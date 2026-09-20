@@ -51,22 +51,19 @@ def step_validate(batch=False):
 
 def step_export():
     """导出"""
-    from export.export import ArticleExporter
-    from utils.db import get_conn
+    from cleaner.llm_validator import _export_raw_csv
+    from utils.logger import get_logger
+    
+    logger = get_logger("main")
+    path = _export_raw_csv()
+    if path:
+        logger.info(f"原始文献信息已导出: {path}")
 
-    exporter = ArticleExporter()
-    with get_conn(DB_PATH) as conn:
-        articles = conn.execute(
-            "SELECT * FROM articles WHERE pmid IN (SELECT pmid FROM llm_validation WHERE llm_verdict = 'RELEVANT')"
-        ).fetchall()
 
-    if articles:
-        json_path = exporter.export_to_json([dict(a) for a in articles])
-        csv_path = exporter.export_to_csv([dict(a) for a in articles])
-        print(f"  JSON: {json_path}")
-        print(f"  CSV: {csv_path}")
-    else:
-        print("  无文献可导出")
+def step_import_review(csv_path: str = None):
+    """导入人工复核结果"""
+    from cleaner.llm_validator import import_human_review
+    import_human_review(csv_path)
 
 
 def main():
@@ -75,9 +72,14 @@ def main():
     )
     parser.add_argument(
         "--step",
-        choices=["download", "parse", "clean", "pdf", "pdf-retry", "validate", "export", "all"],
+        choices=["download", "parse", "clean", "pdf", "pdf-retry", "validate", "import-review", "export", "all"],
         default="all",
         help="运行指定阶段（默认 all）",
+    )
+    parser.add_argument(
+        "--csv",
+        default=None,
+        help="import-review 阶段的 CSV 文件路径（默认自动查找最新的复核文件）",
     )
     parser.add_argument(
         "--query",
@@ -124,6 +126,9 @@ def main():
 
     if step == "validate":
         step_validate(args.batch)
+
+    if step == "import-review":
+        step_import_review(args.csv)
 
     if step in ("export", "all"):
         step_export()

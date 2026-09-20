@@ -80,8 +80,9 @@ DEEPSEEK_API_KEY  = os.environ.get("DEEPSEEK_API_KEY", "")
 DEEPSEEK_BASE_URL = os.environ.get("DEEPSEEK_BASE_URL", "https://api.deepseek.com")
 DEEPSEEK_MODEL    = os.environ.get("DEEPSEEK_MODEL", "deepseek-v4-flash")
 
-ZHIPU_API_KEY = os.environ.get("ZHIPU_API_KEY", "")
-ZHIPU_MODEL   = os.environ.get("ZHIPU_MODEL", "glm-4-Flash-250414")
+ZHIPU_API_KEY   = os.environ.get("ZHIPU_API_KEY", "")
+ZHIPU_MODEL     = os.environ.get("ZHIPU_MODEL", "glm-4-Flash-250414")
+ZHIPU_BATCH_MODEL = "glm-4-flash"      # Batch API 使用的模型（价格 50% off）
 
 OPENAI_API_KEY  = os.environ.get("OPENAI_API_KEY", "")
 OPENAI_BASE_URL = os.environ.get("OPENAI_BASE_URL", "https://api.openai.com/v1")
@@ -92,6 +93,11 @@ LLM_CONCURRENCY = 2
 LLM_MAX_TOKENS  = 8192
 LLM_MAX_RETRIES = 3
 LLM_MAX_ROUNDS  = 2
+
+# ── LLM Batch API 配置（仅 zhipu） ──
+LLM_BATCH_POLL_INTERVAL  = 30           # Batch 轮询间隔（秒）
+LLM_BATCH_TIMEOUT        = 86400        # Batch 超时时间（24h）
+LLM_BATCH_AUTO_DELETE    = True         # 完成后自动删除输入文件
 
 # Provider 配置字典
 LLM_PROVIDER_CONFIGS = {

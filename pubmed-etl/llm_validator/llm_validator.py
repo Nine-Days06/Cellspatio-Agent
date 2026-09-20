@@ -1,19 +1,32 @@
-"""LLM 文献验证模块 - 支持多供应商、批量验证、断点续传"""
+# cleaner/llm_validator.py
+"""
+LLM 文献验证模块
+使用 OpenAI 兼容 API（DeepSeek 等）对文献进行二次相关性验证。
+"""
+
 import json
 import re
 import time
+import csv
+import os
 from pathlib import Path
-from typing import List, Dict, Any
+from datetime import datetime
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
-from config.settings import (
-    LLM_PROVIDER, LLM_PROVIDER_CONFIGS,
-    LLM_BATCH_SIZE, LLM_CONCURRENCY, LLM_MAX_RETRIES,
-    OUTPUT_DIR,
-)
-from utils.db import get_conn, now_iso
-from config.settings import DB_PATH
+from openai import OpenAI
 
+from config.settings import (
+    DB_PATH, OUTPUT_DIR, LOG_DIR,
+    LLM_BATCH_SIZE, LLM_CONCURRENCY, LLM_MAX_TOKENS, LLM_MAX_RETRIES, LLM_MAX_ROUNDS,
+    LLM_PROVIDER, LLM_PROVIDER_CONFIGS,
+    LLM_BATCH_POLL_INTERVAL, LLM_BATCH_TIMEOUT, LLM_BATCH_AUTO_DELETE,
+    ZHIPU_API_KEY, ZHIPU_BATCH_MODEL,
+)
+from utils import now_iso
+from utils.db import get_conn
+from utils.logger import get_logger
+
+logger = get_logger("llm_validator", log_dir=LOG_DIR)
 
 CHECKPOINT_FILENAME = "llm_validation_progress.json"
 
@@ -23,7 +36,7 @@ def _checkpoint_path() -> Path:
 
 
 def _save_checkpoint(round_num: int, failed_rows: list):
-    """保存检查点"""
+    """保存轮次检查点，崩溃后可恢复"""
     data = {
         "round": round_num,
         "failed": [dict(r) for r in failed_rows],
@@ -33,12 +46,11 @@ def _save_checkpoint(round_num: int, failed_rows: list):
     path.parent.mkdir(parents=True, exist_ok=True)
     with open(path, "w", encoding="utf-8") as f:
         json.dump(data, f, ensure_ascii=False)
-    print(f"  检查点已保存: 第 {round_num} 轮, 待重试 {len(failed_rows)} 篇")
+    logger.info(f"检查点已保存: 第 {round_num} 轮, 待重试 {len(failed_rows)} 篇")
 
 
 def _load_checkpoint() -> tuple[int | None, list]:
-    """加载检查点"""
-    from datetime import datetime
+    """加载检查点，返回 (round_num, failed_rows) 或 (None, [])"""
     path = _checkpoint_path()
     if not path.exists():
         return None, []
@@ -47,26 +59,28 @@ def _load_checkpoint() -> tuple[int | None, list]:
             data = json.load(f)
         return data["round"], data["failed"]
     except Exception as e:
-        print(f"  检查点读取失败: {e}")
+        logger.warning(f"检查点读取失败，将从头开始: {e}")
         return None, []
 
 
 def _clear_checkpoint():
-    """删除检查点"""
+    """验证全部完成后删除检查点"""
     path = _checkpoint_path()
     if path.exists():
         path.unlink()
-        print("  检查点已清除")
+        logger.info("检查点已清除（全部验证完成）")
 
 
 def _extract_json(text: str, fix_glm_multi_array: bool = False) -> list | None:
-    """从 LLM 响应中提取 JSON 数组"""
+    """多策略从 LLM 响应中提取 JSON 数组，返回 None 表示全部失败"""
+    # 1) 剥离 markdown 代码块标记
     s = text.strip()
     if s.startswith("```"):
         s = s.split("\n", 1)[-1]
         s = s.rsplit("```", 1)[0] if "```" in s else s
         s = s.strip()
 
+    # 2) 快速路径: 解析完整字符串
     try:
         data = json.loads(s)
         if isinstance(data, list):
@@ -74,12 +88,18 @@ def _extract_json(text: str, fix_glm_multi_array: bool = False) -> list | None:
     except json.JSONDecodeError:
         pass
 
+    # 3) 从第一个 [ 开始
     start = s.find("[")
     if start == -1:
         return None
     json_str = s[start:]
 
     if fix_glm_multi_array:
+        logger.debug(f"s前50字符: {s[:50]!r}")
+        logger.debug(f"s后50字符: {s[-50:]!r}")
+        logger.debug(f"json_str前300字符: {json_str[:300]!r}")
+        logger.debug(f"json_str末100字符: {json_str[-100:]!r}")
+        # 4) 修复多数组 + 尾逗号（先跑，保留所有记录）
         normalized = json_str.replace('\r\n', '\n').replace('\n', '')
         fixed = re.sub(r',\s*\]', ']', re.sub(r'\],\s*\[', ',', normalized))
         if fixed != normalized:
@@ -89,76 +109,28 @@ def _extract_json(text: str, fix_glm_multi_array: bool = False) -> list | None:
                     return data
             except json.JSONDecodeError:
                 pass
+        # 5) 尝试补全被截断的 JSON
+        if json_str.startswith('[') and not json_str.rstrip().endswith(']'):
+            fixed2 = json_str.rstrip().rstrip(',') + '\n]'
+            if fixed2 != json_str:
+                try:
+                    data = json.loads(fixed2)
+                    if isinstance(data, list):
+                        return data
+                except json.JSONDecodeError:
+                    pass
 
-    # 尝试补全截断的 JSON
-    if json_str.startswith('[') and not json_str.rstrip().endswith(']'):
-        fixed2 = json_str.rstrip().rstrip(',') + '\n]'
-        if fixed2 != json_str:
-            try:
-                data = json.loads(fixed2)
-                if isinstance(data, list):
-                    return data
-            except json.JSONDecodeError:
-                pass
+    # 6) raw_decode 总回退（跳过 JSON 后的垃圾内容，只返回第一个数组）
+    try:
+        decoder = json.JSONDecoder()
+        data, idx = decoder.raw_decode(json_str)
+        if isinstance(data, list):
+            return data
+    except (json.JSONDecodeError, ValueError):
+        pass
 
     return None
 
-
-# ── LLM 调用 ──────────────────────────────────────────────────
-
-def _get_client_and_model():
-    """获取当前 LLM 客户端和模型名"""
-    from openai import OpenAI
-
-    config = LLM_PROVIDER_CONFIGS[LLM_PROVIDER]
-
-    if config["client_type"] == "zhipuai":
-        import zhipuai
-        client = zhipuai.ZhipuAI(api_key=config["api_key"])
-    else:
-        client = OpenAI(
-            api_key=config["api_key"],
-            base_url=config["base_url"],
-        )
-
-    return client, config["model"], config
-
-
-def _call_llm(messages: list, temperature: float = 0) -> str:
-    """调用 LLM API"""
-    client, model, config = _get_client_and_model()
-
-    kwargs = config.get("extra_kwargs", {})
-    kwargs["temperature"] = temperature
-
-    extra_body = config.get("extra_body", {})
-
-    for attempt in range(1, LLM_MAX_RETRIES + 1):
-        try:
-            if config["client_type"] == "zhipuai":
-                response = client.chat.completions.create(
-                    model=model,
-                    messages=messages,
-                    **kwargs,
-                )
-            else:
-                response = client.chat.completions.create(
-                    model=model,
-                    messages=messages,
-                    extra_body=extra_body if extra_body else None,
-                    **kwargs,
-                )
-            return response.choices[0].message.content
-        except Exception as e:
-            if attempt == LLM_MAX_RETRIES:
-                raise
-            time.sleep(2 ** attempt)
-            print(f"    LLM 调用失败，重试 {attempt}/{LLM_MAX_RETRIES}: {e}")
-
-    return ""
-
-
-# ── 验证逻辑 ──────────────────────────────────────────────────
 
 SYSTEM_PROMPT = (
     "你是一个人类多组学（Human Multi-omics）分析领域的文献筛选专家。\n"
@@ -166,152 +138,1265 @@ SYSTEM_PROMPT = (
     "多组学包括：转录组学（Transcriptomics）、蛋白质组学（Proteomics）、"
     "代谢组学（Metabolomics）、基因组学（Genomics）、表观基因组学（Epigenomics）。\n"
     "判断以下每篇文献的摘要是否与人类多组学分析相关。\n\n"
-    "判断标准：\n"
-    "- 涉及人类疾病/组织/细胞的组学研究 → RELEVANT\n"
-    "- 涉及组学技术方法开发（且以人类研究为主要应用）→ RELEVANT\n"
-    "- 涉及多组学数据整合分析 → RELEVANT\n"
-    "- 仅泛泛提及组学概念，无具体研究内容 → NOT_RELEVANT\n"
-    "- 研究非人类物种 → NOT_RELEVANT\n"
-    "- 传统临床/流行病学（无组学数据）→ NOT_RELEVANT\n\n"
-    "请以 JSON 数组格式返回结果，每个元素包含：\n"
-    '{"pmid": "xxx", "verdict": "RELEVANT/NOT_RELEVANT", "reason": "判断理由"}\n'
+     "可关注的研究类型：\n"
+    "1. 多组学整合分析（整合 2 种以上组学数据进行系统生物学研究）\n"
+    "2. 单一组学研究（转录组、蛋白质组、代谢组、基因组、表观组等）\n"
+    "3. 组学技术开发（新的测序、质谱、生物信息学方法）\n"
+    "4. 组学数据资源（参考基因组、表达数据库、代谢物数据库等）\n"
+    "5. 组学在疾病诊断/治疗中的应用（癌症、代谢病、神经退行性疾病等）\n\n"
+     "可关注的研究对象：\n"
+    "人类疾病：癌症、肿瘤、代谢性疾病、神经退行性疾病、心血管疾病、自身免疫病等\n"
+    "组织/细胞：血液、脑组织、肝脏、肿瘤组织、免疫细胞、干细胞等\n"
+    "人群研究：队列研究、GWAS、精准医疗、药物基因组学等\n"
+    "模式系统：类器官、细胞系、人源化小鼠模型等\n\n"
+     "判断步骤（请按以下顺序逐一分析后给出最终判定）：\n"
+     "1. 核心研究对象：这篇文献主要研究什么？\n"
+     "   - 人类的组学研究（转录组、蛋白质组、代谢组、基因组、表观组等）\n"
+     "   - 多组学整合分析\n"
+     "   - 组学技术方法开发\n"
+     "   - 非人类物种（植物、动物模型等）\n"
+     "   - 非组学研究（传统临床研究、流行病学等）\n"
+     "2. 关键实体：摘要中出现了哪些组学相关实体？\n"
+     "3. 核心内容：研究的组学类型和分析方法是什么？\n"
+     "4. 参照下方判断标准，得出最终 verdict\n\n"
+     "判断标准：\n"
+    "- 摘要涉及人类疾病/组织/细胞的组学研究"
+     "（转录组、蛋白质组、代谢组、基因组、表观组或多组学整合）→ RELEVANT\n"
+    "- 摘要涉及组学技术方法开发（测序技术、质谱方法、生物信息学工具等），"
+     "且以人类研究为主要应用或验证系统 → RELEVANT\n"
+    "- 摘要涉及多组学数据整合分析（如转录组+代谢组、基因组+表观组等）→ RELEVANT\n"
+    "- 摘要涉及组学数据资源建设（参考基因组、数据库、表达谱等）→ RELEVANT\n"
+    "- 摘要仅泛泛提及组学概念，无具体研究内容 → NOT_RELEVANT\n"
+    "- 摘要研究非人类物种（植物、纯动物模型研究等）→ NOT_RELEVANT\n"
+    "- 摘要研究传统临床/流行病学（无组学数据或分析）→ NOT_RELEVANT\n"
+    "- 摘要仅涉及单一基因/蛋白质的功能验证，无组学分析 → NOT_RELEVANT\n"
+    "- 摘要仅涉及基因组组装/注释，无功能组学分析 → NOT_RELEVANT\n\n"
+     "示例：\n\n"
+     "示例1 — RELEVANT（基因→抗性）\n"
+    "PMID: 15078331\n"
+    "Title: Molecular cloning of the potato Gro1-4 gene conferring "
+    "resistance to pathotype Ro1 of the root cyst nematode Globodera "
+    "rostochiensis, based on a candidate gene approach.\n"
+    "Abstract: The endoparasitic root cyst nematode Globodera "
+    "rostochiensis causes considerable damage in potato cultivation. "
+    "In the past, major genes for nematode resistance have been "
+    "introgressed from related potato species into cultivars. "
+    "Elucidating the molecular basis of resistance will contribute to "
+    "the understanding of nematode-plant interactions and assist in "
+    "breeding nematode-resistant cultivars. The Gro1 resistance locus "
+    "to G. rostochiensis on potato chromosome VII co-localized with a "
+    "resistance-gene-like (RGL) DNA marker. This marker was used to "
+    "isolate from genomic libraries 15 members of a closely related "
+    "candidate gene family. Analysis of inheritance, linkage mapping, "
+    "and sequencing reduced the number of candidate genes to three. "
+    "Complementation analysis by stable potato transformation showed "
+    "that the gene Gro1-4 conferred resistance to G. rostochiensis "
+    "pathotype Ro1. Gro1-4 encodes a protein of 1136 amino acids that "
+    "contains Toll-interleukin 1 receptor (TIR), nucleotide-binding "
+    "(NB), leucine-rich repeat (LRR) homology domains and a C-terminal "
+    "domain with unknown function. The deduced Gro1-4 protein differed "
+    "by 29 amino acid changes from susceptible members of the Gro1 gene "
+    "family. Sequence characterization of 13 members of the Gro1 gene "
+    "family revealed putative regulatory elements and a variable "
+    "microsatellite in the promoter region, insertion of a "
+    "retrotransposon-like element in the first intron, and a stop codon "
+    "in the NB coding region of some genes. Sequence analysis of RT-PCR "
+    "products showed that Gro1-4 is expressed, among other members of "
+    "the family including putative pseudogenes, in non-infected roots "
+    "of nematode-resistant plants. RT-PCR also demonstrated that "
+    "members of the Gro1 gene family are expressed in most potato "
+    "tissues.\n\n"
+     "示例2 — RELEVANT（基因→品质性状）\n"
+    "PMID: 15802505\n"
+    "Title: DNA variation at the invertase locus invGE/GF is "
+    "associated with tuber quality traits in populations of potato "
+    "breeding clones.\n"
+    "Abstract: Starch and sugar content of potato tubers are "
+    "quantitative traits, which are models for the candidate gene "
+    "approach for identifying the molecular basis of quantitative "
+    "trait loci (QTL) in noninbred plants. Starch and sugar content "
+    "are also important for the quality of processed products such as "
+    "potato chips and French fries. A high content of the reducing "
+    "sugars glucose and fructose results in inferior chip quality. "
+    "Tuber starch content affects nutritional quality. Functional and "
+    "genetic models suggest that genes encoding invertases control, "
+    "among other things, tuber sugar content. The invGE/GF locus on "
+    "potato chromosome IX consists of duplicated invertase genes invGE "
+    "and invGF and colocalizes with cold-sweetening QTL Sug9. DNA "
+    "variation at invGE/GF was analyzed in 188 tetraploid potato "
+    "cultivars, which have been assessed for chip quality and tuber "
+    "starch content. Two closely correlated invertase alleles, "
+    "invGE-f and invGF-d, were associated with better chip quality in "
+    "three breeding populations. Allele invGF-b was associated with "
+    "lower tuber starch content. The potato invertase gene invGE is "
+    "orthologous to the tomato invertase gene Lin5, which is causal "
+    "for the fruit-sugar-yield QTL Brix9-2-5, suggesting that natural "
+    "variation of sugar yield in tomato fruits and sugar content of "
+    "potato tubers is controlled by functional variants of orthologous "
+    "invertase genes.\n\n"
+     "示例3 — NOT_RELEVANT（农艺/育种层面，无分子实体）\n"
+    "PMID: 28742868\n"
+    "Title: Combining ability of highland tropic adapted potato for "
+    "tuber yield and yield components under drought.\n"
+    "Abstract: Recurrent drought and late blight disease are the "
+    "major factors limiting potato productivity in the northwest "
+    "Ethiopian highlands. Incorporating drought tolerance and late "
+    "blight resistance in the same genotypes will enable the "
+    "development of cultivars with high and stable yield potential "
+    "under erratic rainfall conditions. The objectives of this study "
+    "were to assess combining ability effects and gene action for "
+    "tuber yield and traits related to drought tolerance in the "
+    "International Potato Centre's (CIP's) advanced clones from the "
+    "late blight resistant breeding population B group 'B3C2' and to "
+    "identify promising parents and families for cultivar development. "
+    "Sixteen advanced clones from the late blight resistant breeding "
+    "population were crossed in two sets using the North Carolina "
+    "Design II. The resulting 32 families were evaluated together with "
+    "five checks and 12 parental clones in a 7 x 7 lattice design with "
+    "two water regimes and two replications. The experiment was "
+    "carried out at Adet, in northwest Ethiopia under well-watered and "
+    "water stressed conditions with terminal drought imposed from the "
+    "tuber bulking stage. The results showed highly significant "
+    "differences between families, checks, and parents for growth, "
+    "physiological, and tuber yield related traits. Traits including "
+    "marketable tuber yield, marketable tuber number, average tuber "
+    "weight and groundcover were positively correlated with total "
+    "tuber yield under both drought stressed and well-watered "
+    "conditions. Plant height was correlated with yield only under "
+    "drought stressed condition. GCA was more important than SCA for "
+    "total tuber yield, marketable tuber yield, average tuber weight, "
+    "plant height, groundcover, and chlorophyll content under stress. "
+    "This study identified the parents with best GCA and the "
+    "combinations with best SCA effects, for both tuber yield and "
+    "drought tolerance related traits. The new population is shown to "
+    "be a valuable genetic resource for variety selection and "
+    "improvement of potato's adaptation to the drought prone areas in "
+    "northwest Ethiopia and similar environments.\n\n"
+     "示例4 — NOT_RELEVANT（方法学论文，仅以马铃薯病原菌为模型）\n"
+    "PMID: 10658663\n"
+    "Title: cDNA-AFLP analysis of differential gene expression in "
+    "the prokaryotic plant pathogen Erwinia carotovora.\n"
+    "Abstract: For studies of differential gene expression in "
+    "prokaryotes, methods for synthesizing representative cDNA "
+    "populations are required. Here, a technique is described for "
+    "the synthesis of cDNA from the potato pathogens Erwinia "
+    "carotovora subsp. atroseptica (Eca) and Erwinia carotovora "
+    "subsp. carotovora (Ecc) using a combination of short "
+    "oligonucleotide (11-mer) primers that were known to anneal to "
+    "conserved sequences in the 3' regions of enterobacterial genes. "
+    "Specific PCR amplifications with primers designed to anneal to "
+    "14 known genes from either Eca or Ecc revealed the presence of "
+    "the corresponding transcripts in cDNA, suggesting that the cDNA "
+    "represented a broad genomic coverage. cDNA-amplified fragment "
+    "length polymorphism (cDNA-AFLP) was used to identify "
+    "differentially expressed genes in Eca, including one that shows "
+    "significant similarity, at the protein level, to an avirulence "
+    "gene from Xanthomonas campestris pv. raphani. Northern analysis "
+    "was used to confirm that differentially amplified cDNA fragments "
+    "were derived from differentially expressed genes. This is the "
+"first report of the use of cDNA-AFLP to study differential gene "
+     "expression in prokaryotes.\n\n"
+     "示例5 — NOT_RELEVANT（外源细菌基因在马铃薯中表达）\n"
+    "PMID: 11231562\n"
+    "Title: Acceleration of potato tuber sprouting by the expression of "
+    "a bacterial pyrophosphatase.\n"
+    "Abstract: Potato is a globally important crop. Unfortunately, "
+    "potato farming is plagued with problems associated with the "
+    "sprouting behavior of seed tubers. The data presented here "
+    "demonstrate that using transgenic technology can influence this "
+    "behavior. Transgenic tubers cytosolically expressing an inorganic "
+    "pyrophosphatase gene derived from Escherichia coli under the "
+    "control of the tuber-specific patatin promoter display "
+    "significantly accelerated sprouting. The period of presprouting "
+    "dormancy for transgenic tubers planted immediately after harvest "
+    "is reduced by six to seven weeks when compared to wild-type "
+    "tubers. This study demonstrates a method with which to regulate "
+    "dormancy, an important aspect of potato crop management.\n\n"
+     "示例6 — NOT_RELEVANT（外源植物基因在马铃薯中表达）\n"
+    "PMID: 11262007\n"
+    "Title: Control of enzymatic browning in potato (Solanum tuberosum "
+    "L.) by sense and antisense RNA from tomato polyphenol oxidase.\n"
+    "Abstract: Polyphenol oxidase (PPO) activity of Russet Burbank "
+    "potato was inhibited by sense and antisense PPO RNAs expressed "
+    "from a tomato PPO cDNA under the control of the 35S promoter. "
+    "Transgenic Russet Burbank potato plants from 37 different lines "
+    "were grown in the field. PPO activity and the level of enzymatic "
+    "browning were measured in the harvested tubers. Of the tubers from "
+    "28 transgenic lines, tubers from 5 lines exhibited reduced "
+    "browning, and PPO activity correlated with this reduction. These "
+    "results indicate that expression of tomato PPO RNA in sense or "
+    "antisense orientation inhibits PPO activity and enzymatic browning "
+    "in the major commercial potato cultivar. Furthermore, the findings "
+    "suggest that expression of closely related heterologous genes "
+    "could prevent enzymatic browning in a wide variety of food crops.\n\n"
+     "示例7 — RELEVANT（马铃薯内源基因功能验证，转基因手段）\n"
+    "PMID: 15078330\n"
+    "Title: The tandem complex of BEL and KNOX partners is required for "
+    "transcriptional repression of ga20ox1.\n"
+    "Abstract: Two interacting TALE proteins of potato, StBEL5 and "
+    "POTH1, mediate developmental processes by regulating phytohormone "
+    "levels. Overexpression of either partner alone increased tuber "
+    "yields by lowering gibberellin (GA) levels and increasing "
+    "cytokinins. StBEL5 and POTH1 bind to the regulatory region of "
+    "ga20ox1 from potato. The StBEL5-POTH1 heterodimer suppressed the "
+    "activity of the ga20ox1 promoter by more than 50%. These results "
+    "indicate that the tandem interaction of StBEL5 and POTH1 is "
+    "essential for regulation of the target gene, affecting tuber "
+    "yield.\n\n"
+     "示例8 — RELEVANT（胁迫-基因-耐逆性状）\n"
+    "PMID: 17207469\n"
+    "Title: Ethylene responsive element binding protein 1 (StEREBP1) "
+    "from Solanum tuberosum increases tolerance to abiotic stress in "
+    "transgenic potato plants.\n"
+    "Abstract: To identify components of the plant stress signal "
+    "transduction cascade, we chose the ethylene responsive element "
+    "binding protein 1 (StEREBP1) for characterization. Northern blot "
+    "analysis showed enhanced transcription of StEREBP1 in response to "
+    "several environmental stresses including low temperature. "
+    "StEREBP1 was found to bind to GCC and DRE/CRT cis-elements, and "
+    "overexpression of StEREBP1 induced several GCC box-containing "
+    "stress response genes. In addition, overexpression of StEREBP1 "
+    "enhanced tolerance to cold and salt stress in transgenic potato "
+    "plants. The results suggest that StEREBP1 is a functional "
+    "transcription factor involved in abiotic stress responses.\n\n"
+     "示例9 — NOT_RELEVANT（胁迫/处理→生理变化，无内源基因功能关系）\n"
+    "PMID: 11080304\n"
+    "Title: Impact of post-anoxia stress on membrane lipids of "
+    "anoxia-pretreated potato cells. A re-appraisal.\n"
+    "Abstract: The importance of lipid peroxidation and its contributing "
+    "pathways (via reactive oxygen species and lipoxygenase) during "
+    "post-anoxia was evaluated using potato (Solanum tuberosum) cell "
+    "cultures. When anoxic cells were re-oxygenated, lipid hydroperoxides "
+    "were detected only upon feeding cells with H2O2, no accumulation was "
+    "found otherwise, and cell viability was preserved. The study "
+    "investigates membrane lipid changes under anoxia-reoxygenation "
+    "stress in potato cells without addressing any potato gene or "
+    "protein's function-trait relationship.\n\n"
+     "示例10 — NOT_RELEVANT（基因/蛋白未指名具体名称）\n"
+    "PMID: 20102600\n"
+    "Title: A potato gene involved in cold tolerance as revealed by "
+    "expression profiling.\n"
+    "Abstract: We identified a gene that was differentially expressed "
+    "in cold-stressed potato. Transgenic potato plants overexpressing "
+    "and RNAi-silenced lines of this gene showed altered freezing "
+    "tolerance, and the gene influenced expression of several "
+    "carbohydrate-related transcripts. The identification of this "
+    "gene may help improve potato cold tolerance in the future. "
+    "全篇对基因仅以「a gene / this gene」泛指，未给出任何具体名称。\n"
+    "（注：① 摘要中的基因未给出具体名称，无法提取命名实体 → "
+    "判 NOT_RELEVANT；② 即使通过转基因/RNAi 等手段验证其功能，"
+    "只要基因未点名，一律 NOT_RELEVANT）\n\n"
+     "请以 JSON 对象格式逐条回答，不要包含其他内容：\n"
+    '{"results":[{"pmid":"...","verdict":"RELEVANT 或 NOT_RELEVANT",'
+    '"reason":"请用中文简要说明判断依据，指出摘要中出现的实体和关系"}]}'
 )
 
+INSERT_SQL = """
+INSERT INTO llm_validation
+    (pmid, llm_verdict, reason, validated_at, human_review)
+VALUES (?, ?, ?, ?, NULL)
+ON CONFLICT(pmid) DO UPDATE SET
+    llm_verdict = excluded.llm_verdict,
+    reason = excluded.reason,
+    validated_at = excluded.validated_at
+"""
 
-def _build_user_prompt(articles: list) -> str:
-    """构建用户提示词"""
-    parts = ["请判断以下文献是否与人类多组学分析相关：\n"]
-    for i, art in enumerate(articles, 1):
-        parts.append(f"文献 {i}:")
-        parts.append(f"PMID: {art.get('pmid', '')}")
-        parts.append(f"标题: {art.get('title', '')}")
-        parts.append(f"摘要: {art.get('abstract', '')[:500]}...")
-        parts.append("")
+UPDATE_HUMAN_REVIEW_SQL = """
+UPDATE llm_validation SET human_review = ? WHERE pmid = ?
+"""
+
+
+def _build_batch_prompt(rows: list) -> str:
+    """为一批文献构建 prompt 正文"""
+    parts = [
+        "以下是需要你根据上述标准判断的文献列表，请逐条判断摘要中是否存在可提取的实体关系：\n\n"
+    ]
+    for i, row in enumerate(rows, 1):
+        title = (row["title"] or "").strip()
+        abstract = (row["abstract"] or "").strip()
+        parts.append(
+            f"## 文献 {i}\nPMID: {row['pmid']}\nTitle: {title}\n"
+            f"Abstract: {abstract}\n"
+        )
     return "\n".join(parts)
 
 
-def _validate_batch(articles: list) -> list:
-    """验证一批文献"""
-    from datetime import datetime
+def _build_client() -> tuple:
+    """
+    根据 LLM_PROVIDER 配置创建 client，返回 (client, model, extra_kwargs, fix_multi_array)。
+    失败时返回 (None, None, None, None)。
+    """
+    cfg = LLM_PROVIDER_CONFIGS.get(LLM_PROVIDER)
+    if not cfg:
+        logger.error(f"未知的 LLM_PROVIDER: {LLM_PROVIDER}")
+        return None, None, None, None
 
-    user_prompt = _build_user_prompt(articles)
-    messages = [
-        {"role": "system", "content": SYSTEM_PROMPT},
-        {"role": "user", "content": user_prompt},
-    ]
+    api_key = os.environ.get(cfg["api_key_env"]) or cfg["api_key_fallback"]
+    if not api_key:
+        logger.error(f"未设置 {cfg['api_key_env']}（环境变量或 config/settings.py）")
+        return None, None, None, None
 
-    fix_multi = LLM_PROVIDER_CONFIGS[LLM_PROVIDER].get("fix_multi_array", False)
-    response = _call_llm(messages)
-    results = _extract_json(response, fix_glm_multi_array=fix_multi)
+    if cfg["client_type"] == "zhipuai":
+        from zhipuai import ZhipuAI
+        client = ZhipuAI(api_key=api_key)
+    else:
+        client = OpenAI(api_key=api_key, base_url=cfg["base_url"])
 
-    if results is None:
-        # 解析失败，标记为未知
-        return [
-            {"pmid": art.get("pmid"), "verdict": "UNKNOWN", "reason": "LLM 响应解析失败"}
-            for art in articles
-        ]
+    extra_kwargs = {k: v for k, v in cfg["extra_kwargs"].items()}
+    extra_kwargs["model"] = cfg["model"]
+    extra_body = cfg.get("extra_body")
+    if extra_body:
+        extra_kwargs["extra_body"] = extra_body
 
-    # 确保每个结果都有 pmid
-    validated = []
-    for r in results:
-        if "pmid" not in r:
-            # 尝试从 articles 中匹配
-            idx = len(validated)
-            if idx < len(articles):
-                r["pmid"] = articles[idx].get("pmid")
-        validated.append(r)
-
-    return validated
+    return client, cfg["model"], extra_kwargs, cfg["fix_multi_array"]
 
 
-# ── 主流程 ────────────────────────────────────────────────────
+def _call_llm(rows: list) -> tuple[list[dict], list[str]]:
+    """调用 LLM API 验证一批文献，返回 (成功结果列表, 失败 PMID 列表)"""
+    prompt = _build_batch_prompt(rows)
+    last_exception = None
+    failed_pmids = [row["pmid"] for row in rows]
 
-def run_validation(batch_mode: bool = False, db_path: Path = None):
-    """运行 LLM 验证"""
-    from datetime import datetime
+    client, model, create_kwargs, fix_multi_array = _build_client()
+    if client is None:
+        return [], failed_pmids
 
-    db_path = db_path or DB_PATH
+    response_attr = "choices"
 
-    print("=" * 60)
-    print("阶段四：LLM 验证")
-    print(f"  供应商: {LLM_PROVIDER}")
-    print("=" * 60)
+    for attempt in range(1, LLM_MAX_RETRIES + 1):
+        try:
+            resp = client.chat.completions.create(
+                messages=[
+                    {"role": "system", "content": SYSTEM_PROMPT},
+                    {"role": "user", "content": prompt},
+                ],
+                **create_kwargs,
+            )
+            choices = getattr(resp, response_attr)
+            content = choices[0].message.content.strip()
 
-    # 获取待验证文献
-    with get_conn(db_path) as conn:
-        # 获取通过硬过滤且未验证的文献
+            result = None
+            try:
+                data = json.loads(content)
+                if isinstance(data, list):
+                    result = data
+                elif isinstance(data, dict) and "results" in data and isinstance(data["results"], list):
+                    result = data["results"]
+            except (json.JSONDecodeError, ValueError):
+                pass
+
+            if result is None:
+                result = _extract_json(content, fix_glm_multi_array=fix_multi_array)
+            if result is None:
+                raise ValueError(f"无法从 LLM 响应中提取有效 JSON: {content[:200]}")
+            return result, []
+        except Exception as e:
+            last_exception = e
+            logger.warning(f"LLM API 调用失败（attempt {attempt}/{LLM_MAX_RETRIES}）: {e}")
+            if attempt < LLM_MAX_RETRIES:
+                time.sleep(2 ** attempt)
+
+    logger.error(f"LLM API 调用全部失败，跳过该批次: {last_exception}")
+    return [], failed_pmids
+
+
+def run_validation(batch_mode: bool = False):
+    """
+    LLM 验证路由入口。
+
+    batch_mode=True 且 LLM_PROVIDER=zhipu → 走智谱 Batch API。
+    batch_mode=True 但 provider 非 zhipu → 警告后降级同步模式。
+    batch_mode=False → 走同步模式（现有逻辑）。
+    """
+    logger.info("=" * 60)
+    logger.info("阶段五：LLM 文献验证")
+    logger.info("=" * 60)
+
+    if batch_mode:
+        if LLM_PROVIDER != "zhipu":
+            logger.warning(
+                "Batch API 仅支持智谱提供者（当前 provider=%s），"
+                "已自动降级为同步模式", LLM_PROVIDER
+            )
+            _run_sync_validation()
+            return
+        _run_zhipu_batch()
+        return
+
+    _run_sync_validation()
+
+
+def _normalize_verdict(value) -> str | None:
+    """
+    将 LLM 返回的 verdict 归一化为标准值（RELEVANT / NOT_RELEVANT）。
+    无法识别（缺失、截断残缺、其他取值）返回 None，由调用方判为失败重试。
+    """
+    if not value:
+        return None
+    compact = str(value).strip().upper().replace(" ", "").replace("-", "").replace("_", "")
+    if compact == "RELEVANT":
+        return "RELEVANT"
+    if compact in ("NOTRELEVANT", "IRRELEVANT"):
+        return "NOT_RELEVANT"
+    return None
+
+
+def _build_log_rows(batch, pmid_to_result, failed_set, now):
+    """
+    将一批 LLM 结果整理为待入库 log_rows（4 元组：pmid, verdict, reason, now）
+    与失败列表。verdict 缺失或非标准视为解析失败（回退重试），不写 UNKNOWN。
+    """
+    log_rows = []
+    round_failed = []
+    for row in batch:
+        pmid = row["pmid"]
+        if pmid in failed_set:
+            round_failed.append(row)
+            continue
+        r = pmid_to_result.get(pmid)
+        if r is None:
+            round_failed.append(row)
+            continue
+        verdict = _normalize_verdict(r.get("verdict"))
+        if verdict is None:
+            round_failed.append(row)
+            continue
+        log_rows.append((pmid, verdict, r.get("reason", ""), now))
+    return log_rows, round_failed
+
+
+def _count_verdicts(validated_rows: list) -> dict:
+    """统计 log_rows（4 元组: pmid, verdict, reason, now）中各 verdict 数量"""
+    verdicts = {}
+    for _, v, _, _ in validated_rows:
+        verdicts[v] = verdicts.get(v, 0) + 1
+    return verdicts
+
+
+def _run_sync_validation():
+    """
+    同步多轮 LLM 验证（原 run_validation 逻辑）。
+    支持多轮重试 + 检查点恢复。
+    跳过已有验证结果的 PMID，输出待人工复核的 CSV。
+    """
+    # ── 检查点恢复 ──
+    start_round, remaining_rows = _load_checkpoint()
+    if remaining_rows:
+        with get_conn(DB_PATH) as conn:
+            done = set(row["pmid"] for row in
+                        conn.execute("SELECT pmid FROM llm_validation").fetchall())
+        remaining_rows = [r for r in remaining_rows if r["pmid"] not in done]
+        logger.info(f"从检查点恢复: 第 {start_round} 轮, "
+                    f"待验证 {len(remaining_rows)} 篇")
+        if not remaining_rows:
+            _clear_checkpoint()
+            logger.info("检查点中的文献均已验证，无需继续")
+            csv_path = _export_review_csv()
+            if csv_path:
+                logger.info(f"待复核清单: {csv_path}")
+            return
+    else:
+        with get_conn(DB_PATH) as conn:
+            rows = conn.execute("""
+                SELECT a.pmid, a.title, a.abstract
+                FROM articles a
+                WHERE a.abstract IS NOT NULL AND a.abstract != ''
+                  AND a.pmid NOT IN (SELECT pmid FROM llm_validation)
+                  AND a.pmid NOT IN (
+                      SELECT pmid FROM filter_log WHERE stage = 'hard_filter'
+                  )
+            """).fetchall()
+
+        if not rows:
+            logger.info("没有待验证的文献（所有已评分文献均已验证）")
+            return
+
+        start_round = 1
+        remaining_rows = rows
+        logger.info(f"待验证文献: {len(rows)} 篇, "
+                    f"{LLM_MAX_ROUNDS + 1} 轮重试机制")
+
+    # ── 多轮重试循环 ──
+    all_validated = []
+    for round_num in range(start_round, LLM_MAX_ROUNDS + 2):
+        if not remaining_rows:
+            break
+
+        round_batches = (len(remaining_rows) + LLM_BATCH_SIZE - 1) // LLM_BATCH_SIZE
+        logger.info(f"--- 第 {round_num} 轮: {len(remaining_rows)} 篇, "
+                    f"{round_batches} 批 ---")
+
+        round_failed = []
+        batches = []
+        for start in range(0, len(remaining_rows), LLM_BATCH_SIZE):
+            batches.append(remaining_rows[start:start + LLM_BATCH_SIZE])
+        logger.info(f"  共 {round_batches} 批, 并发 {LLM_CONCURRENCY} 路")
+
+        with ThreadPoolExecutor(max_workers=LLM_CONCURRENCY) as executor:
+            future_to_batch = {
+                executor.submit(_call_llm, batch): batch
+                for batch in batches
+            }
+            completed = 0
+            for future in as_completed(future_to_batch):
+                batch = future_to_batch[future]
+                batch_num = batches.index(batch) + 1
+                try:
+                    results, failed_pmids = future.result()
+                except Exception as e:
+                    logger.error(f"  批次 {batch_num}/{round_batches} 异常: {e}")
+                    round_failed.extend(batch)
+                    completed += 1
+                    continue
+
+                failed_set = set(failed_pmids)
+                if results:
+                    now = now_iso()
+                    pmid_to_result = {r["pmid"]: r for r in results}
+                    log_rows, batch_failed = _build_log_rows(
+                        batch, pmid_to_result, failed_set, now
+                    )
+                    round_failed.extend(batch_failed)
+
+                    if log_rows:
+                        with get_conn(DB_PATH) as conn:
+                            conn.executemany(INSERT_SQL, log_rows)
+                        all_validated.extend(log_rows)
+                else:
+                    round_failed.extend(batch)
+
+                completed += 1
+                logger.info(f"  [{completed}/{round_batches}] "
+                            f"批次 {batch_num} 完成"
+                            f"({'成功' if results else '全部失败'})")
+
+        remaining_rows = round_failed
+        logger.info(f"  第 {round_num} 轮完成: 累计成功 {len(all_validated)} 篇, "
+                    f"失败 {len(remaining_rows)} 篇")
+
+        # 每轮结束保存检查点
+        _save_checkpoint(round_num + 1, remaining_rows)
+
+    # ── 收尾 ──
+    _clear_checkpoint()
+
+    if remaining_rows:
+        _export_failed_pmids_csv(remaining_rows)
+        logger.warning(f"仍有 {len(remaining_rows)} 篇验证失败, 请检查日志")
+    else:
+        logger.info("所有文献验证成功")
+
+    if not all_validated:
+        logger.warning("所有批次均验证失败，请检查 API 配置")
+        return
+
+    verdicts = _count_verdicts(all_validated)
+    logger.info("LLM 验证统计:")
+    for v, c in sorted(verdicts.items()):
+        pct = c / len(all_validated) * 100
+        logger.info(f"  {v}: {c} 篇 ({pct:.1f}%)")
+
+    csv_path = _export_review_csv()
+    logger.info(f"LLM 验证完成，待复核清单: {csv_path}")
+
+
+def _run_sync_validation_for_pmids(pmid_list: list):
+    """对指定的 PMID 列表执行同步多轮验证（用于 batch 降级）"""
+    if not pmid_list:
+        return
+    with get_conn(DB_PATH) as conn:
+        placeholders = ",".join("?" for _ in pmid_list)
+        rows = conn.execute(f"""
+            SELECT pmid, title, abstract
+            FROM articles
+            WHERE pmid IN ({placeholders})
+              AND abstract IS NOT NULL AND abstract != ''
+              AND pmid NOT IN (
+                  SELECT pmid FROM filter_log WHERE stage = 'hard_filter'
+              )
+        """, pmid_list).fetchall()
+    if not rows:
+        logger.info("降级的 PMID 列表中无限有效摘要的文献，跳过")
+        return
+    logger.info(f"同步降级: 对 {len(rows)} 篇文献执行同步验证")
+
+    rows_list = [dict(r) for r in rows]
+    remaining_rows = rows_list
+    all_validated = []
+    for round_num in range(1, LLM_MAX_ROUNDS + 2):
+        if not remaining_rows:
+            break
+        round_failed = []
+        batches = []
+        for start in range(0, len(remaining_rows), LLM_BATCH_SIZE):
+            batches.append(remaining_rows[start:start + LLM_BATCH_SIZE])
+        with ThreadPoolExecutor(max_workers=LLM_CONCURRENCY) as executor:
+            future_to_batch = {
+                executor.submit(_call_llm, batch): batch
+                for batch in batches
+            }
+            for future in as_completed(future_to_batch):
+                batch = future_to_batch[future]
+                try:
+                    results, failed_pmids = future.result()
+                except Exception:
+                    round_failed.extend(batch)
+                    continue
+                failed_set = set(failed_pmids)
+                if results:
+                    now = now_iso()
+                    pmid_to_result = {r["pmid"]: r for r in results}
+                    log_rows, batch_failed = _build_log_rows(
+                        batch, pmid_to_result, failed_set, now
+                    )
+                    round_failed.extend(batch_failed)
+                    if log_rows:
+                        with get_conn(DB_PATH) as conn:
+                            conn.executemany(INSERT_SQL, log_rows)
+                        all_validated.extend(log_rows)
+                else:
+                    round_failed.extend(batch)
+        remaining_rows = round_failed
+    if all_validated:
+        logger.info(f"同步降级完成: {len(all_validated)} 篇成功")
+    if remaining_rows:
+        logger.warning(f"同步降级仍有 {len(remaining_rows)} 篇失败")
+
+
+def _export_failed_pmids_csv(failed_rows: list) -> Path | None:
+    """导出最终验证失败的 PMID 列表"""
+    if not failed_rows:
+        return None
+    out_dir = Path(OUTPUT_DIR)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+    csv_path = out_dir / f"llm_validation_failed_{ts}.csv"
+    with open(csv_path, "w", newline="", encoding="utf-8-sig") as f:
+        writer = csv.writer(f)
+        writer.writerow(["pmid", "title", "abstract_preview"])
+        for row in failed_rows:
+            writer.writerow([row["pmid"], row["title"], row["abstract"] or ""])
+    logger.warning(f"仍有 {len(failed_rows)} 篇验证失败: {csv_path}")
+    return csv_path
+
+
+def _export_review_csv() -> Path | None:
+    """导出所有待人工复核的记录为 CSV"""
+    with get_conn(DB_PATH) as conn:
         rows = conn.execute("""
-            SELECT a.* FROM articles a
-            WHERE NOT EXISTS (SELECT 1 FROM filter_log f WHERE f.pmid = a.pmid)
-            AND NOT EXISTS (SELECT 1 FROM llm_validation v WHERE v.pmid = a.pmid)
+            SELECT v.pmid, a.title, a.abstract,
+                   v.llm_verdict, v.reason
+            FROM llm_validation v
+            JOIN articles a ON a.pmid = v.pmid
+            WHERE v.human_review IS NULL
+            ORDER BY v.llm_verdict DESC, a.pmid
         """).fetchall()
 
     if not rows:
-        print("  无待验证文献")
+        logger.info("没有待复核的记录")
+        return None
+
+    out_dir = Path(OUTPUT_DIR)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+    csv_path = out_dir / f"llm_review_pending_{ts}.csv"
+
+    with open(csv_path, "w", newline="", encoding="utf-8-sig") as f:
+        writer = csv.writer(f)
+        writer.writerow([
+            "pmid", "title", "abstract",
+            "llm_verdict", "reason", "human_review",
+        ])
+        for row in rows:
+            writer.writerow([
+                row["pmid"],
+                row["title"],
+                row["abstract"] or "",
+                row["llm_verdict"],
+                row["reason"],
+                "",
+            ])
+
+    logger.info(f"待复核清单已导出: {csv_path}")
+    logger.info("请人工标注 human_review 列为 Y 或 N（通过/驳回），然后运行 --step import-review")
+    return csv_path
+
+
+# ═══════════════════════════════════════════════════════════════
+# 智谱 Batch API（仅 zhipu provider）
+# ═══════════════════════════════════════════════════════════════
+
+BATCH_CHECKPOINT_FILE = "llm_batch_progress.json"
+
+PROMPT_PREFIX = (
+    "请根据上述标准判断以下文献是否包含可用于马铃薯知识图谱构建的实体关系信息。\n\n"
+)
+
+PROMPT_OUTPUT_FORMAT = (
+    '# 输出格式（仅输出如下 JSON，不要其他文字）：\n'
+    '{"pmid": "%s", "verdict": "RELEVANT 或 NOT_RELEVANT", '
+    '"reason": "用中文简要说明判断依据"}'
+)
+
+
+def _batch_checkpoint_path() -> Path:
+    return Path(OUTPUT_DIR) / BATCH_CHECKPOINT_FILE
+
+
+def _save_batch_checkpoint(data: dict):
+    path = _batch_checkpoint_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(data, f, ensure_ascii=False)
+    logger.info(f"Batch 检查点已保存: batch_id={data.get('batch_id', 'N/A')}")
+
+
+def _load_batch_checkpoint() -> dict | None:
+    path = _batch_checkpoint_path()
+    if not path.exists():
+        return None
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except Exception as e:
+        logger.warning(f"Batch 检查点读取失败，将重新提交: {e}")
+        return None
+
+
+def _clear_batch_checkpoint():
+    path = _batch_checkpoint_path()
+    if path.exists():
+        path.unlink()
+        logger.info("Batch 检查点已清除")
+
+
+def _build_per_article_prompt(pmid: str, title: str, abstract: str) -> str:
+    return (
+        f"{PROMPT_PREFIX}"
+        f"PMID: {pmid}\n"
+        f"Title: {title or ''}\n"
+        f"Abstract: {abstract or ''}\n\n"
+        f"{PROMPT_OUTPUT_FORMAT % pmid}"
+    )
+
+
+def _build_jsonl(rows: list) -> Path:
+    """构建 batch JSONL 文件（每篇一行），返回文件路径"""
+    out_dir = Path(OUTPUT_DIR)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+    jsonl_path = out_dir / f"batch_input_{ts}.jsonl"
+
+    model = ZHIPU_BATCH_MODEL
+    system_content = SYSTEM_PROMPT
+
+    with open(jsonl_path, "w", encoding="utf-8") as f:
+        for row in rows:
+            pmid = row["pmid"]
+            article_prompt = _build_per_article_prompt(
+                pmid, row["title"] or "", row["abstract"] or ""
+            )
+            req = {
+                "custom_id": pmid,
+                "method": "POST",
+                "url": "/v4/chat/completions",
+                "body": {
+                    "model": model,
+                    "messages": [
+                        {"role": "system", "content": system_content},
+                        {"role": "user", "content": article_prompt},
+                    ],
+                    "temperature": 0,
+                    "max_tokens": LLM_MAX_TOKENS,
+                },
+            }
+            f.write(json.dumps(req, ensure_ascii=False) + "\n")
+
+    file_size_mb = jsonl_path.stat().st_size / (1024 * 1024)
+    logger.info(f"JSONL 已构建: {jsonl_path} ({len(rows)} 行, {file_size_mb:.2f} MB)")
+    return jsonl_path
+
+
+def _parse_batch_results(jsonl_path: str) -> tuple[int, list[str]]:
+    """
+    解析 batch 输出结果 JSONL，写入 llm_validation 表。
+    返回 (成功数, 失败 PMID 列表)。
+    """
+    success_count = 0
+    failed_pmids = []
+
+    with open(jsonl_path, "r", encoding="utf-8") as f:
+        for line_num, line in enumerate(f, 1):
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                item = json.loads(line)
+            except json.JSONDecodeError:
+                logger.warning(f"Batch 结果行 {line_num} JSON 解析失败")
+                failed_pmids.append("")
+                continue
+
+            custom_id = item.get("custom_id", "")
+            pmid = custom_id
+
+            resp = item.get("response", {})
+            if resp.get("status_code") != 200:
+                logger.warning(f"Batch 请求失败: pmid={pmid}, status={resp.get('status_code')}")
+                failed_pmids.append(pmid)
+                continue
+
+            body = resp.get("body", {})
+            choices = body.get("choices", [])
+            if not choices:
+                failed_pmids.append(pmid)
+                continue
+
+            content = choices[0].get("message", {}).get("content", "").strip()
+            if not content:
+                failed_pmids.append(pmid)
+                continue
+
+            # 统一 strip markdown（glm-4-flash 常返回 ```json ... ```）
+            clean = content.strip()
+            if clean.startswith("```"):
+                clean = clean.split("\n", 1)[-1]
+                clean = clean.rsplit("```", 1)[0] if "```" in clean else clean
+                clean = clean.strip()
+
+            # 优先直接解析为单 JSON 对象（batch 每篇独立请求的预期格式）
+            obj = None
+            try:
+                obj = json.loads(clean)
+                if not isinstance(obj, dict):
+                    obj = None
+            except (json.JSONDecodeError, ValueError):
+                pass
+
+            # 若失败，回退 _extract_json 处理数组/results 格式
+            if obj is None:
+                parsed = _extract_json(content, fix_glm_multi_array=True)
+                if parsed:
+                    obj = parsed[0] if isinstance(parsed, list) else parsed
+
+            if obj is None:
+                logger.warning(f"Batch 结果解析失败: pmid={pmid}, content={content[:200]}")
+                failed_pmids.append(pmid)
+                continue
+
+            verdict = _normalize_verdict(obj.get("verdict"))
+            if verdict is None:
+                logger.warning(
+                    f"Batch 结果 verdict 无法识别（判为失败重试）: "
+                    f"pmid={pmid}, verdict={obj.get('verdict')!r}"
+                )
+                failed_pmids.append(pmid)
+                continue
+            reason = obj.get("reason", "")
+            now = now_iso()
+
+            with get_conn(DB_PATH) as conn:
+                conn.execute(INSERT_SQL, (pmid, verdict, reason, now))
+            success_count += 1
+
+    return success_count, failed_pmids
+
+
+def _run_zhipu_batch():
+    """智谱 Batch API 主流程：JSONL 构建 → 上传 → 提交 → 轮询 → 下载 → 解析 → 降级"""
+    api_key = os.environ.get("ZHIPU_API_KEY") or ZHIPU_API_KEY
+    if not api_key:
+        logger.error("未设置 ZHIPU_API_KEY，无法使用 Batch API")
         return
 
-    print(f"  待验证文献: {len(rows)} 篇")
+    from zhipuai import ZhipuAI
+    client = ZhipuAI(api_key=api_key)
 
-    # 检查是否有断点
-    round_num, failed_rows = _load_checkpoint()
-    if failed_rows:
-        print(f"  从断点恢复: 第 {round_num} 轮, 待重试 {len(failed_rows)} 篇")
-        articles_to_validate = failed_rows
+    # ── 步骤 1：检查 checkpoint 恢复 ──
+    chk = _load_batch_checkpoint()
+    if chk:
+        batch_id = chk.get("batch_id")
+        logger.info(f"发现 Batch 检查点: batch_id={batch_id}, status={chk.get('status')}")
+        try:
+            batch_status = client.batches.retrieve(batch_id)
+            st = batch_status.status
+            if st == "completed":
+                logger.info(f"Batch 任务已完成，直接下载结果")
+                _download_and_parse_batch(client, batch_status, chk)
+                _finalize_batch(chk)
+                return
+            elif st in ("in_progress", "finalizing", "validating"):
+                logger.info(f"恢复轮询 batch_id={batch_id}")
+                _poll_until_done(client, batch_id, chk)
+                _finalize_batch(chk)
+                return
+            else:
+                logger.warning(f"Batch 任务已结束（status={st}），降级为同步模式")
+                _clear_batch_checkpoint()
+                _run_sync_validation_for_pmids(chk.get("pmid_list", []))
+                return
+        except Exception as e:
+            logger.warning(f"查询 batch 状态失败: {e}，删除检查点并重新提交")
+            _clear_batch_checkpoint()
+
+    # ── 步骤 2：加载待验证文献 ──
+    with get_conn(DB_PATH) as conn:
+        rows = conn.execute("""
+            SELECT pmid, title, abstract
+            FROM articles
+            WHERE abstract IS NOT NULL AND abstract != ''
+              AND pmid NOT IN (SELECT pmid FROM llm_validation)
+              AND pmid NOT IN (
+                  SELECT pmid FROM filter_log WHERE stage = 'hard_filter'
+              )
+        """).fetchall()
+
+    if not rows:
+        logger.info("没有待验证文献")
+        return
+
+    rows_list = [dict(r) for r in rows]
+    all_pmids = [r["pmid"] for r in rows_list]
+    logger.info(f"待验证文献: {len(rows_list)} 篇（Batch 模式）")
+
+    # ── 步骤 3：构建 JSONL ──
+    jsonl_path = _build_jsonl(rows_list)
+
+    # ── 步骤 4：上传文件 ──
+    logger.info("上传 Batch 文件...")
+    try:
+        file_obj = client.files.create(
+            file=open(jsonl_path, "rb"),
+            purpose="batch",
+        )
+        logger.info(f"文件已上传: {file_obj.id}")
+    except Exception as e:
+        logger.error(f"上传文件失败: {e}，降级为同步模式")
+        _run_sync_validation_for_pmids(all_pmids)
+        return
+
+    # ── 步骤 5：创建 Batch 任务 ──
+    logger.info("创建 Batch 任务...")
+    try:
+        batch = client.batches.create(
+            input_file_id=file_obj.id,
+            endpoint="/v4/chat/completions",
+            auto_delete_input_file=LLM_BATCH_AUTO_DELETE,
+            metadata={
+                "description": "Potato literature LLM validation",
+                "project": "potato-literature-search",
+            },
+        )
+        logger.info(f"Batch 任务已提交: {batch.id}")
+    except Exception as e:
+        logger.error(f"创建 Batch 任务失败: {e}，降级为同步模式")
+        _run_sync_validation_for_pmids(all_pmids)
+        return
+
+    _save_batch_checkpoint({
+        "batch_id": batch.id,
+        "input_file_id": file_obj.id,
+        "pmid_list": all_pmids,
+        "status": "active",
+        "created_at": now_iso(),
+        "updated_at": now_iso(),
+    })
+
+    # ── 步骤 6：轮询 ──
+    _poll_until_done(client, batch.id, {
+        "batch_id": batch.id,
+        "input_file_id": file_obj.id,
+        "pmid_list": all_pmids,
+        "status": "active",
+        "created_at": now_iso(),
+        "updated_at": now_iso(),
+    })
+
+    _finalize_batch({
+        "batch_id": batch.id,
+        "pmid_list": all_pmids,
+    })
+
+
+def _poll_until_done(client, batch_id: str, chk: dict):
+    """轮询 Batch 任务直到完成/失败/超时"""
+    import sys
+
+    start_time = time.time()
+    while True:
+        elapsed = int(time.time() - start_time)
+        if elapsed >= LLM_BATCH_TIMEOUT:
+            logger.error(f"Batch 任务超时（>{LLM_BATCH_TIMEOUT}s），取消任务并降级同步")
+            try:
+                client.batches.cancel(batch_id)
+            except Exception:
+                pass
+            _clear_batch_checkpoint()
+            _run_sync_validation_for_pmids(chk.get("pmid_list", []))
+            return
+
+        try:
+            status = client.batches.retrieve(batch_id)
+        except Exception as e:
+            logger.error(f"查询 Batch 状态失败: {e}")
+            time.sleep(LLM_BATCH_POLL_INTERVAL)
+            continue
+
+        st = status.status
+        counts = status.request_counts
+        total = getattr(counts, "total", 0) or 0
+        completed = getattr(counts, "completed", 0) or 0
+        failed = getattr(counts, "failed", 0) or 0
+
+        progress = f"完成 {completed}/{total}" if total else "排队中"
+        sys.stdout.write(
+            f"\r  ⏳ 任务状态: {st} | {progress} | 失败: {failed} "
+            f"| 用时: {elapsed}s  "
+        )
+        sys.stdout.flush()
+
+        if st == "completed":
+            sys.stdout.write("\n")
+            sys.stdout.flush()
+            logger.info("Batch 任务完成!")
+
+            chk["status"] = "completed"
+            chk["updated_at"] = now_iso()
+            _save_batch_checkpoint(chk)
+
+            _download_and_parse_batch(client, status, chk)
+            return
+        elif st in ("failed", "expired", "cancelled"):
+            sys.stdout.write("\n")
+            sys.stdout.flush()
+            logger.error(f"Batch 任务失败（status={st}），降级为同步模式")
+            _clear_batch_checkpoint()
+            _run_sync_validation_for_pmids(chk.get("pmid_list", []))
+            return
+
+        time.sleep(LLM_BATCH_POLL_INTERVAL)
+
+
+def _download_and_parse_batch(client, batch_status, chk: dict):
+    """下载 Batch 结果并解析写入 DB，处理 error_file 降级"""
+    all_pmids = chk.get("pmid_list", [])
+
+    success_total = 0
+    error_pmids = []
+
+    output_id = getattr(batch_status, "output_file_id", None)
+    error_id = getattr(batch_status, "error_file_id", None)
+
+    if output_id:
+        logger.info("下载结果文件...")
+        try:
+            content = client.files.content(output_id)
+            tmp_path = Path(OUTPUT_DIR) / f"batch_output_{chk['batch_id']}.jsonl"
+            tmp_path.parent.mkdir(parents=True, exist_ok=True)
+            content.write_to_file(str(tmp_path))
+
+            success_total, error_pmids = _parse_batch_results(str(tmp_path))
+            logger.info(f"结果已写入 DB: {success_total} 篇成功, {len(error_pmids)} 篇解析失败")
+        except Exception as e:
+            logger.error(f"下载/解析输出文件失败: {e}")
+            _clear_batch_checkpoint()
+            _run_sync_validation_for_pmids(all_pmids)
+            return
+
+    if error_id:
+        logger.info("下载错误文件...")
+        try:
+            error_content = client.files.content(error_id)
+            error_path = Path(OUTPUT_DIR) / f"batch_errors_{chk['batch_id']}.jsonl"
+            error_path.parent.mkdir(parents=True, exist_ok=True)
+            error_content.write_to_file(str(error_path))
+
+            with open(error_path, "r", encoding="utf-8") as f:
+                for line in f:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        item = json.loads(line)
+                        error_pmids.append(item.get("custom_id", ""))
+                    except json.JSONDecodeError:
+                        pass
+        except Exception as e:
+            logger.warning(f"下载错误文件失败: {e}")
+
+    # 降级：对 error 中的 PMID 执行同步验证
+    if error_pmids:
+        logger.info(f"Batch 错误 {len(error_pmids)} 篇，降级为同步模式重试")
+        _run_sync_validation_for_pmids(error_pmids)
+
+
+def _finalize_batch(chk: dict):
+    """收尾：清除检查点、输出统计、导出 CSV"""
+    _clear_batch_checkpoint()
+
+    with get_conn(DB_PATH) as conn:
+        verdicts = conn.execute("""
+            SELECT llm_verdict, COUNT(*) as cnt
+            FROM llm_validation
+            GROUP BY llm_verdict
+        """).fetchall()
+
+    logger.info("LLM 验证统计（Batch）:")
+    log_info = []
+    total = 0
+    for v, cnt in verdicts:
+        total += cnt
+        log_info.append((v, cnt))
+    logger.info("LLM 验证统计（Batch）:")
+    for v, cnt in log_info:
+        logger.info(f"  {v}: {cnt} 篇 ({cnt / total * 100:.1f}%)")
+
+    csv_path_file = _export_review_csv()
+    logger.info(f"LLM 验证完成，待复核清单: {csv_path_file}")
+
+
+def import_human_review(csv_path: str | None = None):
+    """
+    导入人工复核结果 CSV，更新审核意见并导出最终过滤结果。
+    未指定路径时自动使用最新的 llm_review_pending_*.csv。
+    """
+    out_dir = Path(OUTPUT_DIR)
+    if csv_path:
+        review_file = Path(csv_path)
     else:
-        articles_to_validate = [dict(r) for r in rows] if 'rows' in dir() else []
+        candidates = sorted(out_dir.glob("llm_review_pending_*.csv"), reverse=True)
+        if not candidates:
+            logger.error("未找到 llm_review_pending_*.csv 文件")
+            return
+        review_file = candidates[0]
 
-    if not articles_to_validate:
-        with get_conn(db_path) as conn:
-            rows = conn.execute("""
-                SELECT a.* FROM articles a
-                WHERE NOT EXISTS (
-                    SELECT 1 FROM filter_log f WHERE f.pmid = a.pmid
-                )
-                AND NOT EXISTS (
-                    SELECT 1 FROM llm_validation v WHERE v.pmid = a.pmid
-                )
-            """).fetchall()
-            articles_to_validate = [dict(r) for r in rows]
+    logger.info(f"导入复核文件: {review_file}")
 
-    print(f"  待验证: {len(articles_to_validate)} 篇")
+    with open(review_file, "r", encoding="utf-8-sig", newline="") as f_check:
+        reader_check = csv.DictReader(f_check)
+        required_cols = {"pmid", "human_review"}
+        if not required_cols.issubset(reader_check.fieldnames or []):
+            missing = required_cols - set(reader_check.fieldnames or [])
+            logger.error(f"CSV 缺少必需列: {missing}")
+            return
 
-    # 分批验证
-    all_results = []
-    total_batches = (len(articles_to_validate) + LLM_BATCH_SIZE - 1) // LLM_BATCH_SIZE
+    passed = 0
+    rejected = 0
+    skipped = 0
+    updates = []
 
-    for batch_idx in range(0, len(articles_to_validate), LLM_BATCH_SIZE):
-        batch = articles_to_validate[batch_idx:batch_idx + LLM_BATCH_SIZE]
-        batch_num = batch_idx // LLM_BATCH_SIZE + 1
+    with open(review_file, "r", encoding="utf-8-sig", newline="") as f:
+        reader = csv.DictReader(f)
+        for row in reader:
+            pmid = row.get("pmid", "").strip()
+            review = row.get("human_review", "").strip().upper()
+            if not pmid:
+                skipped += 1
+                continue
+            if review not in ("Y", "N"):
+                skipped += 1
+                continue
+            updates.append((review, pmid))
+            if review == "Y":
+                passed += 1
+            else:
+                rejected += 1
 
-        print(f"  验证批次 {batch_num}/{total_batches} ({len(batch)} 篇)...")
-        results = _validate_batch(batch)
-        all_results.extend(results)
+    if updates:
+        with get_conn(DB_PATH) as conn:
+            conn.executemany(UPDATE_HUMAN_REVIEW_SQL, updates)
 
-        # 写入数据库
-        with get_conn(db_path) as conn:
-            for r in results:
-                conn.execute("""
-                    INSERT OR REPLACE INTO llm_validation (pmid, llm_verdict, reason, validated_at)
-                    VALUES (?, ?, ?, ?)
-                """, (r.get("pmid"), r.get("verdict", "UNKNOWN"), r.get("reason", ""), now_iso()))
+    logger.info(f"导入完成: Y {passed} 篇, N {rejected} 篇, 跳过 {skipped} 行")
 
-        time.sleep(1)  # 避免限流
+    filtered_csv = _export_filtered_csv()
+    if filtered_csv:
+        logger.info(f"最终过滤结果已导出: {filtered_csv}")
 
-    # 统计结果
-    relevant = sum(1 for r in all_results if r.get("verdict") == "RELEVANT")
-    not_relevant = sum(1 for r in all_results if r.get("verdict") == "NOT_RELEVANT")
-    unknown = sum(1 for r in all_results if r.get("verdict") not in ("RELEVANT", "NOT_RELEVANT"))
+    return {"passed": passed, "rejected": rejected, "skipped": skipped}
 
-    print(f"\n  验证完成:")
-    print(f"    RELEVANT:     {relevant} 篇")
-    print(f"    NOT_RELEVANT: {not_relevant} 篇")
-    print(f"    UNKNOWN:      {unknown} 篇")
 
-    _clear_checkpoint()
+def _export_filtered_csv() -> Path | None:
+    """导出 LLM 验证 + 人工复核后的最终结果"""
+    with get_conn(DB_PATH) as conn:
+        rows = conn.execute("""
+            SELECT a.pmid, a.title, a.abstract, a.keywords, a.mesh_terms,
+                   a.pub_year, a.journal, a.doi, a.pmc_id,
+                   a.article_types, a.authors, a.affiliation, a.language,
+                   v.llm_verdict, v.reason, v.human_review
+            FROM articles a
+            JOIN llm_validation v ON a.pmid = v.pmid
+            WHERE v.human_review = 'Y'
+               OR (v.human_review IS NULL AND v.llm_verdict = 'RELEVANT')
+        """).fetchall()
 
-    return {
-        "total": len(all_results),
-        "relevant": relevant,
-        "not_relevant": not_relevant,
-        "unknown": unknown,
-    }
+    if not rows:
+        logger.info("没有符合条件的最终结果")
+        return None
+
+    out_dir = Path(OUTPUT_DIR)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+    csv_path = out_dir / f"llm_filtered_{ts}.csv"
+
+    fieldnames = [
+        "pmid", "title", "abstract", "keywords", "mesh_terms",
+        "pub_year", "journal", "doi", "pmc_id",
+        "article_types", "authors", "affiliation", "language",
+        "llm_verdict", "llm_reason", "human_review",
+    ]
+
+    with open(csv_path, "w", newline="", encoding="utf-8-sig") as f:
+        writer = csv.DictWriter(f, fieldnames=fieldnames)
+        writer.writeheader()
+        for row in rows:
+            d = dict(row)
+            d["llm_reason"] = d.pop("reason", "")
+            writer.writerow(d)
+
+    logger.info(f"最终过滤结果: {csv_path} ({len(rows)} 篇)")
+    return csv_path
+
+
+RAW_EXPORT_FIELDS = [
+    "pmid", "title", "abstract", "keywords", "mesh_terms",
+    "pub_year", "pub_month", "journal", "journal_abbr", "doi",
+    "pmc_id", "article_types", "authors", "affiliation",
+    "language",
+]
+
+
+def _export_raw_csv(db_path: Path = DB_PATH) -> Path | None:
+    """
+    导出复核通过文献的原始信息 CSV（articles 表原始字段，不含 raw_xml_file、LLM/复核列）。
+    筛选条件与 _export_filtered_csv 一致：
+    human_review='Y' 或（未复核且 llm_verdict='RELEVANT'）。
+    """
+    with get_conn(db_path) as conn:
+        rows = conn.execute("""
+            SELECT a.pmid, a.title, a.abstract, a.keywords, a.mesh_terms,
+                   a.pub_year, a.pub_month, a.journal, a.journal_abbr, a.doi,
+                   a.pmc_id, a.article_types, a.authors, a.affiliation,
+                   a.language
+            FROM articles a
+            JOIN llm_validation v ON a.pmid = v.pmid
+            WHERE v.human_review = 'Y'
+               OR (v.human_review IS NULL AND v.llm_verdict = 'RELEVANT')
+        """).fetchall()
+
+    if not rows:
+        logger.info("没有符合条件的原始文献记录")
+        return None
+
+    out_dir = Path(OUTPUT_DIR)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+    csv_path = out_dir / f"articles_raw_{ts}.csv"
+
+    with open(csv_path, "w", newline="", encoding="utf-8-sig") as f:
+        writer = csv.DictWriter(f, fieldnames=RAW_EXPORT_FIELDS)
+        writer.writeheader()
+        for row in rows:
+            writer.writerow(dict(row))
+
+    logger.info(f"原始文献信息已导出: {csv_path} ({len(rows)} 篇)")
+    return csv_path
