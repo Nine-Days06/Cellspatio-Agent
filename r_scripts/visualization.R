@@ -32,6 +32,9 @@ if (plot_type == "volcano") {
 
   # 剔除缺失值，显著点（padj < 0.05）标红，其余灰色
   volcano_data <- data[!is.na(data$log2FC) & !is.na(data$padj), ]
+  if (nrow(volcano_data) == 0) {
+    stop("No valid points after removing NA values in 'log2FC'/'padj'")
+  }
   colors <- ifelse(volcano_data$padj < 0.05, "red", "gray")
 
   # 生成火山图 PNG
@@ -57,6 +60,11 @@ if (plot_type == "volcano") {
     matrix_data <- as.matrix(data)
   }
   storage.mode(matrix_data) <- "numeric"
+
+  # 校验至少有一列有效数值数据（避免单列标识符或全字符数据崩溃）
+  if (ncol(matrix_data) == 0 || all(is.na(matrix_data))) {
+    stop("No numeric data found for heatmap")
+  }
 
   # 生成热图 PNG
   png(output_file, width = 800, height = 600)
