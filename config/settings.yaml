@@ -1,0 +1,29 @@
+app:
+  name: "Multi-omics Analyst Agent"
+  version: "0.1.0"
+  debug: false
+
+llm:
+  provider: "openai"  # openai, ollama, local
+  model: "gpt-4"
+  api_key: "${OPENAI_API_KEY}"
+  base_url: "https://api.openai.com/v1"
+
+embedding:
+  model: "text-embedding-3-small"
+  dimension: 1536
+
+knowledge:
+  lightrag:
+    working_dir: "./knowledge_base"
+    storage_backend: "json"  # json, postgres, neo4j
+    
+analysis:
+  r_scripts_dir: "./r_scripts"
+  timeout: 300  # seconds
+
+external_api:
+  enabled: false
+  pubmed:
+    api_key: "${PUBMED_API_KEY}"
+    rate_limit: 3  # requests per second

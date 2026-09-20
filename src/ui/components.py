@@ -1,0 +1,55 @@
+import streamlit as st
+import pandas as pd
+from typing import Dict, Any
+
+def render_file_uploader(accepted_types: list = None) -> str:
+    """渲染文件上传组件"""
+    if accepted_types is None:
+        accepted_types = ["csv", "tsv", "fastq", "vcf", "fasta"]
+    
+    uploaded_file = st.file_uploader(
+        "上传数据文件",
+        type=accepted_types,
+        help="支持的格式: " + ", ".join(accepted_types)
+    )
+    
+    if uploaded_file is not None:
+        return uploaded_file.name
+    return None
+
+def render_analysis_results(results: Dict[str, Any]):
+    """渲染分析结果"""
+    if not results:
+        st.warning("没有可显示的结果")
+        return
+    
+    # 显示统计信息
+    if 'statistics' in results:
+        st.subheader("统计摘要")
+        st.json(results['statistics'])
+    
+    # 显示数据表格
+    if 'data' in results:
+        st.subheader("详细数据")
+        df = pd.DataFrame(results['data'])
+        st.dataframe(df)
+    
+    # 显示图表
+    if 'charts' in results:
+        st.subheader("可视化图表")
+        for chart in results['charts']:
+            st.pyplot(chart)
+
+def render_knowledge_response(response: str):
+    """渲染知识查询响应"""
+    st.markdown("### 知识查询结果")
+    st.markdown(response)
+    
+    # 添加反馈按钮
+    col1, col2 = st.columns(2)
+    with col1:
+        if st.button("有帮助"):
+            st.success("感谢您的反馈！")
+    with col2:
+        if st.button("需要改进"):
+            st.info("我们会持续改进知识库。")

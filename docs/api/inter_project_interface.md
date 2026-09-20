@@ -2,7 +2,7 @@
 
 ## 概述
 
-本文档定义 pubmed-etl（文献处理项目）与 multiomics-agent（多组学分析智能体）之间的接口规范。
+本文档定义 pubmed-etl（人类多组学文献处理项目）与 multiomics-agent（人类多组学分析智能体）之间的接口规范。
 
 ## 数据流向
 
