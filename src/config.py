@@ -1,77 +1,103 @@
 import os
-import yaml
 from pathlib import Path
 from typing import Dict, Any
 from dotenv import load_dotenv
 
+load_dotenv()
 
-class Config:
-    """配置管理类"""
-    
-    def __init__(self, config_path: str = None):
-        self.config_path = config_path or "config/settings.yaml"
-        self.config = self._load_config()
-        self._load_environment_variables()
-    
-    def _load_config(self) -> Dict[str, Any]:
-        """加载 YAML 配置文件"""
-        try:
-            with open(self.config_path, 'r', encoding='utf-8') as f:
-                return yaml.safe_load(f) or {}
-        except FileNotFoundError:
-            print(f"配置文件未找到: {self.config_path}，使用默认配置")
-            return self._get_default_config()
-        except Exception as e:
-            print(f"加载配置文件失败: {e}")
-            return self._get_default_config()
-    
-    def _get_default_config(self) -> Dict[str, Any]:
-        """获取默认配置"""
-        return {
-            'app': {'name': 'Multi-omics Agent', 'version': '0.1.0'},
-            'llm': {'provider': 'openai', 'model': 'gpt-4'},
-            'knowledge': {'lightrag': {'working_dir': './knowledge_base'}},
-        }
-    
-    def _load_environment_variables(self):
-        """加载环境变量"""
-        load_dotenv()
-        
-        # 替换配置中的环境变量
-        self._replace_env_vars(self.config)
-    
-    def _replace_env_vars(self, config: Dict[str, Any]):
-        """递归替换配置中的环境变量"""
-        for key, value in config.items():
-            if isinstance(value, str) and value.startswith('${') and value.endswith('}'):
-                env_var = value[2:-1]
-                config[key] = os.getenv(env_var, value)
-            elif isinstance(value, dict):
-                self._replace_env_vars(value)
-    
-    def get(self, key: str, default: Any = None) -> Any:
-        """获取配置值"""
-        keys = key.split('.')
-        value = self.config
-        for k in keys:
-            if isinstance(value, dict) and k in value:
-                value = value[k]
-            else:
-                return default
-        return value
-    
-    def set(self, key: str, value: Any):
-        """设置配置值"""
-        keys = key.split('.')
-        config = self.config
-        for k in keys[:-1]:
-            if k not in config:
-                config[k] = {}
-            config = config[k]
-        config[keys[-1]] = value
-    
-    def save(self, config_path: str = None):
-        """保存配置到文件"""
-        save_path = config_path or self.config_path
-        with open(save_path, 'w', encoding='utf-8') as f:
-            yaml.dump(self.config, f, default_flow_style=False, allow_unicode=True)
+# ── 项目路径 ──────────────────────────────────────────────────
+BASE_DIR    = Path(__file__).parent.parent
+DATA_DIR    = BASE_DIR / "data"
+RAW_XML_DIR = DATA_DIR / "raw_xml"
+PROC_DIR    = DATA_DIR / "processed"
+OUTPUT_DIR  = DATA_DIR / "output"
+LOG_DIR     = BASE_DIR / "logs"
+
+# ── 网络代理配置 ────────────────────────────────────────────
+PROXY = os.environ.get("PROXY", "") or None
+
+# ── NCBI API 配置 ────────────────────────────────────────────
+NCBI_API_KEY = os.environ.get("NCBI_API_KEY", "")
+NCBI_EMAIL   = os.environ.get("NCBI_EMAIL", "")
+
+# ── LLM 供应商配置 ──────────────────────────────────────────
+# 快捷切换：修改 LLM_PROVIDER 即可切换供应商
+# 支持：deepseek / openai / zhipu
+LLM_PROVIDER = os.environ.get("LLM_PROVIDER", "deepseek")
+
+# DeepSeek（OpenAI 兼容格式）
+DEEPSEEK_API_KEY  = os.environ.get("DEEPSEEK_API_KEY", "")
+DEEPSEEK_BASE_URL = "https://api.deepseek.com"
+DEEPSEEK_MODEL    = "deepseek-v4-flash"
+
+# 智谱AI（原生 zhipuai SDK）
+ZHIPU_API_KEY   = os.environ.get("ZHIPU_API_KEY", "")
+ZHIPU_MODEL     = "glm-4-Flash-250414"
+
+# OpenAI 兼容 API（如 OpenAI、SiliconFlow、vLLM 等）
+OPENAI_API_KEY  = os.environ.get("OPENAI_API_KEY", "")
+OPENAI_BASE_URL = "https://api.openai.com/v1"
+OPENAI_MODEL    = "gpt-4"
+
+# ── LLM 通用配置 ────────────────────────────────────────────
+LLM_MAX_TOKENS  = 8192
+LLM_MAX_RETRIES = 3
+LLM_TIMEOUT     = 120
+
+# Provider 配置字典 — 新增 provider 只需在此添加一项
+LLM_PROVIDER_CONFIGS = {
+    "deepseek": {
+        "api_key_env": "DEEPSEEK_API_KEY",
+        "api_key": DEEPSEEK_API_KEY,
+        "client_type": "openai",
+        "model": DEEPSEEK_MODEL,
+        "base_url": DEEPSEEK_BASE_URL,
+        "extra_kwargs": {
+            "temperature": 0, "max_tokens": LLM_MAX_TOKENS,
+            "timeout": LLM_TIMEOUT, "response_format": {"type": "json_object"},
+        },
+        "extra_body": {"thinking": {"type": "disabled"}},
+    },
+    "openai": {
+        "api_key_env": "OPENAI_API_KEY",
+        "api_key": OPENAI_API_KEY,
+        "client_type": "openai",
+        "model": OPENAI_MODEL,
+        "base_url": OPENAI_BASE_URL,
+        "extra_kwargs": {"temperature": 0, "max_tokens": LLM_MAX_TOKENS, "timeout": LLM_TIMEOUT},
+    },
+    "zhipu": {
+        "api_key_env": "ZHIPU_API_KEY",
+        "api_key": ZHIPU_API_KEY,
+        "client_type": "zhipuai",
+        "model": ZHIPU_MODEL,
+        "base_url": None,
+        "extra_kwargs": {"temperature": 0, "max_tokens": LLM_MAX_TOKENS},
+    },
+}
+
+
+def get_llm_config(provider: str = None) -> Dict[str, Any]:
+    """获取当前 LLM 配置"""
+    provider = provider or LLM_PROVIDER
+    if provider not in LLM_PROVIDER_CONFIGS:
+        raise ValueError(f"不支持的 LLM 供应商: {provider}，可选: {list(LLM_PROVIDER_CONFIGS.keys())}")
+    return LLM_PROVIDER_CONFIGS[provider]
+
+
+def get_current_llm():
+    """获取当前配置的 LLM 客户端"""
+    from openai import OpenAI
+    import zhipuai
+
+    config = get_llm_config()
+
+    if config["client_type"] == "zhipuai":
+        client = zhipuai.ZhipuAI(api_key=config["api_key"])
+        return client, config["model"]
+    else:
+        client = OpenAI(
+            api_key=config["api_key"],
+            base_url=config["base_url"],
+        )
+        return client, config["model"]
