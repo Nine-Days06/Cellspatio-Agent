@@ -16,35 +16,35 @@ LOG_DIR     = BASE_DIR / "logs"
 # ── 网络代理配置 ────────────────────────────────────────────
 PROXY = os.environ.get("PROXY", "") or None
 
-# ── NCBI API 配置 ────────────────────────────────────────────
-NCBI_API_KEY = os.environ.get("NCBI_API_KEY", "")
-NCBI_EMAIL   = os.environ.get("NCBI_EMAIL", "")
+# ── PubMed/NCBI 配置 ──────────────────────────────────────────
+NCBI_API_KEY  = os.environ.get("NCBI_API_KEY", "")
+NCBI_EMAIL    = os.environ.get("NCBI_EMAIL", "")
+PUBMED_DB     = os.environ.get("PUBMED_DB", "pubmed")
+PUBMED_MAX    = int(os.environ.get("PUBMED_MAX", "10000"))
 
 # ── LLM 供应商配置 ──────────────────────────────────────────
 # 快捷切换：修改 LLM_PROVIDER 即可切换供应商
 # 支持：deepseek / openai / zhipu
-LLM_PROVIDER = os.environ.get("LLM_PROVIDER", "deepseek")
+LLM_PROVIDER    = os.environ.get("LLM_PROVIDER", "deepseek")
+LLM_MAX_TOKENS  = int(os.environ.get("LLM_MAX_TOKENS", "8192"))
+LLM_MAX_RETRIES = int(os.environ.get("LLM_MAX_RETRIES", "3"))
+LLM_TIMEOUT     = int(os.environ.get("LLM_TIMEOUT", "120"))
 
-# DeepSeek（OpenAI 兼容格式）
+# DeepSeek
 DEEPSEEK_API_KEY  = os.environ.get("DEEPSEEK_API_KEY", "")
-DEEPSEEK_BASE_URL = "https://api.deepseek.com"
-DEEPSEEK_MODEL    = "deepseek-v4-flash"
+DEEPSEEK_BASE_URL = os.environ.get("DEEPSEEK_BASE_URL", "https://api.deepseek.com")
+DEEPSEEK_MODEL    = os.environ.get("DEEPSEEK_MODEL", "deepseek-v4-flash")
 
-# 智谱AI（原生 zhipuai SDK）
-ZHIPU_API_KEY   = os.environ.get("ZHIPU_API_KEY", "")
-ZHIPU_MODEL     = "glm-4-Flash-250414"
+# 智谱AI
+ZHIPU_API_KEY = os.environ.get("ZHIPU_API_KEY", "")
+ZHIPU_MODEL   = os.environ.get("ZHIPU_MODEL", "glm-4-Flash-250414")
 
-# OpenAI 兼容 API（如 OpenAI、SiliconFlow、vLLM 等）
+# OpenAI 兼容 API
 OPENAI_API_KEY  = os.environ.get("OPENAI_API_KEY", "")
-OPENAI_BASE_URL = "https://api.openai.com/v1"
-OPENAI_MODEL    = "gpt-4"
+OPENAI_BASE_URL = os.environ.get("OPENAI_BASE_URL", "https://api.openai.com/v1")
+OPENAI_MODEL    = os.environ.get("OPENAI_MODEL", "gpt-4")
 
-# ── LLM 通用配置 ────────────────────────────────────────────
-LLM_MAX_TOKENS  = 8192
-LLM_MAX_RETRIES = 3
-LLM_TIMEOUT     = 120
-
-# Provider 配置字典 — 新增 provider 只需在此添加一项
+# ── Provider 配置字典 ────────────────────────────────────────
 LLM_PROVIDER_CONFIGS = {
     "deepseek": {
         "api_key_env": "DEEPSEEK_API_KEY",
