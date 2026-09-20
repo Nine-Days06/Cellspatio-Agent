@@ -18,7 +18,14 @@ class RExecutor:
     
     def _find_rscript(self) -> str:
         """查找 Rscript 可执行文件"""
-        # 首先使用 shutil.which 查找
+        # 若 R_HOME 已设置，优先使用其中的 Rscript
+        if self.r_home:
+            rscript_name = "Rscript.exe" if os.name == "nt" else "Rscript"
+            candidate = os.path.join(self.r_home, "bin", rscript_name)
+            if os.path.exists(candidate):
+                return candidate
+        
+        # 其次使用 shutil.which 查找
         rscript = shutil.which("Rscript")
         if rscript:
             return rscript

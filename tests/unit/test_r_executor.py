@@ -57,3 +57,23 @@ def test_execute_script_file_not_found():
     # 现在 execute_script 会抛出 RExecutorError 而不是 FileNotFoundError
     with pytest.raises(RExecutorError):
         executor.execute_script("nonexistent_script.R")
+
+def test_find_rscript_prefers_r_home(tmp_path, monkeypatch):
+    """设置 R_HOME 时优先使用 R_HOME/bin 下的 Rscript"""
+    rscript_name = "Rscript.exe" if os.name == "nt" else "Rscript"
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    rscript_file = bin_dir / rscript_name
+    rscript_file.write_text("")
+
+    monkeypatch.setenv("R_HOME", str(tmp_path))
+
+    executor = RExecutor()
+    assert executor.rscript_path == str(rscript_file)
+
+def test_find_rscript_falls_back_when_r_home_invalid(tmp_path, monkeypatch):
+    """R_HOME 中无 Rscript 时回退到 PATH 查找"""
+    monkeypatch.setenv("R_HOME", str(tmp_path / "nonexistent"))
+
+    executor = RExecutor()
+    assert os.path.basename(executor.rscript_path) in ("Rscript", "Rscript.exe")
