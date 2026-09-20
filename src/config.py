@@ -6,21 +6,10 @@ from dotenv import load_dotenv
 load_dotenv()
 
 # ── 项目路径 ──────────────────────────────────────────────────
-BASE_DIR    = Path(__file__).parent.parent
-DATA_DIR    = BASE_DIR / "data"
-RAW_XML_DIR = DATA_DIR / "raw_xml"
-PROC_DIR    = DATA_DIR / "processed"
-OUTPUT_DIR  = DATA_DIR / "output"
-LOG_DIR     = BASE_DIR / "logs"
+BASE_DIR = Path(__file__).parent.parent
 
 # ── 网络代理配置 ────────────────────────────────────────────
 PROXY = os.environ.get("PROXY", "") or None
-
-# ── PubMed/NCBI 配置 ──────────────────────────────────────────
-NCBI_API_KEY  = os.environ.get("NCBI_API_KEY", "")
-NCBI_EMAIL    = os.environ.get("NCBI_EMAIL", "")
-PUBMED_DB     = os.environ.get("PUBMED_DB", "pubmed")
-PUBMED_MAX    = int(os.environ.get("PUBMED_MAX", "10000"))
 
 # ── LLM 供应商配置 ──────────────────────────────────────────
 # 快捷切换：修改 LLM_PROVIDER 即可切换供应商
