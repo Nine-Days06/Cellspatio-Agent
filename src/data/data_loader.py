@@ -1,14 +1,15 @@
-import pandas as pd
-from pathlib import Path
-from typing import Union, Dict, Any
 import logging
+from pathlib import Path
+from typing import Any
+
+import pandas as pd
 
 logger = logging.getLogger(__name__)
 
 class DataLoader:
     """统一的数据加载器，支持多组学数据格式"""
     
-    def __init__(self, config: Dict[str, Any] = None):
+    def __init__(self, config: dict[str, Any] | None = None):
         self.config = config or {}
         self.supported_formats = {
             'csv': self._load_csv,
@@ -18,11 +19,11 @@ class DataLoader:
             'fasta': self._load_fasta,
         }
     
-    def load_csv(self, file_path: Union[str, Path]) -> pd.DataFrame:
+    def load_csv(self, file_path: str | Path) -> pd.DataFrame:
         """加载 CSV 文件"""
         return self._load_csv(file_path)
     
-    def _load_csv(self, file_path: Union[str, Path]) -> pd.DataFrame:
+    def _load_csv(self, file_path: str | Path) -> pd.DataFrame:
         """内部 CSV 加载方法"""
         try:
             df = pd.read_csv(file_path)
@@ -32,11 +33,11 @@ class DataLoader:
             logger.error(f"Failed to load CSV file {file_path}: {e}")
             raise
     
-    def _load_tsv(self, file_path: Union[str, Path]) -> pd.DataFrame:
+    def _load_tsv(self, file_path: str | Path) -> pd.DataFrame:
         """加载 TSV 文件"""
         return pd.read_csv(file_path, sep='\t')
     
-    def _load_fastq(self, file_path: Union[str, Path]) -> Dict[str, Any]:
+    def _load_fastq(self, file_path: str | Path) -> dict[str, Any]:
         """加载 FASTQ 文件，返回记录数等信息"""
         try:
             record_count = 0
@@ -50,7 +51,7 @@ class DataLoader:
             logger.error(f"Failed to load FASTQ file {file_path}: {e}")
             raise
     
-    def _load_vcf(self, file_path: Union[str, Path]) -> Dict[str, Any]:
+    def _load_vcf(self, file_path: str | Path) -> dict[str, Any]:
         """加载 VCF 文件，返回变异数等信息"""
         try:
             variant_count = 0
@@ -67,7 +68,7 @@ class DataLoader:
             logger.error(f"Failed to load VCF file {file_path}: {e}")
             raise
     
-    def _load_fasta(self, file_path: Union[str, Path]) -> Dict[str, Any]:
+    def _load_fasta(self, file_path: str | Path) -> dict[str, Any]:
         """加载 FASTA 文件，返回序列数等信息"""
         try:
             sequence_count = 0
@@ -90,7 +91,7 @@ class DataLoader:
             logger.error(f"Failed to load FASTA file {file_path}: {e}")
             raise
     
-    def auto_detect_format(self, file_path: Union[str, Path]) -> str:
+    def auto_detect_format(self, file_path: str | Path) -> str:
         """自动检测文件格式"""
         suffix = Path(file_path).suffix.lower()
         format_map = {

@@ -1,8 +1,10 @@
-import streamlit as st
-import pandas as pd
-from typing import Dict, Any
+from typing import Any
 
-def render_file_uploader(accepted_types: list = None) -> str:
+import pandas as pd
+import streamlit as st
+
+
+def render_file_uploader(accepted_types: list | None = None) -> str:
     """渲染文件上传组件"""
     if accepted_types is None:
         accepted_types = ["csv", "tsv", "fastq", "vcf", "fasta"]
@@ -17,7 +19,7 @@ def render_file_uploader(accepted_types: list = None) -> str:
         return uploaded_file.name
     return None
 
-def render_analysis_results(results: Dict[str, Any]):
+def render_analysis_results(results: dict[str, Any]):
     """渲染分析结果"""
     if not results:
         st.warning("没有可显示的结果")

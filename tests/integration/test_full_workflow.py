@@ -1,6 +1,7 @@
-import pytest
 import tempfile
-import os
+
+import pytest
+
 from src.main import MultiomicsAgent
 
 
@@ -31,4 +32,3 @@ def test_knowledge_query_workflow():
 def test_ui_rendering():
     """测试 UI 渲染（模拟）"""
     # 这个测试需要 Streamlit 测试框架
-    pass

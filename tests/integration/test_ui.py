@@ -1,5 +1,6 @@
 from src.main import MultiomicsAgent
 
+
 def test_agent_initialization():
     """Test agent initialization"""
     agent = MultiomicsAgent()

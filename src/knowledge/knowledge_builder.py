@@ -1,6 +1,5 @@
 import logging
-from pathlib import Path
-from typing import List, Dict, Any, Optional
+from typing import Any
 
 logger = logging.getLogger(__name__)
 
@@ -11,7 +10,7 @@ class KnowledgeBuilder:
     def __init__(self, lightrag_client):
         self.client = lightrag_client
     
-    def build_from_pubmed(self, search_terms: List[str] = None, max_per_term: int = 500):
+    def build_from_pubmed(self, search_terms: list[str] | None = None, max_per_term: int = 500):
         """从 PubMed 构建知识库（占位符实现）"""
         logger.info(f"Building knowledge from PubMed with terms: {search_terms}")
         # 占位符实现 - 实际需要集成 PubMed API
@@ -21,14 +20,14 @@ class KnowledgeBuilder:
             "inserted": 0,
         }
     
-    def build_from_kegg(self, pathway_ids: List[str]):
+    def build_from_kegg(self, pathway_ids: list[str]):
         """从 KEGG 构建知识库（占位符实现）"""
         logger.info(f"Building knowledge from KEGG: {pathway_ids}")
         for pathway_id in pathway_ids:
             document = f"KEGG pathway {pathway_id} information"
             self.client.insert_document(document)
     
-    def build_from_files(self, file_paths: List[str]):
+    def build_from_files(self, file_paths: list[str]):
         """从本地文件构建知识库"""
         for file_path in file_paths:
             try:
@@ -39,19 +38,19 @@ class KnowledgeBuilder:
             except (OSError, UnicodeDecodeError) as e:
                 logger.error(f"Failed to process file {file_path}: {e}")
     
-    def build_from_text(self, text_content: str, metadata: Dict[str, Any] = None):
+    def build_from_text(self, text_content: str, metadata: dict[str, Any] | None = None):
         """从文本内容构建知识库"""
         self.client.insert_document(text_content)
         logger.info(f"Built knowledge from text, length: {len(text_content)}")
     
-    def build_from_articles(self, articles: List[Dict[str, Any]]):
+    def build_from_articles(self, articles: list[dict[str, Any]]):
         """从文章列表构建知识库"""
         for article in articles:
             text_content = self._convert_article_to_text(article)
             self.client.insert_document(text_content)
         logger.info(f"Built knowledge from {len(articles)} articles")
     
-    def build_initial_knowledge_base(self, config: Dict[str, Any]):
+    def build_initial_knowledge_base(self, config: dict[str, Any]):
         """构建初始知识库"""
         sources = config.get('sources', [])
         for source in sources:
@@ -65,7 +64,7 @@ class KnowledgeBuilder:
             elif source_type == 'files':
                 self.build_from_files(source.get('file_paths', []))
     
-    def _convert_article_to_text(self, article: Dict[str, Any]) -> str:
+    def _convert_article_to_text(self, article: dict[str, Any]) -> str:
         """将文章转换为 LightRAG 可接受的文本格式"""
         text_parts = []
         
@@ -115,7 +114,7 @@ class KnowledgeBuilder:
         
         return "\n".join(text_parts)
     
-    def _identify_omics_type(self, article: Dict[str, Any]) -> str:
+    def _identify_omics_type(self, article: dict[str, Any]) -> str:
         """识别文献涉及的组学类型"""
         text = f"{article.get('title', '')} {article.get('abstract', '')}".lower()
         
@@ -141,7 +140,7 @@ class KnowledgeBuilder:
         
         return ", ".join(omics_types) if omics_types else "未分类"
     
-    def get_build_statistics(self) -> Dict[str, Any]:
+    def get_build_statistics(self) -> dict[str, Any]:
         """获取知识库构建统计信息"""
         return {
             "lightrag_initialized": self.client is not None,
