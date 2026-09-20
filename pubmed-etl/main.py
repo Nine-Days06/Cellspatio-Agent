@@ -1,70 +1,118 @@
-"""PubMed ETL 主程序"""
-import os
-import logging
-from typing import List, Dict, Any
+"""PubMed ETL 主程序 - 支持分步执行"""
+import argparse
+import sys
 from pathlib import Path
 
-from downloader.pubmed_downloader import PubMedDownloader
-from cleaner.cleaner import ArticleCleaner
-from llm_validator.llm_validator import LLMValidator
-from human_review.human_review import HumanReviewer
-from export.export import ArticleExporter
+# 确保项目根目录在 Python 路径中
+sys.path.insert(0, str(Path(__file__).parent))
 
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
+from config.settings import (
+    DB_PATH, RAW_XML_DIR, OUTPUT_DIR, LOG_DIR,
+    PUBMED_QUERY,
+)
+from utils.db import init_db
+
+
+def step_download(query: str = None):
+    """下载文献"""
+    from downloader.pubmed_downloader import run_download
+    return run_download(query or PUBMED_QUERY)
+
+
+def step_parse(xml_dir: Path = None):
+    """解析 XML"""
+    from parser.xml_parser import run_parse
+    run_parse(xml_dir=xml_dir or RAW_XML_DIR, db_path=DB_PATH)
+
+
+def step_clean():
+    """硬过滤"""
+    from cleaner.hard_filter import run_hard_filter
+    return run_hard_filter(db_path=DB_PATH)
+
+
+def step_validate(batch=False):
+    """LLM 验证"""
+    from cleaner.llm_validator import run_validation
+    run_validation(batch_mode=batch)
+
+
+def step_export():
+    """导出"""
+    from export.export import ArticleExporter
+    from utils.db import get_conn
+
+    exporter = ArticleExporter()
+    with get_conn(DB_PATH) as conn:
+        articles = conn.execute(
+            "SELECT * FROM articles WHERE pmid IN (SELECT pmid FROM llm_validation WHERE llm_verdict = 'RELEVANT')"
+        ).fetchall()
+
+    if articles:
+        json_path = exporter.export_to_json([dict(a) for a in articles])
+        csv_path = exporter.export_to_csv([dict(a) for a in articles])
+        print(f"  JSON: {json_path}")
+        print(f"  CSV: {csv_path}")
+    else:
+        print("  无文献可导出")
+
 
 def main():
-    """主流程"""
-    print("=== PubMed ETL 文献处理工具 ===")
-    
-    # 1. 下载文献
-    print("\n1. 下载 PubMed 文献...")
-    downloader = PubMedDownloader()
-    search_terms = [
-        "multi-omics AND cancer",
-        "transcriptomics AND proteomics AND analysis",
-        "RNA-seq AND differential expression",
-    ]
-    all_articles = []
-    for term in search_terms:
-        pmids = downloader.search(term, max_results=100)
-        articles = downloader.fetch_details(pmids)
-        all_articles.extend(articles)
-    print(f"   下载了 {len(all_articles)} 篇文献")
-    
-    # 2. 清洗文献
-    print("\n2. 清洗文献...")
-    cleaner = ArticleCleaner()
-    cleaned = cleaner.clean_articles(all_articles)
-    print(f"   通过清洗: {len(cleaned['cleaned_articles'])} 篇")
-    
-    # 3. LLM 验证
-    print("\n3. LLM 验证...")
-    validator = LLMValidator(provider="openai", api_key=os.getenv("OPENAI_API_KEY"))
-    llm_results = validator.batch_validate(cleaned['cleaned_articles'])
-    relevant = [r for r in llm_results if r['llm_verdict'] == 'relevant']
-    print(f"   LLM 判定相关: {len(relevant)} 篇")
-    
-    # 4. 人工复核
-    print("\n4. 人工复核...")
-    reviewer = HumanReviewer()
-    review_file = reviewer.export_for_review(cleaned['cleaned_articles'], llm_results)
-    print(f"   请复核文件: {review_file}")
-    input("   复核完成后按 Enter 继续...")
-    
-    # 5. 导出
-    print("\n5. 导出文献...")
-    approved = reviewer.load_reviewed_articles(review_file)
-    exporter = ArticleExporter()
-    
-    json_path = exporter.export_to_json(approved)
-    csv_path = exporter.export_to_csv(approved)
-    sqlite_path = exporter.export_to_sqlite(approved)
-    
-    print(f"   JSON: {json_path}")
-    print(f"   CSV: {csv_path}")
-    print(f"   SQLite: {sqlite_path}")
-    print("\n=== 完成 ===")
+    parser = argparse.ArgumentParser(
+        description="人类多组学 PubMed 文献处理工具"
+    )
+    parser.add_argument(
+        "--step",
+        choices=["download", "parse", "clean", "validate", "export", "all"],
+        default="all",
+        help="运行指定阶段（默认 all）",
+    )
+    parser.add_argument(
+        "--query",
+        default=None,
+        help="自定义 PubMed 搜索词（仅在 download / all 阶段生效）",
+    )
+    parser.add_argument(
+        "--xml-dir",
+        default=None,
+        help="XML 文件目录（仅在 parse / all 阶段生效）",
+    )
+    parser.add_argument(
+        "--batch",
+        action="store_true",
+        help="使用 Batch API 进行 LLM 验证",
+    )
+    args = parser.parse_args()
+
+    # 初始化目录和数据库
+    for d in [RAW_XML_DIR, OUTPUT_DIR, LOG_DIR, DB_PATH.parent]:
+        d.mkdir(parents=True, exist_ok=True)
+    init_db(DB_PATH)
+
+    print("▶  人类多组学文献处理系统启动")
+    print(f"   运行阶段: {args.step}")
+    print(f"   数据库:   {DB_PATH}")
+
+    step = args.step
+
+    if step in ("download", "all"):
+        step_download(args.query)
+
+    if step in ("parse", "all"):
+        step_parse(Path(args.xml_dir) if args.xml_dir else None)
+
+    if step in ("clean", "all"):
+        step_clean()
+
+    if step == "validate":
+        step_validate(args.batch)
+
+    if step in ("export", "all"):
+        step_export()
+
+    print("✔  全部流程完成")
+    print(f"   输出目录: {OUTPUT_DIR}")
+
 
 if __name__ == "__main__":
     main()
