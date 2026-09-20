@@ -76,4 +76,4 @@ def test_find_rscript_falls_back_when_r_home_invalid(tmp_path, monkeypatch):
     monkeypatch.setenv("R_HOME", str(tmp_path / "nonexistent"))
 
     executor = RExecutor()
-    assert os.path.basename(executor.rscript_path) in ("Rscript", "Rscript.exe")
+    assert os.path.basename(executor.rscript_path).lower() in ("rscript", "rscript.exe")
