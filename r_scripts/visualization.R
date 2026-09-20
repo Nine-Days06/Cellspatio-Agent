@@ -61,8 +61,8 @@ if (plot_type == "volcano") {
   }
   storage.mode(matrix_data) <- "numeric"
 
-  # 校验至少有一列有效数值数据（避免单列标识符或全字符数据崩溃）
-  if (ncol(matrix_data) == 0 || all(is.na(matrix_data))) {
+  # 校验数据满足热图聚类要求（hclust 需要至少 2 行 2 列，且含非 NA 数值）
+  if (nrow(matrix_data) < 2 || ncol(matrix_data) < 2 || all(is.na(matrix_data))) {
     stop("No numeric data found for heatmap")
   }
 
