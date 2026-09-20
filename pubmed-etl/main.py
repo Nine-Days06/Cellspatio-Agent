@@ -31,6 +31,18 @@ def step_clean():
     return run_hard_filter(db_path=DB_PATH)
 
 
+def step_pdf():
+    """下载 OA 全文"""
+    from downloader.pdf_downloader import run_pdf_download
+    run_pdf_download(db_path=DB_PATH)
+
+
+def step_pdf_retry():
+    """重试失败的 PDF 下载"""
+    from downloader.pdf_downloader import run_pdf_retry
+    run_pdf_retry(db_path=DB_PATH)
+
+
 def step_validate(batch=False):
     """LLM 验证"""
     from cleaner.llm_validator import run_validation
@@ -63,7 +75,7 @@ def main():
     )
     parser.add_argument(
         "--step",
-        choices=["download", "parse", "clean", "validate", "export", "all"],
+        choices=["download", "parse", "clean", "pdf", "pdf-retry", "validate", "export", "all"],
         default="all",
         help="运行指定阶段（默认 all）",
     )
@@ -103,6 +115,12 @@ def main():
 
     if step in ("clean", "all"):
         step_clean()
+
+    if step == "pdf":
+        step_pdf()
+
+    if step == "pdf-retry":
+        step_pdf_retry()
 
     if step == "validate":
         step_validate(args.batch)
