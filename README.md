@@ -28,10 +28,10 @@ chmod +x scripts/setup.sh
 
 1. 复制配置文件：
 ```bash
-cp config/.env.example config/.env
+cp .env.example .env
 ```
 
-2. 编辑 `config/.env`，配置 API 密钥：
+2. 编辑 `.env`，配置 API 密钥：
 ```
 OPENAI_API_KEY=your_api_key
 PUBMED_API_KEY=your_pubmed_key
@@ -76,7 +76,7 @@ multiomics-agent/
 ├── r_scripts/           # R 分析脚本
 ├── tests/               # 测试
 ├── docs/                # 文档
-└── config/              # 配置文件
+└── .env.example         # 环境变量示例
 ```
 
 ## 开发指南

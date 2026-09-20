@@ -41,9 +41,9 @@ if not exist "cache" mkdir cache
 if not exist "metadata" mkdir metadata
 
 REM 复制配置文件
-if not exist "config\.env" (
-    copy config\.env.example config\.env
-    echo 请编辑 config\.env 文件配置 API 密钥
+if not exist ".env" (
+    copy .env.example .env
+    echo 请编辑 .env 文件配置 API 密钥
 )
 
 echo 设置完成！

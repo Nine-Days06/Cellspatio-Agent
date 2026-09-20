@@ -39,9 +39,9 @@ mkdir -p cache
 mkdir -p metadata
 
 # 复制配置文件
-if [ ! -f "config/.env" ]; then
-    cp config/.env.example config/.env
-    echo "请编辑 config/.env 文件配置 API 密钥"
+if [ ! -f ".env" ]; then
+    cp .env.example .env
+    echo "请编辑 .env 文件配置 API 密钥"
 fi
 
 echo "设置完成！"
