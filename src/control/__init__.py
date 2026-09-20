@@ -1,6 +1,6 @@
 # 控制层模块
-from .code_generator import CodeGenerator
+from .r_script_generator import RScriptGenerator
 from .intent_parser import IntentParser
 from .workflow_manager import WorkflowManager
 
-__all__ = ['CodeGenerator', 'IntentParser', 'WorkflowManager']
+__all__ = ['RScriptGenerator', 'IntentParser', 'WorkflowManager']
