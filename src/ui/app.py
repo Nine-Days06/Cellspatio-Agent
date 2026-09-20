@@ -1,5 +1,7 @@
-import streamlit as st
 from typing import Any
+
+import streamlit as st
+
 
 def create_app(agent: Any):
     """创建 Streamlit 应用"""
@@ -35,19 +37,18 @@ def create_app(agent: Any):
             st.markdown(prompt)
         
         # 执行工作流
-        with st.chat_message("assistant"):
-            with st.spinner("思考中..."):
-                result = agent.execute_workflow(prompt)
-                
-                # 根据结果类型显示不同内容
-                if result.get('type') == 'knowledge_response':
-                    response = result.get('response', '无响应')
-                elif 'results' in result and result['results']:
-                    # 如果有分析结果，显示图表
-                    st.info(f"分析完成: {result.get('message', '')}")
-                    response = "分析结果已生成，请查看下方图表。"
-                else:
-                    response = result.get('message', '处理完成')
-                
-                st.markdown(response)
-                st.session_state.messages.append({"role": "assistant", "content": response})
+        with st.chat_message("assistant"), st.spinner("思考中..."):
+            result = agent.execute_workflow(prompt)
+            
+            # 根据结果类型显示不同内容
+            if result.get('type') == 'knowledge_response':
+                response = result.get('response', '无响应')
+            elif result.get('results'):
+                # 如果有分析结果，显示图表
+                st.info(f"分析完成: {result.get('message', '')}")
+                response = "分析结果已生成，请查看下方图表。"
+            else:
+                response = result.get('message', '处理完成')
+            
+            st.markdown(response)
+            st.session_state.messages.append({"role": "assistant", "content": response})

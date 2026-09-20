@@ -1,7 +1,6 @@
 import logging
 import sys
 from pathlib import Path
-from typing import Optional
 
 
 class LoggerFactory:
@@ -10,9 +9,9 @@ class LoggerFactory:
     @staticmethod
     def setup_logger(
         name: str,
-        log_file: Optional[str] = None,
+        log_file: str | None = None,
         level: int = logging.INFO,
-        format: str = None
+        format: str | None = None
     ) -> logging.Logger:
         """设置日志记录器"""
 

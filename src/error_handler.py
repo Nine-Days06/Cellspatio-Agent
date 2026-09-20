@@ -1,7 +1,6 @@
 import logging
-import traceback
-from typing import Dict, Any, Optional
 from functools import wraps
+from typing import Any
 
 logger = logging.getLogger(__name__)
 
@@ -10,10 +9,10 @@ class ErrorHandler:
     """统一错误处理器"""
 
     @staticmethod
-    def handle_llm_error(error: Exception, context: Dict[str, Any] = None) -> Dict[str, Any]:
+    def handle_llm_error(error: Exception, context: dict[str, Any] | None = None) -> dict[str, Any]:
         """处理 LLM 调用错误"""
-        error_msg = f"LLM 调用失败: {str(error)}"
-        logger.error(error_msg, exc_info=True)
+        error_msg = f"LLM 调用失败: {error!s}"
+        logger.error(error_msg)
 
         return {
             'status': 'error',
@@ -24,10 +23,10 @@ class ErrorHandler:
         }
 
     @staticmethod
-    def handle_data_error(error: Exception, file_path: str = None) -> Dict[str, Any]:
+    def handle_data_error(error: Exception, file_path: str | None = None) -> dict[str, Any]:
         """处理数据错误"""
-        error_msg = f"数据处理错误: {str(error)}"
-        logger.error(error_msg, exc_info=True)
+        error_msg = f"数据处理错误: {error!s}"
+        logger.error(error_msg)
 
         suggestion = "请检查文件格式是否正确，支持的格式包括 CSV、TSV、FASTQ、VCF。"
         if file_path:
@@ -41,10 +40,10 @@ class ErrorHandler:
         }
 
     @staticmethod
-    def handle_analysis_error(error: Exception, analysis_type: str = None) -> Dict[str, Any]:
+    def handle_analysis_error(error: Exception, analysis_type: str | None = None) -> dict[str, Any]:
         """处理分析错误"""
-        error_msg = f"分析执行错误: {str(error)}"
-        logger.error(error_msg, exc_info=True)
+        error_msg = f"分析执行错误: {error!s}"
+        logger.error(error_msg)
 
         suggestion = "分析过程中出现错误，请检查输入数据和参数。"
         if analysis_type:
@@ -58,10 +57,10 @@ class ErrorHandler:
         }
 
     @staticmethod
-    def handle_knowledge_error(error: Exception, query: str = None) -> Dict[str, Any]:
+    def handle_knowledge_error(error: Exception, query: str | None = None) -> dict[str, Any]:
         """处理知识检索错误"""
-        error_msg = f"知识检索错误: {str(error)}"
-        logger.error(error_msg, exc_info=True)
+        error_msg = f"知识检索错误: {error!s}"
+        logger.error(error_msg)
 
         return {
             'status': 'error',
@@ -91,10 +90,10 @@ def safe_execute(func):
                 return ErrorHandler.handle_knowledge_error(e)
             else:
                 # 通用错误处理
-                logger.error(f"未处理的错误: {str(e)}", exc_info=True)
+                logger.exception("未处理的错误，请检查输入参数或联系支持。")
                 return {
                     'status': 'error',
-                    'message': f"执行错误: {str(e)}",
+                    'message': f"执行错误: {e!s}",
                     'suggestion': '请检查输入参数或联系支持。'
                 }
     return wrapper

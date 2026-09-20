@@ -1,10 +1,11 @@
 import logging
-from typing import Dict, Any
+from typing import Any
+
+from src.analysis.r_executor import RExecutor
+from src.analysis.visualization import Visualizer
 from src.control.intent_parser import IntentParser
 from src.control.workflow_manager import WorkflowManager
 from src.knowledge.lightrag_client import LightRAGClient
-from src.analysis.r_executor import RExecutor
-from src.analysis.visualization import Visualizer
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -12,7 +13,7 @@ logger = logging.getLogger(__name__)
 class MultiomicsAgent:
     """人类多组学分析智能体主类"""
     
-    def __init__(self, config: Dict[str, Any] = None):
+    def __init__(self, config: dict[str, Any] | None = None):
         self.config = config or {}
         
         # 初始化各个组件
@@ -33,7 +34,7 @@ class MultiomicsAgent:
         
         logger.info("MultiomicsAgent initialized")
     
-    def execute_workflow(self, user_input: str) -> Dict[str, Any]:
+    def execute_workflow(self, user_input: str) -> dict[str, Any]:
         """执行工作流"""
         return self.workflow_manager.execute_workflow(user_input)
     
@@ -62,7 +63,7 @@ class MultiomicsAgent:
                 
             except KeyboardInterrupt:
                 break
-            except Exception as e:
+            except Exception as e:  # noqa: BLE001 - CLI 交互循环需兜底所有异常
                 print(f"错误: {e}\n")
         
         print("感谢使用，再见！")

@@ -1,15 +1,15 @@
-import json
 import hashlib
-from pathlib import Path
-from typing import Any, Optional, Union
+import json
 import logging
+from pathlib import Path
+from typing import Any
 
 logger = logging.getLogger(__name__)
 
 class Cache:
     """简单的文件缓存机制"""
     
-    def __init__(self, cache_dir: Union[str, Path] = None):
+    def __init__(self, cache_dir: str | Path | None = None):
         self.cache_dir = Path(cache_dir) if cache_dir else Path("cache")
         self.cache_dir.mkdir(exist_ok=True)
     
@@ -18,14 +18,14 @@ class Cache:
         hash_key = hashlib.sha256(key.encode()).hexdigest()
         return self.cache_dir / f"{hash_key}.json"
     
-    def get(self, key: str) -> Optional[Any]:
+    def get(self, key: str) -> Any | None:
         """获取缓存数据"""
         cache_path = self._get_cache_key(key)
         if cache_path.exists():
             try:
                 with open(cache_path, 'r', encoding='utf-8') as f:
                     return json.load(f)
-            except Exception as e:
+            except (OSError, json.JSONDecodeError) as e:
                 logger.warning(f"Failed to load cache for key {key}: {e}")
         return None
     
@@ -35,7 +35,7 @@ class Cache:
         try:
             with open(cache_path, 'w', encoding='utf-8') as f:
                 json.dump(value, f, ensure_ascii=False, indent=2)
-        except Exception as e:
+        except OSError as e:
             logger.warning(f"Failed to save cache for key {key}: {e}")
     
     def clear(self):

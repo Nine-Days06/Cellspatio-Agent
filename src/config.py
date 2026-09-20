@@ -1,6 +1,7 @@
 import os
 from pathlib import Path
-from typing import Dict, Any
+from typing import Any
+
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -66,7 +67,7 @@ LLM_PROVIDER_CONFIGS = {
 }
 
 
-def get_llm_config(provider: str = None) -> Dict[str, Any]:
+def get_llm_config(provider: str | None = None) -> dict[str, Any]:
     """获取当前 LLM 配置"""
     provider = provider or LLM_PROVIDER
     if provider not in LLM_PROVIDER_CONFIGS:
@@ -76,8 +77,8 @@ def get_llm_config(provider: str = None) -> Dict[str, Any]:
 
 def get_current_llm():
     """获取当前配置的 LLM 客户端"""
-    from openai import OpenAI
     import zhipuai
+    from openai import OpenAI
 
     config = get_llm_config()
 
