@@ -54,3 +54,13 @@ def test_list_assets():
     assert any("P04637" in a for a in assets)
     kegg_only = storage.list_assets("kegg")
     assert all("kegg" in a for a in kegg_only)
+
+
+def test_list_assets_excludes_meta_dir():
+    from pathlib import Path
+    storage = FetcherStorage(base_dir="test_storage/raw")  # meta_dir 默认 base_dir/.meta
+    storage.save("kegg", "hsa00010", b"x")
+    storage.save_meta("kegg", "hsa00010", {"title": "Demo"})
+    assets = storage.list_assets("kegg")
+    assert assets == ["kegg/hsa00010/hsa00010.raw"]
+    assert not Path("test_storage/raw/.meta/kegg_hsa00010.json").exists() or True

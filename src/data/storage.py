@@ -63,9 +63,11 @@ class FetcherStorage:
             assets = []
             for sub in dir_.iterdir():
                 if sub.is_dir():
+                    if sub == self.meta_dir:
+                        continue
                     assets.extend(walk(sub, f"{prefix}{sub.name}/"))
                 else:
                     assets.append(f"{prefix}{sub.name}")
             return assets
 
-        return walk(base, prefix)
+        return sorted(walk(base, prefix))
