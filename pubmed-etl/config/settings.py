@@ -1,7 +1,8 @@
 """PubMed ETL 配置"""
 import os
-from pathlib import Path
 from datetime import datetime
+from pathlib import Path
+
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -74,7 +75,14 @@ EXCLUDED_ARTICLE_TYPES = [
 ]
 
 # ── LLM 配置 ──────────────────────────────────────────────────
-LLM_PROVIDER = os.environ.get("LLM_PROVIDER", "deepseek")
+# 快捷切换：修改 ETL_LLM_PROVIDER 即可切换供应商
+# 向后兼容：若未设置 ETL_LLM_PROVIDER，仍读取 LLM_PROVIDER
+# 支持：deepseek / openai / zhipu
+LLM_PROVIDER = (
+    os.environ.get("ETL_LLM_PROVIDER")
+    or os.environ.get("LLM_PROVIDER")
+    or "deepseek"
+)
 
 DEEPSEEK_API_KEY  = os.environ.get("DEEPSEEK_API_KEY", "")
 DEEPSEEK_BASE_URL = os.environ.get("DEEPSEEK_BASE_URL", "https://api.deepseek.com")
