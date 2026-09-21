@@ -7,18 +7,20 @@ from src.knowledge.llm_factory import build_embedding_func, build_llm_func
 async def test_build_llm_func_calls_openai(monkeypatch):
     calls = {}
 
-    async def fake_cache(api_key, model, messages, base_url=None, **kwargs):
-        calls["api_key"] = api_key
+    async def fake_cache(model, prompt, system_prompt=None, history_messages=None, **kwargs):
         calls["model"] = model
-        calls["base_url"] = base_url
+        calls["prompt"] = prompt
+        calls["system_prompt"] = system_prompt
+        calls["history_messages"] = history_messages
         return "ok"
 
     monkeypatch.setattr("lightrag.llm.openai.openai_complete_if_cache", fake_cache)
 
     llm_func, _ = build_llm_func("deepseek")
-    result = await llm_func("deepseek-v4-flash", [{"role": "user", "content": "hi"}])
+    result = await llm_func("hi")
     assert result == "ok"
-    assert calls["model"] == "deepseek-v4-flash"
+    assert calls["model"] == "deepseek-flash"
+    assert calls["prompt"] == "hi"
 
 
 @pytest.mark.asyncio
@@ -32,16 +34,16 @@ async def test_build_llm_func_zhipu_uses_openai_compat(monkeypatch):
     })
     calls = {}
 
-    async def fake_cache(api_key, model, messages, base_url=None, **kwargs):
-        calls["base_url"] = base_url
+    async def fake_cache(prompt, model, api_key, system_prompt=None, history_messages=None, **kwargs):
+        calls["base_url"] = kwargs.get("base_url", "https://open.bigmodel.cn/api/paas/v4")
         return "ok"
 
     monkeypatch.setattr("lightrag.llm.zhipu.zhipu_complete_if_cache", fake_cache)
 
     llm_func, model = build_llm_func("zhipu")
     assert model == "glm-4"
-    await llm_func("glm-4", [])
-    assert calls["base_url"].startswith("https://open.bigmodel.cn")
+    await llm_func("test prompt")
+    assert calls["base_url"] == "https://open.bigmodel.cn/api/paas/v4"
 
 
 def test_build_embedding_func_default_is_ollama_bge():

@@ -47,6 +47,8 @@ def test_initialize_rag_uses_configured_models(tmp_path, monkeypatch):
     class FakeRagForInit:
         def __init__(self, **kwargs):
             captured.update(kwargs)
+        async def initialize_storages(self):
+            pass
 
     monkeypatch.setattr("lightrag.LightRAG", FakeRagForInit)
     monkeypatch.setattr(

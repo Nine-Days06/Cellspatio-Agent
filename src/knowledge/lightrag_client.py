@@ -1,3 +1,4 @@
+import asyncio
 import json
 import logging
 import os
@@ -45,6 +46,8 @@ class LightRAGClient:
                     embedding_func=embedding_func,
                     enable_llm_cache=True,
                 )
+                # LightRAG 1.5.7+ 需要显式初始化存储
+                asyncio.run(self._rag.initialize_storages())
                 logger.info("LightRAG initialized: llm=%s embedding=%s",
                             llm_model, getattr(embedding_func, "model_name", "custom"))
             except ImportError:
@@ -71,7 +74,8 @@ class LightRAGClient:
         """查询知识库"""
         self._initialize_rag()
         if self._rag:
-            return self._rag.query(question, param={"mode": mode})
+            from lightrag import QueryParam
+            return self._rag.query(question, param=QueryParam(mode=mode))
         return "LightRAG 未初始化"
 
     def insert_knowledge_graph(self, kg_data: dict[str, Any]):

@@ -7,8 +7,9 @@ logger = logging.getLogger(__name__)
 def build_llm_func(provider: str | None = None) -> tuple:
     """按 src.config 供应商配置构建 async LLM 函数与默认模型名
 
-    openai 兼容供应商（deepseek/openai）走 openai_complete_if_cache；
-    zhipu 走 zhipu_complete_if_cache（遵循其官方 base_url）。
+    返回的 llm_func 签名兼容 LightRAG 1.5.7：
+        llm_func(prompt, system_prompt=None, history_messages=None, **kwargs)
+    内部转发到 zhipu_complete_if_cache / openai_complete_if_cache。
     返回值：(llm_func, model_name)
     """
     from src.config import get_llm_config
@@ -23,17 +24,24 @@ def build_llm_func(provider: str | None = None) -> tuple:
 
         base_url = base_url or "https://open.bigmodel.cn/api/paas/v4"
 
-        async def llm_func(model_name: str, messages: list[dict], **kwargs) -> str:
+        async def llm_func(prompt: str, system_prompt: str | None = None,
+                           history_messages: list[dict] | None = None, **kwargs) -> str:
+            # zhipu_complete_if_cache(prompt, model=..., api_key=..., system_prompt=..., history_messages=[])
+            # base_url 用于创建 client，不传给 completion
             return await zhipu_complete_if_cache(
-                api_key=api_key, model=model_name, messages=messages,
-                base_url=base_url, **kwargs,
+                prompt=prompt, model=model, api_key=api_key,
+                system_prompt=system_prompt, history_messages=history_messages or [],
+                **kwargs,
             )
     else:
         from lightrag.llm.openai import openai_complete_if_cache
 
-        async def llm_func(model_name: str, messages: list[dict], **kwargs) -> str:
+        async def llm_func(prompt: str, system_prompt: str | None = None,
+                           history_messages: list[dict] | None = None, **kwargs) -> str:
+            # openai_complete_if_cache(model, prompt, system_prompt=..., history_messages=..., base_url=..., api_key=...)
             return await openai_complete_if_cache(
-                api_key=api_key, model=model_name, messages=messages,
+                model=model, prompt=prompt, api_key=api_key,
+                system_prompt=system_prompt, history_messages=history_messages,
                 base_url=base_url, **kwargs,
             )
 
