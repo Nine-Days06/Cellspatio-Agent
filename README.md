@@ -8,6 +8,7 @@
 - **知识增强**：基于 RAG + 知识图谱的专业问答
 - **多组学支持**：人类转录组、蛋白质组、代谢组、基因组、表观组等
 - **混合架构**：Python 控制 + R 分析，发挥各自优势
+- **数据获取**：GEO/KEGG/UniProt 公共数据库检索、确认、下载与入库
 - **可扩展**：支持外部 API 集成和模块化扩展
 
 ## 快速开始
@@ -31,10 +32,17 @@ chmod +x scripts/setup.sh
 cp .env.example .env
 ```
 
-2. 编辑 `.env`，配置 API 密钥：
+2. 编辑 `.env`，配置 API 密钥与供应商：
 ```
-OPENAI_API_KEY=your_api_key
-PUBMED_API_KEY=your_pubmed_key
+# LLM 供应商切换：deepseek / openai / zhipu
+AGENT_LLM_PROVIDER=deepseek
+DEEPSEEK_API_KEY=your_key
+ZHIPU_API_KEY=your_key
+
+# PubMed/NCBI/KEGG
+NCBI_API_KEY=your_key
+NCBI_EMAIL=your_email
+KEGG_API_KEY=your_key
 ```
 
 ### 运行
@@ -51,16 +59,31 @@ streamlit run src/ui/app.py
 
 ## 使用示例
 
-### 数据分析
+### 数据获取（两段式：检索 → 确认 → 下载）
 ```
-用户: 分析我的 RNA-seq 数据的差异表达基因
-智能体: 请上传您的数据文件（CSV/TSV格式），我将为您执行差异表达分析。
+用户: 帮我下载 GSE123456 数据集
+智能体: 找到 3 个候选：GSE123456 - RNA-seq of HCC... 请选择要下载的项
+用户: 确认下载 GSE123456
+智能体: 已下载 GSE123456 → data/raw/geo/GSE123456/GSE123456_series_matrix.txt.gz
 ```
 
-### 知识查询
+### 数据分析（GEO → R 差异表达）
+```
+用户: 对这些数据做差异表达分析
+智能体: 已使用 DESeq2 完成差异表达分析，结果保存至 output.de_results.csv
+```
+
+### 知识查询与入库
 ```
 用户: TP53 在癌症中的作用是什么？
-智能体: TP53 是一个重要的肿瘤抑制基因...
+智能体: TP53 是重要的肿瘤抑制基因...
+用户: 将 GSE123456 写入知识库
+智能体: 已写入 1 条文档至 LightRAG 知识库
+```
+
+### LLM 供应商切换
+```
+.env 中设置：AGENT_LLM_PROVIDER=zhipu （或 deepseek/openai）
 ```
 
 ## 项目结构
@@ -68,11 +91,28 @@ streamlit run src/ui/app.py
 ```
 multiomics-agent/
 ├── src/                 # 源代码
-│   ├── ui/              # 用户界面
+│   ├── main.py          # 入口
+│   ├── ui/              # Streamlit 界面
 │   ├── control/         # 控制层
+│   │   ├── intent_parser.py      # 意图解析
+│   │   ├── workflow_manager.py   # 两段式工作流
+│   │   └── r_script_generator.py # R 脚本生成
 │   ├── knowledge/       # 知识检索层
+│   │   ├── lightrag_client.py    # LightRAG 封装
+│   │   ├── knowledge_builder.py  # 批量构建
+│   │   ├── knowledge_importer.py # 文献导入
+│   │   └── llm_factory.py        # LLM/embedding 工厂
 │   ├── analysis/        # 分析层
+│   │   ├── r_executor.py         # R 执行器
+│   │   ├── visualization.py      # 可视化
+│   │   └── result_explainer.py   # 结果解释
 │   └── data/            # 数据层
+│       ├── fetchers/             # 公共数据库 Fetcher
+│       ├── registry.py           # Fetcher 注册表
+│       ├── storage.py            # 本地存储
+│       ├── data_loader.py        # 数据加载
+│       ├── metadata_manager.py   # 元数据管理
+│       └── cache.py              # 缓存
 ├── r_scripts/           # R 分析脚本
 ├── tests/               # 测试
 ├── docs/                # 文档
@@ -89,8 +129,8 @@ python -m pytest tests/unit/
 # 集成测试
 python -m pytest tests/integration/
 
-# 性能测试
-python -m pytest tests/performance/
+# 全量测试
+python -m pytest tests/
 ```
 
 ### 代码风格
