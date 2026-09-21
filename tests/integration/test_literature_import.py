@@ -21,6 +21,11 @@ class MockLightRAGClient:
     def insert_document(self, document: str):
         self.inserted_documents.append(document)
         self.insert_count += 1
+    
+    def insert_documents(self, documents: list[str]) -> int:
+        for doc in documents:
+            self.insert_document(doc)
+        return len(documents)
 
 @pytest.fixture
 def mock_client():

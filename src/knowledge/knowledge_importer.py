@@ -9,6 +9,7 @@ import pandas as pd
 
 logger = logging.getLogger(__name__)
 
+
 class KnowledgeImporter:
     """知识库导入器，支持多种格式导入"""
     
@@ -23,11 +24,8 @@ class KnowledgeImporter:
             
             articles = data if isinstance(data, list) else data.get("articles", [])
             
-            count = 0
-            for article in articles:
-                text_content = self._convert_article_to_text(article)
-                self.client.insert_document(text_content)
-                count += 1
+            texts = [self._convert_article_to_text(a) for a in articles]
+            count = self.client.insert_documents(texts)
             
             logger.info(f"Imported {count} articles from JSON: {json_path}")
             return {"success": True, "count": count, "source": json_path}
@@ -47,12 +45,8 @@ class KnowledgeImporter:
             df = pd.read_sql_query(query, conn)
             conn.close()
             
-            count = 0
-            for _, row in df.iterrows():
-                article = row.to_dict()
-                text_content = self._convert_article_to_text(article)
-                self.client.insert_document(text_content)
-                count += 1
+            texts = [self._convert_article_to_text(row.to_dict()) for _, row in df.iterrows()]
+            count = self.client.insert_documents(texts)
             
             logger.info(f"Imported {count} articles from SQLite: {db_path}")
             return {"success": True, "count": count, "source": db_path}
@@ -66,12 +60,8 @@ class KnowledgeImporter:
         try:
             df = pd.read_csv(csv_path)
             
-            count = 0
-            for _, row in df.iterrows():
-                article = row.to_dict()
-                text_content = self._convert_article_to_text(article)
-                self.client.insert_document(text_content)
-                count += 1
+            texts = [self._convert_article_to_text(row.to_dict()) for _, row in df.iterrows()]
+            count = self.client.insert_documents(texts)
             
             logger.info(f"Imported {count} articles from CSV: {csv_path}")
             return {"success": True, "count": count, "source": csv_path}

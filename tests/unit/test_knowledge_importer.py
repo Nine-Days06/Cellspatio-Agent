@@ -10,6 +10,9 @@ class MockLightRAGClient:
         self.inserted_documents = []
     def insert_document(self, document: str):
         self.inserted_documents.append(document)
+    def insert_documents(self, documents: list[str]) -> int:
+        self.inserted_documents.extend(documents)
+        return len(documents)
 
 def test_importer_init():
     client = MockLightRAGClient()
