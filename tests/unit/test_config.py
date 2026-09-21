@@ -4,55 +4,57 @@ from unittest.mock import patch
 import pytest
 
 
-@patch.dict(os.environ, {}, clear=True)
-@patch("dotenv.load_dotenv", lambda: None)
-def test_default_llm_provider_is_deepseek():
-    """无任何 env 时默认 deepseek"""
-    # 重新导入以触发读取
+@pytest.fixture
+def reload_config():
+    """返回一个重新加载 config 模块的函数"""
     import importlib
 
     import src.config
-    importlib.reload(src.config)
-    assert src.config.LLM_PROVIDER == "deepseek"
+
+    def _reload():
+        importlib.reload(src.config)
+        return src.config
+
+    return _reload
+
+
+@patch.dict(os.environ, {}, clear=True)
+@patch("dotenv.load_dotenv", lambda: None)
+def test_default_llm_provider_is_deepseek(reload_config):
+    """无任何 env 时默认 deepseek"""
+    config = reload_config()
+    assert config.LLM_PROVIDER == "deepseek"
 
 
 @patch.dict(os.environ, {"LLM_PROVIDER": "openai"}, clear=True)
 @patch("dotenv.load_dotenv", lambda: None)
-def test_legacy_llm_provider_compat():
+def test_legacy_llm_provider_compat(reload_config):
     """仅设置 LLM_PROVIDER 向后兼容"""
-    import importlib
-
-    import src.config
-    importlib.reload(src.config)
-    assert src.config.LLM_PROVIDER == "openai"
+    config = reload_config()
+    assert config.LLM_PROVIDER == "openai"
 
 
 @patch.dict(os.environ, {"AGENT_LLM_PROVIDER": "zhipu", "LLM_PROVIDER": "openai"}, clear=True)
 @patch("dotenv.load_dotenv", lambda: None)
-def test_agent_llm_provider_priority_over_legacy():
+def test_agent_llm_provider_priority_over_legacy(reload_config):
     """AGENT_LLM_PROVIDER 优先于兼容别名"""
-    import importlib
-
-    import src.config
-    importlib.reload(src.config)
-    assert src.config.LLM_PROVIDER == "zhipu"
+    config = reload_config()
+    assert config.LLM_PROVIDER == "zhipu"
 
 
 @patch.dict(os.environ, {"AGENT_LLM_PROVIDER": "openai"}, clear=True)
 @patch("dotenv.load_dotenv", lambda: None)
-def test_agent_llm_provider_alone():
+def test_agent_llm_provider_alone(reload_config):
     """仅设置 AGENT_LLM_PROVIDER 生效"""
-    import importlib
-
-    import src.config
-    importlib.reload(src.config)
-    assert src.config.LLM_PROVIDER == "openai"
+    config = reload_config()
+    assert config.LLM_PROVIDER == "openai"
 
 
-def test_get_llm_config_valid():
+@patch.dict(os.environ, {"AGENT_LLM_PROVIDER": "zhipu"}, clear=True)
+def test_get_llm_config_valid(reload_config):
     """get_llm_config 返回正确配置"""
-    import src.config
-    cfg = src.config.get_llm_config("zhipu")
+    config = reload_config()
+    cfg = config.get_llm_config("zhipu")
     assert cfg["client_type"] == "zhipuai"
     assert cfg["model"] == "glm-4-Flash-250414"
 

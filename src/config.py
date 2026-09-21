@@ -10,13 +10,13 @@ load_dotenv()
 BASE_DIR = Path(__file__).parent.parent
 
 # ── 网络代理配置 ────────────────────────────────────────────
-PROXY = os.environ.get("PROXY", "") or None
+PROXY = os.environ.get("PROXY") or None
 
 # ── LLM 供应商配置 ──────────────────────────────────────────
 # 快捷切换：修改 AGENT_LLM_PROVIDER 即可切换供应商
 # 向后兼容：若未设置 AGENT_LLM_PROVIDER，仍读取 LLM_PROVIDER
 # 支持：deepseek / openai / zhipu
-LLM_PROVIDER = (
+LLM_PROVIDER: str = (
     os.environ.get("AGENT_LLM_PROVIDER")
     or os.environ.get("LLM_PROVIDER")
     or "deepseek"
