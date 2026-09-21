@@ -33,8 +33,8 @@ cp .env.example .env
 
 2. 编辑 `.env`，配置 API 密钥与供应商：
 ```
-# LLM 供应商切换：deepseek / openai / zhipu
-AGENT_LLM_PROVIDER=deepseek
+# LLM 供应商切换：deepseek / openai / zhipu（默认 zhipu）
+AGENT_LLM_PROVIDER=zhipu
 DEEPSEEK_API_KEY=your_key
 ZHIPU_API_KEY=your_key
 
@@ -91,7 +91,12 @@ streamlit run src/ui/app.py
 multiomics-agent/
 ├── src/                 # 源代码
 │   ├── main.py          # 入口
+│   ├── config.py        # 配置（LLM 供应商、API Key、代理）
+│   ├── logger.py        # 统一日志
+│   ├── error_handler.py # 全局错误处理
+│   ├── performance.py   # 性能监控
 │   ├── ui/              # Streamlit 界面
+│   │   └── app.py       # Web 应用入口
 │   ├── control/         # 控制层
 │   │   ├── intent_parser.py      # 意图解析
 │   │   ├── workflow_manager.py   # 两段式工作流
@@ -100,21 +105,25 @@ multiomics-agent/
 │   │   ├── lightrag_client.py    # LightRAG 封装
 │   │   ├── knowledge_builder.py  # 批量构建
 │   │   ├── knowledge_importer.py # 文献导入
-│   │   └── llm_factory.py        # LLM/embedding 工厂
+│   │   ├── llm_factory.py        # LLM/embedding 工厂
+│   │   ├── api_gateway.py        # 外部 API 网关
+│   │   └── import_config.py      # 知识库导入配置
 │   ├── analysis/        # 分析层
 │   │   ├── r_executor.py         # R 执行器
 │   │   ├── visualization.py      # 可视化
 │   │   └── result_explainer.py   # 结果解释
 │   └── data/            # 数据层
-│       ├── fetchers/             # 公共数据库 Fetcher
+│       ├── fetchers/             # 公共数据库 Fetcher（GEO/KEGG/UniProt）
 │       ├── registry.py           # Fetcher 注册表
 │       ├── storage.py            # 本地存储
 │       ├── data_loader.py        # 数据加载
 │       ├── metadata_manager.py   # 元数据管理
 │       └── cache.py              # 缓存
+├── pubmed-etl/          # 独立文献批量下载与清洗工具
 ├── r_scripts/           # R 分析脚本
 ├── tests/               # 测试
 ├── docs/                # 文档
+├── setup.bat            # Windows 一键安装脚本
 └── .env.example         # 环境变量示例
 ```
 
@@ -151,4 +160,4 @@ ruff check src/ tests/
 
 ## 许可证
 
-MIT License - 详见 [LICENSE](LICENSE) 文件
+MIT License

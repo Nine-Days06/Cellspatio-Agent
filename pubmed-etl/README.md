@@ -186,7 +186,7 @@ python main.py --query "multi-omics AND human"
 
 | 文件 | 说明 |
 |------|------|
-| `data/processed/multiomics_lit.db` | 全量结构化文献库（articles + filter_log + llm_validation + batch_checkpoints 四张表） |
+| `data/processed/multiomics_lit.db` | 全量结构化文献库（articles + filter_log + llm_validation 三张表；batch 检查点存于 `data/output/llm_batch_progress.json`） |
 | `data/output/llm_review_pending_*.csv` | LLM 验证待人工复核清单（标注 Y/N） |
 | `data/output/llm_validation_failed_*.csv` | LLM 校验失败 PMID 清单 |
 | `data/output/llm_filtered_*.csv` | LLM + 人工复核后的最终过滤结果 |
