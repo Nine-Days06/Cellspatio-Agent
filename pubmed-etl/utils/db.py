@@ -1,13 +1,9 @@
+# utils/db.py
 """SQLite 数据库工具函数"""
+
 import sqlite3
 from pathlib import Path
 from contextlib import contextmanager
-from datetime import datetime
-
-
-def now_iso() -> str:
-    """返回当前时间的 ISO 格式字符串"""
-    return datetime.now().isoformat()
 
 
 # 建表 DDL
@@ -24,11 +20,11 @@ CREATE TABLE IF NOT EXISTS articles (
     journal_abbr  TEXT,
     doi           TEXT,
     pmc_id        TEXT,       -- PMC 编号，有则可尝试获取全文
-    article_types TEXT,       -- '|' 分隔
-    authors       TEXT,       -- '|' 分隔
-    affiliation   TEXT,
+    article_types TEXT,       -- '|' 分隔，来自 PublicationTypeList
+    authors       TEXT,       -- '|' 分隔，"LastName FirstName" 格式
+    affiliation   TEXT,       -- 第一作者单位
     language      TEXT,
-    raw_xml_file  TEXT        -- 来源 XML 批次文件名
+    raw_xml_file  TEXT        -- 来源 XML 批次文件名，便于溯源
 );
 """
 
@@ -89,7 +85,6 @@ def get_all_pmids(db_path: Path) -> list[str]:
 
 
 def count_table(db_path: Path, table: str) -> int:
-    """返回指定表的记录数"""
     if table not in VALID_TABLES:
         raise ValueError(f"Invalid table name: {table}")
     with get_conn(db_path) as conn:

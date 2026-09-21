@@ -1,2 +1,5 @@
-"""工具函数"""
-from utils.db import now_iso
+from datetime import datetime
+
+
+def now_iso() -> str:
+    return datetime.utcnow().isoformat()

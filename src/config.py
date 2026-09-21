@@ -19,7 +19,7 @@ PROXY = os.environ.get("PROXY") or None
 LLM_PROVIDER: str = (
     os.environ.get("AGENT_LLM_PROVIDER")
     or os.environ.get("LLM_PROVIDER")
-    or "deepseek"
+    or "zhipu"
 )
 LLM_MAX_TOKENS  = int(os.environ.get("LLM_MAX_TOKENS", "8192"))
 LLM_MAX_RETRIES = int(os.environ.get("LLM_MAX_RETRIES", "3"))
@@ -28,7 +28,7 @@ LLM_TIMEOUT     = int(os.environ.get("LLM_TIMEOUT", "120"))
 # DeepSeek
 DEEPSEEK_API_KEY  = os.environ.get("DEEPSEEK_API_KEY", "")
 DEEPSEEK_BASE_URL = os.environ.get("DEEPSEEK_BASE_URL", "https://api.deepseek.com")
-DEEPSEEK_MODEL    = os.environ.get("DEEPSEEK_MODEL", "deepseek-v4-flash")
+DEEPSEEK_MODEL    = os.environ.get("DEEPSEEK_MODEL", "deepseek-flash")
 
 # 智谱AI
 ZHIPU_API_KEY = os.environ.get("ZHIPU_API_KEY", "")
@@ -103,6 +103,6 @@ def get_current_llm():
 NCBI_API_KEY = os.environ.get("NCBI_API_KEY", "")
 NCBI_EMAIL   = os.environ.get("NCBI_EMAIL", "")
 
-# 本地 Ollama（embedding 用，计划 2 消费）
+# 本地 Ollama（embedding 用）
 OLLAMA_URL      = os.environ.get("OLLAMA_URL", "http://localhost:11434")
 EMBEDDING_MODEL = os.environ.get("EMBEDDING_MODEL", "bge-m3")

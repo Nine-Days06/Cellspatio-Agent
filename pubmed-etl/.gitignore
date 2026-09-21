@@ -1,0 +1,21 @@
+# API Key
+config/.env
+
+# Python
+__pycache__/
+*.pyc
+
+# 运行产物
+data/
+logs/
+
+# 环境
+.venv/
+
+# IDE
+.idea/
+.junie/
+
+# Documentation
+AGENTS.md
+docs/

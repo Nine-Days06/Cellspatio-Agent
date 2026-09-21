@@ -133,263 +133,57 @@ def _extract_json(text: str, fix_glm_multi_array: bool = False) -> list | None:
 
 
 SYSTEM_PROMPT = (
-    "你是一个人类多组学（Human Multi-omics）分析领域的文献筛选专家。\n"
-    "本项目的目标是从 PubMed 文献中筛选与人类多组学研究相关的高质量文献。\n"
-    "多组学包括：转录组学（Transcriptomics）、蛋白质组学（Proteomics）、"
-    "代谢组学（Metabolomics）、基因组学（Genomics）、表观基因组学（Epigenomics）。\n"
-    "判断以下每篇文献的摘要是否与人类多组学分析相关。\n\n"
-     "可关注的研究类型：\n"
-    "1. 多组学整合分析（整合 2 种以上组学数据进行系统生物学研究）\n"
-    "2. 单一组学研究（转录组、蛋白质组、代谢组、基因组、表观组等）\n"
-    "3. 组学技术开发（新的测序、质谱、生物信息学方法）\n"
-    "4. 组学数据资源（参考基因组、表达数据库、代谢物数据库等）\n"
-    "5. 组学在疾病诊断/治疗中的应用（癌症、代谢病、神经退行性疾病等）\n\n"
-     "可关注的研究对象：\n"
-    "人类疾病：癌症、肿瘤、代谢性疾病、神经退行性疾病、心血管疾病、自身免疫病等\n"
-    "组织/细胞：血液、脑组织、肝脏、肿瘤组织、免疫细胞、干细胞等\n"
-    "人群研究：队列研究、GWAS、精准医疗、药物基因组学等\n"
-    "模式系统：类器官、细胞系、人源化小鼠模型等\n\n"
-     "判断步骤（请按以下顺序逐一分析后给出最终判定）：\n"
-     "1. 核心研究对象：这篇文献主要研究什么？\n"
-     "   - 人类的组学研究（转录组、蛋白质组、代谢组、基因组、表观组等）\n"
-     "   - 多组学整合分析\n"
-     "   - 组学技术方法开发\n"
-     "   - 非人类物种（植物、动物模型等）\n"
-     "   - 非组学研究（传统临床研究、流行病学等）\n"
-     "2. 关键实体：摘要中出现了哪些组学相关实体？\n"
-     "3. 核心内容：研究的组学类型和分析方法是什么？\n"
-     "4. 参照下方判断标准，得出最终 verdict\n\n"
-     "判断标准：\n"
-    "- 摘要涉及人类疾病/组织/细胞的组学研究"
-     "（转录组、蛋白质组、代谢组、基因组、表观组或多组学整合）→ RELEVANT\n"
-    "- 摘要涉及组学技术方法开发（测序技术、质谱方法、生物信息学工具等），"
-     "且以人类研究为主要应用或验证系统 → RELEVANT\n"
-    "- 摘要涉及多组学数据整合分析（如转录组+代谢组、基因组+表观组等）→ RELEVANT\n"
-    "- 摘要涉及组学数据资源建设（参考基因组、数据库、表达谱等）→ RELEVANT\n"
-    "- 摘要仅泛泛提及组学概念，无具体研究内容 → NOT_RELEVANT\n"
-    "- 摘要研究非人类物种（植物、纯动物模型研究等）→ NOT_RELEVANT\n"
-    "- 摘要研究传统临床/流行病学（无组学数据或分析）→ NOT_RELEVANT\n"
-    "- 摘要仅涉及单一基因/蛋白质的功能验证，无组学分析 → NOT_RELEVANT\n"
-    "- 摘要仅涉及基因组组装/注释，无功能组学分析 → NOT_RELEVANT\n\n"
-     "示例：\n\n"
-     "示例1 — RELEVANT（基因→抗性）\n"
-    "PMID: 15078331\n"
-    "Title: Molecular cloning of the potato Gro1-4 gene conferring "
-    "resistance to pathotype Ro1 of the root cyst nematode Globodera "
-    "rostochiensis, based on a candidate gene approach.\n"
-    "Abstract: The endoparasitic root cyst nematode Globodera "
-    "rostochiensis causes considerable damage in potato cultivation. "
-    "In the past, major genes for nematode resistance have been "
-    "introgressed from related potato species into cultivars. "
-    "Elucidating the molecular basis of resistance will contribute to "
-    "the understanding of nematode-plant interactions and assist in "
-    "breeding nematode-resistant cultivars. The Gro1 resistance locus "
-    "to G. rostochiensis on potato chromosome VII co-localized with a "
-    "resistance-gene-like (RGL) DNA marker. This marker was used to "
-    "isolate from genomic libraries 15 members of a closely related "
-    "candidate gene family. Analysis of inheritance, linkage mapping, "
-    "and sequencing reduced the number of candidate genes to three. "
-    "Complementation analysis by stable potato transformation showed "
-    "that the gene Gro1-4 conferred resistance to G. rostochiensis "
-    "pathotype Ro1. Gro1-4 encodes a protein of 1136 amino acids that "
-    "contains Toll-interleukin 1 receptor (TIR), nucleotide-binding "
-    "(NB), leucine-rich repeat (LRR) homology domains and a C-terminal "
-    "domain with unknown function. The deduced Gro1-4 protein differed "
-    "by 29 amino acid changes from susceptible members of the Gro1 gene "
-    "family. Sequence characterization of 13 members of the Gro1 gene "
-    "family revealed putative regulatory elements and a variable "
-    "microsatellite in the promoter region, insertion of a "
-    "retrotransposon-like element in the first intron, and a stop codon "
-    "in the NB coding region of some genes. Sequence analysis of RT-PCR "
-    "products showed that Gro1-4 is expressed, among other members of "
-    "the family including putative pseudogenes, in non-infected roots "
-    "of nematode-resistant plants. RT-PCR also demonstrated that "
-    "members of the Gro1 gene family are expressed in most potato "
-    "tissues.\n\n"
-     "示例2 — RELEVANT（基因→品质性状）\n"
-    "PMID: 15802505\n"
-    "Title: DNA variation at the invertase locus invGE/GF is "
-    "associated with tuber quality traits in populations of potato "
-    "breeding clones.\n"
-    "Abstract: Starch and sugar content of potato tubers are "
-    "quantitative traits, which are models for the candidate gene "
-    "approach for identifying the molecular basis of quantitative "
-    "trait loci (QTL) in noninbred plants. Starch and sugar content "
-    "are also important for the quality of processed products such as "
-    "potato chips and French fries. A high content of the reducing "
-    "sugars glucose and fructose results in inferior chip quality. "
-    "Tuber starch content affects nutritional quality. Functional and "
-    "genetic models suggest that genes encoding invertases control, "
-    "among other things, tuber sugar content. The invGE/GF locus on "
-    "potato chromosome IX consists of duplicated invertase genes invGE "
-    "and invGF and colocalizes with cold-sweetening QTL Sug9. DNA "
-    "variation at invGE/GF was analyzed in 188 tetraploid potato "
-    "cultivars, which have been assessed for chip quality and tuber "
-    "starch content. Two closely correlated invertase alleles, "
-    "invGE-f and invGF-d, were associated with better chip quality in "
-    "three breeding populations. Allele invGF-b was associated with "
-    "lower tuber starch content. The potato invertase gene invGE is "
-    "orthologous to the tomato invertase gene Lin5, which is causal "
-    "for the fruit-sugar-yield QTL Brix9-2-5, suggesting that natural "
-    "variation of sugar yield in tomato fruits and sugar content of "
-    "potato tubers is controlled by functional variants of orthologous "
-    "invertase genes.\n\n"
-     "示例3 — NOT_RELEVANT（农艺/育种层面，无分子实体）\n"
-    "PMID: 28742868\n"
-    "Title: Combining ability of highland tropic adapted potato for "
-    "tuber yield and yield components under drought.\n"
-    "Abstract: Recurrent drought and late blight disease are the "
-    "major factors limiting potato productivity in the northwest "
-    "Ethiopian highlands. Incorporating drought tolerance and late "
-    "blight resistance in the same genotypes will enable the "
-    "development of cultivars with high and stable yield potential "
-    "under erratic rainfall conditions. The objectives of this study "
-    "were to assess combining ability effects and gene action for "
-    "tuber yield and traits related to drought tolerance in the "
-    "International Potato Centre's (CIP's) advanced clones from the "
-    "late blight resistant breeding population B group 'B3C2' and to "
-    "identify promising parents and families for cultivar development. "
-    "Sixteen advanced clones from the late blight resistant breeding "
-    "population were crossed in two sets using the North Carolina "
-    "Design II. The resulting 32 families were evaluated together with "
-    "five checks and 12 parental clones in a 7 x 7 lattice design with "
-    "two water regimes and two replications. The experiment was "
-    "carried out at Adet, in northwest Ethiopia under well-watered and "
-    "water stressed conditions with terminal drought imposed from the "
-    "tuber bulking stage. The results showed highly significant "
-    "differences between families, checks, and parents for growth, "
-    "physiological, and tuber yield related traits. Traits including "
-    "marketable tuber yield, marketable tuber number, average tuber "
-    "weight and groundcover were positively correlated with total "
-    "tuber yield under both drought stressed and well-watered "
-    "conditions. Plant height was correlated with yield only under "
-    "drought stressed condition. GCA was more important than SCA for "
-    "total tuber yield, marketable tuber yield, average tuber weight, "
-    "plant height, groundcover, and chlorophyll content under stress. "
-    "This study identified the parents with best GCA and the "
-    "combinations with best SCA effects, for both tuber yield and "
-    "drought tolerance related traits. The new population is shown to "
-    "be a valuable genetic resource for variety selection and "
-    "improvement of potato's adaptation to the drought prone areas in "
-    "northwest Ethiopia and similar environments.\n\n"
-     "示例4 — NOT_RELEVANT（方法学论文，仅以马铃薯病原菌为模型）\n"
-    "PMID: 10658663\n"
-    "Title: cDNA-AFLP analysis of differential gene expression in "
-    "the prokaryotic plant pathogen Erwinia carotovora.\n"
-    "Abstract: For studies of differential gene expression in "
-    "prokaryotes, methods for synthesizing representative cDNA "
-    "populations are required. Here, a technique is described for "
-    "the synthesis of cDNA from the potato pathogens Erwinia "
-    "carotovora subsp. atroseptica (Eca) and Erwinia carotovora "
-    "subsp. carotovora (Ecc) using a combination of short "
-    "oligonucleotide (11-mer) primers that were known to anneal to "
-    "conserved sequences in the 3' regions of enterobacterial genes. "
-    "Specific PCR amplifications with primers designed to anneal to "
-    "14 known genes from either Eca or Ecc revealed the presence of "
-    "the corresponding transcripts in cDNA, suggesting that the cDNA "
-    "represented a broad genomic coverage. cDNA-amplified fragment "
-    "length polymorphism (cDNA-AFLP) was used to identify "
-    "differentially expressed genes in Eca, including one that shows "
-    "significant similarity, at the protein level, to an avirulence "
-    "gene from Xanthomonas campestris pv. raphani. Northern analysis "
-    "was used to confirm that differentially amplified cDNA fragments "
-    "were derived from differentially expressed genes. This is the "
-"first report of the use of cDNA-AFLP to study differential gene "
-     "expression in prokaryotes.\n\n"
-     "示例5 — NOT_RELEVANT（外源细菌基因在马铃薯中表达）\n"
-    "PMID: 11231562\n"
-    "Title: Acceleration of potato tuber sprouting by the expression of "
-    "a bacterial pyrophosphatase.\n"
-    "Abstract: Potato is a globally important crop. Unfortunately, "
-    "potato farming is plagued with problems associated with the "
-    "sprouting behavior of seed tubers. The data presented here "
-    "demonstrate that using transgenic technology can influence this "
-    "behavior. Transgenic tubers cytosolically expressing an inorganic "
-    "pyrophosphatase gene derived from Escherichia coli under the "
-    "control of the tuber-specific patatin promoter display "
-    "significantly accelerated sprouting. The period of presprouting "
-    "dormancy for transgenic tubers planted immediately after harvest "
-    "is reduced by six to seven weeks when compared to wild-type "
-    "tubers. This study demonstrates a method with which to regulate "
-    "dormancy, an important aspect of potato crop management.\n\n"
-     "示例6 — NOT_RELEVANT（外源植物基因在马铃薯中表达）\n"
-    "PMID: 11262007\n"
-    "Title: Control of enzymatic browning in potato (Solanum tuberosum "
-    "L.) by sense and antisense RNA from tomato polyphenol oxidase.\n"
-    "Abstract: Polyphenol oxidase (PPO) activity of Russet Burbank "
-    "potato was inhibited by sense and antisense PPO RNAs expressed "
-    "from a tomato PPO cDNA under the control of the 35S promoter. "
-    "Transgenic Russet Burbank potato plants from 37 different lines "
-    "were grown in the field. PPO activity and the level of enzymatic "
-    "browning were measured in the harvested tubers. Of the tubers from "
-    "28 transgenic lines, tubers from 5 lines exhibited reduced "
-    "browning, and PPO activity correlated with this reduction. These "
-    "results indicate that expression of tomato PPO RNA in sense or "
-    "antisense orientation inhibits PPO activity and enzymatic browning "
-    "in the major commercial potato cultivar. Furthermore, the findings "
-    "suggest that expression of closely related heterologous genes "
-    "could prevent enzymatic browning in a wide variety of food crops.\n\n"
-     "示例7 — RELEVANT（马铃薯内源基因功能验证，转基因手段）\n"
-    "PMID: 15078330\n"
-    "Title: The tandem complex of BEL and KNOX partners is required for "
-    "transcriptional repression of ga20ox1.\n"
-    "Abstract: Two interacting TALE proteins of potato, StBEL5 and "
-    "POTH1, mediate developmental processes by regulating phytohormone "
-    "levels. Overexpression of either partner alone increased tuber "
-    "yields by lowering gibberellin (GA) levels and increasing "
-    "cytokinins. StBEL5 and POTH1 bind to the regulatory region of "
-    "ga20ox1 from potato. The StBEL5-POTH1 heterodimer suppressed the "
-    "activity of the ga20ox1 promoter by more than 50%. These results "
-    "indicate that the tandem interaction of StBEL5 and POTH1 is "
-    "essential for regulation of the target gene, affecting tuber "
-    "yield.\n\n"
-     "示例8 — RELEVANT（胁迫-基因-耐逆性状）\n"
-    "PMID: 17207469\n"
-    "Title: Ethylene responsive element binding protein 1 (StEREBP1) "
-    "from Solanum tuberosum increases tolerance to abiotic stress in "
-    "transgenic potato plants.\n"
-    "Abstract: To identify components of the plant stress signal "
-    "transduction cascade, we chose the ethylene responsive element "
-    "binding protein 1 (StEREBP1) for characterization. Northern blot "
-    "analysis showed enhanced transcription of StEREBP1 in response to "
-    "several environmental stresses including low temperature. "
-    "StEREBP1 was found to bind to GCC and DRE/CRT cis-elements, and "
-    "overexpression of StEREBP1 induced several GCC box-containing "
-    "stress response genes. In addition, overexpression of StEREBP1 "
-    "enhanced tolerance to cold and salt stress in transgenic potato "
-    "plants. The results suggest that StEREBP1 is a functional "
-    "transcription factor involved in abiotic stress responses.\n\n"
-     "示例9 — NOT_RELEVANT（胁迫/处理→生理变化，无内源基因功能关系）\n"
-    "PMID: 11080304\n"
-    "Title: Impact of post-anoxia stress on membrane lipids of "
-    "anoxia-pretreated potato cells. A re-appraisal.\n"
-    "Abstract: The importance of lipid peroxidation and its contributing "
-    "pathways (via reactive oxygen species and lipoxygenase) during "
-    "post-anoxia was evaluated using potato (Solanum tuberosum) cell "
-    "cultures. When anoxic cells were re-oxygenated, lipid hydroperoxides "
-    "were detected only upon feeding cells with H2O2, no accumulation was "
-    "found otherwise, and cell viability was preserved. The study "
-    "investigates membrane lipid changes under anoxia-reoxygenation "
-    "stress in potato cells without addressing any potato gene or "
-    "protein's function-trait relationship.\n\n"
-     "示例10 — NOT_RELEVANT（基因/蛋白未指名具体名称）\n"
-    "PMID: 20102600\n"
-    "Title: A potato gene involved in cold tolerance as revealed by "
-    "expression profiling.\n"
-    "Abstract: We identified a gene that was differentially expressed "
-    "in cold-stressed potato. Transgenic potato plants overexpressing "
-    "and RNAi-silenced lines of this gene showed altered freezing "
-    "tolerance, and the gene influenced expression of several "
-    "carbohydrate-related transcripts. The identification of this "
-    "gene may help improve potato cold tolerance in the future. "
-    "全篇对基因仅以「a gene / this gene」泛指，未给出任何具体名称。\n"
-    "（注：① 摘要中的基因未给出具体名称，无法提取命名实体 → "
-    "判 NOT_RELEVANT；② 即使通过转基因/RNAi 等手段验证其功能，"
-    "只要基因未点名，一律 NOT_RELEVANT）\n\n"
-     "请以 JSON 对象格式逐条回答，不要包含其他内容：\n"
-    '{"results":[{"pmid":"...","verdict":"RELEVANT 或 NOT_RELEVANT",'
-    '"reason":"请用中文简要说明判断依据，指出摘要中出现的实体和关系"}]}'
+    """你是一个人类多组学（Human Multi-Omics）文献筛选专家。
+你的任务是判断每篇 PubMed 文献的摘要是否真正与人类多组学分析相关。
+
+【什么是人类多组学？】
+人类多组学指同时分析两种或以上组学数据（如基因组+转录组、蛋白质组+代谢组等）以研究人类疾病、生物学过程或治疗策略的研究。关键特征是：
+1. 整合分析：多组学数据相互验证、关联或共同解释生物学现象
+2. 多种组学：至少涉及 2 种组学类型（转录组、蛋白质组、代谢组、基因组、表观组、单细胞组等）
+3. 人类相关性：以人类患者、细胞、组织或临床数据为主要研究对象
+
+【可保留的文献类型】
+✓ 多组学整合分析（如转录组+代谢组、多组学机器学习框架）
+✓ 多组学策略论文（提出多组学分析方法、范式）
+✓ 单组学+多组学验证（主要是一个组学，但用其他组学作为佐证）
+✓ 组学技术在人类中的应用验证
+✓ 多组学临床研究（癌症、精准医疗、生物标志物发现等）
+
+【应过滤的文献类型】
+✗ 纯单组学论文（仅转录组、仅蛋白质组等，不涉及其他组学整合）
+✗ 纯技术方法论文（不涉及人类或只以动物/细胞系为模型）
+✗ 非组学研究（传统临床、流行病学、无组学分析）
+✗ 仅基因/蛋白质功能验证，无组学层面分析
+✗ 仅基因组组装/注释，无功能组学分析
+
+【判断步骤】
+1. 确定核心组学类型：文章主要使用哪种组学？（转录组、蛋白质组、代谢组、基因组、表观组、单细胞等）
+2. 确定是否有整合分析：是否对比/关联至少 2 种组学数据？是否使用多组学整合框架？
+3. 确定研究对象：是否涉及人类？是否以人类临床/患者为主要对象？
+4. 根据上述信息判断是否为人类多组学相关
+
+【判断标准】
+RELEVANT（保留）
+- 明确提及多组学整合（如 'multi-omics'/'multi omics'）且涉及人类
+- 同时使用 2 种及以上组学数据进行分析
+- 使用多组学整合方法（如多组学机器学习、多组学网络分析）
+- 单组学研究，但用其他组学作为佐证验证
+- 多组学临床研究（癌症、精准医疗、生物标志物发现等）
+
+NOT_RELEVANT（过滤）
+- 仅一种组学（如仅转录组或仅蛋白质组），无整合分析
+- 仅技术方法论文（不涉及人类或只以模型动物为对象）
+- 纯临床/流行病学研究，无组学数据或分析
+- 仅基因组组装/注释，无功能组学分析
+- 仅基因/蛋白质功能验证，无组学层面分析
+
+【输出格式】
+请以 JSON 对象格式逐条回答，不要包含其他内容：
+{"results":[{"pmid":"...","verdict":"RELEVANT 或 NOT_RELEVANT",
+"reason":"请用中文简要说明判断依据，指出摘要中的组学类型、整合分析情况和研究对象"}]}
+"""
 )
+
 
 INSERT_SQL = """
 INSERT INTO llm_validation
@@ -829,7 +623,7 @@ def _export_review_csv() -> Path | None:
 BATCH_CHECKPOINT_FILE = "llm_batch_progress.json"
 
 PROMPT_PREFIX = (
-    "请根据上述标准判断以下文献是否包含可用于马铃薯知识图谱构建的实体关系信息。\n\n"
+    "请根据上述标准判断以下文献是否包含可用于人类多组学知识图谱构建的实体关系信息。\n\n"
 )
 
 PROMPT_OUTPUT_FORMAT = (
@@ -1083,8 +877,8 @@ def _run_zhipu_batch():
             endpoint="/v4/chat/completions",
             auto_delete_input_file=LLM_BATCH_AUTO_DELETE,
             metadata={
-                "description": "Potato literature LLM validation",
-                "project": "potato-literature-search",
+                "description": "Human multi-omics literature LLM validation",
+                "project": "multiomics-literature-selection",
             },
         )
         logger.info(f"Batch 任务已提交: {batch.id}")
