@@ -91,3 +91,16 @@ def get_current_llm():
             base_url=config["base_url"],
         )
         return client, config["model"]
+
+
+# ── 外部数据源配置 ──────────────────────────────────────────
+# GEO 检索复用 NCBI E-utilities
+NCBI_API_KEY = os.environ.get("NCBI_API_KEY", "")
+NCBI_EMAIL   = os.environ.get("NCBI_EMAIL", "")
+
+# KEGG 免费 API key（可选，提升频率限额）
+KEGG_API_KEY = os.environ.get("KEGG_API_KEY", "")
+
+# 本地 Ollama（embedding 用，计划 2 消费）
+OLLAMA_URL      = os.environ.get("OLLAMA_URL", "http://localhost:11434")
+EMBEDDING_MODEL = os.environ.get("EMBEDDING_MODEL", "bge-m3")
