@@ -78,6 +78,7 @@ EXCLUDED_ARTICLE_TYPES = [
 # 快捷切换：修改 ETL_LLM_PROVIDER 即可切换供应商
 # 向后兼容：若未设置 ETL_LLM_PROVIDER，仍读取 LLM_PROVIDER
 # 支持：deepseek / openai / zhipu
+# 注：空字符串视同未设置，将回退
 LLM_PROVIDER = (
     os.environ.get("ETL_LLM_PROVIDER")
     or os.environ.get("LLM_PROVIDER")
