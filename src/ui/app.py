@@ -17,8 +17,12 @@ def create_app(agent: Any):
             st.info("外部 API 已启用，将查询最新文献和数据库。")
         
         st.header("知识库状态")
-        stats = agent.knowledge_client.get_statistics()
-        st.json(stats)
+        try:
+            stats = agent.knowledge_client.get_statistics()
+            st.json(stats)
+        except Exception as e:
+            st.error(f"知识库状态获取失败: {e}")
+            st.json({"working_dir": "knowledge_base", "initialized": False})
     
     # 初始化会话状态
     if "messages" not in st.session_state:

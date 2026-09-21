@@ -103,3 +103,8 @@ class MultiomicsAgent:
         import sys
         print("启动 Streamlit Web 界面...")
         subprocess.run([sys.executable, "-m", "streamlit", "run", "src/ui/app.py"], check=False)
+
+
+if __name__ == "__main__":
+    agent = MultiomicsAgent()
+    agent.run("cli")
