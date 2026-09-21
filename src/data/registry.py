@@ -30,12 +30,12 @@ class FetcherRegistry:
     def build_default(storage=None) -> "FetcherRegistry":
         """注册 GEO / KEGG / UniProt 三个试点 fetcher"""
         registry = FetcherRegistry()
-        from src.config import KEGG_API_KEY, NCBI_API_KEY, NCBI_EMAIL
+        from src.config import NCBI_API_KEY, NCBI_EMAIL
         from src.data.fetchers.geo_fetcher import GEOFetcher
         from src.data.fetchers.kegg_fetcher import KEGGFetcher
         from src.data.fetchers.uniprot_fetcher import UniProtFetcher
 
-        registry.register(KEGGFetcher(storage=storage, api_key=KEGG_API_KEY))
+        registry.register(KEGGFetcher(storage=storage))
         registry.register(UniProtFetcher(storage=storage))
         registry.register(GEOFetcher(storage=storage, api_key=NCBI_API_KEY, email=NCBI_EMAIL))
         return registry

@@ -59,15 +59,6 @@ def test_ingest_text_wraps_raw_text():
     assert "ENTRY" in text
 
 
-def test_api_key_appended():
-    def handler(request):
-        assert "key=sekret" in str(request.url)
-        return httpx.Response(200, text="path:hsa00010\tT\n")
-
-    fetcher = KEGGFetcher(client=httpx.Client(transport=httpx.MockTransport(handler)), api_key="sekret")
-    fetcher.search("glycolysis")
-
-
 def test_download_raises_not_implemented():
     fetcher = KEGGFetcher()
     try:

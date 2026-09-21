@@ -1,4 +1,5 @@
 """KEGG 通路数据获取"""
+import time
 from pathlib import Path
 from urllib.parse import quote
 
@@ -8,23 +9,31 @@ from src.data.fetchers.base import AssetInfo, AssetMeta, BaseFetcher
 
 
 class KEGGFetcher(BaseFetcher):
-    """KEGG REST API（rest.kegg.jp）通路数据获取"""
+    """KEGG REST API（rest.kegg.jp）通路数据获取
+
+    频率限制：3 请求/秒（IP 级，官方要求）
+    """
 
     source = "kegg"
     asset_type = "knowledge"
     base_url = "https://rest.kegg.jp"
+    _RATE_LIMIT = 3.0  # 请求/秒
+    _last_request_time = 0.0
 
-    def __init__(self, storage=None, client: httpx.Client | None = None, api_key: str = ""):
+    def __init__(self, storage=None, client: httpx.Client | None = None):
         super().__init__(storage=storage, client=client)
-        self.api_key = api_key
 
     def _url(self, path: str) -> str:
-        url = f"{self.base_url}/{path}"
-        if self.api_key:
-            url += f"?key={self.api_key}"
-        return url
+        return f"{self.base_url}/{path}"
 
     def _get(self, path: str) -> str:
+        # 频率限制：3 请求/秒
+        min_interval = 1.0 / self._RATE_LIMIT
+        elapsed = time.time() - self._last_request_time
+        if elapsed < min_interval:
+            time.sleep(min_interval - elapsed)
+        self._last_request_time = time.time()
+
         resp = self._get_client().get(self._url(path))
         resp.raise_for_status()
         return resp.text
