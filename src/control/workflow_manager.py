@@ -1,20 +1,27 @@
 import logging
+import re
+from pathlib import Path
 from typing import Any
 
 logger = logging.getLogger(__name__)
 
+
 class WorkflowManager:
     """流程管理器，协调各个组件"""
     
-    def __init__(self, intent_parser, knowledge_client, r_executor, visualizer):
+    def __init__(self, intent_parser, knowledge_client, r_executor, visualizer,
+                 fetcher_registry=None, storage=None, knowledge_builder=None):
         self.intent_parser = intent_parser
         self.knowledge_client = knowledge_client
         self.r_executor = r_executor
         self.visualizer = visualizer
+        self.fetcher_registry = fetcher_registry
+        self.storage = storage
+        self.knowledge_builder = knowledge_builder
     
     def execute_workflow(self, user_input: str, context: dict[str, Any] | None = None) -> dict[str, Any]:
         """执行工作流"""
-        context = context or {}
+        context = context if context is not None else {}
         
         # 1. 解析意图
         intent = self.intent_parser.parse(user_input)
@@ -27,6 +34,8 @@ class WorkflowManager:
             return self._execute_analysis_workflow(intent, params, context)
         elif intent['type'] == 'knowledge_query':
             return self._execute_knowledge_workflow(intent, params, context)
+        elif intent['type'] == 'fetch_data':
+            return self._execute_fetch_data_workflow(intent, params, context)
         else:
             return self._execute_general_workflow(intent, params, context)
     
@@ -57,6 +66,40 @@ class WorkflowManager:
             'response': knowledge_result
         }
     
+    def _execute_fetch_data_workflow(self, intent: dict[str, Any], params: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:
+        """阶段 1：检索 → 列出候选 → 等待用户确认下载"""
+        if self.fetcher_registry is None:
+            return {'status': 'error', 'type': 'fetch_data', 'message': '数据获取组件未配置'}
+        query = intent.get('original_input', '')
+        sources = params.get('sources') or self.fetcher_registry.sources()
+        
+        candidates = []
+        for source in sources:
+            fetcher = self.fetcher_registry.get(source)
+            try:
+                metas = fetcher.search(query, max_results=5)
+            except Exception as e:  # noqa: BLE001 - 单个来源失败不应中断整体检索
+                logger.warning("source %s search failed: %s", source, e)
+                continue
+            for meta in metas:
+                candidates.append({
+                    'source': meta.source,
+                    'asset_id': meta.asset_id,
+                    'title': meta.title,
+                    'asset_type': meta.asset_type,
+                })
+        
+        if not candidates:
+            return {'status': 'no_results', 'type': 'fetch_data', 'query': query,
+                    'message': '未找到匹配的数据集，请换关键词重试'}
+        
+        context['fetch_candidates'] = candidates
+        return {
+            'status': 'needs_confirmation', 'type': 'fetch_data',
+            'query': query, 'candidates': candidates,
+            'message': f'找到 {len(candidates)} 个候选数据集，请选择要下载的项',
+        }
+    
     def _execute_general_workflow(self, intent: dict[str, Any], params: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:
         """执行通用工作流"""
         return {
@@ -64,3 +107,33 @@ class WorkflowManager:
             'type': 'general_response',
             'message': '这是一个通用响应。请询问具体的数据分析或知识问题。'
         }
+    
+    def confirm_and_download(self, source: str, asset_id: str) -> dict[str, Any]:
+        """阶段 2：确认详情 → 下载落盘（分析流入口）"""
+        if self.fetcher_registry is None:
+            return {'status': 'error', 'message': '数据获取组件未配置'}
+        fetcher = self.fetcher_registry.get(source)
+        info = fetcher.confirm(asset_id)
+        access_path = fetcher.download(asset_id)
+        logger.info("Asset confirmed and downloaded: %s/%s -> %s", source, asset_id, access_path)
+        return {
+            'status': 'success',
+            'type': 'fetch_result',
+            'asset': {
+                'source': source,
+                'asset_id': asset_id,
+                'title': info.title,
+                'access_path': str(access_path),
+                'metadata': info.metadata,
+            },
+        }
+    
+    def ingest_asset_to_kb(self, source: str, asset_id: str) -> dict[str, Any]:
+        """知识流：将资产文本写入知识库（LightRAG）"""
+        if self.fetcher_registry is None or self.knowledge_builder is None:
+            return {'status': 'error', 'message': '知识构建组件未配置'}
+        fetcher = self.fetcher_registry.get(source)
+        text = fetcher.ingest_text(asset_id)
+        result = self.knowledge_builder.build_from_text(text)
+        return {'status': 'success', 'type': 'ingest_result', 'asset_id': asset_id,
+                'inserted': result.get('inserted')}
