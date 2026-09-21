@@ -13,9 +13,14 @@ BASE_DIR = Path(__file__).parent.parent
 PROXY = os.environ.get("PROXY", "") or None
 
 # ── LLM 供应商配置 ──────────────────────────────────────────
-# 快捷切换：修改 LLM_PROVIDER 即可切换供应商
+# 快捷切换：修改 AGENT_LLM_PROVIDER 即可切换供应商
+# 向后兼容：若未设置 AGENT_LLM_PROVIDER，仍读取 LLM_PROVIDER
 # 支持：deepseek / openai / zhipu
-LLM_PROVIDER    = os.environ.get("LLM_PROVIDER", "deepseek")
+LLM_PROVIDER = (
+    os.environ.get("AGENT_LLM_PROVIDER")
+    or os.environ.get("LLM_PROVIDER")
+    or "deepseek"
+)
 LLM_MAX_TOKENS  = int(os.environ.get("LLM_MAX_TOKENS", "8192"))
 LLM_MAX_RETRIES = int(os.environ.get("LLM_MAX_RETRIES", "3"))
 LLM_TIMEOUT     = int(os.environ.get("LLM_TIMEOUT", "120"))
