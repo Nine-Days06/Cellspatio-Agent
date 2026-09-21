@@ -63,4 +63,5 @@ def test_get_llm_config_invalid_raises():
     """无效 provider 抛 ValueError"""
     import src.config
     with pytest.raises(ValueError, match="不支持的 LLM 供应商"):
-        src.config.get_llm_config("unknown")
+        src.config.get_llm_config("unknown")
+
