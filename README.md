@@ -15,14 +15,13 @@
 
 ### 安装
 
-```bash
-# 克隆项目
+```cmd
+REM 克隆项目
 git clone https://github.com/your-org/multiomics-agent.git
 cd multiomics-agent
 
-# 运行设置脚本
-chmod +x scripts/setup.sh
-./scripts/setup.sh
+REM 运行设置脚本
+setup.bat
 ```
 
 ### 配置
