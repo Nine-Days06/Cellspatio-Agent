@@ -45,6 +45,7 @@ class LightRAGClient:
                     llm_model_name=llm_model,
                     embedding_func=embedding_func,
                     enable_llm_cache=True,
+                    llm_model_max_async=2,  # 并发限制，受 API 限流影响
                 )
                 # LightRAG 1.5.7+ 需要显式初始化存储
                 asyncio.run(self._rag.initialize_storages())

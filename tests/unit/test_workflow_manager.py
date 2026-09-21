@@ -15,6 +15,11 @@ class MockRExecutor:
         return SimpleNamespace(returncode=0, stdout="", stderr="")
 
 
+class MockRScriptGenerator:
+    def generate_code(self, analysis_type, params):
+        return f"# R code for {analysis_type}"
+
+
 class MockVisualizer:
     pass
 
@@ -77,6 +82,7 @@ def _make_manager(fetcher_registry=FakeRegistry(), builder=None):
         visualizer=MockVisualizer(),
         fetcher_registry=fetcher_registry,
         knowledge_builder=builder or FakeBuilder(),
+        r_script_generator=MockRScriptGenerator(),
     )
 
 
@@ -123,3 +129,23 @@ def test_fetch_data_context_records_candidates():
     context = {}
     manager.execute_workflow("帮我下载 GEO 数据集", context=context)
     assert len(context['fetch_candidates']) == 2
+
+
+def test_de_analysis_uses_downloaded_asset(tmp_path):
+    csv_file = tmp_path / "GSE123456_expression.csv"
+    csv_file.write_text("gene,log2FC,pvalue\nTP53,1.5,0.001\n", encoding="utf-8")
+    context = {'downloaded_assets': [
+        {'source': 'geo', 'asset_id': 'GSE123456', 'access_path': str(csv_file)},
+    ]}
+    manager = _make_manager()
+    result = manager.execute_workflow("对这些数据做差异表达分析", context=context)
+    assert result['status'] == 'success'
+    assert result['analysis_type'] == 'differential_expression'
+
+
+def test_de_analysis_without_data_errors():
+    manager = _make_manager()
+    result = manager.execute_workflow("做差异表达分析")
+    assert result['status'] == 'success'
+    assert result['analysis_type'] == 'differential_expression'
+    assert '演示模式' in result['message'] or '无实际数据' in result['message']

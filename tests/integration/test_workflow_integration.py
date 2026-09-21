@@ -25,6 +25,10 @@ class MockKnowledgeClient:
 class MockRExecutor:
     """模拟 R 执行器"""
 
+    def execute_code(self, code):
+        from types import SimpleNamespace
+        return SimpleNamespace(returncode=0, stdout="", stderr="")
+
 
 class MockVisualizer:
     """模拟可视化器"""
@@ -37,6 +41,7 @@ def _make_workflow_manager() -> WorkflowManager:
         knowledge_client=MockKnowledgeClient(),
         r_executor=MockRExecutor(),
         visualizer=MockVisualizer(),
+        r_script_generator=RScriptGenerator(),
     )
 
 

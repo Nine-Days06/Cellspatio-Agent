@@ -3,12 +3,17 @@ from typing import Any
 
 from src.analysis.r_executor import RExecutor
 from src.analysis.visualization import Visualizer
+from src.control.r_script_generator import RScriptGenerator
 from src.control.intent_parser import IntentParser
 from src.control.workflow_manager import WorkflowManager
+from src.knowledge.knowledge_builder import KnowledgeBuilder
 from src.knowledge.lightrag_client import LightRAGClient
+from src.data.registry import FetcherRegistry
+from src.data.storage import FetcherStorage
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
+
 
 class MultiomicsAgent:
     """人类多组学分析智能体主类"""
@@ -18,25 +23,49 @@ class MultiomicsAgent:
         
         # 初始化各个组件
         self.intent_parser = IntentParser()
+        
+        llm_cfg = self.config.get('llm', {})
+        provider = llm_cfg.get('provider')
+        lightrag_config = {'provider': provider} if provider not in (None, 'mock') else {}
+        
         self.knowledge_client = LightRAGClient(
-            working_dir=self.config.get('knowledge_dir', './knowledge_base')
+            working_dir=self.config.get('knowledge_dir', './knowledge_base'),
+            config=lightrag_config,
         )
         self.r_executor = RExecutor()
         self.visualizer = Visualizer()
+        self.r_script_generator = RScriptGenerator()
         
-        # 初始化工作流管理器
+        self.storage = FetcherStorage(base_dir=self.config.get('data_dir', 'data/raw'))
+        self.fetcher_registry = FetcherRegistry.build_default(storage=self.storage)
+        self.knowledge_builder = KnowledgeBuilder(
+            self.knowledge_client, fetcher_registry=self.fetcher_registry
+        )
+        
         self.workflow_manager = WorkflowManager(
             intent_parser=self.intent_parser,
             knowledge_client=self.knowledge_client,
             r_executor=self.r_executor,
-            visualizer=self.visualizer
+            visualizer=self.visualizer,
+            fetcher_registry=self.fetcher_registry,
+            storage=self.storage,
+            knowledge_builder=self.knowledge_builder,
+            r_script_generator=self.r_script_generator,
         )
         
         logger.info("MultiomicsAgent initialized")
     
-    def execute_workflow(self, user_input: str) -> dict[str, Any]:
+    def execute_workflow(self, user_input: str, context: dict[str, Any] | None = None) -> dict[str, Any]:
         """执行工作流"""
-        return self.workflow_manager.execute_workflow(user_input)
+        return self.workflow_manager.execute_workflow(user_input, context)
+    
+    def confirm_and_download(self, source: str, asset_id: str) -> dict[str, Any]:
+        """确认并下载数据资产（UI/CLI 供用户在候选选择后调用）"""
+        return self.workflow_manager.confirm_and_download(source, asset_id)
+    
+    def ingest_asset(self, source: str, asset_id: str) -> dict[str, Any]:
+        """将资产写入知识库（知识流）"""
+        return self.workflow_manager.ingest_asset_to_kb(source, asset_id)
     
     def run(self, mode: str = "cli"):
         """运行智能体"""
