@@ -3,6 +3,39 @@ from typing import Any
 import pandas as pd
 import streamlit as st
 
+STARTER_PRESETS: list[dict[str, str]] = [
+    {"group": "转录组", "label": "找 RNA-seq 数据集",
+     "prompt": "帮我找人类 肝癌 RNA-seq 数据集"},
+    {"group": "转录组", "label": "差异表达分析",
+     "prompt": "对已下载数据做差异表达分析"},
+    {"group": "蛋白组", "label": "查蛋白功能",
+     "prompt": "TP53 蛋白的功能和通路关系是什么？"},
+    {"group": "通路", "label": "通路富集解读",
+     "prompt": "解释 KEGG 通路富集分析结果怎么看"},
+    {"group": "知识", "label": "基因机制问答",
+     "prompt": "BRCA1 在乳腺癌中的作用机制是什么？"},
+]
+
+
+def render_starter_presets() -> str | None:
+    """空会话时渲染分组预设按钮；返回被点击的 prompt，否则 None"""
+    import streamlit as st
+
+    st.markdown("#### 不知道从哪开始？试试这些")
+    groups: dict[str, list[dict[str, str]]] = {}
+    for p in STARTER_PRESETS:
+        groups.setdefault(p["group"], []).append(p)
+
+    clicked = None
+    for group_name, items in groups.items():
+        cols = st.columns(len(items))
+        for col, item in zip(cols, items):
+            with col:
+                if st.button(item["label"], key=f"preset_{item['label']}",
+                             use_container_width=True):
+                    clicked = item["prompt"]
+    return clicked
+
 
 def render_file_uploader(accepted_types: list | None = None) -> str:
     """渲染文件上传组件"""

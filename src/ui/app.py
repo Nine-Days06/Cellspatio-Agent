@@ -2,6 +2,34 @@ from typing import Any
 
 import streamlit as st
 
+from src.ui.components import render_starter_presets
+
+
+def run_prompt(agent: Any, prompt: str) -> None:
+    """统一执行：显示用户消息 → workflow → 渲染/确认流 → 入历史"""
+    import streamlit as st
+
+    st.session_state.messages.append({"role": "user", "content": prompt})
+    with st.chat_message("user"):
+        st.markdown(prompt)
+
+    with st.chat_message("assistant"), st.spinner("思考中..."):
+        result = agent.execute_workflow(prompt)
+
+    if result.get("type") == "fetch_data" and result.get("status") == "needs_confirmation":
+        st.session_state.fetch_candidates = result.get("candidates", [])
+        st.session_state.fetch_query = result.get("query", "")
+        st.session_state.awaiting_confirmation = True
+        with st.chat_message("assistant"):
+            st.markdown(result.get("message", "找到候选数据集，请选择要下载的项："))
+        st.rerun()
+        return
+
+    _render_chat_result(result)
+    st.session_state.messages.append(
+        {"role": "assistant", "content": _format_result(result)}
+    )
+
 
 def create_app(agent: Any):
     """创建 Streamlit 应用"""
@@ -40,28 +68,23 @@ def create_app(agent: Any):
     # 候选选择器（在聊天输入之前渲染，避免重复渲染问题）
     if st.session_state.get("awaiting_confirmation"):
         _render_candidate_selector(agent)
-    
-    # 用户输入
+
+    # 预设起点（仅会话较空时展示）
+    if len(st.session_state.messages) <= 1:
+        clicked = render_starter_presets()
+        if clicked:
+            st.session_state.auto_prompt = clicked
+
+    # 自动提示（预设/基因追问）优先于手动输入
+    auto = st.session_state.pop("auto_prompt", None)
+    if auto:
+        run_prompt(agent, auto)
+        st.rerun()
+        return
+
     if prompt := st.chat_input("请输入您的问题或分析需求"):
-        # 显示用户消息
-        st.session_state.messages.append({"role": "user", "content": prompt})
-        with st.chat_message("user"):
-            st.markdown(prompt)
-        
-        # 执行工作流
-        with st.chat_message("assistant"), st.spinner("思考中..."):
-            result = agent.execute_workflow(prompt)
-        
-        if result.get('type') == 'fetch_data' and result.get('status') == 'needs_confirmation':
-            st.session_state.fetch_candidates = result.get('candidates', [])
-            st.session_state.awaiting_confirmation = True
-            st.session_state.fetch_query = result.get('query', '')
-            with st.chat_message("assistant"):
-                st.markdown(result.get('message', '找到候选数据集，请选择要下载的项：'))
-            st.rerun()
-        else:
-            _render_chat_result(result)
-            st.session_state.messages.append({"role": "assistant", "content": _format_result(result)})
+        run_prompt(agent, prompt)
+        st.rerun()
 
 
 def _render_candidate_selector(agent: Any):
