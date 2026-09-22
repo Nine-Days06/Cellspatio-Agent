@@ -79,6 +79,17 @@ class LightRAGClient:
             return self._rag.query(question, param=QueryParam(mode=mode))
         return "LightRAG 未初始化"
 
+    def query_context(self, question: str, mode: str = "hybrid") -> str:
+        """只返回检索到的上下文片段（不生成回答），供注入 codegen prompt"""
+        self._initialize_rag()
+        if not self._rag:
+            return ""
+        from lightrag import QueryParam
+        return self._rag.query(
+            question,
+            param=QueryParam(mode=mode, only_need_context=True),
+        )
+
     def insert_knowledge_graph(self, kg_data: dict[str, Any]):
         """插入知识图谱数据"""
         self._initialize_rag()
