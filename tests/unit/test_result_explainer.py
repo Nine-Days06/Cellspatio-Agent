@@ -1,4 +1,5 @@
 """ResultExplainer 单元测试"""
+
 from src.analysis.result_explainer import ResultExplainer
 
 
@@ -39,6 +40,7 @@ def test_llm_path_uses_knowledge_context_and_llm():
                 def create(**kwargs):
                     captured["prompt"] = kwargs["messages"][-1]["content"]
                     return Resp("结合知识库：TP53 相关通路在结果中富集。")
+
             self.chat = type("C", (), {"completions": completions})()
 
     ex = ResultExplainer(llm_client=FakeLLM(), knowledge_client=FakeKB())
@@ -60,6 +62,27 @@ def test_llm_failure_falls_back_to_template():
                     raise RuntimeError("api down")
 
     ex = ResultExplainer(llm_client=Boom(), knowledge_client=None)
+    out = ex.generate_llm_explanation({"total_genes": 50, "significant_genes": 5}, "q")
+    assert "待实现" not in out
+    assert "5" in out
+
+
+def test_llm_empty_response_falls_back_to_template():
+    class EmptyResp:
+        class chat:
+            class completions:
+                @staticmethod
+                def create(**kwargs):
+                    class R:
+                        choices = [
+                            type(
+                                "C", (), {"message": type("M", (), {"content": "  "})()}
+                            )()
+                        ]
+
+                    return R()
+
+    ex = ResultExplainer(llm_client=EmptyResp(), knowledge_client=None)
     out = ex.generate_llm_explanation({"total_genes": 50, "significant_genes": 5}, "q")
     assert "待实现" not in out
     assert "5" in out
