@@ -483,3 +483,49 @@ def test_confirm_and_download_appends_lineage(tmp_path, monkeypatch):
     rows = lineage_mod.read_lineage(lineage_path)
     assert len(rows) == 1
     assert rows[0]["asset_id"] == "GSE1"
+
+
+def test_de_retries_after_repair_then_succeeds():
+    from src.analysis.r_executor import RExecutorError
+    from src.control.workflow_manager import WorkflowManager
+
+    class FakeIntent:
+        def parse(self, user_input):
+            return {"type": "analysis", "analysis_type": "differential_expression",
+                    "original_input": user_input}
+        def extract_parameters(self, user_input):
+            return {"input_files": ["counts.csv"]}
+
+    class FakeGen:
+        def generate_code(self, analysis_type, params, method_context=None):
+            return "# attempt"
+
+    class FlakyExec:
+        def __init__(self):
+            self.n = 0
+        def execute_code(self, code):
+            self.n += 1
+            if self.n == 1:
+                raise RExecutorError("first fail")
+            class R:
+                returncode = 0
+            return R()
+
+    class FakeRepairer:
+        def __init__(self):
+            self.calls = []
+        def repair(self, code, err):
+            self.calls.append(err)
+            return "# repaired"
+
+    rep = FakeRepairer()
+    wm = WorkflowManager(
+        intent_parser=FakeIntent(), knowledge_client=None,
+        r_executor=FlakyExec(), visualizer=None,
+        r_script_generator=FakeGen(),
+        code_repairer=rep, max_repair_attempts=2,
+    )
+    result = wm.execute_workflow("做差异表达")
+    assert result["status"] == "success"
+    assert rep.calls and "first fail" in rep.calls[0]
+    assert result.get("repair_count") == 1

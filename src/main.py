@@ -59,6 +59,10 @@ class MultiomicsAgent:
 
         self.result_explainer = ResultExplainer(knowledge_client=self.knowledge_client)
 
+        from src.analysis.code_repair import CodeRepairer
+        # llm_client 可先为 None，接线口预留
+        self.code_repairer = CodeRepairer(llm_client=None)
+
         self.workflow_manager = WorkflowManager(
             intent_parser=self.intent_parser,
             knowledge_client=self.knowledge_client,
@@ -70,6 +74,7 @@ class MultiomicsAgent:
             r_script_generator=self.r_script_generator,
             methods_kb=self.methods_kb,
             explainer=self.result_explainer,
+            code_repairer=self.code_repairer,
         )
 
         logger.info("MultiomicsAgent initialized")

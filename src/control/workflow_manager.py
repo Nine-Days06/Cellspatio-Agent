@@ -22,6 +22,8 @@ class WorkflowManager:
         methods_kb=None,
         explainer=None,
         lineage_path: str = "data/lineage.jsonl",
+        code_repairer=None,
+        max_repair_attempts: int = 2,
     ):
         self.intent_parser = intent_parser
         self.knowledge_client = knowledge_client
@@ -35,6 +37,8 @@ class WorkflowManager:
         self.methods_kb = methods_kb
         self.explainer = explainer
         self.lineage_path = lineage_path
+        self.code_repairer = code_repairer
+        self.max_repair_attempts = max_repair_attempts
 
     def execute_workflow(
         self, user_input: str, context: dict[str, Any] | None = None
@@ -113,7 +117,36 @@ class WorkflowManager:
             {"input_file": input_file, "output_file": output_file},
             method_context=method_context,
         )
-        result = self.r_executor.execute_code(code)
+        from src.analysis.r_executor import RExecutorError
+
+        attempt = 0
+        current_code = code
+        repair_count = 0
+        last_err: Exception | None = None
+        result = None
+        while attempt <= self.max_repair_attempts:
+            try:
+                result = self.r_executor.execute_code(current_code)
+                last_err = None
+                break
+            except RExecutorError as e:
+                last_err = e
+                if self.code_repairer is None or attempt >= self.max_repair_attempts:
+                    break
+                fixed = self.code_repairer.repair(current_code, str(e))
+                if not fixed:
+                    break
+                current_code = fixed
+                repair_count += 1
+            attempt += 1
+
+        if result is None or last_err is not None:
+            return {
+                'status': 'error',
+                'analysis_type': 'differential_expression',
+                'message': f'差异表达分析失败: {last_err}',
+                'results': {'repair_count': repair_count},
+            }
         logger.info(
             "DE analysis finished on %s (returncode=%s)", input_file, result.returncode
         )
@@ -136,7 +169,7 @@ class WorkflowManager:
                 question=params.get("question", ""),
                 intent={"type": "analysis", "analysis_type": "differential_expression"},
                 params={"input_file": input_file, "output_file": output_file},
-                script_code=code,
+                script_code=current_code,
                 results={"returncode": result.returncode, "output_file": output_file},
             ))
         except Exception as e:  # noqa: BLE001
@@ -146,7 +179,9 @@ class WorkflowManager:
             "analysis_type": "differential_expression",
             "message": "差异表达分析完成",
             "method_context": method_context,
-            "results": {"returncode": result.returncode, "output_file": output_file},
+            "results": {"returncode": result.returncode, "output_file": output_file,
+                        "repair_count": repair_count},
+            "repair_count": repair_count,
             "explanation": explanation,
             "capsule_dir": capsule_dir,
         }
