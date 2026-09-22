@@ -6,12 +6,14 @@ from src.data.fetchers.base import AssetInfo, AssetMeta
 
 
 class MockKnowledgeClient:
-    def query(self, query): return "mock"
+    def query(self, query):
+        return "mock"
 
 
 class MockRExecutor:
     def execute_code(self, code):
         from types import SimpleNamespace
+
         return SimpleNamespace(returncode=0, stdout="", stderr="")
 
 
@@ -31,10 +33,18 @@ class FakeFetcher:
     def __init__(self, metas=None):
         if metas is None:
             self.metas = [
-                AssetMeta(asset_id="GSE123456", title="RNA-seq of HCC",
-                          source="geo", asset_type="analysis"),
-                AssetMeta(asset_id="GSE654321", title="ATAC-seq of HCC",
-                          source="geo", asset_type="analysis"),
+                AssetMeta(
+                    asset_id="GSE123456",
+                    title="RNA-seq of HCC",
+                    source="geo",
+                    asset_type="analysis",
+                ),
+                AssetMeta(
+                    asset_id="GSE654321",
+                    title="ATAC-seq of HCC",
+                    source="geo",
+                    asset_type="analysis",
+                ),
             ]
         else:
             self.metas = metas
@@ -43,9 +53,13 @@ class FakeFetcher:
         return self.metas[:max_results]
 
     def confirm(self, asset_id):
-        return AssetInfo(asset_id=asset_id, title="RNA-seq of HCC",
-                         source="geo", asset_type="analysis",
-                         metadata={"organism": "Homo sapiens"})
+        return AssetInfo(
+            asset_id=asset_id,
+            title="RNA-seq of HCC",
+            source="geo",
+            asset_type="analysis",
+            metadata={"organism": "Homo sapiens"},
+        )
 
     def download(self, asset_id):
         return Path("data/raw/geo") / asset_id / "series_matrix.txt"
@@ -69,12 +83,17 @@ class FakeRegistry:
 class FakeBuilder:
     def __init__(self):
         self.received = []
+
     def build_from_text(self, text):
         self.received.append(text)
         return {"inserted": 1}
 
 
-def _make_manager(fetcher_registry=FakeRegistry(), builder=None):
+# 模块级默认注册表：避免 B008（默认参数中调用构造函数），同时保留显式传 None 的语义
+_DEFAULT_REGISTRY = FakeRegistry()
+
+
+def _make_manager(fetcher_registry=_DEFAULT_REGISTRY, builder=None):
     return WorkflowManager(
         intent_parser=IntentParser(),
         knowledge_client=MockKnowledgeClient(),
@@ -89,38 +108,38 @@ def _make_manager(fetcher_registry=FakeRegistry(), builder=None):
 def test_fetch_data_workflow_needs_confirmation():
     manager = _make_manager()
     result = manager.execute_workflow("帮我下载 GEO 数据集")
-    assert result['type'] == 'fetch_data'
-    assert result['status'] == 'needs_confirmation'
-    assert result['candidates'][0]['asset_id'] == 'GSE123456'
+    assert result["type"] == "fetch_data"
+    assert result["status"] == "needs_confirmation"
+    assert result["candidates"][0]["asset_id"] == "GSE123456"
 
 
 def test_fetch_data_no_registry():
     manager = _make_manager(fetcher_registry=None)
     result = manager.execute_workflow("帮我下载 GEO 数据集")
-    assert result['status'] == 'error'
+    assert result["status"] == "error"
 
 
 def test_fetch_data_no_results():
     manager = _make_manager(FakeRegistry({"geo": FakeFetcher(metas=[])}))
     result = manager.execute_workflow("帮我下载 GEO 数据集")
-    assert result['status'] == 'no_results'
+    assert result["status"] == "no_results"
 
 
 def test_confirm_and_download_success():
     manager = _make_manager()
     result = manager.confirm_and_download("geo", "GSE123456")
-    assert result['status'] == 'success'
-    assert result['type'] == 'fetch_result'
-    assert result['asset']['asset_id'] == 'GSE123456'
-    assert str(result['asset']['access_path']).endswith("series_matrix.txt")
+    assert result["status"] == "success"
+    assert result["type"] == "fetch_result"
+    assert result["asset"]["asset_id"] == "GSE123456"
+    assert str(result["asset"]["access_path"]).endswith("series_matrix.txt")
 
 
 def test_ingest_asset_to_kb():
     builder = FakeBuilder()
     manager = _make_manager(builder=builder)
     result = manager.ingest_asset_to_kb("geo", "GSE123456")
-    assert result['status'] == 'success'
-    assert result['inserted'] == 1
+    assert result["status"] == "success"
+    assert result["inserted"] == 1
     assert "GSE123456" in builder.received[0]
 
 
@@ -128,43 +147,50 @@ def test_fetch_data_context_records_candidates():
     manager = _make_manager()
     context = {}
     manager.execute_workflow("帮我下载 GEO 数据集", context=context)
-    assert len(context['fetch_candidates']) == 2
+    assert len(context["fetch_candidates"]) == 2
 
 
 def test_de_analysis_uses_downloaded_asset(tmp_path):
     csv_file = tmp_path / "GSE123456_expression.csv"
     csv_file.write_text("gene,log2FC,pvalue\nTP53,1.5,0.001\n", encoding="utf-8")
-    context = {'downloaded_assets': [
-        {'source': 'geo', 'asset_id': 'GSE123456', 'access_path': str(csv_file)},
-    ]}
+    context = {
+        "downloaded_assets": [
+            {"source": "geo", "asset_id": "GSE123456", "access_path": str(csv_file)},
+        ]
+    }
     manager = _make_manager()
     result = manager.execute_workflow("对这些数据做差异表达分析", context=context)
-    assert result['status'] == 'success'
-    assert result['analysis_type'] == 'differential_expression'
+    assert result["status"] == "success"
+    assert result["analysis_type"] == "differential_expression"
 
 
 def test_de_analysis_without_data_errors():
     manager = _make_manager()
     result = manager.execute_workflow("做差异表达分析")
-    assert result['status'] == 'success'
-    assert result['analysis_type'] == 'differential_expression'
-    assert '演示模式' in result['message'] or '无实际数据' in result['message']
+    assert result["status"] == "success"
+    assert result["analysis_type"] == "differential_expression"
+    assert "演示模式" in result["message"] or "无实际数据" in result["message"]
 
 
-def test_de_analysis_queries_methods_kb_and_injects_context(tmp_path):
+def test_de_analysis_queries_methods_kb_and_injects_context():
     """分析流应先查 MethodsKb，再把 context 传入 generate_code"""
     from src.control.workflow_manager import WorkflowManager
 
     class FakeIntent:
         def parse(self, user_input):
-            return {"type": "analysis", "analysis_type": "differential_expression",
-                    "original_input": user_input}
+            return {
+                "type": "analysis",
+                "analysis_type": "differential_expression",
+                "original_input": user_input,
+            }
+
         def extract_parameters(self, user_input):
             return {"input_files": ["counts.csv"]}
 
     class FakeMethods:
         def __init__(self):
             self.questions = []
+
         def query_context(self, q, mode="hybrid"):
             self.questions.append(q)
             return "# DESeq2\n# 不要用 TPM"
@@ -172,6 +198,7 @@ def test_de_analysis_queries_methods_kb_and_injects_context(tmp_path):
     class FakeGen:
         def __init__(self):
             self.calls = []
+
         def generate_code(self, analysis_type, params, method_context=None):
             self.calls.append({"type": analysis_type, "ctx": method_context})
             return "# script"
@@ -180,6 +207,7 @@ def test_de_analysis_queries_methods_kb_and_injects_context(tmp_path):
         def execute_code(self, code):
             class R:
                 returncode = 0
+
             return R()
 
     methods = FakeMethods()
@@ -198,19 +226,24 @@ def test_de_analysis_queries_methods_kb_and_injects_context(tmp_path):
     assert result["status"] == "success"
 
 
-def test_de_analysis_without_methods_kb_still_works(tmp_path):
+def test_de_analysis_without_methods_kb_still_works():
     from src.control.workflow_manager import WorkflowManager
 
     class FakeIntent:
         def parse(self, user_input):
-            return {"type": "analysis", "analysis_type": "differential_expression",
-                    "original_input": user_input}
+            return {
+                "type": "analysis",
+                "analysis_type": "differential_expression",
+                "original_input": user_input,
+            }
+
         def extract_parameters(self, user_input):
             return {"input_files": ["counts.csv"]}
 
     class FakeGen:
         def __init__(self):
             self.ctx_seen = "unset"
+
         def generate_code(self, analysis_type, params, method_context=None):
             self.ctx_seen = method_context
             return "# script"
@@ -219,6 +252,7 @@ def test_de_analysis_without_methods_kb_still_works(tmp_path):
         def execute_code(self, code):
             class R:
                 returncode = 0
+
             return R()
 
     gen = FakeGen()
