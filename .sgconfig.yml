@@ -1,0 +1,58 @@
+# .sgconfig.yml — ast-grep (ast-grep) 实用 CLI 速查表
+# 版本：ast-grep 0.45+
+# 用法：在项目根目录运行以下命令
+
+## 常用 AST 节点类型（配合 -k 使用）
+# class_definition     类定义
+# function_definition  函数/方法定义
+# decorator            装饰器 (@dataclass 等)
+# call                 函数调用
+# import_statement     import 语句
+# expression_statement 表达式语句
+# if_statement         if 语句
+# assignment           赋值
+# string               字符串字面量
+
+## 核心查找命令
+
+### 1. 找所有类定义
+ast-grep run -k class_definition -l python src/
+
+### 2. 找所有函数/方法定义
+ast-grep run -k function_definition -l python src/
+
+### 3. 找所有装饰器（如 @dataclass, @property 等）
+ast-grep run -k decorator -l python src/
+
+### 4. 找特定函数的调用点（结合模式）
+ast-grep run -p 'RScriptGenerator(...).generate_code($ARGS)' -l python src/
+ast-grep run -p 'LightRAGClient(...).query($ARGS)' -l python src/
+ast-grep run -p 'rpy2.robjects.r($CODE)' -l python src/
+
+### 5. 找 WorkflowManager 四分支入口
+ast-grep run -p '_execute_${}_workflow' -l python src/control/
+
+### 6. 找 Fetcher 子类（类定义 + 基类约束）
+# 两步法：先找所有类，再 grep 基类
+ast-grep run -k class_definition -l python src/data/fetchers/ | Select-String "BaseFetcher"
+
+### 7. 找 __all__ 导出
+ast-grep run -p '__all__ = [$ITEMS]' -l python src/
+
+### 8. 找 import 语句（追踪依赖）
+ast-grep run -k import_statement -l python src/ | Select-String "lightrag|rpy2|streamlit"
+
+## 进阶：输出格式控制
+ast-grep run -k class_definition -l python src/ --format sarif  # SARIF 格式
+ast-grep run -k class_definition -l python src/ --format github  # GitHub Actions 格式
+
+## 语言支持
+# -l python / -l rust / -l typescript / -l javascript / -l go / -l java / 等
+
+## 调试：查看 AST 结构
+ast-grep run -p '$X' -l python --debug-query=ast src/control/intent_parser.py
+
+## 注意
+# - 此版本的 scan 命令需要项目配置（sg new），暂不推荐
+# - 直接用 run 命令即可满足 90% 检索需求
+# - 配合 Select-String (PowerShell) 或 grep (Linux) 做二次过滤
