@@ -20,6 +20,7 @@ class WorkflowManager:
         r_script_generator=None,
         data_loader=None,
         methods_kb=None,
+        explainer=None,
     ):
         self.intent_parser = intent_parser
         self.knowledge_client = knowledge_client
@@ -31,6 +32,7 @@ class WorkflowManager:
         self.r_script_generator = r_script_generator
         self.data_loader = data_loader
         self.methods_kb = methods_kb
+        self.explainer = explainer
 
     def execute_workflow(
         self, user_input: str, context: dict[str, Any] | None = None
@@ -115,12 +117,23 @@ class WorkflowManager:
         )
         if result.returncode == 0:
             self._record_analysis_to_kb("differential_expression", input_file, output_file)
+        explanation = None
+        if self.explainer is not None:
+            try:
+                explanation = self.explainer.generate_llm_explanation(
+                    {"input_file": input_file, "output_file": output_file,
+                     "analysis_type": "differential_expression"},
+                    question=params.get("question", "差异表达分析结果说明"),
+                )
+            except Exception as e:  # noqa: BLE001
+                logger.warning("explanation failed: %s", e)
         return {
             "status": "success",
             "analysis_type": "differential_expression",
             "message": "差异表达分析完成",
             "method_context": method_context,
             "results": {"returncode": result.returncode, "output_file": output_file},
+            "explanation": explanation,
         }
 
     def _record_analysis_to_kb(self, analysis_type: str, input_file: str,

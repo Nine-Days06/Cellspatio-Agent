@@ -350,3 +350,39 @@ def test_de_failure_does_not_write_knowledge():
     except RuntimeError:
         pass
     assert builder.texts == []
+
+
+def test_de_success_returns_explanation_field():
+    from src.control.workflow_manager import WorkflowManager
+
+    class FakeIntent:
+        def parse(self, user_input):
+            return {"type": "analysis", "analysis_type": "differential_expression",
+                    "original_input": user_input}
+        def extract_parameters(self, user_input):
+            return {"input_files": ["counts.csv"]}
+
+    class FakeExplainer:
+        def generate_llm_explanation(self, data, question):
+            return "解说文本"
+
+    class FakeGen:
+        def generate_code(self, analysis_type, params, method_context=None):
+            return "# s"
+
+    class FakeExec:
+        def execute_code(self, code):
+            class R:
+                returncode = 0
+            return R()
+
+    wm = WorkflowManager(
+        intent_parser=FakeIntent(),
+        knowledge_client=None,
+        r_executor=FakeExec(),
+        visualizer=None,
+        r_script_generator=FakeGen(),
+        explainer=FakeExplainer(),
+    )
+    result = wm.execute_workflow("做差异表达")
+    assert result.get("explanation") == "解说文本"

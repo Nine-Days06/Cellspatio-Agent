@@ -55,6 +55,10 @@ class MultiomicsAgent:
             self.knowledge_client, fetcher_registry=self.fetcher_registry
         )
 
+        from src.analysis.result_explainer import ResultExplainer
+
+        self.result_explainer = ResultExplainer(knowledge_client=self.knowledge_client)
+
         self.workflow_manager = WorkflowManager(
             intent_parser=self.intent_parser,
             knowledge_client=self.knowledge_client,
@@ -65,6 +69,7 @@ class MultiomicsAgent:
             knowledge_builder=self.knowledge_builder,
             r_script_generator=self.r_script_generator,
             methods_kb=self.methods_kb,
+            explainer=self.result_explainer,
         )
 
         logger.info("MultiomicsAgent initialized")

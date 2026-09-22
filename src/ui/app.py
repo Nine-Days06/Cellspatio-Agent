@@ -97,6 +97,9 @@ def _render_chat_result(result: dict[str, Any]):
         response = "分析结果已生成，请查看下方图表。"
     else:
         response = result.get('message', '处理完成')
+    explanation = result.get('explanation')
+    if explanation:
+        response = f"{response}\n\n---\n**结果解读**\n\n{explanation}"
     with st.chat_message("assistant"):
         st.markdown(response)
 
@@ -104,11 +107,15 @@ def _render_chat_result(result: dict[str, Any]):
 def _format_result(result: dict[str, Any]) -> str:
     """将结果格式化为聊天消息文本"""
     if result.get('type') == 'knowledge_response':
-        return result.get('response', '无响应')
+        response = result.get('response', '无响应')
     elif result.get('type') == 'fetch_result':
         asset = result.get('asset', {})
-        return f"已下载 {asset.get('asset_id')} → `{asset.get('access_path')}`"
+        response = f"已下载 {asset.get('asset_id')} → `{asset.get('access_path')}`"
     elif result.get('results'):
-        return f"分析完成: {result.get('message', '')}"
+        response = f"分析完成: {result.get('message', '')}"
     else:
-        return result.get('message', '处理完成')
+        response = result.get('message', '处理完成')
+    explanation = result.get('explanation')
+    if explanation:
+        response = f"{response}\n\n---\n**结果解读**\n\n{explanation}"
+    return response
