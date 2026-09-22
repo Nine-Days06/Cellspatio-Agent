@@ -1,10 +1,11 @@
 """R 脚本生成器"""
+
 from typing import Any
 
 
 class RScriptGenerator:
     """生成 R 分析脚本模板"""
-    
+
     def generate_code(
         self,
         analysis_type: str,
@@ -18,14 +19,14 @@ class RScriptGenerator:
             params: 模板参数
             method_context: 可选的方法学参考文本，注入脚本头注释
         """
-        if analysis_type == 'differential_expression':
+        if analysis_type == "differential_expression":
             body = self._generate_de_code(params)
-        elif analysis_type == 'pathway_analysis':
+        elif analysis_type == "pathway_analysis":
             body = self._generate_pathway_code(params)
-        elif analysis_type == 'visualization':
+        elif analysis_type == "visualization":
             body = self._generate_visualization_code(params)
         else:
-            return f'# 不支持的分析类型: {analysis_type}'
+            return f"# 不支持的分析类型: {analysis_type}"
         return self._inject_method_context(body, method_context)
 
     @staticmethod
@@ -44,22 +45,18 @@ class RScriptGenerator:
         # 统一每行前缀 "# "，已带 # 的行保持原样
         normalized = []
         for line in method_context.splitlines():
-            normalized.append(line if line.lstrip().startswith('#') else f'# {line}')
-        block = (
-            '# 方法学参考（自动生成，勿删）\n'
-            + '\n'.join(normalized)
-            + '\n#\n'
-        )
-        shebang = '#!/usr/bin/env Rscript'
+            normalized.append(line if line.lstrip().startswith("#") else f"# {line}")
+        block = "# 方法学参考（自动生成，勿删）\n" + "\n".join(normalized) + "\n#\n"
+        shebang = "#!/usr/bin/env Rscript"
         if body.startswith(shebang):
-            return shebang + '\n' + block + body[len(shebang):].lstrip('\n')
+            return shebang + "\n" + block + body[len(shebang) :].lstrip("\n")
         return block + body
-    
+
     def _generate_de_code(self, params: dict[str, Any]) -> str:
         """生成差异表达分析 R 代码"""
-        input_file = params.get('input_file', 'input.csv')
-        output_file = params.get('output_file', 'output.csv')
-        
+        input_file = params.get("input_file", "input.csv")
+        output_file = params.get("output_file", "output.csv")
+
         return f'''#!/usr/bin/env Rscript
 # 差异表达分析模板
 
@@ -88,12 +85,12 @@ write.csv(results, output_file, row.names = FALSE)
 
 cat("差异表达分析完成，结果已保存至:", output_file, "\\n")
 '''
-    
+
     def _generate_pathway_code(self, params: dict[str, Any]) -> str:
         """生成通路分析 R 代码"""
-        input_file = params.get('input_file', 'input.csv')
-        output_file = params.get('output_file', 'output.csv')
-        
+        input_file = params.get("input_file", "input.csv")
+        output_file = params.get("output_file", "output.csv")
+
         return f'''#!/usr/bin/env Rscript
 # 通路分析模板
 
@@ -117,11 +114,11 @@ write.csv(results, output_file, row.names = FALSE)
 
 cat("通路分析完成，结果已保存至:", output_file, "\\n")
 '''
-    
+
     def _generate_visualization_code(self, params: dict[str, Any]) -> str:
         """生成可视化 R 代码"""
-        plot_type = params.get('plot_type', 'volcano')
-        
+        plot_type = params.get("plot_type", "volcano")
+
         return f'''#!/usr/bin/env Rscript
 # 可视化模板
 
