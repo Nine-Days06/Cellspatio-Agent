@@ -175,3 +175,22 @@ def _format_result(result: dict[str, Any]) -> str:
     if explanation:
         response = f"{response}\n\n---\n**结果解读**\n\n{explanation}"
     return response
+
+
+def _bootstrap():
+    """streamlit run src/ui/app.py 入口：初始化 agent 并渲染界面"""
+    import sys
+    from pathlib import Path
+
+    # 保证以 `streamlit run src/ui/app.py` 启动时能 `import src.*`
+    root = Path(__file__).resolve().parents[2]
+    if str(root) not in sys.path:
+        sys.path.insert(0, str(root))
+
+    from src.main import MultiomicsAgent
+
+    create_app(MultiomicsAgent())
+
+
+if __name__ == "__main__":
+    _bootstrap()

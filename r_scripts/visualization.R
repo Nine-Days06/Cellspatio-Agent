@@ -1,4 +1,5 @@
 #!/usr/bin/env Rscript
+# 独立副本，仅供手动 Rscript 执行；主项目分析逻辑在 src/control/r_script_generator.py。
 
 # 可视化脚本（火山图 / 热图）
 args <- commandArgs(trailingOnly=TRUE)
