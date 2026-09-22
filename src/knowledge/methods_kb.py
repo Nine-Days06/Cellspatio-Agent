@@ -1,4 +1,5 @@
 """方法学知识库（第二 LightRAG 实例，与主事实库隔离）"""
+
 import logging
 from pathlib import Path
 from typing import Any
@@ -16,13 +17,15 @@ class MethodsKb:
             cards_dir: 方法卡片目录（build_from_cards 默认路径）
         """
         self.client = client
-        self.cards_dir = Path(cards_dir) if cards_dir else Path("knowledge_base_methods_cards")
+        self.cards_dir = (
+            Path(cards_dir) if cards_dir else Path("knowledge_base_methods_cards")
+        )
 
     def query_context(self, question: str, mode: str = "hybrid") -> str:
         """检索方法学上下文；失败返回空串（不阻断分析主流程）"""
         try:
             return self.client.query_context(question, mode=mode)
-        except Exception as e:  # noqa: BLE001 - 方法库是增强层，必须降级
+        except Exception as e:  # 方法库是增强层，必须降级
             logger.warning("MethodsKb query failed: %s", e)
             return ""
 

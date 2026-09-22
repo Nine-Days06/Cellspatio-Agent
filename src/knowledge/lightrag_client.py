@@ -49,10 +49,15 @@ class LightRAGClient:
                 )
                 # LightRAG 1.5.7+ 需要显式初始化存储
                 asyncio.run(self._rag.initialize_storages())
-                logger.info("LightRAG initialized: llm=%s embedding=%s",
-                            llm_model, getattr(embedding_func, "model_name", "custom"))
+                logger.info(
+                    "LightRAG initialized: llm=%s embedding=%s",
+                    llm_model,
+                    getattr(embedding_func, "model_name", "custom"),
+                )
             except ImportError:
-                logger.error("LightRAG not installed. Install with: pip install lightrag-hku")
+                logger.error(
+                    "LightRAG not installed. Install with: pip install lightrag-hku"
+                )
                 raise
 
     def insert_document(self, document: str, metadata: dict[str, Any] | None = None):
@@ -76,6 +81,7 @@ class LightRAGClient:
         self._initialize_rag()
         if self._rag:
             from lightrag import QueryParam
+
             return self._rag.query(question, param=QueryParam(mode=mode))
         return "LightRAG 未初始化"
 
@@ -85,6 +91,7 @@ class LightRAGClient:
         if not self._rag:
             return ""
         from lightrag import QueryParam
+
         return self._rag.query(
             question,
             param=QueryParam(mode=mode, only_need_context=True),

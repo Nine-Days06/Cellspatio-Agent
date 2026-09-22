@@ -1,4 +1,5 @@
 """MethodsKb 单元测试（不触达真实 LightRAG）"""
+
 from src.knowledge.methods_kb import MethodsKb
 
 
@@ -41,3 +42,15 @@ def test_query_context_returns_empty_on_client_error():
 
     kb = MethodsKb(client=Boom())
     assert kb.query_context("x") == ""
+
+
+def test_build_from_cards_missing_dir_returns_zero():
+    kb = MethodsKb(client=FakeClient(), cards_dir="/nonexistent/path")
+    assert kb.build_from_cards() == 0
+
+
+def test_build_from_cards_empty_dir_returns_zero(tmp_path):
+    empty = tmp_path / "empty"
+    empty.mkdir()
+    kb = MethodsKb(client=FakeClient(), cards_dir=empty)
+    assert kb.build_from_cards() == 0
