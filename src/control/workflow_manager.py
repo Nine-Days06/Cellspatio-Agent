@@ -129,6 +129,18 @@ class WorkflowManager:
                 )
             except Exception as e:  # noqa: BLE001
                 logger.warning("explanation failed: %s", e)
+        capsule_dir = None
+        try:
+            from src.analysis.capsule import export_analysis_capsule
+            capsule_dir = str(export_analysis_capsule(
+                question=params.get("question", ""),
+                intent={"type": "analysis", "analysis_type": "differential_expression"},
+                params={"input_file": input_file, "output_file": output_file},
+                script_code=code,
+                results={"returncode": result.returncode, "output_file": output_file},
+            ))
+        except Exception as e:  # noqa: BLE001
+            logger.warning("capsule export failed: %s", e)
         return {
             "status": "success",
             "analysis_type": "differential_expression",
@@ -136,6 +148,7 @@ class WorkflowManager:
             "method_context": method_context,
             "results": {"returncode": result.returncode, "output_file": output_file},
             "explanation": explanation,
+            "capsule_dir": capsule_dir,
         }
 
     def _record_analysis_to_kb(self, analysis_type: str, input_file: str,

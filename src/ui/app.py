@@ -123,6 +123,8 @@ def _render_chat_result(result: dict[str, Any]):
     elif result.get('results'):
         st.info(f"分析完成: {result.get('message', '')}")
         response = "分析结果已生成，请查看下方图表。"
+        if result.get('capsule_dir'):
+            response += f"\n\n复现胶囊：`{result['capsule_dir']}`"
     else:
         response = result.get('message', '处理完成')
     explanation = result.get('explanation')
@@ -141,6 +143,8 @@ def _format_result(result: dict[str, Any]) -> str:
         response = f"已下载 {asset.get('asset_id')} → `{asset.get('access_path')}`"
     elif result.get('results'):
         response = f"分析完成: {result.get('message', '')}"
+        if result.get('capsule_dir'):
+            response += f"\n复现胶囊：`{result['capsule_dir']}`"
     else:
         response = result.get('message', '处理完成')
     explanation = result.get('explanation')
