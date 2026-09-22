@@ -70,10 +70,53 @@ def render_analysis_results(results: dict[str, Any]):
         st.dataframe(df)
     
     # 显示图表
-    if 'charts' in results:
+    if "charts" in results:
         st.subheader("可视化图表")
-        for chart in results['charts']:
-            st.pyplot(chart)
+        for chart in results["charts"]:
+            # plotly Figure
+            if hasattr(chart, "to_dict") and not hasattr(chart, "savefig"):
+                st.plotly_chart(chart, use_container_width=True)
+            # matplotlib Figure
+            elif hasattr(chart, "savefig"):
+                st.pyplot(chart)
+            # plotly fig dict（未来）
+            elif isinstance(chart, dict) and chart.get("data"):
+                st.plotly_chart(chart, use_container_width=True)
+            else:
+                st.warning("未知图表类型，已跳过")
+
+    render_gene_followup(results)
+
+
+def gene_followup_prompt(gene: str) -> str:
+    """基因 → 知识库追问 prompt"""
+    g = (gene or "").strip()
+    if not g:
+        return ""
+    return f"{g} 的功能、通路关系和研究意义是什么？"
+
+
+def render_gene_followup(results: dict[str, Any]) -> None:
+    """结果表含 gene 列时，提供选择并写入 auto_prompt"""
+    import streamlit as st
+
+    data = results.get("data")
+    if not data:
+        return
+    try:
+        df = pd.DataFrame(data)
+    except Exception:  # noqa: BLE001
+        return
+    if "gene" not in df.columns:
+        return
+    genes = [str(g) for g in df["gene"].dropna().astype(str).head(50)]
+    if not genes:
+        return
+    st.markdown("#### 追问知识库")
+    gene = st.selectbox("选择基因", genes, key="gene_followup_select")
+    if st.button("查询该基因", key="gene_followup_btn"):
+        st.session_state.auto_prompt = gene_followup_prompt(gene)
+
 
 def render_knowledge_response(response: str):
     """渲染知识查询响应"""
