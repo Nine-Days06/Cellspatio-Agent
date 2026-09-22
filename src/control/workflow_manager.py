@@ -113,6 +113,8 @@ class WorkflowManager:
         logger.info(
             "DE analysis finished on %s (returncode=%s)", input_file, result.returncode
         )
+        if result.returncode == 0:
+            self._record_analysis_to_kb("differential_expression", input_file, output_file)
         return {
             "status": "success",
             "analysis_type": "differential_expression",
@@ -120,6 +122,25 @@ class WorkflowManager:
             "method_context": method_context,
             "results": {"returncode": result.returncode, "output_file": output_file},
         }
+
+    def _record_analysis_to_kb(self, analysis_type: str, input_file: str,
+                               output_file: str, user_question: str = "") -> None:
+        """分析成功后写回主知识库（闭环记忆）；失败仅告警"""
+        if self.knowledge_builder is None:
+            return
+        zh = {"differential_expression": "差异表达"}.get(analysis_type, analysis_type)
+        text = (
+            "# 分析实验记录\n"
+            f"类型：{zh}（{analysis_type}）\n"
+            f"输入：{input_file}\n"
+            f"输出：{output_file}\n"
+            f"触发问题：{user_question}\n"
+            "状态：执行成功（returncode=0）\n"
+        )
+        try:
+            self.knowledge_builder.build_from_text(text)
+        except Exception as e:  # noqa: BLE001 - 写回失败不影响分析结果返回
+            logger.warning("analysis summary writeback failed: %s", e)
 
     def _execute_knowledge_workflow(
         self, intent: dict[str, Any], params: dict[str, Any], context: dict[str, Any]

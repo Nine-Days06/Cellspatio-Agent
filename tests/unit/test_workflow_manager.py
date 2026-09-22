@@ -267,3 +267,86 @@ def test_de_analysis_without_methods_kb_still_works():
     result = wm.execute_workflow("做差异表达")
     assert result["status"] == "success"
     assert gen.ctx_seen is None
+
+
+def test_de_success_writes_summary_to_knowledge_builder():
+    from src.control.workflow_manager import WorkflowManager
+
+    class FakeIntent:
+        def parse(self, user_input):
+            return {"type": "analysis", "analysis_type": "differential_expression",
+                    "original_input": user_input}
+        def extract_parameters(self, user_input):
+            return {"input_files": ["counts.csv"]}
+
+    class FakeKBBuilder:
+        def __init__(self):
+            self.texts = []
+        def build_from_text(self, text, metadata=None):
+            self.texts.append(text)
+            return {"inserted": 1}
+
+    class FakeGen:
+        def generate_code(self, analysis_type, params, method_context=None):
+            return "# s"
+
+    class FakeExec:
+        def execute_code(self, code):
+            class R:
+                returncode = 0
+            return R()
+
+    builder = FakeKBBuilder()
+    wm = WorkflowManager(
+        intent_parser=FakeIntent(),
+        knowledge_client=None,
+        r_executor=FakeExec(),
+        visualizer=None,
+        r_script_generator=FakeGen(),
+        knowledge_builder=builder,
+    )
+    result = wm.execute_workflow("做差异表达")
+    assert result["status"] == "success"
+    assert builder.texts, "成功后应写回知识库"
+    assert "差异表达" in builder.texts[0]
+
+
+def test_de_failure_does_not_write_knowledge():
+    from src.control.workflow_manager import WorkflowManager
+
+    class FakeIntent:
+        def parse(self, user_input):
+            return {"type": "analysis", "analysis_type": "differential_expression",
+                    "original_input": user_input}
+        def extract_parameters(self, user_input):
+            return {"input_files": ["counts.csv"]}
+
+    class FakeKBBuilder:
+        def __init__(self):
+            self.texts = []
+        def build_from_text(self, text, metadata=None):
+            self.texts.append(text)
+            return {"inserted": 1}
+
+    class FakeGen:
+        def generate_code(self, analysis_type, params, method_context=None):
+            return "# s"
+
+    class FakeExec:
+        def execute_code(self, code):
+            raise RuntimeError("R boom")
+
+    builder = FakeKBBuilder()
+    wm = WorkflowManager(
+        intent_parser=FakeIntent(),
+        knowledge_client=None,
+        r_executor=FakeExec(),
+        visualizer=None,
+        r_script_generator=FakeGen(),
+        knowledge_builder=builder,
+    )
+    try:
+        wm.execute_workflow("做差异表达")
+    except RuntimeError:
+        pass
+    assert builder.texts == []
