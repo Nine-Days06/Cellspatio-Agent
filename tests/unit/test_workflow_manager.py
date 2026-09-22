@@ -16,7 +16,7 @@ class MockRExecutor:
 
 
 class MockRScriptGenerator:
-    def generate_code(self, analysis_type, params):
+    def generate_code(self, analysis_type, params, method_context=None):
         return f"# R code for {analysis_type}"
 
 
@@ -149,3 +149,87 @@ def test_de_analysis_without_data_errors():
     assert result['status'] == 'success'
     assert result['analysis_type'] == 'differential_expression'
     assert '演示模式' in result['message'] or '无实际数据' in result['message']
+
+
+def test_de_analysis_queries_methods_kb_and_injects_context(tmp_path):
+    """分析流应先查 MethodsKb，再把 context 传入 generate_code"""
+    from src.control.workflow_manager import WorkflowManager
+
+    class FakeIntent:
+        def parse(self, user_input):
+            return {"type": "analysis", "analysis_type": "differential_expression",
+                    "original_input": user_input}
+        def extract_parameters(self, user_input):
+            return {"input_files": ["counts.csv"]}
+
+    class FakeMethods:
+        def __init__(self):
+            self.questions = []
+        def query_context(self, q, mode="hybrid"):
+            self.questions.append(q)
+            return "# DESeq2\n# 不要用 TPM"
+
+    class FakeGen:
+        def __init__(self):
+            self.calls = []
+        def generate_code(self, analysis_type, params, method_context=None):
+            self.calls.append({"type": analysis_type, "ctx": method_context})
+            return "# script"
+
+    class FakeExec:
+        def execute_code(self, code):
+            class R:
+                returncode = 0
+            return R()
+
+    methods = FakeMethods()
+    gen = FakeGen()
+    wm = WorkflowManager(
+        intent_parser=FakeIntent(),
+        knowledge_client=None,
+        r_executor=FakeExec(),
+        visualizer=None,
+        r_script_generator=gen,
+        methods_kb=methods,
+    )
+    result = wm.execute_workflow("做差异表达")
+    assert methods.questions, "应查询方法库"
+    assert gen.calls and gen.calls[0]["ctx"] and "DESeq2" in gen.calls[0]["ctx"]
+    assert result["status"] == "success"
+
+
+def test_de_analysis_without_methods_kb_still_works(tmp_path):
+    from src.control.workflow_manager import WorkflowManager
+
+    class FakeIntent:
+        def parse(self, user_input):
+            return {"type": "analysis", "analysis_type": "differential_expression",
+                    "original_input": user_input}
+        def extract_parameters(self, user_input):
+            return {"input_files": ["counts.csv"]}
+
+    class FakeGen:
+        def __init__(self):
+            self.ctx_seen = "unset"
+        def generate_code(self, analysis_type, params, method_context=None):
+            self.ctx_seen = method_context
+            return "# script"
+
+    class FakeExec:
+        def execute_code(self, code):
+            class R:
+                returncode = 0
+            return R()
+
+    gen = FakeGen()
+    wm = WorkflowManager(
+        intent_parser=FakeIntent(),
+        knowledge_client=None,
+        r_executor=FakeExec(),
+        visualizer=None,
+        r_script_generator=gen,
+        methods_kb=None,
+    )
+    result = wm.execute_workflow("做差异表达")
+    assert result["status"] == "success"
+    assert gen.ctx_seen is None

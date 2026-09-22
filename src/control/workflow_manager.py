@@ -11,7 +11,7 @@ class WorkflowManager:
     
     def __init__(self, intent_parser, knowledge_client, r_executor, visualizer,
                  fetcher_registry=None, storage=None, knowledge_builder=None,
-                 r_script_generator=None, data_loader=None):
+                 r_script_generator=None, data_loader=None, methods_kb=None):
         self.intent_parser = intent_parser
         self.knowledge_client = knowledge_client
         self.r_executor = r_executor
@@ -21,6 +21,7 @@ class WorkflowManager:
         self.knowledge_builder = knowledge_builder
         self.r_script_generator = r_script_generator
         self.data_loader = data_loader
+        self.methods_kb = methods_kb
     
     def execute_workflow(self, user_input: str, context: dict[str, Any] | None = None) -> dict[str, Any]:
         """执行工作流"""
@@ -56,6 +57,17 @@ class WorkflowManager:
             'results': {}
         }
     
+    def _method_context_for(self, analysis_type: str, params: dict[str, Any]) -> str | None:
+        """生成代码前查方法学知识库；无库/查询失败返回 None"""
+        if self.methods_kb is None:
+            return None
+        question = f"{analysis_type} 分析 方法 适用 参数 常见坑"
+        extra = params.get("input_file") or ""
+        if extra:
+            question = f"{question} {extra}"
+        ctx = self.methods_kb.query_context(question)
+        return ctx or None
+
     def _execute_de_analysis(self, params: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:
         """差异表达分析：优先使用已确认下载的 GEO 数据"""
         input_file = None
@@ -74,9 +86,11 @@ class WorkflowManager:
             }
         
         output_file = str(Path(input_file).with_suffix('.de_results.csv'))
+        method_context = self._method_context_for("differential_expression", params)
         code = self.r_script_generator.generate_code(
             'differential_expression',
             {'input_file': input_file, 'output_file': output_file},
+            method_context=method_context,
         )
         result = self.r_executor.execute_code(code)
         logger.info("DE analysis finished on %s (returncode=%s)", input_file, result.returncode)
@@ -84,6 +98,7 @@ class WorkflowManager:
             'status': 'success',
             'analysis_type': 'differential_expression',
             'message': '差异表达分析完成',
+            'method_context': method_context,
             'results': {'returncode': result.returncode, 'output_file': output_file},
         }
     

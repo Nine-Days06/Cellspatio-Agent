@@ -36,6 +36,14 @@ class MultiomicsAgent:
         self.visualizer = Visualizer()
         self.r_script_generator = RScriptGenerator()
         
+        from src.knowledge.methods_kb import MethodsKb
+        self.methods_kb = MethodsKb(
+            client=LightRAGClient(
+                working_dir=self.config.get("methods_knowledge_dir", "./knowledge_base_methods"),
+                config=lightrag_config,
+            ),
+        )
+        
         self.storage = FetcherStorage(base_dir=self.config.get('data_dir', 'data/raw'))
         self.fetcher_registry = FetcherRegistry.build_default(storage=self.storage)
         self.knowledge_builder = KnowledgeBuilder(
@@ -51,6 +59,7 @@ class MultiomicsAgent:
             storage=self.storage,
             knowledge_builder=self.knowledge_builder,
             r_script_generator=self.r_script_generator,
+            methods_kb=self.methods_kb,
         )
         
         logger.info("MultiomicsAgent initialized")
