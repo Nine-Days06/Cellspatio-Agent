@@ -1,6 +1,8 @@
 """方法学知识库建库：python -m src.knowledge.build_methods_kb"""
+
 import argparse
 import logging
+from pathlib import Path
 
 from src.knowledge.lightrag_client import LightRAGClient
 from src.knowledge.methods_kb import MethodsKb
@@ -9,7 +11,7 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 
-def build_methods_kb(kb: MethodsKb, cards_dir=None) -> int:
+def build_methods_kb(kb: MethodsKb, cards_dir: str | Path | None = None) -> int:
     """从卡片目录摄入方法库，返回插入条数"""
     n = kb.build_from_cards(cards_dir)
     logger.info("方法卡片插入完成: %s 条", n)

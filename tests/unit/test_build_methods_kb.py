@@ -1,5 +1,4 @@
 """建库脚本单测"""
-from pathlib import Path
 
 from src.knowledge.build_methods_kb import build_methods_kb
 
@@ -15,5 +14,6 @@ def test_build_methods_kb_returns_inserted_count(tmp_path):
             return len(documents)
 
     from src.knowledge.methods_kb import MethodsKb
+
     kb = MethodsKb(client=FakeClient())
     assert build_methods_kb(kb, cards_dir=cards) == 2
