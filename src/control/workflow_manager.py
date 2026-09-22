@@ -21,6 +21,7 @@ class WorkflowManager:
         data_loader=None,
         methods_kb=None,
         explainer=None,
+        lineage_path: str = "data/lineage.jsonl",
     ):
         self.intent_parser = intent_parser
         self.knowledge_client = knowledge_client
@@ -33,6 +34,7 @@ class WorkflowManager:
         self.data_loader = data_loader
         self.methods_kb = methods_kb
         self.explainer = explainer
+        self.lineage_path = lineage_path
 
     def execute_workflow(
         self, user_input: str, context: dict[str, Any] | None = None
@@ -193,14 +195,29 @@ class WorkflowManager:
                 logger.warning("source %s search failed: %s", source, e)
                 continue
             for meta in metas:
-                candidates.append(
-                    {
-                        "source": meta.source,
-                        "asset_id": meta.asset_id,
-                        "title": meta.title,
-                        "asset_type": meta.asset_type,
-                    }
+                detail = None
+                try:
+                    detail = fetcher.confirm(meta.asset_id)
+                except Exception as e:  # noqa: BLE001 - 详情失败不阻断候选列表
+                    logger.warning("confirm %s failed: %s", meta.asset_id, e)
+
+                reason_bits = [q.strip() for q in query.split() if q.strip()]
+                reason = (
+                    f"检索词命中：{', '.join(reason_bits[:5]) or '（无分词）'}；"
+                    f"标题含相关关键词"
+                    if any(b.lower() in meta.title.lower() for b in reason_bits)
+                    else f"来自 {meta.source} 的 {meta.asset_type} 资产"
                 )
+                item = {
+                    "source": meta.source,
+                    "asset_id": meta.asset_id,
+                    "title": meta.title,
+                    "asset_type": meta.asset_type,
+                    "reason": reason,
+                    "description": getattr(detail, "description", "") if detail else "",
+                    "metadata": dict(getattr(detail, "metadata", {}) or {}) if detail else {},
+                }
+                candidates.append(item)
 
         if not candidates:
             return {
@@ -229,7 +246,9 @@ class WorkflowManager:
             "message": "这是一个通用响应。请询问具体的数据分析或知识问题。",
         }
 
-    def confirm_and_download(self, source: str, asset_id: str) -> dict[str, Any]:
+    def confirm_and_download(
+        self, source: str, asset_id: str, query: str = ""
+    ) -> dict[str, Any]:
         """阶段 2：确认详情 → 下载落盘（分析流入口）"""
         if self.fetcher_registry is None:
             return {"status": "error", "message": "数据获取组件未配置"}
@@ -239,6 +258,21 @@ class WorkflowManager:
         logger.info(
             "Asset confirmed and downloaded: %s/%s -> %s", source, asset_id, access_path
         )
+        from src.data.lineage import append_lineage
+
+        try:
+            append_lineage(
+                self.lineage_path,
+                {
+                    "source": source,
+                    "asset_id": asset_id,
+                    "title": info.title,
+                    "access_path": str(access_path),
+                    "query": query,  # UI 可在后续传入；保持字段存在
+                },
+            )
+        except Exception as e:  # noqa: BLE001
+            logger.warning("lineage append failed: %s", e)
         return {
             "status": "success",
             "type": "fetch_result",

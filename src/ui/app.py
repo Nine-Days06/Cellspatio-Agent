@@ -55,6 +55,7 @@ def create_app(agent: Any):
         if result.get('type') == 'fetch_data' and result.get('status') == 'needs_confirmation':
             st.session_state.fetch_candidates = result.get('candidates', [])
             st.session_state.awaiting_confirmation = True
+            st.session_state.fetch_query = result.get('query', '')
             with st.chat_message("assistant"):
                 st.markdown(result.get('message', '找到候选数据集，请选择要下载的项：'))
             st.rerun()
@@ -75,10 +76,37 @@ def _render_candidate_selector(agent: Any):
             for c in candidates
         }
         choice = st.selectbox("选择要下载的数据集：", list(label_map.keys()))
+        cand = label_map[choice]
+        st.caption(f"推荐理由：{cand.get('reason', '—')}")
+        if cand.get("description"):
+            st.info(cand["description"])
+        md = cand.get("metadata") or {}
+        if md:
+            st.markdown("**元数据对比（当前项）**")
+            st.json(md)
+        # 若存在多项，简易对比表
+        if len(candidates) > 1:
+            import pandas as pd
+
+            rows = []
+            for c in candidates:
+                row = {"id": c["asset_id"], "title": c["title"], "source": c["source"]}
+                row.update(
+                    {
+                        k: c.get("metadata", {}).get(k, "")
+                        for k in ("organism", "samples", "platform")
+                    }
+                )
+                rows.append(row)
+            st.dataframe(pd.DataFrame(rows), use_container_width=True)
         if st.button("确认下载"):
             selected = label_map[choice]
             with st.spinner("下载中..."):
-                result = agent.confirm_and_download(selected['source'], selected['asset_id'])
+                result = agent.confirm_and_download(
+                    selected['source'],
+                    selected['asset_id'],
+                    query=st.session_state.get("fetch_query", ""),
+                )
             st.session_state.awaiting_confirmation = False
             message = f"已下载 {selected['asset_id']} → `{result['asset']['access_path']}`"
             st.session_state.messages.append({"role": "assistant", "content": message})

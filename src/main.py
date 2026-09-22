@@ -80,9 +80,11 @@ class MultiomicsAgent:
         """执行工作流"""
         return self.workflow_manager.execute_workflow(user_input, context)
 
-    def confirm_and_download(self, source: str, asset_id: str) -> dict[str, Any]:
+    def confirm_and_download(
+        self, source: str, asset_id: str, query: str = ""
+    ) -> dict[str, Any]:
         """确认并下载数据资产（UI/CLI 供用户在候选选择后调用）"""
-        return self.workflow_manager.confirm_and_download(source, asset_id)
+        return self.workflow_manager.confirm_and_download(source, asset_id, query=query)
 
     def ingest_asset(self, source: str, asset_id: str) -> dict[str, Any]:
         """将资产写入知识库（知识流）"""

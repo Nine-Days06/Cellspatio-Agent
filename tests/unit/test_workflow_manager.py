@@ -386,3 +386,100 @@ def test_de_success_returns_explanation_field():
     )
     result = wm.execute_workflow("做差异表达")
     assert result.get("explanation") == "解说文本"
+
+
+def test_fetch_candidates_include_reason_and_confirm_detail():
+    from src.control.workflow_manager import WorkflowManager
+
+    class Meta:
+        def __init__(self, aid, title):
+            self.asset_id = aid
+            self.title = title
+            self.source = "geo"
+            self.asset_type = "analysis"
+
+    class Info:
+        def __init__(self):
+            self.title = "GSE1 detail"
+            self.description = "肝细胞癌 RNA-seq，n=10"
+            self.metadata = {"organism": "Homo sapiens", "samples": 10}
+            self.asset_id = "GSE1"
+            self.source = "geo"
+            self.asset_type = "analysis"
+
+    class FakeFetcher:
+        source = "geo"
+
+        def search(self, query, max_results=5):
+            return [Meta("GSE1", "HCC RNA-seq")]
+
+        def confirm(self, asset_id):
+            return Info()
+
+    class FakeRegistry:
+        def sources(self):
+            return ["geo"]
+
+        def get(self, source):
+            return FakeFetcher()
+
+    class FakeIntent:
+        def parse(self, user_input):
+            return {"type": "fetch_data", "original_input": user_input}
+
+        def extract_parameters(self, user_input):
+            return {}
+
+    wm = WorkflowManager(
+        intent_parser=FakeIntent(),
+        knowledge_client=None,
+        r_executor=None,
+        visualizer=None,
+        fetcher_registry=FakeRegistry(),
+    )
+    result = wm.execute_workflow("帮我找 肝癌 RNA-seq 数据集")
+    cands = result["candidates"]
+    assert cands[0].get("reason")
+    assert cands[0].get("description")
+    assert cands[0].get("metadata", {}).get("organism")
+
+
+def test_confirm_and_download_appends_lineage(tmp_path, monkeypatch):
+    from src.control.workflow_manager import WorkflowManager
+    from src.data import lineage as lineage_mod
+
+    lineage_path = tmp_path / "lineage.jsonl"
+
+    class Info:
+        title = "t"
+        description = "d"
+        metadata = {}
+        asset_id = "GSE1"
+        source = "geo"
+        asset_type = "analysis"
+
+    class FakeFetcher:
+        source = "geo"
+
+        def confirm(self, asset_id):
+            return Info()
+
+        def download(self, asset_id):
+            return tmp_path / "file.txt"
+
+    class FakeRegistry:
+        def get(self, source):
+            return FakeFetcher()
+
+    wm = WorkflowManager(
+        intent_parser=None,
+        knowledge_client=None,
+        r_executor=None,
+        visualizer=None,
+        fetcher_registry=FakeRegistry(),
+        lineage_path=str(lineage_path),
+    )
+    wm.confirm_and_download("geo", "GSE1")
+    rows = lineage_mod.read_lineage(lineage_path)
+    assert len(rows) == 1
+    assert rows[0]["asset_id"] == "GSE1"
