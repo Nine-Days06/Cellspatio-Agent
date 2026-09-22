@@ -14,6 +14,7 @@ from cleaner.llm_validator import (
     _count_verdicts,
     _normalize_verdict,
     _export_raw_csv,
+    _export_articles_csv,
 )
 from utils.db import init_db, get_conn
 
@@ -484,6 +485,129 @@ class TestExportRawCsv(unittest.TestCase):
             conn.execute("DELETE FROM llm_validation")
         path = self._export()
         self.assertIsNone(path)
+
+
+class TestExportArticlesCsv(unittest.TestCase):
+    """_export_articles_csv：主项目兼容格式 + 增量导出"""
+
+    EXPORT_FIELDS = [
+        "pmid", "title", "abstract", "keywords", "mesh_terms",
+        "authors", "year", "journal", "doi",
+    ]
+
+    def setUp(self):
+        self.temp_dir = tempfile.mkdtemp()
+        self.db_path = Path(self.temp_dir) / "test.db"
+        init_db(self.db_path)
+        self._seed()
+
+    def tearDown(self):
+        import shutil
+        shutil.rmtree(self.temp_dir, ignore_errors=True)
+
+    def _seed(self):
+        articles = [
+            ("A", "Title A", "Abstract A", "kw1|kw2", "mesh1|mesh2",
+             2021, "Plant J", "10.1/aaa", "AuthorA|AuthorB"),
+            ("B", "Title B", "Abstract B", "kwB", "meshB",
+             2022, "Plant J", "10.1/bbb", "AuthorC"),
+            ("C", "Title C", "Abstract C", "kwC", "meshC",
+             2021, "Plant J", "10.1/ccc", "AuthorD"),
+            ("D", "Title D", "Abstract D", "kwD", "meshD",
+             2021, "Plant J", "10.1/ddd", "AuthorE"),
+        ]
+        with get_conn(self.db_path) as conn:
+            conn.executemany(
+                "INSERT INTO articles "
+                "(pmid, title, abstract, keywords, mesh_terms, "
+                "pub_year, journal, doi, authors) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                articles,
+            )
+            conn.executemany(
+                "INSERT INTO llm_validation (pmid, llm_verdict, human_review) "
+                "VALUES (?, ?, ?)",
+                [
+                    ("A", "RELEVANT", "Y"),        # 人工通过 → 应导出
+                    ("B", "RELEVANT", None),       # LLM 相关未复核 → 应导出
+                    ("C", "RELEVANT", "N"),        # 人工驳回 → 不导出
+                    ("D", "NOT_RELEVANT", None),   # LLM 不相关 → 不导出
+                ],
+            )
+
+    def _export(self):
+        import cleaner.llm_validator as mod
+        orig = mod.OUTPUT_DIR
+        mod.OUTPUT_DIR = self.temp_dir
+        try:
+            return mod._export_articles_csv(db_path=self.db_path)
+        finally:
+            mod.OUTPUT_DIR = orig
+
+    def test_export_fields_match_main_project(self):
+        path = self._export()
+        self.assertIsNotNone(path)
+        with open(path, "r", encoding="utf-8-sig") as f:
+            reader = csv.DictReader(f)
+            fieldnames = reader.fieldnames
+            rows = list(reader)
+        self.assertEqual(fieldnames, self.EXPORT_FIELDS)
+        self.assertEqual(sorted(r["pmid"] for r in rows), ["A", "B"])
+
+    def test_export_pipe_separators_converted_to_comma(self):
+        path = self._export()
+        with open(path, "r", encoding="utf-8-sig") as f:
+            rows = {r["pmid"]: r for r in csv.DictReader(f)}
+        self.assertEqual(rows["A"]["keywords"], "kw1,kw2")
+        self.assertEqual(rows["A"]["mesh_terms"], "mesh1,mesh2")
+        self.assertEqual(rows["A"]["authors"], "AuthorA,AuthorB")
+        self.assertEqual(rows["A"]["year"], "2021")
+
+    def test_export_filename_and_bom(self):
+        path = self._export()
+        self.assertTrue(path.name.startswith("articles_"))
+        self.assertTrue(path.name.endswith(".csv"))
+        self.assertFalse(path.name.startswith("articles_raw_"))
+        with open(path, "rb") as f:
+            self.assertTrue(f.read(3).startswith(b"\xef\xbb\xbf"))
+
+    def test_export_empty_returns_none(self):
+        with get_conn(self.db_path) as conn:
+            conn.execute("DELETE FROM llm_validation")
+        path = self._export()
+        self.assertIsNone(path)
+
+    def test_incremental_second_export_empty(self):
+        first = self._export()
+        self.assertIsNotNone(first)
+        second = self._export()
+        self.assertIsNone(second)
+
+    def test_incremental_only_new_pmid(self):
+        first = self._export()
+        self.assertIsNotNone(first)
+        # 新增一篇人工通过文献
+        with get_conn(self.db_path) as conn:
+            conn.execute(
+                "INSERT INTO articles (pmid, title, abstract, pub_year, journal, doi) "
+                "VALUES ('E', 'Title E', 'Abstract E', 2023, 'Plant J', '10.1/eee')"
+            )
+            conn.execute(
+                "INSERT INTO llm_validation (pmid, llm_verdict, human_review) "
+                "VALUES ('E', 'RELEVANT', 'Y')"
+            )
+        second = self._export()
+        self.assertIsNotNone(second)
+        with open(second, "r", encoding="utf-8-sig") as f:
+            rows = list(csv.DictReader(f))
+        self.assertEqual([r["pmid"] for r in rows], ["E"])
+
+    def test_exported_pmids_record_file(self):
+        self._export()
+        rec_path = Path(self.temp_dir) / "exported_pmids.txt"
+        self.assertTrue(rec_path.exists())
+        content = rec_path.read_text(encoding="utf-8").strip().splitlines()
+        self.assertEqual(sorted(content), ["A", "B"])
 
 
 if __name__ == "__main__":

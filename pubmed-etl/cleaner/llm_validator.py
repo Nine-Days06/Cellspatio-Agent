@@ -1194,3 +1194,74 @@ def _export_raw_csv(db_path: Path = DB_PATH) -> Path | None:
 
     logger.info(f"原始文献信息已导出: {csv_path} ({len(rows)} 篇)")
     return csv_path
+
+
+ARTICLES_EXPORT_FIELDS = [
+    "pmid", "title", "abstract", "keywords", "mesh_terms",
+    "authors", "year", "journal", "doi",
+]
+
+EXPORTED_PMIDS_FILENAME = "exported_pmids.txt"
+
+
+def _load_exported_pmids() -> set[str]:
+    """读取已导出的 PMID 集合"""
+    path = Path(OUTPUT_DIR) / EXPORTED_PMIDS_FILENAME
+    if not path.exists():
+        return set()
+    return {line.strip() for line in path.read_text(encoding="utf-8").splitlines() if line.strip()}
+
+
+def _append_exported_pmids(pmids: list[str]) -> None:
+    """追写本次导出的 PMID 到记录文件"""
+    path = Path(OUTPUT_DIR) / EXPORTED_PMIDS_FILENAME
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with open(path, "a", encoding="utf-8") as f:
+        for p in sorted(pmids):
+            f.write(p + "\n")
+
+
+def _export_articles_csv(db_path: Path = DB_PATH) -> Path | None:
+    """
+    导出主项目（multiomics-agent）兼容 CSV，供 KnowledgeImporter.import_from_csv 直接导入。
+    字段对齐 _convert_article_to_text 期望：year（由 pub_year 映射）、
+    数组字段 | 分隔 → 逗号分隔，仅含纯文献信息 9 列。
+    筛选条件与 _export_raw_csv 一致；增量：跳过 exported_pmids.txt 已记录的 PMID。
+    """
+    exported = _load_exported_pmids()
+    with get_conn(db_path) as conn:
+        rows = conn.execute("""
+            SELECT a.pmid, a.title, a.abstract, a.keywords, a.mesh_terms,
+                   a.pub_year, a.journal, a.doi, a.authors
+            FROM articles a
+            JOIN llm_validation v ON a.pmid = v.pmid
+            WHERE (v.human_review = 'Y'
+               OR (v.human_review IS NULL AND v.llm_verdict = 'RELEVANT'))
+              AND a.pmid NOT IN ({})
+        """.format(",".join("?" * len(exported))), tuple(sorted(exported))).fetchall()
+
+    rows = [dict(r) for r in rows]
+    if not rows:
+        logger.info("没有新的符合条件的文献记录，跳过导出")
+        return None
+
+    for r in rows:
+        r["year"] = r.pop("pub_year")
+        for col in ("keywords", "mesh_terms", "authors"):
+            if isinstance(r.get(col), str):
+                r[col] = r[col].replace("|", ",")
+
+    out_dir = Path(OUTPUT_DIR)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+    csv_path = out_dir / f"articles_{ts}.csv"
+
+    with open(csv_path, "w", newline="", encoding="utf-8-sig") as f:
+        writer = csv.DictWriter(f, fieldnames=ARTICLES_EXPORT_FIELDS)
+        writer.writeheader()
+        for r in rows:
+            writer.writerow(r)
+
+    _append_exported_pmids([r["pmid"] for r in rows])
+    logger.info(f"主项目兼容文献已导出: {csv_path} ({len(rows)} 篇)")
+    return csv_path
