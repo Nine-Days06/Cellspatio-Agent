@@ -79,3 +79,24 @@ def test_visualization_template_brace_escaping():
     assert code.count('{') == code.count('}')
     assert 'if (!(plot_type %in%' in code
     assert '} else {' in code
+
+def test_generate_code_injects_method_context():
+    from src.control.r_script_generator import RScriptGenerator
+    gen = RScriptGenerator()
+    code = gen.generate_code(
+        "differential_expression",
+        {"input_file": "a.csv", "output_file": "b.csv"},
+        method_context="# DESeq2 卡片\n# 不要用 TPM",
+    )
+    assert "方法学参考（自动生成，勿删）" in code
+    assert "不要用 TPM" in code
+
+
+def test_generate_code_without_method_context_has_no_marker():
+    from src.control.r_script_generator import RScriptGenerator
+    gen = RScriptGenerator()
+    code = gen.generate_code(
+        "differential_expression",
+        {"input_file": "a.csv", "output_file": "b.csv"},
+    )
+    assert "方法学参考（自动生成，勿删）" not in code
