@@ -6,7 +6,7 @@
 
 ## 不适用
 - 无统计检验列的表达矩阵
-- 需要展示基因名交互悬停时，静态 matplotlib 不足（应使用 plotly）
+- 需要交互式悬停展示基因名时，静态 ggplot2 不足（可使用 plotly::ggplotly 转换或 R plotly 原生绘图）
 
 ## 推荐参数
 - 阈值线：`|log2FC|=1`，`padj=0.05`
