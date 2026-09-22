@@ -68,10 +68,10 @@ def step_import_review(csv_path: str = None):
 
 
 def step_export():
-    from cleaner.llm_validator import _export_raw_csv
-    path = _export_raw_csv()
+    from cleaner.llm_validator import _export_articles_csv
+    path = _export_articles_csv()
     if path:
-        logger.info(f"原始文献信息已导出: {path}")
+        logger.info(f"主项目兼容文献已导出: {path}")
 
 
 def main():
