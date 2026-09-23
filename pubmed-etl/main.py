@@ -76,7 +76,7 @@ def step_export():
 
 def main():
     parser = argparse.ArgumentParser(
-        description="人类多组学 PubMed 文献批量下载与清洗系统"
+        description="人类单细胞与空间/时序组学 PubMed 文献批量下载与清洗系统"
     )
     parser.add_argument(
         "--step",
@@ -111,7 +111,7 @@ def main():
         d.mkdir(parents=True, exist_ok=True)
     init_db(DB_PATH)
 
-    logger.info("▶  人类多组学文献清洗系统启动")
+    logger.info("▶  人类单细胞与空间/时序组学文献清洗系统启动")
     logger.info(f"   运行阶段: {args.step}")
     logger.info(f"   数据库:   {DB_PATH}")
 

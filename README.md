@@ -1,12 +1,14 @@
-# 人类多组学分析智能体
+# CellSpatio 单细胞与时空组学分析智能体
 
-交互式人类多组学数据分析与知识问答系统，基于 LightRAG 和 Python + R 混合架构。
+交互式人类单细胞与空间/时序组学数据分析与知识问答系统，基于 LightRAG 和 Python + R 混合架构。
 
 ## 功能特性
 
-- **引导式分析**：自然语言驱动的人类多组学数据分析
+- **引导式分析**：自然语言驱动的人类单细胞与空间/时序组学数据分析
 - **知识增强**：基于 RAG + 知识图谱的专业问答
-- **多组学支持**：人类转录组、蛋白质组、代谢组、基因组、表观组等
+- **分析覆盖**：bulk 差异表达、单细胞聚类/注释、空间转录组；知识问答跨组学
+- **脚本确认**：LLM 生成 R 脚本人工确认后执行，失败自动修复（≤2 次）
+- **单细胞/时空**：Seurat / Visium 流程
 - **混合架构**：Python 控制 + R 分析，发挥各自优势
 - **数据获取**：GEO/KEGG/UniProt 公共数据库检索、确认、下载与入库
 - **可扩展**：支持外部 API 集成和模块化扩展
@@ -17,8 +19,8 @@
 
 ```cmd
 REM 克隆项目
-git clone https://github.com/your-org/multiomics-agent.git
-cd multiomics-agent
+git clone https://github.com/your-org/cellspatio-agent.git
+cd cellspatio-agent
 
 REM 运行设置脚本
 setup.bat
@@ -88,7 +90,7 @@ streamlit run src/ui/app.py
 ## 项目结构
 
 ```
-multiomics-agent/
+cellspatio-agent/
 ├── src/                 # 源代码
 │   ├── main.py          # 入口
 │   ├── config.py        # 配置（LLM 供应商、API Key、代理）
@@ -119,7 +121,7 @@ multiomics-agent/
 │       ├── data_loader.py        # 数据加载
 │       ├── metadata_manager.py   # 元数据管理
 │       └── cache.py              # 缓存
-├── pubmed-etl/          # 独立文献批量下载与清洗工具
+├── pubmed-etl/          # 独立文献批量下载与清洗工具（单细胞+时空方向）
 ├── r_scripts/           # R 分析脚本
 ├── tests/               # 测试
 ├── docs/                # 文档

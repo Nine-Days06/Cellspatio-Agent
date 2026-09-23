@@ -51,7 +51,7 @@ EUTILS_BASE = "https://eutils.ncbi.nlm.nih.gov/entrez/eutils"
 # ── 内部工具函数 ──────────────────────────────────────────────
 
 def _base_params() -> dict:
-    p = {"email": NCBI_EMAIL, "tool": "multiomics_lit_pipeline"}
+    p = {"email": NCBI_EMAIL, "tool": "cellspatio_lit_pipeline"}
     if NCBI_API_KEY:
         p["api_key"] = NCBI_API_KEY
     return p

@@ -22,7 +22,7 @@ LOG_DIR     = BASE_DIR / "logs"
 # PDF 存储路径
 PDF_DIR = DATA_DIR / "pdfs"
 
-DB_PATH     = PROC_DIR / "multiomics_lit.db"
+DB_PATH     = PROC_DIR / "multiomics_lit.db"  # 文件名保留 multiomics_lit.db 以兼容存量数据；展示名已改为 CellSpatio
 
 # ── 网络代理配置 ────────────────────────────────────────────
 # 可选：HTTP/HTTPS 代理，如 http://127.0.0.1:7890（走代理访问 NCBI 等外网）
@@ -45,18 +45,12 @@ REQUEST_INTERVAL = 0.11 if NCBI_API_KEY else 0.34
 EFETCH_BATCH_SIZE = 300
 
 # ── 搜索策略 ─────────────────────────────────────────────────
-# 主搜索词：聚焦多组学整合分析，且与人类/患者相关
-# 搜索逻辑：(明确提及 multi-omics) AND (强调整合/多模态) AND (人类/患者/临床)
+# 主搜索词：聚焦人类单细胞与空间/时序组学
 PUBMED_QUERY = (
-    # 明确提及 "multi-omics" 或 "multi omics"
-    '("multi-omics"[Title/Abstract] OR "multi omics"[Title/Abstract]) '
-    # 强调整合分析特征
-    'AND ("integrated"[Title/Abstract] OR "integrative"[Title/Abstract] '
-    'OR "combined"[Title/Abstract] OR "joint"[Title/Abstract] '
-    'OR "multi-modal"[Title/Abstract]) '
-    # 且与人类患者/临床相关
-    'AND ("human"[Title/Abstract] OR "patient"[Title/Abstract] '
-    'OR "clinical"[Title/Abstract] OR "clinical study"[Title/Abstract])'
+    '("single-cell"[Title/Abstract] OR scRNA-seq[Title/Abstract] OR '
+    '"spatial transcriptomics"[Title/Abstract] OR Visium[Title/Abstract] OR '
+    '"spatiotemporal"[Title/Abstract]) AND '
+    '("Homo sapiens"[Organism] OR human[Title/Abstract] OR patients[Title/Abstract])'
 )
 
 # 文献时间范围

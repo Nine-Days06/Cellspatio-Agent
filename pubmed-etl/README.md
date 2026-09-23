@@ -1,6 +1,6 @@
-# 人类多组学文献批量下载与清洗系统
+# 人类单细胞与空间/时序组学文献批量下载与清洗系统
 
-基于 NCBI E-utilities API，批量下载 PubMed 中人类多组学相关文献（聚焦 multi-omics 整合分析、且与人类/患者/临床相关），
+基于 NCBI E-utilities API，批量下载 PubMed 中人类单细胞与空间/时序组学相关文献，
 经过解析、去重、质量过滤、LLM 二次验证，最终产出结构化数据集，
 用于知识图谱构建或智能体效果评测。
 
@@ -26,9 +26,8 @@ PubMed E-utilities 下载的是 **XML 格式的元数据**（标题、摘要、�
 ## 搜索策略
 
 `config/settings.py` 中的 `PUBMED_QUERY` 为默认搜索词，聚焦：
-1. 明确提及 `multi-omics` / `multi omics`
-2. 同时包含整合分析特征（integrated / integrative / combined / joint / multi-modal）
-3. 且与人类相关（human / patient / clinical）
+1. 明确提及 `single-cell` / `scRNA-seq` / `spatial transcriptomics` / `Visium` / `spatiotemporal`
+2. 且与人类相关（Homo sapiens / human / patients）
 
 可用 `--query` 参数覆盖默认搜索词。
 
