@@ -4,10 +4,9 @@ from typing import Any
 
 # 必须最先加载：触发 load_dotenv，保证 R_HOME/NCBI_* 等在组件初始化前可见
 import src.config  # noqa: F401
-from src.config import get_current_llm
-
 from src.analysis.r_executor import RExecutor
 from src.analysis.visualization import Visualizer
+from src.config import get_current_llm
 from src.control.intent_parser import IntentParser
 from src.control.r_script_generator import RScriptGenerator
 from src.control.workflow_manager import WorkflowManager
@@ -115,6 +114,18 @@ class CellSpatioAgent:
     def ingest_asset(self, source: str, asset_id: str) -> dict[str, Any]:
         """将资产写入知识库（知识流）"""
         return self.workflow_manager.ingest_asset_to_kb(source, asset_id)
+
+    def execute_confirmed_script(
+        self,
+        analysis_type: str,
+        params: dict[str, Any],
+        script: str,
+        method_context: str | None = None,
+    ) -> dict[str, Any]:
+        """用户确认脚本后执行（含 repair 循环）"""
+        return self.workflow_manager.execute_confirmed_script(
+            analysis_type, params, script, method_context=method_context
+        )
 
     def run(self, mode: str = "cli"):
         """运行智能体"""

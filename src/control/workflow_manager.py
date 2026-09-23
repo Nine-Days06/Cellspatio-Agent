@@ -42,7 +42,7 @@ class WorkflowManager:
         lineage_path: str = "data/lineage.jsonl",
         code_repairer=None,
         max_repair_attempts: int = 2,
-        require_script_confirmation: bool = True,
+        require_script_confirmation: bool = False,
     ):
         self.intent_parser = intent_parser
         self.knowledge_client = knowledge_client
@@ -161,7 +161,38 @@ class WorkflowManager:
             {"input_file": input_file, "output_file": output_file},
             method_context=method_context,
         )
+
+        # HITL: 需要脚本确认且未通过 context 批准
+        if self.require_script_confirmation and not context.get("script_approved"):
+            return {
+                "status": "needs_script_confirmation",
+                "analysis_type": "differential_expression",
+                "script": code,
+                "params": {"input_file": input_file, "output_file": output_file},
+                "method_context": method_context,
+            }
+
+        return self._finish_analysis(
+            "differential_expression",
+            {"input_file": input_file, "output_file": output_file},
+            code,
+            method_context,
+            context,
+        )
+
+    def _finish_analysis(
+        self,
+        analysis_type: str,
+        params: dict[str, Any],
+        code: str,
+        method_context: str | None,
+        context: dict[str, Any],
+    ) -> dict[str, Any]:
+        """执行分析的核心逻辑：repair 循环、结果处理、知识库记录"""
         from src.analysis.r_executor import RExecutorError
+
+        input_file = params["input_file"]
+        output_file = params["output_file"]
 
         attempt = 0
         current_code = code
@@ -187,23 +218,23 @@ class WorkflowManager:
         if result is None or last_err is not None:
             return {
                 'status': 'error',
-                'analysis_type': 'differential_expression',
-                'message': f'差异表达分析失败: {last_err}',
+                'analysis_type': analysis_type,
+                'message': f'{self._analysis_type_zh(analysis_type)}分析失败: {last_err}',
                 'results': {'repair_count': repair_count},
             }
         logger.info(
-            "DE analysis finished on %s (returncode=%s)", input_file, result.returncode
+            "%s analysis finished on %s (returncode=%s)", analysis_type, input_file, result.returncode
         )
         if result.returncode == 0:
-            self._record_analysis_to_kb("differential_expression", input_file, output_file)
+            self._record_analysis_to_kb(analysis_type, input_file, output_file)
         explanation = None
         if self.explainer is not None:
             try:
                 stats = self._de_output_stats(output_file)
                 explanation = self.explainer.generate_llm_explanation(
                     {"input_file": input_file, "output_file": output_file,
-                     "analysis_type": "differential_expression", **stats},
-                    question=params.get("question", "差异表达分析结果说明"),
+                     "analysis_type": analysis_type, **stats},
+                    question=params.get("question", f"{self._analysis_type_zh(analysis_type)}分析结果说明"),
                 )
             except Exception as e:  # noqa: BLE001
                 logger.warning("explanation failed: %s", e)
@@ -212,7 +243,7 @@ class WorkflowManager:
             from src.analysis.capsule import export_analysis_capsule
             capsule_dir = str(export_analysis_capsule(
                 question=params.get("question", ""),
-                intent={"type": "analysis", "analysis_type": "differential_expression"},
+                intent={"type": "analysis", "analysis_type": analysis_type},
                 params={"input_file": input_file, "output_file": output_file},
                 script_code=current_code,
                 results={"returncode": result.returncode, "output_file": output_file},
@@ -221,8 +252,8 @@ class WorkflowManager:
             logger.warning("capsule export failed: %s", e)
         return {
             "status": "success",
-            "analysis_type": "differential_expression",
-            "message": "差异表达分析完成",
+            "analysis_type": analysis_type,
+            "message": f"{self._analysis_type_zh(analysis_type)}分析完成",
             "method_context": method_context,
             "results": {"returncode": result.returncode, "output_file": output_file,
                         "repair_count": repair_count},
@@ -230,6 +261,33 @@ class WorkflowManager:
             "explanation": explanation,
             "capsule_dir": capsule_dir,
         }
+
+    def _analysis_type_zh(self, analysis_type: str) -> str:
+        """分析类型中文映射"""
+        return {
+            "differential_expression": "差异表达",
+            "single_cell": "单细胞",
+            "spatial": "空间转录组",
+        }.get(analysis_type, analysis_type)
+
+    def execute_confirmed_script(
+        self,
+        analysis_type: str,
+        params: dict[str, Any],
+        script: str,
+        method_context: str | None = None,
+    ) -> dict[str, Any]:
+        """用户确认脚本后执行（含 repair 循环）"""
+        if analysis_type != "differential_expression":
+            # P4 扩展 single_cell / spatial
+            return {
+                "status": "error",
+                "analysis_type": analysis_type,
+                "message": f"暂不支持确认执行的分析类型: {analysis_type}",
+            }
+        return self._finish_analysis(
+            analysis_type, params, script, method_context, {"script_approved": True},
+        )
 
     def _record_analysis_to_kb(self, analysis_type: str, input_file: str,
                                output_file: str, user_question: str = "") -> None:
