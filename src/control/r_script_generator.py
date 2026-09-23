@@ -191,32 +191,44 @@ cat("结果已保存至:", output_file, "\\n")
 '''
 
     def _generate_pathway_code(self, params: dict[str, Any]) -> str:
-        """生成通路分析 R 代码"""
-        input_file = params.get("input_file", "input.csv")
-        output_file = params.get("output_file", "output.csv")
+        """真实 clusterProfiler KEGG 富集（回退模板）。
+
+        输入约定：DE 输出 CSV（含 gene 与 padj 列）。
+        """
+        input_file = params.get("input_file", "de_results.csv")
+        output_file = params.get("output_file", "pathway_enrichment.csv")
 
         return f'''#!/usr/bin/env Rscript
-# 通路分析模板
-
-# 读取数据
-data <- read.csv(input_file, row.names = 1)
-
-# 设置输入输出文件
+# 通路富集分析（clusterProfiler + KEGG）
 input_file <- "{input_file}"
 output_file <- "{output_file}"
 
-# 读取基因列表
-genes <- read.csv(input_file)
+if (!requireNamespace("clusterProfiler", quietly = TRUE)) {{
+    stop("请先安装: BiocManager::install('clusterProfiler')")
+}}
+if (!requireNamespace("org.Hs.eg.db", quietly = TRUE)) {{
+    stop("请先安装: BiocManager::install('org.Hs.eg.db')")
+}}
+library(clusterProfiler)
+library(org.Hs.eg.db)
 
-# 这里可以添加 KEGG/GO 通路富集分析
-# library(clusterProfiler)
-# enrich_result <- enrichKEGG(gene = genes$gene_id, organism = 'hsa')
+de <- read.csv(input_file, stringsAsFactors = FALSE)
+if (!all(c("gene", "padj") %in% colnames(de))) {{
+    stop("输入需要 gene 与 padj 列（差异表达输出）")
+}}
+genes <- de$gene[which(de$padj < 0.05)]
+genes <- genes[!is.na(genes)]
+if (length(genes) == 0) {{
+    write.csv(data.frame(), output_file, row.names = FALSE)
+    cat("无显著差异基因，跳过富集\\n")
+    quit(save = "no", status = 0)
+}}
 
-# 保存结果
-results <- data.frame(pathway = character(), pvalue = numeric())
-write.csv(results, output_file, row.names = FALSE)
-
-cat("通路分析完成，结果已保存至:", output_file, "\\n")
+ek <- enrichKEGG(gene = genes, organism = "hsa", pvalueCutoff = 0.05)
+ek_df <- as.data.frame(ek)
+write.csv(ek_df, output_file, row.names = FALSE)
+cat("富集通路数:", nrow(ek_df), "输入基因数:", length(genes), "\\n")
+cat("结果已保存至:", output_file, "\\n")
 '''
 
     def _generate_visualization_code(self, params: dict[str, Any]) -> str:

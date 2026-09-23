@@ -26,8 +26,11 @@ def test_generate_pathway_template():
     code = generator.generate_code("pathway_analysis", {})
 
     assert "#!/usr/bin/env Rscript" in code
-    assert "read.csv(input_file)" in code
-    assert "KEGG" in code
+    assert "enrichKEGG" in code
+    assert "clusterProfiler" in code
+    assert "org.Hs.eg.db" in code
+    assert 'input_file <- "de_results.csv"' in code
+    assert 'output_file <- "pathway_enrichment.csv"' in code
 
 
 def test_generate_visualization_template():
@@ -142,3 +145,16 @@ def test_de_template_is_real_deseq2_not_mock():
     assert "pvalue = 1" not in code
     assert 'input_file <- "c.csv"' in code
     assert 'output_file <- "o.csv"' in code
+
+
+def test_pathway_template_is_real_clusterprofiler():
+    from src.control.r_script_generator import RScriptGenerator
+
+    code = RScriptGenerator().generate_code(
+        "pathway_analysis",
+        {"input_file": "de.csv", "output_file": "pw.csv"},
+    )
+    assert "enrichKEGG" in code
+    assert "clusterProfiler" in code
+    assert "pvalue = numeric()" not in code
+    assert 'input_file <- "de.csv"' in code
