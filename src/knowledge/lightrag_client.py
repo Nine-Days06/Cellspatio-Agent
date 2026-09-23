@@ -165,6 +165,14 @@ class LightRAGClient:
                     addon_params={
                         "language": "Chinese",
                         "entity_types_guidance": (
+                            "- CellType: Cell types and clusters "
+                            "(e.g. CD8 T cell, hepatocyte, cluster 3)\n"
+                            "- CellState: Cell states or programs "
+                            "(e.g. exhausted, cycling, EMT)\n"
+                            "- SpatialSite: Spatial spots, regions, or anatomical sites "
+                            "(e.g. tumor edge, Visium spot, cortex layer)\n"
+                            "- Dataset: Single-cell or spatial datasets and accessions "
+                            "(e.g. GSE subsets, 10x Visium runs)\n"
                             "- Gene: Gene symbols and official gene names "
                             "(e.g. TP53, INS, BRCA1)\n"
                             "- Protein: Proteins and UniProt accessions "
@@ -179,7 +187,7 @@ class LightRAGClient:
                             "(e.g. insulin, cisplatin)\n"
                             "- Variant: Mutations, SNPs, and protein variants\n"
                             "- Experiment: Assays and omics experiments "
-                            "(e.g. RNA-seq, GSE studies)\n"
+                            "(e.g. scRNA-seq, spatial transcriptomics, GSE studies)\n"
                             "- Sample: Biological samples, cell lines, tissues "
                             "(e.g. SKOV3, pancreatic beta cell)\n"
                             "- Organization: Labs, databases, and institutions "
