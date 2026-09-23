@@ -17,6 +17,8 @@ class IntentParser:
                 "differential_expression": "差异表达分析、差异基因、DEG、fold change",
                 "pathway_analysis": "通路分析、通路富集、GO、KEGG、Pathway",
                 "visualization": "可视化、画图、图表、火山图、热图、PCA、箱线图",
+                "single_cell": "单细胞分析、scRNA、Seurat、降维、聚类、UMAP、细胞类型注释、细胞亚群",
+                "spatial": "空间转录组、空间组学、Visium、spatial、时空、空间位置、组织原位",
             }
         },
         "fetch_data": {
@@ -46,6 +48,8 @@ class IntentParser:
             'differential_expression': ['差异表达', '差异基因', 'DEG', 'fold change'],
             'pathway_analysis': ['通路', 'pathway', '富集', 'GO', 'KEGG'],
             'visualization': ['可视化', '画图', '图表', '火山图', '热图'],
+            'single_cell': ['单细胞', 'scRNA', 'scrna', 'Seurat', 'seurat', 'UMAP', '细胞聚类', '细胞注释'],
+            'spatial': ['空间转录', '空间组', 'Visium', 'visium', 'spatial', '时空组'],
         }
         self.knowledge_keywords = [
             '是什么', '有什么', '有哪些', '哪些', '怎么', '如何',
@@ -90,7 +94,7 @@ class IntentParser:
 ## 输出格式（严格 JSON）：
 {{
   "type": "analysis|fetch_data|knowledge_query|general|ambiguous",
-  "analysis_type": "differential_expression|pathway_analysis|visualization",  // 仅 type=analysis
+  "analysis_type": "differential_expression|pathway_analysis|visualization|single_cell|spatial",  // 仅 type=analysis
   "secondary_intent": "fetch_data|analysis|knowledge_query|null",  // 次要意图
   "confidence": 0.0-1.0,
   "original_input": "用户原始输入",

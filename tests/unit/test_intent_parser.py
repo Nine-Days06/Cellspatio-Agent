@@ -45,3 +45,29 @@ def test_parse_analysis_priority_over_fetch():
     intent = parser.parse("下载数据集并做差异表达分析")
     assert intent['type'] == 'analysis'
     assert intent['analysis_type'] == 'differential_expression'
+
+
+def test_parse_single_cell_intent():
+    from src.control.intent_parser import IntentParser
+
+    parser = IntentParser()
+    intent = parser.parse("对这份 scRNA-seq 数据做单细胞聚类和 UMAP")
+    assert intent["type"] == "analysis"
+    assert intent["analysis_type"] == "single_cell"
+
+
+def test_parse_spatial_intent():
+    from src.control.intent_parser import IntentParser
+
+    parser = IntentParser()
+    intent = parser.parse("分析这个 Visium 空间转录组数据")
+    assert intent["type"] == "analysis"
+    assert intent["analysis_type"] == "spatial"
+
+
+def test_subtypes_listed_in_system_prompt():
+    from src.control.intent_parser import IntentParser
+
+    parser = IntentParser()
+    assert "single_cell" in parser.system_prompt
+    assert "spatial" in parser.system_prompt
