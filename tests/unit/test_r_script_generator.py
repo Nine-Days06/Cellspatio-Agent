@@ -158,3 +158,18 @@ def test_pathway_template_is_real_clusterprofiler():
     assert "clusterProfiler" in code
     assert "pvalue = numeric()" not in code
     assert 'input_file <- "de.csv"' in code
+
+
+def test_spatial_visium_template():
+    from src.control.r_script_generator import RScriptGenerator
+
+    code = RScriptGenerator().generate_code(
+        "spatial",
+        {"input_file": "spatial_data", "output_file": "sp.csv",
+         "plot_file": "spatial_plot.png"},
+    )
+    assert "Load10X_Spatial" in code
+    assert "SpatialDimPlot" in code
+    assert "spatial 模板尚未实现" not in code
+    assert 'output_file <- "sp.csv"' in code
+    assert 'plot_file <- "spatial_plot.png"' in code

@@ -331,30 +331,52 @@ cat("cluster 表:", output_file, "marker 表:", marker_file, "\\n")
 '''
 
     def _generate_spatial_code(self, params: dict[str, Any]) -> str:
-        """生成空间转录组分析 R 代码（占位）"""
-        input_file = params.get("input_file", "input.h5ad")
-        output_file = params.get("output_file", "output.csv")
+        """Seurat Visium 空间流程（回退模板）。
+
+        输入约定：spaceranger 输出目录（含 spatial/ 与 filtered_feature_bc_matrix/）。
+        """
+        input_file = params.get("input_file", "spatial_dir")
+        output_file = params.get("output_file", "spatial_clusters.csv")
+        plot_file = params.get("plot_file", "spatial_plot.png")
+        resolution = params.get("resolution", 0.5)
 
         return f'''#!/usr/bin/env Rscript
-# 空间转录组分析模板
-
-# 设置输入输出文件
-input_file <- "{input_file}"
+# 空间转录组分析（Seurat Visium）
+input_dir <- "{input_file}"
 output_file <- "{output_file}"
+plot_file <- "{plot_file}"
 
-# 这里可以添加空间转录组分析流程
-# library(Seurat)
-# obj <- Load10X_Spatial(input_file)
-# obj <- SCTransform(obj)
-# obj <- RunPCA(obj)
-# obj <- FindNeighbors(obj)
-# obj <- FindClusters(obj)
-# obj <- RunUMAP(obj)
-# SpatialDimPlot(obj)
+if (!requireNamespace("Seurat", quietly = TRUE)) {{
+    stop("请先安装 Seurat（>= 4.1 含空间接口）")
+}}
+library(Seurat)
 
-# 保存结果
-results <- data.frame(spot = character(), cluster = numeric(), x = numeric(), y = numeric())
-write.csv(results, output_file, row.names = FALSE)
+if (!dir.exists(input_dir)) {{
+    stop("输入目录不存在: ", input_dir)
+}}
+obj <- Load10X_Spatial(data.dir = input_dir)
+obj <- NormalizeData(obj, verbose = FALSE)
+obj <- FindVariableFeatures(obj, nfeatures = 2000, verbose = FALSE)
+obj <- ScaleData(obj, verbose = FALSE)
+obj <- RunPCA(obj, npcs = 30, verbose = FALSE)
+obj <- FindNeighbors(obj, dims = 1:15, verbose = FALSE)
+obj <- FindClusters(obj, resolution = {resolution}, verbose = FALSE)
+obj <- RunUMAP(obj, dims = 1:15, verbose = FALSE)
 
-cat("空间转录组分析完成，结果已保存至:", output_file, "\\n")
+coords <- GetTissueCoordinates(obj)
+out <- data.frame(
+    spot = rownames(coords),
+    x = coords[, 1],
+    y = coords[, 2],
+    cluster = as.character(obj$seurat_clusters),
+    row.names = NULL
+)
+write.csv(out, output_file, row.names = FALSE)
+
+png(plot_file, width = 1400, height = 1200, res = 150)
+print(SpatialDimPlot(obj, label = TRUE, label.size = 3) + NoLegend())
+dev.off()
+cat("spot 数:", ncol(obj),
+    "聚类数:", length(levels(obj$seurat_clusters)), "\\n")
+cat("cluster 表:", output_file, "空间图:", plot_file, "\\n")
 '''
