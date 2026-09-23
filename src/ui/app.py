@@ -143,10 +143,23 @@ def _render_candidate_selector(agent: Any):
             st.rerun()
 
 
+def _render_references(references: list[dict[str, Any]]) -> None:
+    """结构化引用单独渲染（与正文分离，避免与 LLM 自造段混淆）"""
+    if not references:
+        return
+    from src.knowledge.lightrag_client import format_reference
+
+    st.markdown("**来源**")
+    for ref in references:
+        st.markdown(f"- {format_reference(ref)}")
+
+
 def _render_chat_result(result: dict[str, Any]):
     """按结果类型渲染聊天回复"""
+    references: list[dict[str, Any]] = []
     if result.get('type') == 'knowledge_response':
         response = result.get('response', '无响应')
+        references = list(result.get('references') or [])
     elif result.get('type') == 'fetch_result':
         asset = result.get('asset', {})
         response = f"已下载 {asset.get('asset_id')} → `{asset.get('access_path')}`"
@@ -163,12 +176,15 @@ def _render_chat_result(result: dict[str, Any]):
         response = f"{response}\n\n---\n**结果解读**\n\n{explanation}"
     with st.chat_message("assistant"):
         st.markdown(response)
+        _render_references(references)
 
 
 def _format_result(result: dict[str, Any]) -> str:
     """将结果格式化为聊天消息文本"""
+    references: list[dict[str, Any]] = []
     if result.get('type') == 'knowledge_response':
         response = result.get('response', '无响应')
+        references = list(result.get('references') or [])
     elif result.get('type') == 'fetch_result':
         asset = result.get('asset', {})
         response = f"已下载 {asset.get('asset_id')} → `{asset.get('access_path')}`"
@@ -181,6 +197,11 @@ def _format_result(result: dict[str, Any]) -> str:
     explanation = result.get('explanation')
     if explanation:
         response = f"{response}\n\n---\n**结果解读**\n\n{explanation}"
+    if references:
+        from src.knowledge.lightrag_client import format_reference
+
+        lines = "\n".join(f"- {format_reference(r)}" for r in references)
+        response = f"{response}\n\n**来源**\n{lines}"
     return response
 
 
