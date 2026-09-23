@@ -126,37 +126,68 @@ class RScriptGenerator:
         return block + body
 
     def _generate_de_code(self, params: dict[str, Any]) -> str:
-        """生成差异表达分析 R 代码"""
+        """真实 DESeq2 差异表达（回退模板）。
+
+        输入约定：counts CSV，行为基因、列为样本。
+        分组：params['group_csv'] 指向样本注释 CSV（行名=样本名，一列 group）；
+        否则前 floor(n/2) 为 control、其余为 treatment。
+        """
         input_file = params.get("input_file", "input.csv")
         output_file = params.get("output_file", "output.csv")
+        group_csv = params.get("group_csv", "")
+
+        if group_csv:
+            group_block = (
+                f'coldata_df <- read.csv("{group_csv}", row.names = 1, '
+                "stringsAsFactors = FALSE)\n"
+                "groups <- factor(coldata_df[colnames(counts), 1])\n"
+            )
+        else:
+            group_block = (
+                "n <- ncol(counts)\n"
+                'groups <- factor(c(rep("control", floor(n / 2)), '
+                'rep("treatment", ceiling(n / 2))))\n'
+            )
 
         return f'''#!/usr/bin/env Rscript
-# 差异表达分析模板
-
-# 读取数据
-data <- read.csv(input_file, row.names = 1)
-
-# 这里可以添加差异表达分析逻辑
-# 示例：简单的差异表达分析框架
-library(DESeq2)
-
-# 设置输入输出文件
+# 差异表达分析（DESeq2）
 input_file <- "{input_file}"
 output_file <- "{output_file}"
 
-# 读取数据
-count_data <- read.csv(input_file, row.names = 1)
+if (!requireNamespace("DESeq2", quietly = TRUE)) {{
+    stop("请先安装 DESeq2: BiocManager::install('DESeq2')")
+}}
+library(DESeq2)
 
-# 这里可以添加 DESeq2 分析流程
-# dds <- DESeqDataSetFromMatrix(...)
-# dds <- DESeq(dds)
-# res <- results(dds)
+counts <- as.matrix(read.csv(input_file, row.names = 1, check.names = FALSE))
+counts <- round(counts)
+counts <- counts[rowSums(counts) >= 10, , drop = FALSE]
+if (nrow(counts) == 0 || ncol(counts) < 4) {{
+    stop("counts 矩阵为空或样本数 < 4")
+}}
 
-# 保存结果
-results <- data.frame(gene = rownames(count_data), log2FC = 0, pvalue = 1)
-write.csv(results, output_file, row.names = FALSE)
+{group_block}
+if (any(is.na(groups)) || nlevels(groups) < 2) {{
+    stop("分组无效：需要至少两个水平的 factor")
+}}
+coldata <- data.frame(group = groups, row.names = colnames(counts))
 
-cat("差异表达分析完成，结果已保存至:", output_file, "\\n")
+dds <- DESeqDataSetFromMatrix(countData = counts, colData = coldata, design = ~ group)
+dds <- DESeq(dds)
+res <- as.data.frame(results(
+    dds, contrast = c("group", levels(groups)[2], levels(groups)[1])
+))
+res$gene <- rownames(res)
+res <- res[order(res$padj), ]
+
+write.csv(
+    res[, c("gene", "log2FoldChange", "lfcSE", "stat", "pvalue", "padj")],
+    output_file,
+    row.names = FALSE
+)
+sig <- sum(res$padj < 0.05, na.rm = TRUE)
+cat("总基因数:", nrow(res), "显著差异基因(padj<0.05):", sig, "\\n")
+cat("结果已保存至:", output_file, "\\n")
 '''
 
     def _generate_pathway_code(self, params: dict[str, Any]) -> str:

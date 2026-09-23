@@ -10,8 +10,11 @@ def test_generate_de_template():
     code = generator.generate_code("differential_expression", {})
 
     assert "#!/usr/bin/env Rscript" in code
-    assert "read.csv(input_file, row.names = 1)" in code
-    assert "write.csv(results, output_file" in code
+    assert "DESeqDataSetFromMatrix" in code
+    assert "DESeq(" in code
+    assert "results(" in code
+    assert 'input_file <- "input.csv"' in code
+    assert 'output_file <- "output.csv"' in code
 
 
 def test_generate_pathway_template():
@@ -56,6 +59,9 @@ def test_de_template_param_injection():
 
     assert 'input_file <- "mydata.csv"' in code
     assert 'output_file <- "myresults.tsv"' in code
+    assert "DESeqDataSetFromMatrix" in code
+    assert "DESeq(" in code
+    assert "results(" in code
 
 
 def test_visualization_plot_type_param():
@@ -120,3 +126,19 @@ def test_generate_code_without_method_context_has_no_marker():
         {"input_file": "a.csv", "output_file": "b.csv"},
     )
     assert "方法学参考（自动生成，勿删）" not in code
+
+
+def test_de_template_is_real_deseq2_not_mock():
+    from src.control.r_script_generator import RScriptGenerator
+
+    code = RScriptGenerator().generate_code(
+        "differential_expression",
+        {"input_file": "c.csv", "output_file": "o.csv"},
+    )
+    assert "DESeqDataSetFromMatrix" in code
+    assert "DESeq(" in code
+    assert "results(" in code
+    assert "log2FC = 0" not in code
+    assert "pvalue = 1" not in code
+    assert 'input_file <- "c.csv"' in code
+    assert 'output_file <- "o.csv"' in code
