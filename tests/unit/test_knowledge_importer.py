@@ -51,8 +51,11 @@ def test_import_from_csv():
 def test_convert_article_to_text():
     client = MockLightRAGClient()
     importer = KnowledgeImporter(client)
-    article = {"pmid": "12345", "title": "Test Article", "abstract": "Test abstract", "keywords": ["test", "multi-omics"], "year": 2020, "journal": "Test Journal"}
+    article = {"pmid": "12345", "title": "Test Article", "abstract": "Test abstract", "keywords": ["test", "multi-omics"], "year": 2020, "journal": "Test Journal", "doi": "10.1000/xyz"}
     text = importer._convert_article_to_text(article)
     assert "标题：Test Article" in text
     assert "摘要：Test abstract" in text
     assert "年份：2020" in text
+    assert "PMID：12345" in text
+    assert "链接：https://pubmed.ncbi.nlm.nih.gov/12345/" in text
+    assert "DOI：10.1000/xyz" in text
