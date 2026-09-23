@@ -7,7 +7,7 @@ import pandas as pd
 logger = logging.getLogger(__name__)
 
 class DataLoader:
-    """统一的数据加载器，支持多组学数据格式"""
+    """统一的数据加载器，支持单细胞/空间与常规表达矩阵等数据格式"""
     
     def __init__(self, config: dict[str, Any] | None = None):
         self.config = config or {}

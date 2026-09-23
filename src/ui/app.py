@@ -41,8 +41,8 @@ def run_prompt(agent: Any, prompt: str) -> None:
 def create_app(agent: Any):
     """创建 Streamlit 应用"""
     
-    st.title("人类多组学分析智能体")
-    st.caption("交互式人类多组学数据分析与知识问答系统")
+    st.title("CellSpatio 单细胞与时空组学分析智能体")
+    st.caption("单细胞与空间/时序组学分析 · LightRAG 知识问答")
     
     # 侧边栏配置
     with st.sidebar:
@@ -215,9 +215,9 @@ def _bootstrap():
     if str(root) not in sys.path:
         sys.path.insert(0, str(root))
 
-    from src.main import MultiomicsAgent
+    from src.main import CellSpatioAgent
 
-    create_app(MultiomicsAgent())
+    create_app(CellSpatioAgent())
 
 
 if __name__ == "__main__":

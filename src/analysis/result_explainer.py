@@ -54,7 +54,7 @@ class ResultExplainer:
         if self.knowledge_client is None:
             return ""
         pathways = data.get("top_pathways") or []
-        question = " ".join(str(p) for p in pathways[:3]) or "多组学差异分析 结果解读"
+        question = " ".join(str(p) for p in pathways[:3]) or "单细胞与时空组学分析 结果解读"
         try:
             return self.knowledge_client.query(question)
         except Exception as e:  # noqa: BLE001 - 背景是增强，失败降级

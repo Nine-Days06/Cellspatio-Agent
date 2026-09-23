@@ -14,6 +14,10 @@ STARTER_PRESETS: list[dict[str, str]] = [
      "prompt": "解释 KEGG 通路富集分析结果怎么看"},
     {"group": "知识", "label": "基因机制问答",
      "prompt": "BRCA1 在乳腺癌中的作用机制是什么？"},
+    {"group": "单细胞", "label": "单细胞聚类 UMAP",
+     "prompt": "对已下载的单细胞表达矩阵做聚类和 UMAP"},
+    {"group": "时空", "label": "空间转录组",
+     "prompt": "分析 Visium 空间转录组数据并输出空间聚类图"},
 ]
 
 

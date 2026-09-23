@@ -109,7 +109,7 @@ class CellSpatioAgent:
 
     def _run_cli(self):
         """命令行模式"""
-        print("人类多组学分析智能体已启动（CLI模式）")
+        print("CellSpatio 单细胞与时空组学分析智能体已启动（CLI模式）")
         print("输入 'quit' 或 'exit' 退出\n")
 
         while True:
@@ -142,5 +142,5 @@ class CellSpatioAgent:
 
 
 if __name__ == "__main__":
-    agent = MultiomicsAgent()
+    agent = CellSpatioAgent()
     agent.run("cli")
