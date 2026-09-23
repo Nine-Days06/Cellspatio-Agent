@@ -82,6 +82,43 @@ class WorkflowManager:
         else:
             return self._execute_general_workflow(intent, params, context)
 
+    def _resolve_input_file(self, params: dict[str, Any], context: dict[str, Any]) -> str | None:
+        """解析输入文件：优先 params.input_files，其次 context.downloaded_assets"""
+        if params.get("input_files"):
+            candidate = params["input_files"][0]
+            if Path(candidate).exists():
+                return candidate
+        if context.get("downloaded_assets"):
+            candidate = context["downloaded_assets"][-1].get("access_path")
+            if candidate and Path(candidate).exists():
+                return candidate
+        return None
+
+    def _generate_or_finish(
+        self,
+        analysis_type: str,
+        run_params: dict[str, Any],
+        method_context: str | None,
+        context: dict[str, Any],
+    ) -> dict[str, Any]:
+        """统一生成代码并决定是否需要确认或直接执行"""
+        code = self.r_script_generator.generate_code(
+            analysis_type, run_params, method_context=method_context,
+        )
+        if self.require_script_confirmation and not context.get("script_approved"):
+            return {
+                "status": "needs_script_confirmation",
+                "type": "analysis",
+                "analysis_type": analysis_type,
+                "script": code,
+                "params": run_params,
+                "method_context": method_context,
+                "message": "已生成 R 脚本，请审阅并确认执行",
+            }
+        return self._finish_analysis(
+            analysis_type, run_params, code, method_context, context,
+        )
+
     def _execute_analysis_workflow(
         self, intent: dict[str, Any], params: dict[str, Any], context: dict[str, Any]
     ) -> dict[str, Any]:
@@ -90,6 +127,10 @@ class WorkflowManager:
 
         if analysis_type == "differential_expression":
             return self._execute_de_analysis(params, context)
+        if analysis_type == "single_cell":
+            return self._execute_sc_analysis(params, context)
+        if analysis_type == "spatial":
+            return self._execute_spatial_analysis(params, context)
 
         return {
             "status": "success",
@@ -179,6 +220,52 @@ class WorkflowManager:
             method_context,
             context,
         )
+
+    def _execute_sc_analysis(self, params: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:
+        """单细胞分析：聚类、标记基因"""
+        input_file = self._resolve_input_file(params, context)
+        if not input_file:
+            return {
+                "status": "success",
+                "analysis_type": "single_cell",
+                "message": "单细胞分析完成（演示模式，无实际数据）",
+                "results": {},
+            }
+        out = str(Path(input_file).with_suffix(".sc_clusters.csv"))
+        marker = str(Path(input_file).with_suffix(".sc_markers.csv"))
+        run_params = {
+            "input_file": input_file,
+            "output_file": out,
+            "marker_file": marker,
+        }
+        method_context = self._method_context_for("single_cell", params)
+        return self._generate_or_finish("single_cell", run_params, method_context, context)
+
+    def _execute_spatial_analysis(self, params: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:
+        """空间转录组分析：聚类、空间图"""
+        input_file = self._resolve_input_file(params, context)
+        if not input_file:
+            return {
+                "status": "success",
+                "analysis_type": "spatial",
+                "message": "空间转录组分析完成（演示模式，无实际数据）",
+                "results": {},
+            }
+        base = Path(input_file)
+        if base.is_dir():
+            run_params = {
+                "input_file": input_file,
+                "output_file": str(base / ".spatial_clusters.csv"),
+                "plot_file": str(base / ".spatial_plot.png"),
+            }
+        else:
+            run_params = {
+                "input_file": input_file,
+                "output_file": str(base.with_suffix(".spatial_clusters.csv")),
+                "plot_file": str(base.with_suffix(".spatial_plot.png")),
+            }
+        method_context = self._method_context_for("spatial", params)
+        return self._generate_or_finish("spatial", run_params, method_context, context)
 
     def _finish_analysis(
         self,
@@ -278,8 +365,7 @@ class WorkflowManager:
         method_context: str | None = None,
     ) -> dict[str, Any]:
         """用户确认脚本后执行（含 repair 循环）"""
-        if analysis_type != "differential_expression":
-            # P4 扩展 single_cell / spatial
+        if analysis_type not in ("differential_expression", "single_cell", "spatial"):
             return {
                 "status": "error",
                 "analysis_type": analysis_type,
@@ -294,7 +380,11 @@ class WorkflowManager:
         """分析成功后写回主知识库（闭环记忆）；失败仅告警"""
         if self.knowledge_builder is None:
             return
-        zh = {"differential_expression": "差异表达"}.get(analysis_type, analysis_type)
+        zh = {
+            "differential_expression": "差异表达",
+            "single_cell": "单细胞聚类",
+            "spatial": "空间转录组",
+        }.get(analysis_type, analysis_type)
         text = (
             "# 分析实验记录\n"
             f"类型：{zh}（{analysis_type}）\n"
