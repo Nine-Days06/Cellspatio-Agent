@@ -2,10 +2,110 @@ import asyncio
 import json
 import logging
 import os
+import re
 from pathlib import Path
 from typing import Any
 
 logger = logging.getLogger(__name__)
+
+# LLM 自造的参考文献段（LightRAG prompt 要求输出，中文模型可能译成参考文献）
+_REF_SECTION_RE = re.compile(
+    r"(?im)^[ \t]*(?:#{1,6}[ \t]+)?(?:\*\*)?"
+    r"(?:references|参考文献|引用文献|bibliography)"
+    r"(?:\*\*)?[ \t:：]*$"
+)
+_KEGG_HEADER_RE = re.compile(r"^#\s*KEGG\s+通路:\s*(\S+)", re.MULTILINE)
+_UNIPROT_HEADER_RE = re.compile(r"^#\s*UniProt\s+蛋白:\s*(\S+)", re.MULTILINE)
+_GEO_HEADER_RE = re.compile(r"^#\s*GEO\s+数据集:\s*(\S+)", re.MULTILINE)
+_SOURCE_LINE_RE = re.compile(r"^来源：(\S+)", re.MULTILINE)
+_LINK_LINE_RE = re.compile(r"^链接：(\S+)", re.MULTILINE)
+_PMID_LINE_RE = re.compile(r"^PMID：(\S+)", re.MULTILINE)
+_DOI_LINE_RE = re.compile(r"^DOI：(\S+)", re.MULTILINE)
+_KEGG_ID_RE = re.compile(r"^(?:map|hsa|ko)\d+$", re.IGNORECASE)
+_UNIPROT_ACC_RE = re.compile(
+    r"^(?:[OPQ][0-9][A-Z0-9]{3}[0-9]|[A-NR-Z][0-9](?:[A-Z][A-Z0-9]{9}[0-9]))$"
+)
+_PMID_BASENAME_RE = re.compile(r"^\d{6,9}$")
+
+
+def strip_references_section(text: str) -> str:
+    """去掉回答末尾 LLM 自由发挥的 References/参考文献 段（切到文末）"""
+    if not text:
+        return text
+    m = _REF_SECTION_RE.search(text)
+    if m:
+        return text[: m.start()].rstrip() + "\n"
+    return text
+
+
+def derive_file_path(text: str) -> str:
+    """从入库文本推导 citation file_path（URL 或空串）。
+
+    LightRAG 只存 basename，故 URL 末段必须全局唯一
+    （UniProt 不能以 `/entry` 结尾，否则 10 条会撞成同一文档）。
+    """
+    m = _SOURCE_LINE_RE.search(text) or _LINK_LINE_RE.search(text)
+    if m:
+        return m.group(1)
+    m = _KEGG_HEADER_RE.search(text)
+    if m:
+        return f"https://www.kegg.jp/pathway/{m.group(1)}"
+    m = _UNIPROT_HEADER_RE.search(text)
+    if m:
+        return f"https://www.uniprot.org/uniprotkb/{m.group(1)}"
+    m = _GEO_HEADER_RE.search(text)
+    if m:
+        return f"https://www.ncbi.nlm.nih.gov/geo/query/acc.cgi?acc={m.group(1)}"
+    m = _DOI_LINE_RE.search(text)
+    if m:
+        return f"https://doi.org/{m.group(1)}"
+    m = _PMID_LINE_RE.search(text)
+    if m:
+        return f"https://pubmed.ncbi.nlm.nih.gov/{m.group(1)}/"
+    return ""
+
+
+def expand_file_path(fp: str) -> str:
+    """把 LightRAG 存的 basename 还原为可点击完整 URL"""
+    if not fp or fp.startswith("http") or fp == "unknown_source":
+        return fp
+    if fp.startswith("acc.cgi"):
+        return f"https://www.ncbi.nlm.nih.gov/geo/query/{fp}"
+    if _KEGG_ID_RE.match(fp):
+        return f"https://www.kegg.jp/pathway/{fp}"
+    if _UNIPROT_ACC_RE.match(fp):
+        return f"https://www.uniprot.org/uniprotkb/{fp}"
+    if _PMID_BASENAME_RE.match(fp):
+        return f"https://pubmed.ncbi.nlm.nih.gov/{fp}/"
+    return fp
+
+
+def format_reference(ref: dict[str, Any]) -> str:
+    """结构化引用 → Markdown 链接或编号条目"""
+    url = expand_file_path(str(ref.get("file_path") or ""))
+    rid = str(ref.get("reference_id") or "")
+    if url.startswith("http"):
+        label = label_from_url(url) or url
+        return f"[{label}]({url})"
+    if rid:
+        return f"[{rid}] {url}" if url else f"[{rid}]"
+    return url
+
+
+def label_from_url(url: str) -> str:
+    """从 source URL 提炼可读标签"""
+    u = url.rstrip("/")
+    if "kegg.jp/pathway/" in u:
+        return f"KEGG {u.rsplit('/', 1)[-1]}"
+    if "uniprot.org/uniprotkb/" in u:
+        return f"UniProt {u.split('/uniprotkb/')[-1].split('/')[0]}"
+    if "pubmed.ncbi.nlm.nih.gov/" in u:
+        return f"PMID {u.rsplit('/', 1)[-1]}"
+    if "acc.cgi?acc=" in u:
+        return f"GEO {u.split('acc=')[-1]}"
+    if "doi.org/" in u:
+        return f"DOI {u.split('doi.org/')[-1]}"
+    return ""
 
 
 class LightRAGClient:
@@ -106,29 +206,74 @@ class LightRAGClient:
                 raise
 
     def insert_document(self, document: str, metadata: dict[str, Any] | None = None):
-        """增量插入单篇文档"""
+        """增量插入单篇文档；自动推导 file_path 供引用"""
         self._initialize_rag()
         if self._rag:
-            self._rag.insert(document)
+            fp = derive_file_path(document)
+            if fp:
+                self._rag.insert(document, file_paths=fp)
+            else:
+                self._rag.insert(document)
             logger.info(f"Document inserted, length: {len(document)}")
 
-    def insert_documents(self, documents: list[str]) -> int:
-        """批量插入文档（批量构建与导入统一走这里），返回插入数量"""
+    def insert_documents(self, documents: list[str], file_paths: list[str] | None = None) -> int:
+        """批量插入；file_paths 缺省时按文档头/来源行推导（citation 用）"""
         self._initialize_rag()
         if not documents or self._rag is None:
             return 0
-        self._rag.insert(documents)
+        if file_paths is None:
+            file_paths = [derive_file_path(d) for d in documents]
+        # 全空则不传，兼容不支持 file_paths 的 mock
+        if any(file_paths):
+            self._rag.insert(documents, file_paths=file_paths)
+        else:
+            self._rag.insert(documents)
         logger.info(f"Batch inserted {len(documents)} documents")
         return len(documents)
 
     def query(self, question: str, mode: str = "hybrid") -> str:
-        """查询知识库"""
+        """查询知识库（纯文本；背景/兼容调用方）"""
         self._initialize_rag()
         if self._rag:
             from lightrag import QueryParam
 
             return self._rag.query(question, param=QueryParam(mode=mode))
         return "LightRAG 未初始化"
+
+    def query_with_references(
+        self, question: str, mode: str = "hybrid"
+    ) -> dict[str, Any]:
+        """查询并返回结构化引用。
+
+        SDK 的 query() 只返回 str；引用在 query_llm 的 data.references。
+        响应中的 LLM 自造 References 段已剥离。
+        """
+        self._initialize_rag()
+        if not self._rag:
+            return {"response": "LightRAG 未初始化", "references": []}
+        from lightrag import QueryParam
+
+        raw = self._rag.query_llm(
+            question,
+            param=QueryParam(mode=mode, include_references=True),
+        )
+        llm = raw.get("llm_response") or {}
+        content = llm.get("content")
+        if not isinstance(content, str):
+            content = ""
+        refs = (raw.get("data") or {}).get("references") or []
+        expanded = []
+        for ref in refs:
+            if isinstance(ref, dict):
+                r = dict(ref)
+                r["file_path"] = expand_file_path(str(r.get("file_path") or ""))
+                expanded.append(r)
+            else:
+                expanded.append(ref)
+        return {
+            "response": strip_references_section(content),
+            "references": expanded,
+        }
 
     def query_context(self, question: str, mode: str = "hybrid") -> str:
         """只返回检索到的上下文片段（不生成回答），供注入 codegen prompt"""
