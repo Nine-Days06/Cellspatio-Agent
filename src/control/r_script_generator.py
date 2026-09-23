@@ -1,10 +1,17 @@
 """R 脚本生成器"""
 
+import logging
 from typing import Any
+
+logger = logging.getLogger(__name__)
 
 
 class RScriptGenerator:
-    """生成 R 分析脚本模板"""
+    """生成 R 分析脚本（P3：LLM 优先，模板回退）"""
+
+    def __init__(self, llm_client=None, model: str = "gpt-4o-mini"):
+        self.llm_client = llm_client
+        self.model = model
 
     def generate_code(
         self,
