@@ -2,7 +2,7 @@ import tempfile
 
 import pytest
 
-from src.main import MultiomicsAgent
+from src.main import CellSpatioAgent
 
 
 def test_full_analysis_workflow():
@@ -13,8 +13,8 @@ def test_full_analysis_workflow():
             'knowledge_dir': temp_dir,
             'llm': {'provider': 'mock'},  # 使用 mock LLM
         }
-        
-        agent = MultiomicsAgent(config)
+
+        agent = CellSpatioAgent(config)
         
         # 测试分析工作流
         result = agent.execute_workflow("分析差异表达基因")

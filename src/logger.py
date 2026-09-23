@@ -48,10 +48,10 @@ class LoggerFactory:
 
 
 # 设置根日志记录器
-def setup_root_logger(log_file: str = "logs/multiomics_agent.log"):
+def setup_root_logger(log_file: str = "logs/cellspatio_agent.log"):
     """设置根日志记录器"""
     return LoggerFactory.setup_logger(
-        name="multiomics_agent",
+        name="cellspatio_agent",
         log_file=log_file,
         level=logging.INFO
     )

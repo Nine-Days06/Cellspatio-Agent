@@ -72,7 +72,7 @@ class IntentParser:
                 sub_desc = "\n" + "\n".join(sub_items)
             intent_desc.append(f"- {intent_type}: {info['description']}{sub_desc}")
 
-        self.system_prompt = f"""你是多组学分析智能体的意图识别器。请分析用户输入，准确识别意图类型。
+        self.system_prompt = f"""你是 CellSpatio 单细胞与时空组学分析智能体的意图识别器。请分析用户输入，准确识别意图类型。
 
 ## 意图类型定义：
 {chr(10).join(intent_desc)}

@@ -18,8 +18,8 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 
-class MultiomicsAgent:
-    """人类多组学分析智能体主类"""
+class CellSpatioAgent:
+    """CellSpatio 单细胞与时空组学分析智能体主类"""
 
     def __init__(self, config: dict[str, Any] | None = None):
         self.config = config or {}
@@ -80,7 +80,7 @@ class MultiomicsAgent:
             code_repairer=self.code_repairer,
         )
 
-        logger.info("MultiomicsAgent initialized")
+        logger.info("CellSpatioAgent initialized")
 
     def execute_workflow(
         self, user_input: str, context: dict[str, Any] | None = None
