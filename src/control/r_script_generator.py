@@ -266,33 +266,68 @@ if (plot_type == "volcano") {{
 '''
 
     def _generate_single_cell_code(self, params: dict[str, Any]) -> str:
-        """生成单细胞分析 R 代码（占位）"""
-        input_file = params.get("input_file", "input.h5ad")
-        output_file = params.get("output_file", "output.csv")
+        """Seurat 标准单细胞流程（回退模板）。
+
+        输入约定：表达矩阵 CSV（行为基因、列为细胞，整数 counts）。
+        """
+        input_file = params.get("input_file", "scrna.csv")
+        output_file = params.get("output_file", "sc_clusters.csv")
+        marker_file = params.get("marker_file", "sc_markers.csv")
+        resolution = params.get("resolution", 0.5)
 
         return f'''#!/usr/bin/env Rscript
-# 单细胞分析模板
-
-# 设置输入输出文件
+# 单细胞分析（Seurat）
 input_file <- "{input_file}"
 output_file <- "{output_file}"
+marker_file <- "{marker_file}"
 
-# 这里可以添加 Seurat 单细胞分析流程
-# library(Seurat)
-# obj <- Read10X(input_file)
-# obj <- NormalizeData(obj)
-# obj <- FindVariableFeatures(obj)
-# obj <- ScaleData(obj)
-# obj <- RunPCA(obj)
-# obj <- FindNeighbors(obj)
-# obj <- FindClusters(obj)
-# obj <- RunUMAP(obj)
+if (!requireNamespace("Seurat", quietly = TRUE)) {{
+    stop("请先安装 Seurat")
+}}
+library(Seurat)
 
-# 保存结果
-results <- data.frame(cell = character(), cluster = numeric(), UMAP1 = numeric(), UMAP2 = numeric())
-write.csv(results, output_file, row.names = FALSE)
+mat <- as.matrix(read.csv(input_file, row.names = 1, check.names = FALSE))
+mat <- round(mat)
+obj <- CreateSeuratObject(counts = mat, min.cells = 3, min.features = 200)
+if (ncol(obj) < 10) {{
+    stop("质控后细胞数 < 10，请检查输入矩阵")
+}}
+obj[["percent.mt"]] <- PercentageFeatureSet(obj, pattern = "^MT-|^mt-")
+obj <- subset(
+    obj,
+    subset = nFeature_RNA > 200 & nFeature_RNA < 5000 & percent.mt < 20
+)
+if (ncol(obj) < 10) {{
+    stop("过滤后细胞数 < 10，请放宽 QC 阈值")
+}}
+obj <- NormalizeData(obj, verbose = FALSE)
+obj <- FindVariableFeatures(obj, nfeatures = 2000, verbose = FALSE)
+obj <- ScaleData(obj, verbose = FALSE)
+npcs <- min(30, ncol(obj) - 1, nrow(obj) - 1)
+obj <- RunPCA(obj, npcs = npcs, verbose = FALSE)
+obj <- FindNeighbors(obj, dims = 1:min(15, npcs), verbose = FALSE)
+obj <- FindClusters(obj, resolution = {resolution}, verbose = FALSE)
+obj <- RunUMAP(obj, dims = 1:min(15, npcs), verbose = FALSE)
 
-cat("单细胞分析完成，结果已保存至:", output_file, "\\n")
+emb <- Embeddings(obj, "umap")
+out <- data.frame(
+    cell = rownames(emb),
+    umap_1 = emb[, 1],
+    umap_2 = emb[, 2],
+    cluster = as.character(obj$seurat_clusters),
+    nFeature_RNA = obj$nFeature_RNA,
+    row.names = NULL
+)
+write.csv(out, output_file, row.names = FALSE)
+
+markers <- FindAllMarkers(
+    obj, only.pos = TRUE, max.cells.per.ident = 300,
+    logfc.threshold = 0.25, verbose = FALSE
+)
+write.csv(markers, marker_file, row.names = FALSE)
+cat("细胞数:", ncol(obj),
+    "聚类数:", length(levels(obj$seurat_clusters)), "\\n")
+cat("cluster 表:", output_file, "marker 表:", marker_file, "\\n")
 '''
 
     def _generate_spatial_code(self, params: dict[str, Any]) -> str:

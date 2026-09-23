@@ -109,3 +109,20 @@ def test_execute_confirmed_script_accepts_sc_and_spatial():
     assert r1["status"] == "success"
     r2 = wm.execute_confirmed_script("spatial", {"input_file": "d", "output_file": "e", "plot_file": "f"}, "# s")
     assert r2["status"] == "success"
+
+
+def test_seurat_template_full_pipeline():
+    from src.control.r_script_generator import RScriptGenerator
+
+    code = RScriptGenerator().generate_code(
+        "single_cell",
+        {"input_file": "m.csv", "output_file": "sc.csv",
+         "marker_file": "markers.csv"},
+    )
+    assert "Seurat" in code
+    assert "FindClusters" in code
+    assert "RunUMAP" in code
+    assert "FindAllMarkers" in code
+    assert "单细胞分析模板" not in code
+    assert 'output_file <- "sc.csv"' in code
+    assert 'marker_file <- "markers.csv"' in code
