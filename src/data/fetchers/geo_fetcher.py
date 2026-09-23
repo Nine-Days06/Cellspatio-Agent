@@ -83,6 +83,7 @@ class GEOFetcher(BaseFetcher):
         m = info.metadata
         lines = [
             f"# GEO 数据集: {info.asset_id}",
+            f"来源：https://www.ncbi.nlm.nih.gov/geo/query/acc.cgi?acc={info.asset_id}",
             f"标题：{info.title}",
             f"摘要：{info.description}",
             f"类型：{m.get('gdsType', '')}",

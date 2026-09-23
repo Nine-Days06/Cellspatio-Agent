@@ -72,9 +72,10 @@ class KEGGFetcher(BaseFetcher):
         raise NotImplementedError(f"{self.source} 是知识流数据源，无文件下载")
 
     def ingest_text(self, asset_id: str) -> str:
-        """通路条目原文转为可入库文本"""
+        """通路条目原文转为可入库文本（首行 header + 来源 URL）"""
         raw = self._get(f"get/{asset_id}")
-        return f"# KEGG 通路: {asset_id}\n\n{raw}\n"
+        url = f"https://www.kegg.jp/pathway/{asset_id}"
+        return f"# KEGG 通路: {asset_id}\n来源：{url}\n\n{raw}\n"
 
     @staticmethod
     def _parse_field(text: str, field: str) -> str:

@@ -56,6 +56,7 @@ def test_ingest_text_wraps_raw_text():
     fetcher = _fetcher_with(handler)
     text = fetcher.ingest_text("hsa00010")
     assert text.startswith("# KEGG 通路: hsa00010")
+    assert "来源：https://www.kegg.jp/pathway/hsa00010" in text
     assert "ENTRY" in text
 
 

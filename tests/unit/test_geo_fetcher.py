@@ -142,4 +142,5 @@ def test_ingest_text_from_summary():
     fetcher = _fetcher_with(handler)
     text = fetcher.ingest_text("GSE123456")
     assert "# GEO 数据集: GSE123456" in text
+    assert "来源：https://www.ncbi.nlm.nih.gov/geo/query/acc.cgi?acc=GSE123456" in text
     assert "Expression data" in text

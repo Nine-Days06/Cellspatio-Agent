@@ -76,6 +76,8 @@ def test_ingest_text_builds_markdown():
     fetcher = _fetcher_with(handler)
     text = fetcher.ingest_text("P04637")
     assert "# UniProt 蛋白: P04637" in text
+    # basename 必须唯一（不能是 /entry），否则 LightRAG 去重会丢文档
+    assert "来源：https://www.uniprot.org/uniprotkb/P04637" in text
     assert "基因：TP53" in text
     assert "Tumor suppressor." in text
 

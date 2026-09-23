@@ -58,6 +58,8 @@ class UniProtFetcher(BaseFetcher):
         item = resp.json()
         lines = [
             f"# UniProt 蛋白: {asset_id}",
+            # URL 末段必须是 accession：LightRAG 只存 basename，`/entry` 会撞车
+            f"来源：https://www.uniprot.org/uniprotkb/{asset_id}",
             f"蛋白名：{self._protein_name(item)}",
             f"基因：{self._gene_name(item)}",
         ]
