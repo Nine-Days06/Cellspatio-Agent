@@ -1,6 +1,9 @@
 import logging
 from typing import Any
 
+# 必须最先加载：触发 load_dotenv，保证 R_HOME/NCBI_* 等在组件初始化前可见
+import src.config  # noqa: F401
+
 from src.analysis.r_executor import RExecutor
 from src.analysis.visualization import Visualizer
 from src.control.intent_parser import IntentParser

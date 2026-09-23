@@ -20,10 +20,10 @@ def reload_config():
 
 @patch.dict(os.environ, {}, clear=True)
 @patch("dotenv.load_dotenv", lambda: None)
-def test_default_llm_provider_is_deepseek(reload_config):
-    """无任何 env 时默认 deepseek"""
+def test_default_llm_provider_is_zhipu(reload_config):
+    """无任何 env 时默认 zhipu"""
     config = reload_config()
-    assert config.LLM_PROVIDER == "deepseek"
+    assert config.LLM_PROVIDER == "zhipu"
 
 
 @patch.dict(os.environ, {"LLM_PROVIDER": "openai"}, clear=True)

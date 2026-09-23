@@ -13,9 +13,20 @@ class RExecutor:
     """R 脚本执行器"""
     
     def __init__(self, r_home: str | None = None):
+        # 延迟读取：允许在 load_dotenv 之后构造也能拿到 R_HOME
+        self._r_home_override = r_home
         self.r_home = r_home or os.getenv("R_HOME", "/usr/lib/R")
         self.rscript_path = self._find_rscript()
-    
+
+    def _resolve_rscript(self) -> str:
+        """解析 Rscript：优先用缓存；若仍是占位符则重查（兼容 env 晚加载）"""
+        if self.rscript_path and self.rscript_path != "Rscript" and os.path.exists(self.rscript_path):
+            return self.rscript_path
+        if self._r_home_override is None and os.getenv("R_HOME"):
+            self.r_home = os.getenv("R_HOME", "")
+        self.rscript_path = self._find_rscript()
+        return self.rscript_path
+
     def _find_rscript(self) -> str:
         """查找 Rscript 可执行文件"""
         # 若 R_HOME 已设置，优先使用其中的 Rscript
@@ -49,7 +60,7 @@ class RExecutor:
     
     def execute_script(self, script_path: str, args: list[str] | None = None) -> subprocess.CompletedProcess:
         """执行 R 脚本"""
-        cmd = [self.rscript_path, str(script_path)] + (args or [])
+        cmd = [self._resolve_rscript(), str(script_path)] + (args or [])
         logger.info(f"Executing R script: {cmd}")
         
         try:

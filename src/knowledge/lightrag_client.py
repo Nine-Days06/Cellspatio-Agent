@@ -19,16 +19,32 @@ class LightRAGClient:
         # 延迟导入 LightRAG，避免立即依赖
         self._rag = None
 
+    @staticmethod
+    def _normalize_ollama_host(host: str) -> str:
+        """把 0.0.0.0 / 裸 host:port 规范成客户端可连的 URL"""
+        h = (host or "").strip().rstrip("/")
+        if not h:
+            return "http://127.0.0.1:11434"
+        if "://" not in h:
+            h = f"http://{h}"
+        # 0.0.0.0 是服务端监听地址，客户端连不上
+        if "://0.0.0.0" in h or "://[::]" in h:
+            h = h.replace("://0.0.0.0", "://127.0.0.1").replace("://[::]", "://127.0.0.1")
+        return h
+
     def _initialize_rag(self):
         """使用真实 LLM（云端 DeepSeek 等）与 embedding（本地 Ollama bge-m3）初始化"""
         if self._rag is None:
             try:
                 from lightrag import LightRAG
 
-                ollama_url = self.config.get("ollama_url") or os.getenv("OLLAMA_HOST")
-                if ollama_url:
-                    os.environ["OLLAMA_HOST"] = ollama_url.rstrip("/")
-                os.environ.setdefault("OLLAMA_HOST", "http://localhost:11434")
+                ollama_url = (
+                    self.config.get("ollama_url")
+                    or os.getenv("OLLAMA_URL")
+                    or os.getenv("OLLAMA_HOST")
+                    or "http://127.0.0.1:11434"
+                )
+                os.environ["OLLAMA_HOST"] = self._normalize_ollama_host(ollama_url)
 
                 from src.knowledge.llm_factory import (
                     build_embedding_func,
@@ -46,6 +62,35 @@ class LightRAGClient:
                     embedding_func=embedding_func,
                     enable_llm_cache=True,
                     llm_model_max_async=2,  # 并发限制，受 API 限流影响
+                    addon_params={
+                        "language": "Chinese",
+                        "entity_types_guidance": (
+                            "- Gene: Gene symbols and official gene names "
+                            "(e.g. TP53, INS, BRCA1)\n"
+                            "- Protein: Proteins and UniProt accessions "
+                            "(e.g. p53, P04637, cellular tumor antigen p53)\n"
+                            "- Pathway: KEGG pathways and map IDs "
+                            "(e.g. p53 signaling pathway, map04115, apoptosis)\n"
+                            "- Disease: Diseases, phenotypes, and disorders "
+                            "(e.g. type 2 diabetes mellitus, cancer)\n"
+                            "- Organism: Species and strains "
+                            "(e.g. Homo sapiens, Drosophila)\n"
+                            "- Chemical: Compounds, drugs, and metabolites "
+                            "(e.g. insulin, cisplatin)\n"
+                            "- Variant: Mutations, SNPs, and protein variants\n"
+                            "- Experiment: Assays and omics experiments "
+                            "(e.g. RNA-seq, GSE studies)\n"
+                            "- Sample: Biological samples, cell lines, tissues "
+                            "(e.g. SKOV3, pancreatic beta cell)\n"
+                            "- Organization: Labs, databases, and institutions "
+                            "(e.g. UniProt, KEGG, GEO)\n"
+                            "- Person: Authors and researchers named in the text\n"
+                            "- Publication: Papers and journals "
+                            "(e.g. Cell Res, FEBS Lett)\n"
+                            "- Concept: Other scientific concepts not covered above\n"
+                            "- Other: Fallback when no type fits"
+                        ).rstrip(),
+                    },
                 )
                 # LightRAG 1.5.7+ 需要显式初始化存储
                 asyncio.run(self._rag.initialize_storages())

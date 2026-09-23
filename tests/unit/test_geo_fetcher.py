@@ -67,12 +67,19 @@ def test_confirm_uses_accession_term():
 
 
 def test_series_matrix_url_rules():
+    # NCBI 规则：accession 数字末 3 位换成 nnn（官方 geo_paccess.html）
     fetcher = GEOFetcher()
     assert fetcher._series_matrix_url("GSE123456") == (
-        "https://ftp.ncbi.nlm.nih.gov/geo/series/GSE123/GSE123456/matrix/GSE123456_series_matrix.txt.gz"
+        "https://ftp.ncbi.nlm.nih.gov/geo/series/GSE123nnn/GSE123456/matrix/GSE123456_series_matrix.txt.gz"
+    )
+    assert fetcher._series_matrix_url("GSE48351") == (
+        "https://ftp.ncbi.nlm.nih.gov/geo/series/GSE48nnn/GSE48351/matrix/GSE48351_series_matrix.txt.gz"
+    )
+    assert fetcher._series_matrix_url("GSE1234") == (
+        "https://ftp.ncbi.nlm.nih.gov/geo/series/GSE1nnn/GSE1234/matrix/GSE1234_series_matrix.txt.gz"
     )
     assert fetcher._series_matrix_url("GSE12") == (
-        "https://ftp.ncbi.nlm.nih.gov/geo/series/GSE012/GSE12/matrix/GSE12_series_matrix.txt.gz"
+        "https://ftp.ncbi.nlm.nih.gov/geo/series/GSEnnn/GSE12/matrix/GSE12_series_matrix.txt.gz"
     )
 
 

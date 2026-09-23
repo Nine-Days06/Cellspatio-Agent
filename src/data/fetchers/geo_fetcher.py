@@ -131,11 +131,20 @@ class GEOFetcher(BaseFetcher):
             },
         )
 
+    @staticmethod
+    def _series_range_dir(accession: str) -> str:
+        """NCBI FTP 区间目录：accession 数字末 3 位换成 nnn
+
+        GSE48351 -> GSE48nnn, GSE123456 -> GSE123nnn, GSE1234 -> GSE1nnn, GSE1 -> GSEnnn
+        """
+        digits = accession[3:] if accession[:3].isalpha() else accession
+        if len(digits) <= 3:
+            return f"{accession[:3] if accession[:3].isalpha() else 'GSE'}nnn"
+        return f"{accession[:-3]}nnn"
+
     def _series_matrix_url(self, accession: str) -> str:
         """构造 GEO Series Matrix 下载地址"""
-        digits = accession[3:]
-        prefix = (digits[:3] if len(digits) >= 3 else digits).zfill(3)
-        sub = f"GSE{prefix}"
+        sub = self._series_range_dir(accession)
         return (
             f"{self.GEO_FTP_URL}/{sub}/{accession}/matrix/"
             f"{accession}_series_matrix.txt.gz"

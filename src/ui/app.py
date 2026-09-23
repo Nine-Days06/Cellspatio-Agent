@@ -1,6 +1,13 @@
+import sys
+from pathlib import Path
 from typing import Any
 
 import streamlit as st
+
+# 保证以 `streamlit run src/ui/app.py` 启动时，模块级导入也能 `import src.*`
+_root = Path(__file__).resolve().parents[2]
+if str(_root) not in sys.path:
+    sys.path.insert(0, str(_root))
 
 from src.ui.components import render_analysis_results, render_starter_presets
 
