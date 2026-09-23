@@ -67,7 +67,7 @@ class WorkflowManager:
         context = context if context is not None else {}
 
         # 1. 解析意图
-        intent = self.intent_parser.parse(user_input)
+        intent = self.intent_parser.parse(user_input, context)
         params = self.intent_parser.extract_parameters(user_input)
 
         logger.info(f"Parsed intent: {intent}")

@@ -177,7 +177,7 @@ def test_de_analysis_queries_methods_kb_and_injects_context():
     from src.control.workflow_manager import WorkflowManager
 
     class FakeIntent:
-        def parse(self, user_input):
+        def parse(self, user_input, context=None):
             return {
                 "type": "analysis",
                 "analysis_type": "differential_expression",
@@ -230,7 +230,7 @@ def test_de_analysis_without_methods_kb_still_works():
     from src.control.workflow_manager import WorkflowManager
 
     class FakeIntent:
-        def parse(self, user_input):
+        def parse(self, user_input, context=None):
             return {
                 "type": "analysis",
                 "analysis_type": "differential_expression",
@@ -273,7 +273,7 @@ def test_de_success_writes_summary_to_knowledge_builder():
     from src.control.workflow_manager import WorkflowManager
 
     class FakeIntent:
-        def parse(self, user_input):
+        def parse(self, user_input, context=None):
             return {"type": "analysis", "analysis_type": "differential_expression",
                     "original_input": user_input}
         def extract_parameters(self, user_input):
@@ -315,7 +315,7 @@ def test_de_failure_does_not_write_knowledge():
     from src.control.workflow_manager import WorkflowManager
 
     class FakeIntent:
-        def parse(self, user_input):
+        def parse(self, user_input, context=None):
             return {"type": "analysis", "analysis_type": "differential_expression",
                     "original_input": user_input}
         def extract_parameters(self, user_input):
@@ -356,7 +356,7 @@ def test_de_success_returns_explanation_field():
     from src.control.workflow_manager import WorkflowManager
 
     class FakeIntent:
-        def parse(self, user_input):
+        def parse(self, user_input, context=None):
             return {"type": "analysis", "analysis_type": "differential_expression",
                     "original_input": user_input}
         def extract_parameters(self, user_input):
@@ -424,7 +424,7 @@ def test_fetch_candidates_include_reason_and_confirm_detail():
             return FakeFetcher()
 
     class FakeIntent:
-        def parse(self, user_input):
+        def parse(self, user_input, context=None):
             return {"type": "fetch_data", "original_input": user_input}
 
         def extract_parameters(self, user_input):
@@ -490,7 +490,7 @@ def test_de_retries_after_repair_then_succeeds():
     from src.control.workflow_manager import WorkflowManager
 
     class FakeIntent:
-        def parse(self, user_input):
+        def parse(self, user_input, context=None):
             return {"type": "analysis", "analysis_type": "differential_expression",
                     "original_input": user_input}
         def extract_parameters(self, user_input):
@@ -609,7 +609,7 @@ class KnowledgeIntent:
     def __init__(self):
         self._params = IntentParser()
 
-    def parse(self, user_input):
+    def parse(self, user_input, context=None):
         return {
             "type": "knowledge_query",
             "confidence": 1.0,
@@ -1069,3 +1069,26 @@ def test_lazy_ingest_kb_miss_gene_triggers_search(tmp_path):
 
     ids = {(item["source"], item["asset_id"]) for item in result["lazy_ingested"]}
     assert ("kegg", "map04115") in ids or ("uniprot", "P04637") in ids
+
+
+def test_intent_parse_receives_context_history():
+    from src.control.workflow_manager import WorkflowManager
+
+    class SpyIntent:
+        def __init__(self):
+            self.seen_context = None
+
+        def parse(self, user_input, context=None):
+            self.seen_context = context
+            return {"type": "general", "original_input": user_input}
+
+        def extract_parameters(self, user_input):
+            return {}
+
+    spy = SpyIntent()
+    wm = WorkflowManager(
+        intent_parser=spy, knowledge_client=None, r_executor=None, visualizer=None
+    )
+    ctx = {"history": [{"role": "user", "content": "上一轮"}]}
+    wm.execute_workflow("继续", context=ctx)
+    assert spy.seen_context is ctx
