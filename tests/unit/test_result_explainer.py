@@ -86,3 +86,16 @@ def test_llm_empty_response_falls_back_to_template():
     out = ex.generate_llm_explanation({"total_genes": 50, "significant_genes": 5}, "q")
     assert "待实现" not in out
     assert "5" in out
+
+
+def test_result_explainer_accepts_model():
+    from src.analysis.result_explainer import ResultExplainer
+
+    exp = ResultExplainer(llm_client=None, knowledge_client=None, model="glm-4-Flash")
+    assert exp.model == "glm-4-Flash"
+    text = exp.generate_llm_explanation(
+        {"total_genes": 100, "significant_genes": 10},
+        question="q",
+    )
+    assert "总基因数：100" in text
+    assert "显著差异基因（调整后p值 < 0.05）：10" in text

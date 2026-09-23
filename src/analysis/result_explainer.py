@@ -7,9 +7,10 @@ logger = logging.getLogger(__name__)
 class ResultExplainer:
     """将统计结果转化为自然语言解释（可选 LLM + 知识库背景）"""
 
-    def __init__(self, llm_client=None, knowledge_client=None):
+    def __init__(self, llm_client=None, knowledge_client=None, model: str = "gpt-4o-mini"):
         self.llm_client = llm_client
         self.knowledge_client = knowledge_client
+        self.model = model
 
     def explain_differential_expression(self, results: dict[str, Any]) -> str:
         """解释差异表达分析结果（规则模板）"""
@@ -76,7 +77,7 @@ class ResultExplainer:
         )
         try:
             response = self.llm_client.chat.completions.create(
-                model=getattr(self, "model", "gpt-4o-mini"),
+                model=self.model,
                 messages=[{"role": "user", "content": user_prompt}],
                 temperature=0.2,
                 max_tokens=500,
