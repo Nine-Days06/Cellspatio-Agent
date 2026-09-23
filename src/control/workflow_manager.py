@@ -111,15 +111,39 @@ class WorkflowManager:
         ctx = self.methods_kb.query_context(question)
         return ctx or None
 
+    @staticmethod
+    def _de_output_stats(output_file: str) -> dict[str, Any]:
+        """读取 DE 输出 CSV，统计总基因数与 padj<0.05 显著数；失败返回 0/0"""
+        import csv
+
+        total = 0
+        sig = 0
+        try:
+            with open(output_file, newline="", encoding="utf-8") as f:
+                reader = csv.DictReader(f)
+                for row in reader:
+                    total += 1
+                    raw = row.get("padj") or row.get("pvalue") or ""
+                    try:
+                        p = float(raw)
+                    except ValueError:
+                        continue
+                    if p < 0.05:
+                        sig += 1
+        except OSError as e:
+            logger.warning("read de output for stats failed: %s", e)
+        return {"total_genes": total, "significant_genes": sig}
+
     def _execute_de_analysis(
         self, params: dict[str, Any], context: dict[str, Any]
     ) -> dict[str, Any]:
         """差异表达分析：优先使用已确认下载的 GEO 数据"""
         input_file = None
-        if params.get("input_files"):
-            input_file = params["input_files"][0]
-        elif context.get("downloaded_assets"):
+        # 优先使用已下载的资产（context 传入），其次才用参数里的文件
+        if context.get("downloaded_assets"):
             input_file = context["downloaded_assets"][-1].get("access_path")
+        elif params.get("input_files"):
+            input_file = params["input_files"][0]
 
         # 如果没有数据文件，返回占位成功（用于测试/演示）
         if not input_file:
@@ -175,9 +199,10 @@ class WorkflowManager:
         explanation = None
         if self.explainer is not None:
             try:
+                stats = self._de_output_stats(output_file)
                 explanation = self.explainer.generate_llm_explanation(
                     {"input_file": input_file, "output_file": output_file,
-                     "analysis_type": "differential_expression"},
+                     "analysis_type": "differential_expression", **stats},
                     question=params.get("question", "差异表达分析结果说明"),
                 )
             except Exception as e:  # noqa: BLE001
@@ -462,7 +487,7 @@ class WorkflowManager:
         if callable(has):
             try:
                 return bool(has(source))
-            except Exception:  # noqa: BLE001 - 兼容无 has 的 mock
+            except Exception:  # noqa: BLE001, S110 - 兼容无 has 的 mock
                 pass
         sources = getattr(self.fetcher_registry, "sources", None)
         if callable(sources):

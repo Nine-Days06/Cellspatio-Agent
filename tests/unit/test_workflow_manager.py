@@ -1092,3 +1092,55 @@ def test_intent_parse_receives_context_history():
     ctx = {"history": [{"role": "user", "content": "上一轮"}]}
     wm.execute_workflow("继续", context=ctx)
     assert spy.seen_context is ctx
+
+
+def test_de_explanation_receives_real_stats(tmp_path):
+    from src.control.workflow_manager import WorkflowManager
+
+    csv_file = tmp_path / "in.csv"
+    csv_file.write_text("gene,s1,s2\nG1,1,2\nG2,3,4\nG3,5,6\n", encoding="utf-8")
+
+    class FakeIntent:
+        def parse(self, user_input, context=None):
+            return {"type": "analysis", "analysis_type": "differential_expression",
+                    "original_input": user_input}
+
+        def extract_parameters(self, user_input):
+            return {"input_files": ["x.csv"]}
+
+    class CapturingExplainer:
+        def __init__(self):
+            self.data = None
+
+        def generate_llm_explanation(self, data, question):
+            self.data = data
+            return "ok"
+
+    class FakeGen:
+        def generate_code(self, analysis_type, params, method_context=None):
+            return "# s"
+
+    class FakeExec:
+        def execute_code(self, code):
+            out = str(csv_file.with_suffix(".de_results.csv"))
+            with open(out, "w", encoding="utf-8") as f:
+                f.write("gene,padj\nG1,0.001\nG2,0.2\nG3,0.8\n")
+
+            class R:
+                returncode = 0
+
+            return R()
+
+    exp = CapturingExplainer()
+    wm = WorkflowManager(
+        intent_parser=FakeIntent(), knowledge_client=None,
+        r_executor=FakeExec(), visualizer=None,
+        r_script_generator=FakeGen(), explainer=exp,
+        require_script_confirmation=False,
+    )
+    context = {"downloaded_assets": [{"access_path": str(csv_file)}]}
+    result = wm.execute_workflow("做差异表达", context=context)
+    assert result["status"] == "success"
+    assert exp.data["total_genes"] == 3
+    assert exp.data["significant_genes"] == 1
+    assert exp.data.get("input_file")
