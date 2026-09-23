@@ -23,6 +23,22 @@ def run_prompt(agent: Any, prompt: str) -> None:
     with st.chat_message("assistant"), st.spinner("思考中..."):
         result = agent.execute_workflow(prompt)
 
+    if result.get("status") == "needs_script_confirmation":
+        st.session_state.pending_script = {
+            "script": result.get("script", ""),
+            "analysis_type": result.get("analysis_type"),
+            "params": result.get("params") or {},
+            "method_context": result.get("method_context"),
+        }
+        st.session_state.awaiting_script_confirmation = True
+        with st.chat_message("assistant"):
+            st.markdown(result.get("message", "已生成 R 脚本，请审阅并确认执行"))
+            _render_script_confirmation(agent)
+        st.session_state.messages.append(
+            {"role": "assistant", "content": _format_script_confirmation(result)}
+        )
+        return
+
     if result.get("type") == "fetch_data" and result.get("status") == "needs_confirmation":
         st.session_state.fetch_candidates = result.get("candidates", [])
         st.session_state.fetch_query = result.get("query", "")
@@ -66,6 +82,10 @@ def create_app(agent: Any):
         st.session_state.fetch_candidates = []
     if "awaiting_confirmation" not in st.session_state:
         st.session_state.awaiting_confirmation = False
+    if "awaiting_script_confirmation" not in st.session_state:
+        st.session_state.awaiting_script_confirmation = False
+    if "pending_script" not in st.session_state:
+        st.session_state.pending_script = None
     
     # 显示聊天历史
     for message in st.session_state.messages:
@@ -75,6 +95,10 @@ def create_app(agent: Any):
     # 候选选择器（在聊天输入之前渲染，避免重复渲染问题）
     if st.session_state.get("awaiting_confirmation"):
         _render_candidate_selector(agent)
+
+    # 脚本确认（在聊天输入之前渲染）
+    if st.session_state.get("awaiting_script_confirmation"):
+        _render_script_confirmation(agent)
 
     # 预设起点（仅会话较空时展示）
     if len(st.session_state.messages) <= 1:
@@ -203,6 +227,47 @@ def _format_result(result: dict[str, Any]) -> str:
         lines = "\n".join(f"- {format_reference(r)}" for r in references)
         response = f"{response}\n\n**来源**\n{lines}"
     return response
+
+
+def _format_script_confirmation(result: dict[str, Any]) -> str:
+    """将脚本确认结果格式化为聊天消息文本"""
+    return (
+        f"{result.get('message', '已生成 R 脚本，请审阅并确认执行')}\n\n"
+        f"```r\n{result.get('script', '')}\n```"
+    )
+
+
+def _render_script_confirmation(agent: Any) -> None:
+    """渲染脚本确认 UI"""
+    pending = st.session_state.pending_script
+    if not pending:
+        st.session_state.awaiting_script_confirmation = False
+        return
+    st.markdown("**待执行脚本（请审阅）**")
+    st.code(pending["script"], language="r")
+    col1, col2 = st.columns(2)
+    if col1.button("确认执行", type="primary", key="confirm_script_btn"):
+        with st.spinner("执行中..."):
+            result = agent.execute_confirmed_script(
+                pending["analysis_type"],
+                pending["params"],
+                pending["script"],
+                method_context=pending.get("method_context"),
+            )
+        st.session_state.awaiting_script_confirmation = False
+        st.session_state.pending_script = None
+        _render_chat_result(result)
+        st.session_state.messages.append(
+            {"role": "assistant", "content": _format_result(result)}
+        )
+        st.rerun()
+    if col2.button("取消", key="cancel_script_btn"):
+        st.session_state.awaiting_script_confirmation = False
+        st.session_state.pending_script = None
+        st.session_state.messages.append(
+            {"role": "assistant", "content": "已取消本次脚本执行。"}
+        )
+        st.rerun()
 
 
 def _bootstrap():
