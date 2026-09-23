@@ -235,13 +235,25 @@ class WorkflowManager:
             if lazy_ingested:
                 context["lazy_ingested"] = lazy_ingested
 
-        knowledge_result = self.knowledge_client.query(query)
+        # 结构化引用优先；旧 mock 只有 query() 时回退纯文本
+        references: list[dict[str, Any]] = []
+        if hasattr(self.knowledge_client, "query_with_references"):
+            payload = self.knowledge_client.query_with_references(query)
+            knowledge_result = str(payload.get("response") or "")
+            references = list(payload.get("references") or [])
+        else:
+            from src.knowledge.lightrag_client import strip_references_section
+
+            knowledge_result = strip_references_section(
+                str(self.knowledge_client.query(query) or "")
+            )
 
         return {
             "status": "success",
             "type": "knowledge_response",
             "query": query,
             "response": knowledge_result,
+            "references": references,
             "lazy_ingested": lazy_ingested,
         }
 

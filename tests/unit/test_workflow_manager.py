@@ -693,7 +693,7 @@ def test_lazy_ingest_skipped_without_query_context():
 
         def query(self, query):
             self.query_calls.append(query)
-            return "ok"
+            return "ok\n\n### References\n- [1] x\n"
 
     kegg = FakeBioFetcher("kegg")
     registry = FakeBioRegistry({"kegg": kegg})
@@ -706,7 +706,32 @@ def test_lazy_ingest_skipped_without_query_context():
 
     assert result["lazy_ingested"] == []
     assert kegg.ingested == []
-    assert result["response"] == "ok"
+    # 剥离 LLM 自造 References 段
+    assert result["response"] == "ok\n"
+    assert result["references"] == []
+
+
+def test_knowledge_workflow_uses_query_with_references():
+    """有 query_with_references → 结构化引用进 result，response 仍为 str"""
+    class StructClient:
+        def query(self, query):
+            raise AssertionError("should use query_with_references")
+
+        def query_with_references(self, query):
+            return {
+                "response": "正文\n",
+                "references": [{"reference_id": "1", "file_path": "https://x/y"}],
+            }
+
+    wm, _ = _make_lazy_manager(
+        context_len=999, registry=None, builder=FakeBuilder(),
+        knowledge_client=StructClient(),
+    )
+    result = wm.execute_workflow("TP53 是什么")
+    assert result["response"] == "正文\n"
+    assert result["references"] == [
+        {"reference_id": "1", "file_path": "https://x/y"}
+    ]
 
 
 def test_lazy_ingest_query_context_error_does_not_block_answer():
