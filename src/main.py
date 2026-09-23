@@ -1,8 +1,10 @@
 import logging
+import os
 from typing import Any
 
 # 必须最先加载：触发 load_dotenv，保证 R_HOME/NCBI_* 等在组件初始化前可见
 import src.config  # noqa: F401
+from src.config import get_current_llm
 
 from src.analysis.r_executor import RExecutor
 from src.analysis.visualization import Visualizer
@@ -24,8 +26,19 @@ class CellSpatioAgent:
     def __init__(self, config: dict[str, Any] | None = None):
         self.config = config or {}
 
+        # LLM 客户端与模型（失败回退到关键词/模板模式）
+        try:
+            llm_client, llm_model = get_current_llm()
+        except Exception as e:  # noqa: BLE001
+            logger.warning("LLM client init failed, fallback to keyword/template: %s", e)
+            llm_client, llm_model = None, "gpt-4o-mini"
+        if not llm_model:
+            llm_model = "gpt-4o-mini"
+        self.llm_client = llm_client
+        self.llm_model = llm_model
+
         # 初始化各个组件
-        self.intent_parser = IntentParser()
+        self.intent_parser = IntentParser(llm_client=llm_client, model=llm_model)
 
         llm_cfg = self.config.get("llm", {})
         provider = llm_cfg.get("provider")
@@ -39,7 +52,7 @@ class CellSpatioAgent:
         )
         self.r_executor = RExecutor()
         self.visualizer = Visualizer()
-        self.r_script_generator = RScriptGenerator()
+        self.r_script_generator = RScriptGenerator(llm_client=llm_client, model=llm_model)
 
         from src.knowledge.methods_kb import MethodsKb
 
@@ -60,11 +73,15 @@ class CellSpatioAgent:
 
         from src.analysis.result_explainer import ResultExplainer
 
-        self.result_explainer = ResultExplainer(knowledge_client=self.knowledge_client)
+        self.result_explainer = ResultExplainer(
+            knowledge_client=self.knowledge_client,
+            llm_client=llm_client,
+            model=llm_model,
+        )
 
         from src.analysis.code_repair import CodeRepairer
-        # llm_client 可先为 None，接线口预留
-        self.code_repairer = CodeRepairer(llm_client=None)
+
+        self.code_repairer = CodeRepairer(llm_client=llm_client, model=llm_model)
 
         self.workflow_manager = WorkflowManager(
             intent_parser=self.intent_parser,
@@ -78,6 +95,7 @@ class CellSpatioAgent:
             methods_kb=self.methods_kb,
             explainer=self.result_explainer,
             code_repairer=self.code_repairer,
+            require_script_confirmation=(os.environ.get("SCRIPT_REQUIRE_CONFIRM", "1") == "1"),
         )
 
         logger.info("CellSpatioAgent initialized")

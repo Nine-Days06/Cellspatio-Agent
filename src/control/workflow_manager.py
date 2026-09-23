@@ -42,6 +42,7 @@ class WorkflowManager:
         lineage_path: str = "data/lineage.jsonl",
         code_repairer=None,
         max_repair_attempts: int = 2,
+        require_script_confirmation: bool = True,
     ):
         self.intent_parser = intent_parser
         self.knowledge_client = knowledge_client
@@ -57,6 +58,7 @@ class WorkflowManager:
         self.lineage_path = lineage_path
         self.code_repairer = code_repairer
         self.max_repair_attempts = max_repair_attempts
+        self.require_script_confirmation = require_script_confirmation
 
     def execute_workflow(
         self, user_input: str, context: dict[str, Any] | None = None
