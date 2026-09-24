@@ -14,42 +14,47 @@ from src.ui.components import render_analysis_results, render_starter_presets
 
 def run_prompt(agent: Any, prompt: str) -> None:
     """统一执行：显示用户消息 → workflow → 渲染/确认流 → 入历史"""
-    import streamlit as st
-
-    st.session_state.messages.append({"role": "user", "content": prompt})
+    st.session_state["messages"].append({"role": "user", "content": prompt})
     with st.chat_message("user"):
         st.markdown(prompt)
 
+    # 组装 context：history（推送前的历史）+ downloaded_assets + 当前输入
+    context = {
+        "history": list(st.session_state["messages"][:-1]),
+        "downloaded_assets": st.session_state.get("downloaded_assets", []),
+        "last_user_input": prompt,
+    }
+
     with st.chat_message("assistant"), st.spinner("思考中..."):
-        result = agent.execute_workflow(prompt)
+        result = agent.execute_workflow(prompt, context=context)
 
     if result.get("status") == "needs_script_confirmation":
-        st.session_state.pending_script = {
+        st.session_state["pending_script"] = {
             "script": result.get("script", ""),
             "analysis_type": result.get("analysis_type"),
             "params": result.get("params") or {},
             "method_context": result.get("method_context"),
         }
-        st.session_state.awaiting_script_confirmation = True
+        st.session_state["awaiting_script_confirmation"] = True
         with st.chat_message("assistant"):
             st.markdown(result.get("message", "已生成 R 脚本，请审阅并确认执行"))
             _render_script_confirmation(agent)
-        st.session_state.messages.append(
+        st.session_state["messages"].append(
             {"role": "assistant", "content": _format_script_confirmation(result)}
         )
         return
 
     if result.get("type") == "fetch_data" and result.get("status") == "needs_confirmation":
-        st.session_state.fetch_candidates = result.get("candidates", [])
-        st.session_state.fetch_query = result.get("query", "")
-        st.session_state.awaiting_confirmation = True
+        st.session_state["fetch_candidates"] = result.get("candidates", [])
+        st.session_state["fetch_query"] = result.get("query", "")
+        st.session_state["awaiting_confirmation"] = True
         with st.chat_message("assistant"):
             st.markdown(result.get("message", "找到候选数据集，请选择要下载的项："))
         st.rerun()
         return
 
     _render_chat_result(result)
-    st.session_state.messages.append(
+    st.session_state["messages"].append(
         {"role": "assistant", "content": _format_result(result)}
     )
 
@@ -86,6 +91,8 @@ def create_app(agent: Any):
         st.session_state.awaiting_script_confirmation = False
     if "pending_script" not in st.session_state:
         st.session_state.pending_script = None
+    if "downloaded_assets" not in st.session_state:
+        st.session_state.downloaded_assets = []
     
     # 显示聊天历史
     for message in st.session_state.messages:
@@ -121,9 +128,9 @@ def create_app(agent: Any):
 def _render_candidate_selector(agent: Any):
     """渲染候选数据集选择器与确认下载按钮"""
     with st.chat_message("assistant"):
-        candidates = st.session_state.fetch_candidates or []
+        candidates = st.session_state.get("fetch_candidates") or []
         if not candidates:
-            st.session_state.awaiting_confirmation = False
+            st.session_state["awaiting_confirmation"] = False
             return
         label_map = {
             f"[{c['source']}] {c['asset_id']} - {c['title']}": c
@@ -161,9 +168,14 @@ def _render_candidate_selector(agent: Any):
                     selected['asset_id'],
                     query=st.session_state.get("fetch_query", ""),
                 )
-            st.session_state.awaiting_confirmation = False
+            st.session_state["awaiting_confirmation"] = False
+            # 持久化 downloaded_asset，供后续 run_prompt 组装 context
+            if "asset" in result:
+                st.session_state.setdefault("downloaded_assets", []).append(
+                    result["asset"]
+                )
             message = f"已下载 {selected['asset_id']} → `{result['asset']['access_path']}`"
-            st.session_state.messages.append({"role": "assistant", "content": message})
+            st.session_state["messages"].append({"role": "assistant", "content": message})
             st.rerun()
 
 
