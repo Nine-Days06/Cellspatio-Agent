@@ -1,0 +1,9 @@
+{"id": "de-1", "input": "对这份数据做差异表达分析", "expect_tool": "run_analysis", "expect_args": {"analysis_type": "differential_expression"}}
+{"id": "sc-1", "input": "对这份 scRNA-seq 数据做单细胞聚类和 UMAP", "expect_tool": "run_analysis", "expect_args": {"analysis_type": "single_cell"}}
+{"id": "spatial-1", "input": "分析这个 Visium 空间转录组数据", "expect_tool": "run_analysis", "expect_args": {"analysis_type": "spatial"}}
+{"id": "fetch-geo-1", "input": "帮我下载 GSE123456 数据集", "expect_tool": "search_datasets", "expect_args": {}}
+{"id": "fetch-uniprot-1", "input": "下载 TP53 蛋白信息", "expect_tool": "search_datasets", "expect_args": {}}
+{"id": "know-gene-1", "input": "TP53 在癌症中的作用是什么？", "expect_tool": "query_knowledge", "expect_args": {}}
+{"id": "know-method-1", "input": "差异表达分析为什么用 DESeq2 而不是 TPM？", "expect_tool": "query_knowledge", "expect_args": {}}
+{"id": "general-1", "input": "你好", "expect_tool": null, "expect_args": {}}
+{"id": "unsupported-1", "input": "帮我做个通路富集分析", "expect_tool": null, "expect_args": {}}
