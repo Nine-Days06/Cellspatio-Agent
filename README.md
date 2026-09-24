@@ -11,6 +11,7 @@
 - **单细胞/时空**：Seurat / Visium 流程
 - **混合架构**：Python 控制 + R 分析，发挥各自优势
 - **数据获取**：GEO/KEGG/UniProt 公共数据库检索、确认、下载与入库
+- **工具路由**：LLM tool-calling 选择分析/检索/知识工具（schema 强制参数），失败自动回退关键词意图路径
 - **可扩展**：支持外部 API 集成和模块化扩展
 
 ## 快速开始
@@ -100,8 +101,10 @@ cellspatio-agent/
 │   ├── ui/              # Streamlit 界面
 │   │   └── app.py       # Web 应用入口
 │   ├── control/         # 控制层
-│   │   ├── intent_parser.py      # 意图解析
-│   │   ├── workflow_manager.py   # 两段式工作流
+│   │   ├── agent_runtime.py     # tool-calling 运行时（主入口）
+│   │   ├── tools.py             # 工具 schema 与系统提示词
+│   │   ├── intent_parser.py     # 意图解析（回退路径）
+│   │   ├── workflow_manager.py   # 分支执行与 HITL
 │   │   └── r_script_generator.py # R 脚本生成
 │   ├── knowledge/       # 知识检索层
 │   │   ├── lightrag_client.py    # LightRAG 封装
