@@ -7,6 +7,7 @@ import src.config  # noqa: F401
 from src.analysis.r_executor import RExecutor
 from src.analysis.visualization import Visualizer
 from src.config import get_current_llm
+from src.control.agent_runtime import AgentRuntime
 from src.control.intent_parser import IntentParser
 from src.control.r_script_generator import RScriptGenerator
 from src.control.workflow_manager import WorkflowManager
@@ -97,13 +98,22 @@ class CellSpatioAgent:
             require_script_confirmation=(os.environ.get("SCRIPT_REQUIRE_CONFIRM", "1") == "1"),
         )
 
+        # AgentRuntime: LLM tool loop; fallback to legacy workflow
+        self.agent_runtime = AgentRuntime(
+            llm_client=self.llm_client,
+            model=self.llm_model,
+            workflow_manager=self.workflow_manager,
+        )
+
         logger.info("CellSpatioAgent initialized")
 
     def execute_workflow(
         self, user_input: str, context: dict[str, Any] | None = None
     ) -> dict[str, Any]:
-        """执行工作流"""
-        return self.workflow_manager.execute_workflow(user_input, context)
+        """执行工作流（委托给 AgentRuntime 工具循环）"""
+        context = dict(context) if context else {}
+        context.setdefault("last_user_input", user_input)
+        return self.agent_runtime.execute(user_input, context)
 
     def confirm_and_download(
         self, source: str, asset_id: str, query: str = ""
