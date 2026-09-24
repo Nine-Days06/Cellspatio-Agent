@@ -453,7 +453,7 @@ def test_confirm_and_download_appends_lineage(tmp_path, monkeypatch):
     class Info:
         title = "t"
         description = "d"
-        metadata = {}
+        metadata = {}  # noqa: RUF012 - 测试桩，无需 ClassVar
         asset_id = "GSE1"
         source = "geo"
         asset_type = "analysis"

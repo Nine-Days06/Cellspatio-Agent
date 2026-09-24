@@ -1,5 +1,4 @@
 """Test main.py LLM wiring and HITL switch"""
-import pytest
 
 
 def test_main_wires_llm_components(monkeypatch):

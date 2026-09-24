@@ -225,11 +225,23 @@ class WorkflowManager:
         """单细胞分析：聚类、标记基因"""
         input_file = self._resolve_input_file(params, context)
         if not input_file:
+            # 无数据：生成示例脚本进入确认流程，让用户审阅或取消（冒烟/演示路径）
+            run_params = {
+                "input_file": "scrna_matrix.csv",
+                "output_file": "sc_clusters.csv",
+                "marker_file": "sc_markers.csv",
+            }
+            method_context = self._method_context_for("single_cell", params)
+            code = self.r_script_generator.generate_code(
+                "single_cell", run_params, method_context=method_context,
+            )
             return {
-                "status": "success",
+                "status": "needs_script_confirmation",
                 "analysis_type": "single_cell",
-                "message": "单细胞分析完成（演示模式，无实际数据）",
-                "results": {},
+                "script": code,
+                "params": run_params,
+                "method_context": method_context,
+                "message": "未检测到数据文件，已生成示例 Seurat 脚本（占位输入），请确认或取消",
             }
         out = str(Path(input_file).with_suffix(".sc_clusters.csv"))
         marker = str(Path(input_file).with_suffix(".sc_markers.csv"))
@@ -245,11 +257,23 @@ class WorkflowManager:
         """空间转录组分析：聚类、空间图"""
         input_file = self._resolve_input_file(params, context)
         if not input_file:
+            # 无数据：生成示例脚本进入确认流程，让用户审阅或取消（冒烟/演示路径）
+            run_params = {
+                "input_file": "visium_data",
+                "output_file": "spatial_clusters.csv",
+                "plot_file": "spatial_plot.png",
+            }
+            method_context = self._method_context_for("spatial", params)
+            code = self.r_script_generator.generate_code(
+                "spatial", run_params, method_context=method_context,
+            )
             return {
-                "status": "success",
+                "status": "needs_script_confirmation",
                 "analysis_type": "spatial",
-                "message": "空间转录组分析完成（演示模式，无实际数据）",
-                "results": {},
+                "script": code,
+                "params": run_params,
+                "method_context": method_context,
+                "message": "未检测到数据文件，已生成示例 Visium 脚本（占位输入），请确认或取消",
             }
         base = Path(input_file)
         if base.is_dir():

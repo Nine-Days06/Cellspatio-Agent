@@ -25,7 +25,7 @@ class MethodsKb:
         """检索方法学上下文；失败返回空串（不阻断分析主流程）"""
         try:
             return self.client.query_context(question, mode=mode)
-        except Exception as e:  # 方法库是增强层，必须降级
+        except Exception as e:  # noqa: BLE001 - 方法库是增强层，必须降级
             logger.warning("MethodsKb query failed: %s", e)
             return ""
 

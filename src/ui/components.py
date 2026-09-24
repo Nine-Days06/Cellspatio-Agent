@@ -31,7 +31,7 @@ def render_starter_presets() -> str | None:
         groups.setdefault(p["group"], []).append(p)
 
     clicked = None
-    for group_name, items in groups.items():
+    for items in groups.values():
         cols = st.columns(len(items))
         for col, item in zip(cols, items):
             with col:

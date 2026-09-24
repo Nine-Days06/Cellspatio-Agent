@@ -66,11 +66,12 @@ def test_single_cell_routes_and_output_names(tmp_path):
     assert gen.last["params"]["marker_file"].endswith(".sc_markers.csv")
 
 
-def test_single_cell_demo_without_data(tmp_path):
+def test_single_cell_no_data_generates_script_for_confirmation(tmp_path):
     wm, _ = _wm(SCIntent(), require=False)
     result = wm.execute_workflow("做单细胞聚类")
-    assert result["status"] == "success"
-    assert "演示模式" in result["message"]
+    assert result["status"] == "needs_script_confirmation"
+    assert "未检测到数据文件" in result["message"]
+    assert result["script"]
 
 
 def test_single_cell_confirmation_flow(tmp_path):

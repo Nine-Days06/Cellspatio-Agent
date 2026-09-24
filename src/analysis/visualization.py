@@ -81,7 +81,6 @@ class Visualizer:
         title: str = "Volcano Plot",
     ):
         """交互式火山图；padj=0 夹到最小正值避免 Inf"""
-        import plotly.graph_objects as go
 
         df = data.copy()
         if pval_col not in df.columns:
@@ -98,7 +97,7 @@ class Visualizer:
             x=ns[log2fc_col] if len(ns) else None,
             y=ns["neglog10"] if len(ns) else None,
             mode="markers", name="不显著",
-            marker=dict(color="gray", size=6, opacity=0.5),
+            marker={"color": "gray", "size": 6, "opacity": 0.5},
             text=ns.get(gene_col, None) if len(ns) else None,
             hovertemplate="%{text}<br>log2FC=%{x}<br>-log10p=%{y}<extra></extra>",
         ))
@@ -106,7 +105,7 @@ class Visualizer:
             x=sig[log2fc_col] if len(sig) else None,
             y=sig["neglog10"] if len(sig) else None,
             mode="markers", name="显著",
-            marker=dict(color="red", size=8, opacity=0.7),
+            marker={"color": "red", "size": 8, "opacity": 0.7},
             text=sig.get(gene_col, None) if len(sig) else None,
             hovertemplate="%{text}<br>log2FC=%{x}<br>-log10p=%{y}<extra></extra>",
         ))
@@ -122,7 +121,6 @@ class Visualizer:
 
     def plot_heatmap_plotly(self, data: "pd.DataFrame", title: str = "Heatmap"):
         """交互式热图（数值列）"""
-        import plotly.graph_objects as go
 
         numeric = data.select_dtypes("number")
         if numeric.empty:

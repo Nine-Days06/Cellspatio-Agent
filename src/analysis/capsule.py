@@ -1,6 +1,6 @@
 """可复现分析胶囊：导出问题/意图/脚本/结果元数据"""
 import json
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -15,7 +15,7 @@ def export_analysis_capsule(
 ) -> Path:
     """写入 `<out_root>/<timestamp>/` 并返回该目录路径"""
     root = Path(out_root)
-    ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+    ts = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
     capsule = root / ts
     capsule.mkdir(parents=True, exist_ok=True)
 

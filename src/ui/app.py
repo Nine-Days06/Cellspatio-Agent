@@ -71,7 +71,7 @@ def create_app(agent: Any):
         try:
             stats = agent.knowledge_client.get_statistics()
             st.json(stats)
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001 - UI 容错，知识库不可用时降级展示
             st.error(f"知识库状态获取失败: {e}")
             st.json({"working_dir": "knowledge_base", "initialized": False})
     

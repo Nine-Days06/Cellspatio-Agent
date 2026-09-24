@@ -5,18 +5,18 @@ from src.knowledge.api_gateway import APIGateway
 from src.knowledge.import_config import ImportConfig, import_config
 from src.knowledge.knowledge_builder import KnowledgeBuilder
 from src.knowledge.knowledge_importer import KnowledgeImporter
-from src.knowledge.llm_factory import build_embedding_func, build_llm_func
 from src.knowledge.lightrag_client import LightRAGClient
+from src.knowledge.llm_factory import build_embedding_func, build_llm_func
 from src.knowledge.methods_kb import MethodsKb
 
 __all__ = [
     "APIGateway",
     "ImportConfig",
-    "import_config",
     "KnowledgeBuilder",
     "KnowledgeImporter",
     "LightRAGClient",
     "MethodsKb",
     "build_embedding_func",
     "build_llm_func",
+    "import_config",
 ]

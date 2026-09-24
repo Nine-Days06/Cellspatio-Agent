@@ -74,7 +74,7 @@ def test_llm_empty_response_falls_back_to_template():
                 @staticmethod
                 def create(**kwargs):
                     class R:
-                        choices = [
+                        choices = [  # noqa: RUF012 - 测试桩，无需 ClassVar
                             type(
                                 "C", (), {"message": type("M", (), {"content": "  "})()}
                             )()

@@ -1,8 +1,7 @@
 """知识库导入 CLI 入口 - 提供命令行接口导入文献数据"""
 import argparse
-import sys
 
-from src.config import LLM_PROVIDER, get_llm_config
+from src.config import LLM_PROVIDER
 from src.knowledge.knowledge_importer import KnowledgeImporter
 
 
@@ -16,9 +15,6 @@ def build_importer(provider: str | None = None) -> KnowledgeImporter:
         KnowledgeImporter 实例
     """
     from src.knowledge.lightrag_client import LightRAGClient
-    from src.knowledge.llm_factory import build_embedding_func, build_llm_func
-
-    config = get_llm_config(provider)
 
     working_dir = "./knowledge_base"
     lightrag_client = LightRAGClient(
@@ -26,7 +22,6 @@ def build_importer(provider: str | None = None) -> KnowledgeImporter:
         config={"provider": provider}
     )
 
-    embedding_func = build_embedding_func()
     importer = KnowledgeImporter(lightrag_client)
     return importer
 

@@ -1,7 +1,7 @@
 import json
 import logging
 import re
-from typing import Any
+from typing import Any, ClassVar
 
 logger = logging.getLogger(__name__)
 
@@ -10,7 +10,7 @@ class IntentParser:
     """意图解析器，使用 LLM 进行智能意图识别"""
 
     # 意图定义
-    INTENT_TYPES = {
+    INTENT_TYPES: ClassVar[dict[str, Any]] = {
         "analysis": {
             "description": "数据分析请求：差异表达分析、通路富集、可视化等",
             "sub_types": {
@@ -117,7 +117,7 @@ class IntentParser:
         if self.llm_client:
             try:
                 return self._parse_with_llm(user_input, context)
-            except Exception as e:
+            except (json.JSONDecodeError, AttributeError, ValueError) as e:
                 logger.warning(f"LLM intent parsing failed, fallback to keywords: {e}")
 
         return self._parse_with_keywords(user_input)
@@ -202,7 +202,8 @@ class IntentParser:
                 }
 
         # 简短输入可能是 ambiguous
-        if len(user_input.strip()) < 10 and not any(k in user_input for k in self.knowledge_keywords + self.dataset_keywords + sum(self.analysis_keywords.values(), [])):
+        all_analysis_keywords = [kw for kws in self.analysis_keywords.values() for kw in kws]
+        if len(user_input.strip()) < 10 and not any(k in user_input for k in self.knowledge_keywords + self.dataset_keywords + all_analysis_keywords):
             return {
                 'type': 'ambiguous',
                 'confidence': 0.5,
