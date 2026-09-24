@@ -28,35 +28,94 @@ class RExecutor:
         return self.rscript_path
 
     def _find_rscript(self) -> str:
-        """查找 Rscript 可执行文件"""
-        # 若 R_HOME 已设置，优先使用其中的 Rscript
-        if self.r_home:
-            rscript_name = "Rscript.exe" if os.name == "nt" else "Rscript"
-            candidate = os.path.join(self.r_home, "bin", rscript_name)
+        """查找 Rscript 可执行文件（跨平台动态检测）"""
+        rscript_name = "Rscript.exe" if os.name == "nt" else "Rscript"
+
+        # 1. R_HOME 环境变量（显式指定，优先级最高）
+        r_home = self.r_home or os.getenv("R_HOME")
+        if r_home:
+            candidate = os.path.join(r_home, "bin", rscript_name)
             if os.path.exists(candidate):
                 return candidate
-        
-        # 其次使用 shutil.which 查找
+
+        # 2. PATH 中查找（用户安装时勾选 "Add to PATH"）
         rscript = shutil.which("Rscript")
         if rscript:
             return rscript
-        
-        # 检查常见安装路径
-        common_paths = [
-            "/usr/bin/Rscript",
-            "/usr/local/bin/Rscript",
-            "/opt/R/bin/Rscript",
-            "/Program Files/R/bin/Rscript.exe",
-            "C:\\Program Files\\R\\bin\\Rscript.exe",
-            os.path.expanduser("~/.local/bin/Rscript"),
-        ]
-        
+
+        # 3. Windows：从注册表读取 R 安装路径
+        if os.name == "nt":
+            reg_path = self._get_r_home_from_registry()
+            if reg_path:
+                candidate = os.path.join(reg_path, "bin", rscript_name)
+                if os.path.exists(candidate):
+                    return candidate
+
+        # 4. 跨平台常见默认路径（兜底）
+        common_paths = self._get_common_r_paths()
         for path in common_paths:
             if os.path.exists(path) and os.access(path, os.X_OK):
                 return path
-        
-        # 如果都找不到，返回默认值（可能在 PATH 中）
-        return "Rscript"
+
+        # 5. 实在找不到，返回默认命令名（交给 subprocess 报错）
+        return rscript_name
+
+    def _get_r_home_from_registry(self) -> str | None:
+        """从 Windows 注册表读取 R 安装路径 (HKLM\\Software\\R-core\\R)"""
+        try:
+            import winreg
+            # R 4.x+ 通常写在 HKLM\\Software\\R-core\\R
+            with winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, r"Software\R-core\R") as key:
+                install_path, _ = winreg.QueryValueEx(key, "InstallPath")
+                if install_path and os.path.isdir(install_path):
+                    return install_path
+        except (FileNotFoundError, OSError, ImportError):
+            pass
+        # 兼容旧版/用户级安装：HKCU
+        try:
+            import winreg
+            with winreg.OpenKey(winreg.HKEY_CURRENT_USER, r"Software\R-core\R") as key:
+                install_path, _ = winreg.QueryValueEx(key, "InstallPath")
+                if install_path and os.path.isdir(install_path):
+                    return install_path
+        except (FileNotFoundError, OSError, ImportError):
+            pass
+        return None
+
+    def _get_common_r_paths(self) -> list[str]:
+        """跨平台常见默认安装路径（按可能性排序）"""
+        rscript_name = "Rscript.exe" if os.name == "nt" else "Rscript"
+        paths = []
+
+        if os.name == "nt":
+            # Windows: 遍历 Program Files、用户目录、常见自定义盘符
+            for base in [
+                os.getenv("ProgramFiles", r"C:\Program Files"),
+                os.getenv("ProgramFiles(x86)", r"C:\Program Files (x86)"),
+                os.getenv("LOCALAPPDATA", ""),
+                "D:\\", "E:\\", "F:\\",
+            ]:
+                if not base:
+                    continue
+                # R-4.x.x 版本目录
+                for ver in ["R-4.5.3", "R-4.5.2", "R-4.5.1", "R-4.5.0",
+                            "R-4.4.3", "R-4.4.2", "R-4.4.1", "R-4.4.0",
+                            "R-4.3.3", "R-4.3.2", "R-4.3.1", "R-4.3.0",
+                            "R-4.2.3", "R-4.2.2", "R-4.2.1", "R-4.2.0"]:
+                    paths.append(os.path.join(base, ver, "bin", rscript_name))
+                # 通用 R 目录
+                paths.append(os.path.join(base, "R", "bin", rscript_name))
+        else:
+            # Linux/macOS 常见路径
+            paths.extend([
+                "/usr/bin/Rscript",
+                "/usr/local/bin/Rscript",
+                "/opt/R/bin/Rscript",
+                "/opt/homebrew/bin/Rscript",  # Apple Silicon Homebrew
+                os.path.expanduser("~/.local/bin/Rscript"),
+            ])
+
+        return paths
     
     def execute_script(self, script_path: str, args: list[str] | None = None) -> subprocess.CompletedProcess:
         """执行 R 脚本"""

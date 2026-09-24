@@ -8,11 +8,16 @@ from src.analysis.r_executor import RExecutor, RExecutorError
 
 
 def is_r_available():
-    """检查R是否可用"""
+    """检查R是否可用（复用 RExecutor 的查找逻辑）"""
+    from src.analysis.r_executor import RExecutor
     try:
-        result = subprocess.run(["Rscript", "--version"], capture_output=True, timeout=5, check=False)
+        executor = RExecutor()
+        rscript = executor._resolve_rscript()
+        if rscript == "Rscript" and not os.path.exists(rscript):
+            return False
+        result = subprocess.run([rscript, "--version"], capture_output=True, timeout=5, check=False)
         return result.returncode == 0
-    except (FileNotFoundError, subprocess.TimeoutExpired):
+    except (FileNotFoundError, subprocess.TimeoutExpired, Exception):
         return False
 
 @pytest.mark.skipif(not is_r_available(), reason="R not installed")
