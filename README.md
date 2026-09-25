@@ -20,7 +20,7 @@
 
 ```cmd
 REM 克隆项目
-git clone https://github.com/your-org/cellspatio-agent.git
+git clone https://github.com/Nine-Days06/cellspatio-agent.git
 cd cellspatio-agent
 
 REM 运行设置脚本

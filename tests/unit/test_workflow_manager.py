@@ -164,12 +164,12 @@ def test_de_analysis_uses_downloaded_asset(tmp_path):
     assert result["analysis_type"] == "differential_expression"
 
 
-def test_de_analysis_without_data_errors():
+def test_de_analysis_without_data_needs_input():
     manager = _make_manager()
     result = manager.execute_workflow("做差异表达分析")
-    assert result["status"] == "success"
+    assert result["status"] == "needs_input"
     assert result["analysis_type"] == "differential_expression"
-    assert "演示模式" in result["message"] or "无实际数据" in result["message"]
+    assert "input_files" in result["message"] or "下载" in result["message"] or "数据" in result["message"]
 
 
 def test_de_analysis_queries_methods_kb_and_injects_context():
@@ -1144,3 +1144,30 @@ def test_de_explanation_receives_real_stats(tmp_path):
     assert exp.data["total_genes"] == 3
     assert exp.data["significant_genes"] == 1
     assert exp.data.get("input_file")
+
+
+def test_unsupported_analysis_type_returns_error():
+    """pathway/visualization 不得再假成功。"""
+    from src.control.workflow_manager import WorkflowManager
+
+    class FakeIntent:
+        def parse(self, user_input, context=None):
+            return {
+                "type": "analysis",
+                "analysis_type": "pathway_analysis",
+                "original_input": user_input,
+            }
+
+        def extract_parameters(self, user_input):
+            return {}
+
+    manager = WorkflowManager(
+        intent_parser=FakeIntent(),
+        knowledge_client=MockKnowledgeClient(),
+        r_executor=MockRExecutor(),
+        visualizer=MockVisualizer(),
+        r_script_generator=MockRScriptGenerator(),
+    )
+    result = manager.execute_workflow("做通路富集")
+    assert result["status"] == "error"
+    assert "pathway_analysis" in result["message"]

@@ -46,13 +46,15 @@ def _make_workflow_manager() -> WorkflowManager:
 
 
 def test_analysis_workflow_full_chain():
-    """测试分析工作流完整链路：意图解析 → 工作流管理"""
+    """测试分析工作流完整链路：意图解析 → 工作流管理（无数据时返回 needs_input）"""
     manager = _make_workflow_manager()
 
     result = manager.execute_workflow("分析差异表达基因")
 
-    assert result['status'] == 'success'
+    # 无数据时 → needs_input（新语义：不再伪造成功）
+    assert result['status'] == 'needs_input'
     assert result['analysis_type'] == 'differential_expression'
+    assert 'input_files' in result['message'] or '下载' in result['message'] or '数据' in result['message']
 
 
 def test_visualization_intent_and_script_generation():

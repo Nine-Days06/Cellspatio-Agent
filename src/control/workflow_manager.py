@@ -132,10 +132,16 @@ class WorkflowManager:
         if analysis_type == "spatial":
             return self._execute_spatial_analysis(params, context)
 
+        # 不支持的分析类型：返回 error（schema 已白名单挡住，但以防万一）
+        from src.control.tools import SUPPORTED_ANALYSIS_TYPES
         return {
-            "status": "success",
+            "status": "error",
+            "type": "analysis",
             "analysis_type": analysis_type,
-            "message": f"已开始执行 {analysis_type} 分析",
+            "message": (
+                f"不支持的分析类型: {analysis_type}；"
+                f"当前支持 {', '.join(SUPPORTED_ANALYSIS_TYPES)}"
+            ),
             "results": {},
         }
 
@@ -186,12 +192,15 @@ class WorkflowManager:
         elif params.get("input_files"):
             input_file = params["input_files"][0]
 
-        # 如果没有数据文件，返回占位成功（用于测试/演示）
+        # 无数据：返回 needs_input 终态（AgentRuntime 短路上抛 UI），不再伪造成功
         if not input_file:
             return {
-                "status": "success",
+                "status": "needs_input",
+                "type": "analysis",
                 "analysis_type": "differential_expression",
-                "message": "差异表达分析完成（演示模式，无实际数据）",
+                "message": (
+                    "需提供数据文件，请先下载或指定输入文件"
+                ),
                 "results": {},
             }
 
@@ -808,3 +817,41 @@ class WorkflowManager:
             "asset_id": asset_id,
             "inserted": result.get("inserted"),
         }
+
+    # ── AgentRuntime 执行面（tool-calling）────────────────────
+    def search_datasets_for_agent(
+        self, query: str, params: dict[str, Any], context: dict[str, Any] | None = None
+    ) -> dict[str, Any]:
+        """Agent 面向的数据检索入口：构造 intent → 调用内部检索工作流"""
+        context = context or {}
+        intent = {"type": "fetch_data", "original_input": query}
+        return self._execute_fetch_data_workflow(intent, params, context)
+
+    def query_knowledge_for_agent(
+        self, query: str, context: dict[str, Any] | None = None
+    ) -> dict[str, Any]:
+        """Agent 面向的知识查询入口：构造 intent → 调用内部知识工作流"""
+        context = context or {}
+        intent = {"type": "knowledge_query", "original_input": query}
+        params = self.intent_parser.extract_parameters(query) if self.intent_parser else {}
+        return self._execute_knowledge_workflow(intent, params, context)
+
+    def run_analysis_for_agent(
+        self, analysis_type: str, params: dict[str, Any], context: dict[str, Any] | None = None
+    ) -> dict[str, Any]:
+        """Agent 面向的分析执行入口：校验类型白名单 → 构造 intent → 调用内部工作流"""
+        context = context or {}
+        from src.control.tools import SUPPORTED_ANALYSIS_TYPES
+
+        if analysis_type not in SUPPORTED_ANALYSIS_TYPES:
+            return {
+                "status": "error",
+                "analysis_type": analysis_type,
+                "message": f"不支持的分析类型: {analysis_type}，支持的类型: {', '.join(SUPPORTED_ANALYSIS_TYPES)}",
+            }
+        intent = {
+            "type": "analysis",
+            "analysis_type": analysis_type,
+            "original_input": context.get("last_user_input", "") or params.get("question", ""),
+        }
+        return self._execute_analysis_workflow(intent, params, context)
