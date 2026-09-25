@@ -12,6 +12,10 @@
 - **混合架构**：Python 控制 + R 分析，发挥各自优势
 - **数据获取**：GEO/KEGG/UniProt 公共数据库检索、确认、下载与入库
 - **工具路由**：LLM tool-calling 选择分析/检索/知识工具（schema 强制参数），失败自动回退关键词意图路径
+- **工作流记录**：自动生成 `workflow.json`（intent/params/steps/outputs），落盘 `.wrroc/<run_id>/`
+- **溯源体系**：WRROC + Lineage 图谱，输入→代码→结果全链路可追踪
+- **快照分支**：Git worktree 自动创建 `snapshots/<run_id>/`，锁定代码+数据+环境
+- **一键复现**：`python -m src.cli.replay <run_id>` 恢复 worktree、数据、环境、结果
 - **可扩展**：支持外部 API 集成和模块化扩展
 
 ## 快速开始
@@ -105,7 +109,14 @@ cellspatio-agent/
 │   │   ├── tools.py             # 工具 schema 与系统提示词
 │   │   ├── intent_parser.py     # 意图解析（回退路径）
 │   │   ├── workflow_manager.py   # 分支执行与 HITL
+│   │   ├── workflow_recorder.py  # Workflow 记录器
+│   │   ├── wrroc_store.py        # WRROC 落盘存储
+│   │   ├── snapshot_manager.py   # Git worktree 快照管理
+│   │   ├── replay.py             # 复现接口
 │   │   └── r_script_generator.py # R 脚本生成
+│   ├── schemas/         # Schema 定义
+│   │   ├── workflow.py          # Workflow JSON Schema
+│   │   └── lineage.py           # Lineage 图谱模型
 │   ├── knowledge/       # 知识检索层
 │   │   ├── lightrag_client.py    # LightRAG 封装
 │   │   ├── knowledge_builder.py  # 批量构建
@@ -161,7 +172,7 @@ ruff check src/ tests/
 2. 创建特性分支 (`git checkout -b feature/amazing-feature`)
 3. 提交更改 (`git commit -m 'Add amazing feature'`)
 4. 推送到分支 (`git push origin feature/amazing-feature`)
-5. 创建 Pull Request
+4. 创建 Pull Request
 
 ## 许可证
 

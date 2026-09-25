@@ -37,6 +37,7 @@ knowledge_base/
 *.log
 .env
 .omo
+.wrroc/
 
 # pubmed-etl 运行时数据（数据库、XML、PDF、输出）
 pubmed-etl/data/

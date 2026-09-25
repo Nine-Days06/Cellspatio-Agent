@@ -42,8 +42,21 @@ class CellSpatioAgent:
         # 初始化各个组件
         self.intent_parser = IntentParser(llm_client=llm_client, model=llm_model)
 
-        # 创建 WorkflowRecorder
-        self.workflow_recorder = WorkflowRecorder()
+        # 推导 git 仓库根目录：优先 repo_root 配置，其次从 knowledge_dir/data_dir 推导父目录
+        repo_root = self.config.get("repo_root")
+        if not repo_root:
+            # 从 knowledge_dir 或 data_dir 推导父目录作为 git 仓库根
+            for key in ("knowledge_dir", "data_dir"):
+                val = self.config.get(key)
+                if val:
+                    repo_root = str(Path(val).parent)
+                    break
+        if not repo_root:
+            repo_root = "."
+        self.workflow_recorder = WorkflowRecorder(
+            wrroc_base_dir=str(Path(repo_root) / ".wrroc"),
+            repo_root=Path(repo_root)
+        )
 
         llm_cfg = self.config.get("llm", {})
         provider = llm_cfg.get("provider")

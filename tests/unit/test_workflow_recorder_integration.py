@@ -14,16 +14,30 @@ def _get_run_id(recorder: WorkflowRecorder) -> str:
     return list(ctx.keys())[-1]
 
 
+def _init_git_repo(path: Path):
+    """在指定路径初始化 git 仓库。"""
+    import subprocess
+    subprocess.run(["git", "init"], cwd=path, check=True, capture_output=True)
+    subprocess.run(["git", "config", "user.email", "test@test.com"], cwd=path, check=True)
+    subprocess.run(["git", "config", "user.name", "Test"], cwd=path, check=True)
+    (path / "README.md").write_text("# Test")
+    subprocess.run(["git", "add", "."], cwd=path, check=True)
+    subprocess.run(["git", "commit", "-m", "init"], cwd=path, check=True)
+
+
 def test_workflow_manager_with_recorder(monkeypatch):
     """WorkflowManager 注入 Recorder 后自动记录执行轨迹。"""
     monkeypatch.setattr("src.main.get_current_llm", lambda: (None, "test-model"))
     monkeypatch.setattr("src.main.LightRAGClient.__init__", lambda self, *a, **k: None)
 
     with tempfile.TemporaryDirectory() as tmp:
+        # 初始化 git 仓库以支持 snapshot 创建
+        _init_git_repo(Path(tmp))
+
         csv_file = Path(tmp) / "counts.csv"
         csv_file.write_text("gene,sample1,sample2\nTP53,10,12\nGAPDH,100,110\n", encoding="utf-8")
 
-        config = {"knowledge_dir": tmp, "data_dir": tmp}
+        config = {"knowledge_dir": tmp, "data_dir": tmp, "repo_root": tmp}
         agent = CellSpatioAgent(config)
 
         # 验证 recorder 注入
@@ -51,10 +65,13 @@ def test_workflow_manager_recorder_captures_intent_and_steps(monkeypatch):
     monkeypatch.setattr("src.main.LightRAGClient.__init__", lambda self, *a, **k: None)
 
     with tempfile.TemporaryDirectory() as tmp:
+        # 初始化 git 仓库以支持 snapshot 创建
+        _init_git_repo(Path(tmp))
+
         csv_file = Path(tmp) / "counts.csv"
         csv_file.write_text("gene,sample1,sample2\nTP53,10,12\nGAPDH,100,110\n", encoding="utf-8")
 
-        config = {"knowledge_dir": tmp, "data_dir": tmp}
+        config = {"knowledge_dir": tmp, "data_dir": tmp, "repo_root": tmp}
         agent = CellSpatioAgent(config)
 
         context = {"downloaded_assets": [{"source": "geo", "asset_id": "GSE1", "access_path": str(csv_file)}]}

@@ -54,8 +54,9 @@ class WorkflowRecorder:
         recorder.finish_run(run_id)  # 自动落盘到 WRROCStore
     """
 
-    def __init__(self, wrroc_base_dir: str = ".wrroc"):
+    def __init__(self, wrroc_base_dir: str = ".wrroc", repo_root: Path | str | None = None):
         self.store = WRROCStore(Path(wrroc_base_dir))
+        self.repo_root = Path(repo_root) if repo_root else Path.cwd()
 
     @classmethod
     def get_context(cls) -> dict[str, WorkflowExecution]:
@@ -173,7 +174,7 @@ class WorkflowRecorder:
         wf_path = self.store.persist(run)
         # 自动创建 Git 快照
         from src.control.snapshot_manager import SnapshotManager
-        mgr = SnapshotManager(Path.cwd())
+        mgr = SnapshotManager(self.repo_root)
         mgr.create_snapshot(run.run_id, commit_msg=f"Snapshot for {run.run_id}")
         return wf_path
 

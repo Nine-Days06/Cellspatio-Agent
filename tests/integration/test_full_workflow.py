@@ -1,3 +1,4 @@
+import subprocess
 import tempfile
 from pathlib import Path
 
@@ -12,11 +13,22 @@ def test_full_analysis_workflow(monkeypatch):
     monkeypatch.setattr("src.main.LightRAGClient.__init__", lambda self, *a, **k: None)
 
     with tempfile.TemporaryDirectory() as temp_dir:
-        csv_file = Path(temp_dir) / "counts.csv"
+        # 创建 git 仓库作为 repo_root
+        repo = Path(temp_dir) / "repo"
+        repo.mkdir()
+        subprocess.run(["git", "init"], cwd=repo, check=True, capture_output=True)
+        subprocess.run(["git", "config", "user.email", "test@test.com"], cwd=repo, check=True)
+        subprocess.run(["git", "config", "user.name", "Test"], cwd=repo, check=True)
+        (repo / "README.md").write_text("# Test")
+        subprocess.run(["git", "add", "."], cwd=repo, check=True)
+        subprocess.run(["git", "commit", "-m", "init"], cwd=repo, check=True)
+
+        csv_file = repo / "counts.csv"
         csv_file.write_text("gene,sample1,sample2\nTP53,10,12\nGAPDH,100,110\n", encoding="utf-8")
         config = {
             "knowledge_dir": temp_dir,
-            "llm": {"provider": "mock"},
+            "data_dir": temp_dir,
+            "repo_root": str(repo),  # 显式指定 git 仓库根目录
         }
         agent = CellSpatioAgent(config)
         context = {
@@ -44,3 +56,4 @@ def test_knowledge_query_workflow():
 def test_ui_rendering():
     """测试 UI 渲染（模拟）"""
     # 这个测试需要 Streamlit 测试框架
+    pytest.skip("需要 Streamlit 测试框架")

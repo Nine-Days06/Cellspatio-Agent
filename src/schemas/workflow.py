@@ -118,7 +118,6 @@ class WorkflowExecution(BaseModel):
 # 延迟导入 json，避免循环
 import json
 
-
 # ── 兼容 WRROCStore 所需的 WorkflowRun 等模型 ─────────────────────────
 
 class WorkflowIntent(BaseModel):
@@ -169,5 +168,5 @@ class WorkflowRun(BaseModel):
         return "\n".join(lines)
 
     @classmethod
-    def from_json(cls, json_str: str) -> "WorkflowRun":
+    def from_json(cls, json_str: str) -> WorkflowRun:
         return cls.model_validate_json(json_str)

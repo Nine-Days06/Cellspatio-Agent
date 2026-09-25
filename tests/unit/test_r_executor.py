@@ -17,7 +17,7 @@ def is_r_available():
             return False
         result = subprocess.run([rscript, "--version"], capture_output=True, timeout=5, check=False)
         return result.returncode == 0
-    except (FileNotFoundError, subprocess.TimeoutExpired, Exception):
+    except (FileNotFoundError, subprocess.TimeoutExpired):
         return False
 
 @pytest.mark.skipif(not is_r_available(), reason="R not installed")
