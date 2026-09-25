@@ -2,6 +2,7 @@ import json
 import logging
 import os
 import re
+import uuid
 from pathlib import Path
 from typing import Any
 
@@ -43,6 +44,7 @@ class WorkflowManager:
         code_repairer=None,
         max_repair_attempts: int = 2,
         require_script_confirmation: bool = False,
+        workflow_recorder=None,
     ):
         self.intent_parser = intent_parser
         self.knowledge_client = knowledge_client
@@ -59,6 +61,7 @@ class WorkflowManager:
         self.code_repairer = code_repairer
         self.max_repair_attempts = max_repair_attempts
         self.require_script_confirmation = require_script_confirmation
+        self.workflow_recorder = workflow_recorder
 
     def execute_workflow(
         self, user_input: str, context: dict[str, Any] | None = None
@@ -66,21 +69,44 @@ class WorkflowManager:
         """执行工作流"""
         context = context if context is not None else {}
 
-        # 1. 解析意图
+        # 1. 解析意图（先解析，拿到 intent 再开始记录）
         intent = self.intent_parser.parse(user_input, context)
         params = self.intent_parser.extract_parameters(user_input)
+
+        # 生成 run_id
+        run_id = f"run-{uuid.uuid4().hex[:8]}"
+
+        # 记录开始：此时已有 intent，直接传入完整信息
+        if self.workflow_recorder:
+            self.workflow_recorder.start_execution(
+                intent={
+                    "type": intent.get("type", "general"),
+                    "analysis_type": intent.get("analysis_type"),
+                    "original_input": user_input,
+                    "confidence": intent.get("confidence", 1.0),
+                },
+                parameters=params,
+                user_input=user_input,
+                context=context,
+                run_id=run_id,
+            )
 
         logger.info(f"Parsed intent: {intent}")
 
         # 2. 根据意图执行相应工作流
         if intent["type"] == "analysis":
-            return self._execute_analysis_workflow(intent, params, context)
+            result = self._execute_analysis_workflow(intent, params, context, run_id)
         elif intent["type"] == "knowledge_query":
-            return self._execute_knowledge_workflow(intent, params, context)
+            result = self._execute_knowledge_workflow(intent, params, context, run_id)
         elif intent["type"] == "fetch_data":
-            return self._execute_fetch_data_workflow(intent, params, context)
+            result = self._execute_fetch_data_workflow(intent, params, context, run_id)
         else:
-            return self._execute_general_workflow(intent, params, context)
+            result = self._execute_general_workflow(intent, params, context, run_id)
+
+        if self.workflow_recorder:
+            self.workflow_recorder.finish_execution(run_id)
+
+        return result
 
     def _resolve_input_file(self, params: dict[str, Any], context: dict[str, Any]) -> str | None:
         """解析输入文件：优先 params.input_files，其次 context.downloaded_assets"""
@@ -120,17 +146,17 @@ class WorkflowManager:
         )
 
     def _execute_analysis_workflow(
-        self, intent: dict[str, Any], params: dict[str, Any], context: dict[str, Any]
+        self, intent: dict[str, Any], params: dict[str, Any], context: dict[str, Any], run_id: str | None = None
     ) -> dict[str, Any]:
         """执行分析工作流"""
         analysis_type = intent.get("analysis_type")
 
         if analysis_type == "differential_expression":
-            return self._execute_de_analysis(params, context)
+            return self._execute_de_analysis(params, context, run_id)
         if analysis_type == "single_cell":
-            return self._execute_sc_analysis(params, context)
+            return self._execute_sc_analysis(params, context, run_id)
         if analysis_type == "spatial":
-            return self._execute_spatial_analysis(params, context)
+            return self._execute_spatial_analysis(params, context, run_id)
 
         # 不支持的分析类型：返回 error（schema 已白名单挡住，但以防万一）
         from src.control.tools import SUPPORTED_ANALYSIS_TYPES
@@ -182,9 +208,19 @@ class WorkflowManager:
         return {"total_genes": total, "significant_genes": sig}
 
     def _execute_de_analysis(
-        self, params: dict[str, Any], context: dict[str, Any]
+        self, params: dict[str, Any], context: dict[str, Any], run_id: str | None = None
     ) -> dict[str, Any]:
         """差异表达分析：优先使用已确认下载的 GEO 数据"""
+        # 记录步骤开始
+        if self.workflow_recorder and run_id:
+            self.workflow_recorder.record_step(
+                run_id,
+                step_id="de_analysis_start",
+                step_type="analysis",
+                tool="run_analysis",
+                params={"analysis_type": "differential_expression"},
+            )
+
         input_file = None
         # 优先使用已下载的资产（context 传入），其次才用参数里的文件
         if context.get("downloaded_assets"):
@@ -194,7 +230,7 @@ class WorkflowManager:
 
         # 无数据：返回 needs_input 终态（AgentRuntime 短路上抛 UI），不再伪造成功
         if not input_file:
-            return {
+            result = {
                 "status": "needs_input",
                 "type": "analysis",
                 "analysis_type": "differential_expression",
@@ -203,6 +239,16 @@ class WorkflowManager:
                 ),
                 "results": {},
             }
+            if self.workflow_recorder and run_id:
+                self.workflow_recorder.record_step(
+                    run_id,
+                    step_id="de_analysis_no_input",
+                    step_type="analysis",
+                    tool="run_analysis",
+                    params={},
+                    output={"status": "needs_input", "message": "无输入数据"},
+                )
+            return result
 
         output_file = str(Path(input_file).with_suffix(".de_results.csv"))
         method_context = self._method_context_for("differential_expression", params)
@@ -214,15 +260,25 @@ class WorkflowManager:
 
         # HITL: 需要脚本确认且未通过 context 批准
         if self.require_script_confirmation and not context.get("script_approved"):
-            return {
+            result = {
                 "status": "needs_script_confirmation",
                 "analysis_type": "differential_expression",
                 "script": code,
                 "params": {"input_file": input_file, "output_file": output_file},
                 "method_context": method_context,
             }
+            if self.workflow_recorder and run_id:
+                self.workflow_recorder.record_step(
+                    run_id,
+                    step_id="de_analysis_script_generated",
+                    step_type="analysis",
+                    tool="run_analysis",
+                    params={"analysis_type": "differential_expression"},
+                    output={"status": "needs_script_confirmation", "script": code[:100]},
+                )
+            return result
 
-        return self._finish_analysis(
+        result = self._finish_analysis(
             "differential_expression",
             {"input_file": input_file, "output_file": output_file},
             code,
@@ -230,8 +286,29 @@ class WorkflowManager:
             context,
         )
 
-    def _execute_sc_analysis(self, params: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:
+        if self.workflow_recorder and run_id:
+            self.workflow_recorder.record_step(
+                run_id,
+                step_id="de_analysis_finish",
+                step_type="analysis",
+                tool="run_analysis",
+                params={"analysis_type": "differential_expression"},
+                output={"status": result.get("status", "success"), "result": result.get("results")},
+            )
+
+        return result
+
+    def _execute_sc_analysis(self, params: dict[str, Any], context: dict[str, Any], run_id: str | None = None) -> dict[str, Any]:
         """单细胞分析：聚类、标记基因"""
+        if self.workflow_recorder and run_id:
+            self.workflow_recorder.record_step(
+                run_id,
+                step_id="sc_analysis_start",
+                step_type="analysis",
+                tool="run_analysis",
+                params={"analysis_type": "single_cell"},
+            )
+
         input_file = self._resolve_input_file(params, context)
         if not input_file:
             # 无数据：生成示例脚本进入确认流程，让用户审阅或取消（冒烟/演示路径）
@@ -244,7 +321,7 @@ class WorkflowManager:
             code = self.r_script_generator.generate_code(
                 "single_cell", run_params, method_context=method_context,
             )
-            return {
+            result = {
                 "status": "needs_script_confirmation",
                 "analysis_type": "single_cell",
                 "script": code,
@@ -252,6 +329,17 @@ class WorkflowManager:
                 "method_context": method_context,
                 "message": "未检测到数据文件，已生成示例 Seurat 脚本（占位输入），请确认或取消",
             }
+            if self.workflow_recorder and run_id:
+                self.workflow_recorder.record_step(
+                    run_id,
+                    step_id="sc_analysis_no_input",
+                    step_type="analysis",
+                    tool="run_analysis",
+                    params={"analysis_type": "single_cell"},
+                    output={"status": "needs_script_confirmation", "script": code[:100]},
+                )
+            return result
+
         out = str(Path(input_file).with_suffix(".sc_clusters.csv"))
         marker = str(Path(input_file).with_suffix(".sc_markers.csv"))
         run_params = {
@@ -262,8 +350,17 @@ class WorkflowManager:
         method_context = self._method_context_for("single_cell", params)
         return self._generate_or_finish("single_cell", run_params, method_context, context)
 
-    def _execute_spatial_analysis(self, params: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:
+    def _execute_spatial_analysis(self, params: dict[str, Any], context: dict[str, Any], run_id: str | None = None) -> dict[str, Any]:
         """空间转录组分析：聚类、空间图"""
+        if self.workflow_recorder and run_id:
+            self.workflow_recorder.record_step(
+                run_id,
+                step_id="spatial_analysis_start",
+                step_type="analysis",
+                tool="run_analysis",
+                params={"analysis_type": "spatial"},
+            )
+
         input_file = self._resolve_input_file(params, context)
         if not input_file:
             # 无数据：生成示例脚本进入确认流程，让用户审阅或取消（冒烟/演示路径）
@@ -276,7 +373,7 @@ class WorkflowManager:
             code = self.r_script_generator.generate_code(
                 "spatial", run_params, method_context=method_context,
             )
-            return {
+            result = {
                 "status": "needs_script_confirmation",
                 "analysis_type": "spatial",
                 "script": code,
@@ -284,6 +381,17 @@ class WorkflowManager:
                 "method_context": method_context,
                 "message": "未检测到数据文件，已生成示例 Visium 脚本（占位输入），请确认或取消",
             }
+            if self.workflow_recorder and run_id:
+                self.workflow_recorder.record_step(
+                    run_id,
+                    step_id="spatial_analysis_no_input",
+                    step_type="analysis",
+                    tool="run_analysis",
+                    params={"analysis_type": "spatial"},
+                    output={"status": "needs_script_confirmation", "script": code[:100]},
+                )
+            return result
+
         base = Path(input_file)
         if base.is_dir():
             run_params = {
@@ -432,9 +540,18 @@ class WorkflowManager:
             logger.warning("analysis summary writeback failed: %s", e)
 
     def _execute_knowledge_workflow(
-        self, intent: dict[str, Any], params: dict[str, Any], context: dict[str, Any]
+        self, intent: dict[str, Any], params: dict[str, Any], context: dict[str, Any], run_id: str | None = None
     ) -> dict[str, Any]:
         """执行知识查询工作流；本地库缺目标 ID 时按需从 KEGG/UniProt 补库再答"""
+        if self.workflow_recorder and run_id:
+            self.workflow_recorder.record_step(
+                run_id,
+                step_id="knowledge_query_start",
+                step_type="knowledge_query",
+                tool="query_knowledge",
+                params={"query": intent.get("original_input", "")},
+            )
+
         query = intent.get("original_input", "")
 
         lazy_ingested: list[dict[str, Any]] = []
@@ -456,7 +573,7 @@ class WorkflowManager:
                 str(self.knowledge_client.query(query) or "")
             )
 
-        return {
+        result = {
             "status": "success",
             "type": "knowledge_response",
             "query": query,
@@ -464,6 +581,18 @@ class WorkflowManager:
             "references": references,
             "lazy_ingested": lazy_ingested,
         }
+
+        if self.workflow_recorder and run_id:
+            self.workflow_recorder.record_step(
+                run_id,
+                step_id="knowledge_query_finish",
+                step_type="knowledge_query",
+                tool="query_knowledge",
+                params={"query": query},
+                output={"status": "success", "response": knowledge_result[:100]},
+            )
+
+        return result
 
     def _should_lazy_ingest(self, query: str, params: dict[str, Any]) -> bool:
         """是否触发按需补库。
@@ -693,7 +822,7 @@ class WorkflowManager:
         return query.strip()
 
     def _execute_fetch_data_workflow(
-        self, intent: dict[str, Any], params: dict[str, Any], context: dict[str, Any]
+        self, intent: dict[str, Any], params: dict[str, Any], context: dict[str, Any], run_id: str | None = None
     ) -> dict[str, Any]:
         """阶段 1：检索 → 列出候选 → 等待用户确认下载"""
         if self.fetcher_registry is None:
@@ -756,9 +885,18 @@ class WorkflowManager:
         }
 
     def _execute_general_workflow(
-        self, intent: dict[str, Any], params: dict[str, Any], context: dict[str, Any]
+        self, intent: dict[str, Any], params: dict[str, Any], context: dict[str, Any], run_id: str | None = None
     ) -> dict[str, Any]:
         """执行通用工作流"""
+        if self.workflow_recorder and run_id:
+            self.workflow_recorder.record_step(
+                run_id,
+                step_id="general_workflow",
+                step_type="general",
+                tool="none",
+                params={},
+                output={"status": "success", "message": "通用响应"},
+            )
         return {
             "status": "success",
             "type": "general_response",

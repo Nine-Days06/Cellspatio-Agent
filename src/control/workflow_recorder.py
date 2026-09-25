@@ -48,8 +48,16 @@ class WorkflowRecorder:
         recorder.record_parameters(run_id, ...)
         recorder.record_step(run_id, ...)
         recorder.finish_execution(run_id)
-        json_str = recorder.export_json(run_id)
     """
+
+    @classmethod
+    def get_context(cls) -> dict[str, WorkflowExecution]:
+        """获取上下文字典（供外部获取 run_id 列表）。"""
+        ctx = _run_context.get()
+        if ctx is None:
+            ctx = {}
+            _run_context.set(ctx)
+        return ctx
 
     def start_execution(
         self,

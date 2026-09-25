@@ -11,6 +11,7 @@ from src.control.agent_runtime import AgentRuntime
 from src.control.intent_parser import IntentParser
 from src.control.r_script_generator import RScriptGenerator
 from src.control.workflow_manager import WorkflowManager
+from src.control.workflow_recorder import WorkflowRecorder
 from src.data.registry import FetcherRegistry
 from src.data.storage import FetcherStorage
 from src.knowledge.knowledge_builder import KnowledgeBuilder
@@ -39,6 +40,9 @@ class CellSpatioAgent:
 
         # 初始化各个组件
         self.intent_parser = IntentParser(llm_client=llm_client, model=llm_model)
+
+        # 创建 WorkflowRecorder
+        self.workflow_recorder = WorkflowRecorder()
 
         llm_cfg = self.config.get("llm", {})
         provider = llm_cfg.get("provider")
@@ -96,6 +100,7 @@ class CellSpatioAgent:
             explainer=self.result_explainer,
             code_repairer=self.code_repairer,
             require_script_confirmation=(os.environ.get("SCRIPT_REQUIRE_CONFIRM", "1") == "1"),
+            workflow_recorder=self.workflow_recorder,
         )
 
         # AgentRuntime: LLM tool loop; fallback to legacy workflow
