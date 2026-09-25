@@ -166,11 +166,16 @@ class WorkflowRecorder:
         exec_.add_step(step)
 
     def finish_run(self, run_id: str) -> Path:
-        """结束记录，返回完整 WorkflowExecution，并自动落盘到 WRROCStore。"""
+        """结束记录，返回完整 WorkflowExecution，并自动落盘到 WRROCStore + 创建 Git 快照。"""
         exec_ = self._require_execution(run_id)
         # 转换为 WorkflowRun 并持久化
         run = self._to_workflow_run(exec_)
-        return self.store.persist(run)
+        wf_path = self.store.persist(run)
+        # 自动创建 Git 快照
+        from src.control.snapshot_manager import SnapshotManager
+        mgr = SnapshotManager(Path.cwd())
+        mgr.create_snapshot(run.run_id, commit_msg=f"Snapshot for {run.run_id}")
+        return wf_path
 
     def _to_workflow_run(self, exec_: WorkflowExecution) -> WorkflowRun:
         """将 WorkflowExecution 转换为 WorkflowRun 供 WRROCStore 使用。"""

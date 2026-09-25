@@ -1,5 +1,6 @@
 import logging
 import os
+from pathlib import Path
 from typing import Any
 
 # 必须最先加载：触发 load_dotenv，保证 R_HOME/NCBI_* 等在组件初始化前可见
@@ -141,6 +142,11 @@ class CellSpatioAgent:
         return self.workflow_manager.execute_confirmed_script(
             analysis_type, params, script, method_context=method_context
         )
+
+    def replay(self, run_id: str) -> dict[str, Any]:
+        """一键复现历史运行"""
+        from src.control.replay import replay_run
+        return replay_run(run_id, repo_root=self.config.get("repo_root", Path.cwd()))
 
     def run(self, mode: str = "cli"):
         """运行智能体"""
