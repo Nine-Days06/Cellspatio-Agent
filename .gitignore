@@ -52,6 +52,7 @@ output/
 
 # Docs
 docs/snapshots/
+docs/superpowers
 
 # Snapshots (Git worktree 快照)
 snapshots/
