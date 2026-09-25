@@ -4,13 +4,16 @@
 - 使用 contextvars 实现运行级隔离（同一进程并发多 run_id）
 - 内存记录，显式 export_json/export_jsonl 导出
 - 线程安全：contextvars 天然隔离，单 run_id 串行记录
+- 完成时自动落盘到 WRROCStore
 """
 from __future__ import annotations
 
 import contextvars
 import uuid
+from pathlib import Path
 from typing import Any
 
+from src.control.wrroc_store import WRROCStore
 from src.schemas.workflow import (
     AnalysisType,
     IntentRecord,
@@ -20,6 +23,7 @@ from src.schemas.workflow import (
     StepType,
     TerminalStatus,
     WorkflowExecution,
+    WorkflowRun,
     WorkflowStep,
 )
 
@@ -47,8 +51,11 @@ class WorkflowRecorder:
         recorder.record_intent(run_id, ...)
         recorder.record_parameters(run_id, ...)
         recorder.record_step(run_id, ...)
-        recorder.finish_execution(run_id)
+        recorder.finish_run(run_id)  # 自动落盘到 WRROCStore
     """
+
+    def __init__(self, wrroc_base_dir: str = ".wrroc"):
+        self.store = WRROCStore(Path(wrroc_base_dir))
 
     @classmethod
     def get_context(cls) -> dict[str, WorkflowExecution]:
@@ -158,11 +165,60 @@ class WorkflowRecorder:
         )
         exec_.add_step(step)
 
-    def finish_execution(self, run_id: str) -> Any:
-        """结束记录，返回完整 WorkflowExecution。"""
+    def finish_run(self, run_id: str) -> Path:
+        """结束记录，返回完整 WorkflowExecution，并自动落盘到 WRROCStore。"""
         exec_ = self._require_execution(run_id)
-        # 可选：清理上下文，或保留供后续 export
-        return exec_
+        # 转换为 WorkflowRun 并持久化
+        run = self._to_workflow_run(exec_)
+        return self.store.persist(run)
+
+    def _to_workflow_run(self, exec_: WorkflowExecution) -> WorkflowRun:
+        """将 WorkflowExecution 转换为 WorkflowRun 供 WRROCStore 使用。"""
+        from src.schemas.workflow import (
+            StepOutput,
+            StepType,
+            TerminalStatus,
+            WorkflowInput,
+            WorkflowIntent,
+            WorkflowRun,
+            WorkflowStep,
+        )
+
+        # 转换 steps
+        steps = []
+        for step in exec_.steps:
+            step_output = None
+            if step.output:
+                step_output = StepOutput(
+                    status=TerminalStatus(step.output.status.value),
+                    result=step.output.result,
+                    error=step.output.error,
+                )
+            steps.append(WorkflowStep(
+                step_id=step.step_id,
+                step_type=StepType(step.step_type.value),
+                tool=step.tool,
+                params=step.params,
+                output=step_output,
+            ))
+
+        return WorkflowRun(
+            run_id=exec_.run_id,
+            intent=WorkflowIntent(
+                type=exec_.intent.type,
+                analysis_type=exec_.intent.analysis_type,
+                original_input=exec_.intent.original_input,
+                confidence=exec_.intent.confidence,
+            ),
+            params=exec_.parameters.model_dump(),
+            input=WorkflowInput(
+                user_input=exec_.meta.get("user_input", ""),
+                context=exec_.meta.get("context", {}),
+            ),
+            steps=steps,
+            outputs=[],  # 由具体 workflow 方法在 finish_run 前设置
+            meta=exec_.meta,
+        )
 
     def get_record(self, run_id: str) -> WorkflowExecution | None:
         """获取执行记录（未 finish 也可获取）。"""

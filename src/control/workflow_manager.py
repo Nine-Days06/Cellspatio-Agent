@@ -104,7 +104,7 @@ class WorkflowManager:
             result = self._execute_general_workflow(intent, params, context, run_id)
 
         if self.workflow_recorder:
-            self.workflow_recorder.finish_execution(run_id)
+            self.workflow_recorder.finish_run(run_id)
 
         return result
 

@@ -117,3 +117,57 @@ class WorkflowExecution(BaseModel):
 
 # 延迟导入 json，避免循环
 import json
+
+
+# ── 兼容 WRROCStore 所需的 WorkflowRun 等模型 ─────────────────────────
+
+class WorkflowIntent(BaseModel):
+    """意图记录。"""
+    type: IntentType
+    analysis_type: AnalysisType | None = None
+    original_input: str
+    confidence: float = Field(ge=0.0, le=1.0, default=1.0)
+
+
+class WorkflowInput(BaseModel):
+    """输入记录。"""
+    user_input: str
+    context: dict[str, Any] = Field(default_factory=dict)
+
+
+class WorkflowOutput(BaseModel):
+    """输出记录。"""
+    name: str
+    path: str
+    type: Literal["csv", "json", "txt", "png", "rds", "other"]
+    meta: dict[str, Any] = Field(default_factory=dict)
+
+
+class WorkflowRun(BaseModel):
+    """完整工作流运行记录：与 WorkflowExecution 字段兼容，字段名对齐 WRROCStore 需求。"""
+    run_id: str
+    timestamp: datetime = Field(default_factory=datetime.utcnow)
+    intent: WorkflowIntent
+    params: dict[str, Any] = Field(default_factory=dict)
+    input: WorkflowInput = Field(default_factory=WorkflowInput)
+    steps: list[WorkflowStep] = Field(default_factory=list)
+    outputs: list[WorkflowOutput] = Field(default_factory=list)
+    meta: dict[str, Any] = Field(default_factory=dict)
+
+    def add_step(self, step: WorkflowStep) -> None:
+        self.steps.append(step)
+
+    def to_json(self, indent: int = 2) -> str:
+        return self.model_dump_json(indent=indent)
+
+    def to_jsonl(self) -> str:
+        lines = []
+        base = {"run_id": self.run_id, "timestamp": self.timestamp.isoformat()}
+        for step in self.steps:
+            line = {**base, "step": step.model_dump(mode="json")}
+            lines.append(json.dumps(line, ensure_ascii=False))
+        return "\n".join(lines)
+
+    @classmethod
+    def from_json(cls, json_str: str) -> "WorkflowRun":
+        return cls.model_validate_json(json_str)

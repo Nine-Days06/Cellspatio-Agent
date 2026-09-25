@@ -126,8 +126,8 @@ def test_recorder_records_multiple_steps():
     assert record.steps[1].output.status.value == "success"
 
 
-def test_recorder_finish_execution_returns_record():
-    """finish_execution 返回完整记录。"""
+def test_recorder_finish_run_returns_path():
+    """finish_run 返回 WRROC 存储路径。"""
     recorder = WorkflowRecorder()
     run_id = recorder.start_execution(
         intent={"type": "analysis", "analysis_type": "differential_expression", "original_input": "test"},
@@ -136,9 +136,9 @@ def test_recorder_finish_execution_returns_record():
         context={},
     )
     recorder.record_step(run_id, "step-1", "analysis", "run_analysis", {}, output={"status": "success"})
-    record = recorder.finish_execution(run_id)
-    assert record.run_id == run_id
-    assert len(record.steps) == 1
+    path = recorder.finish_run(run_id)
+    assert path.name == "workflow.json"
+    assert path.parent.name == run_id
 
 
 def test_recorder_export_json():
@@ -151,7 +151,7 @@ def test_recorder_export_json():
         context={},
     )
     recorder.record_step(run_id, "s1", "analysis", "run_analysis", {}, output={"status": "success", "result": {"file": "out.csv"}})
-    recorder.finish_execution(run_id)
+    recorder.finish_run(run_id)
     json_str = recorder.export_json(run_id)
     assert "run_id" in json_str
     assert "differential_expression" in json_str
@@ -170,7 +170,7 @@ def test_recorder_export_jsonl():
     )
     recorder.record_step(run_id, "s1", "analysis", "run_analysis", {"analysis_type": "de"}, output={"status": "success", "result": {"file": "out1.csv"}})
     recorder.record_step(run_id, "s2", "analysis", "run_analysis", {}, output={"status": "success", "result": {"file": "out2.csv"}})
-    recorder.finish_execution(run_id)
+    recorder.finish_run(run_id)
     jsonl = recorder.export_jsonl(run_id)
     lines = jsonl.strip().split("\n")
     assert len(lines) == 2
