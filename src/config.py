@@ -9,9 +9,6 @@ load_dotenv()
 # ── 项目路径 ──────────────────────────────────────────────────
 BASE_DIR = Path(__file__).parent.parent
 
-# ── 网络代理配置 ────────────────────────────────────────────
-PROXY = os.environ.get("PROXY") or None
-
 # ── LLM 供应商配置 ──────────────────────────────────────────
 # 快捷切换：修改 AGENT_LLM_PROVIDER 即可切换供应商
 # 向后兼容：若未设置 AGENT_LLM_PROVIDER，仍读取 LLM_PROVIDER
@@ -22,7 +19,6 @@ LLM_PROVIDER: str = (
     or "zhipu"
 )
 LLM_MAX_TOKENS  = int(os.environ.get("LLM_MAX_TOKENS", "8192"))
-LLM_MAX_RETRIES = int(os.environ.get("LLM_MAX_RETRIES", "3"))
 LLM_TIMEOUT     = int(os.environ.get("LLM_TIMEOUT", "120"))
 
 # DeepSeek
@@ -104,5 +100,4 @@ NCBI_API_KEY = os.environ.get("NCBI_API_KEY", "")
 NCBI_EMAIL   = os.environ.get("NCBI_EMAIL", "")
 
 # 本地 Ollama（embedding 用）
-OLLAMA_URL      = os.environ.get("OLLAMA_URL", "http://localhost:11434")
 EMBEDDING_MODEL = os.environ.get("EMBEDDING_MODEL", "bge-m3")
