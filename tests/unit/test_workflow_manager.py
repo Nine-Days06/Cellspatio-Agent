@@ -3,6 +3,7 @@ from pathlib import Path
 from src.control.intent_parser import IntentParser
 from src.control.workflow_manager import WorkflowManager
 from src.data.fetchers.base import AssetInfo, AssetMeta
+from tests.unit.fakes import FakeExec, FakeGen, FakeIntent
 
 
 class MockKnowledgeClient:
@@ -176,17 +177,6 @@ def test_de_analysis_queries_methods_kb_and_injects_context():
     """分析流应先查 MethodsKb，再把 context 传入 generate_code"""
     from src.control.workflow_manager import WorkflowManager
 
-    class FakeIntent:
-        def parse(self, user_input, context=None):
-            return {
-                "type": "analysis",
-                "analysis_type": "differential_expression",
-                "original_input": user_input,
-            }
-
-        def extract_parameters(self, user_input):
-            return {"input_files": ["counts.csv"]}
-
     class FakeMethods:
         def __init__(self):
             self.questions = []
@@ -195,23 +185,8 @@ def test_de_analysis_queries_methods_kb_and_injects_context():
             self.questions.append(q)
             return "# DESeq2\n# 不要用 TPM"
 
-    class FakeGen:
-        def __init__(self):
-            self.calls = []
-
-        def generate_code(self, analysis_type, params, method_context=None):
-            self.calls.append({"type": analysis_type, "ctx": method_context})
-            return "# script"
-
-    class FakeExec:
-        def execute_code(self, code):
-            class R:
-                returncode = 0
-
-            return R()
-
     methods = FakeMethods()
-    gen = FakeGen()
+    gen = FakeGen(track_calls=True)
     wm = WorkflowManager(
         intent_parser=FakeIntent(),
         knowledge_client=None,
@@ -229,33 +204,7 @@ def test_de_analysis_queries_methods_kb_and_injects_context():
 def test_de_analysis_without_methods_kb_still_works():
     from src.control.workflow_manager import WorkflowManager
 
-    class FakeIntent:
-        def parse(self, user_input, context=None):
-            return {
-                "type": "analysis",
-                "analysis_type": "differential_expression",
-                "original_input": user_input,
-            }
-
-        def extract_parameters(self, user_input):
-            return {"input_files": ["counts.csv"]}
-
-    class FakeGen:
-        def __init__(self):
-            self.ctx_seen = "unset"
-
-        def generate_code(self, analysis_type, params, method_context=None):
-            self.ctx_seen = method_context
-            return "# script"
-
-    class FakeExec:
-        def execute_code(self, code):
-            class R:
-                returncode = 0
-
-            return R()
-
-    gen = FakeGen()
+    gen = FakeGen(track_ctx=True)
     wm = WorkflowManager(
         intent_parser=FakeIntent(),
         knowledge_client=None,
@@ -272,13 +221,6 @@ def test_de_analysis_without_methods_kb_still_works():
 def test_de_success_writes_summary_to_knowledge_builder():
     from src.control.workflow_manager import WorkflowManager
 
-    class FakeIntent:
-        def parse(self, user_input, context=None):
-            return {"type": "analysis", "analysis_type": "differential_expression",
-                    "original_input": user_input}
-        def extract_parameters(self, user_input):
-            return {"input_files": ["counts.csv"]}
-
     class FakeKBBuilder:
         def __init__(self):
             self.texts = []
@@ -286,23 +228,13 @@ def test_de_success_writes_summary_to_knowledge_builder():
             self.texts.append(text)
             return {"inserted": 1}
 
-    class FakeGen:
-        def generate_code(self, analysis_type, params, method_context=None):
-            return "# s"
-
-    class FakeExec:
-        def execute_code(self, code):
-            class R:
-                returncode = 0
-            return R()
-
     builder = FakeKBBuilder()
     wm = WorkflowManager(
         intent_parser=FakeIntent(),
         knowledge_client=None,
         r_executor=FakeExec(),
         visualizer=None,
-        r_script_generator=FakeGen(),
+        r_script_generator=FakeGen(return_value="# s"),
         knowledge_builder=builder,
     )
     result = wm.execute_workflow("做差异表达")
@@ -314,13 +246,6 @@ def test_de_success_writes_summary_to_knowledge_builder():
 def test_de_failure_does_not_write_knowledge():
     from src.control.workflow_manager import WorkflowManager
 
-    class FakeIntent:
-        def parse(self, user_input, context=None):
-            return {"type": "analysis", "analysis_type": "differential_expression",
-                    "original_input": user_input}
-        def extract_parameters(self, user_input):
-            return {"input_files": ["counts.csv"]}
-
     class FakeKBBuilder:
         def __init__(self):
             self.texts = []
@@ -328,21 +253,13 @@ def test_de_failure_does_not_write_knowledge():
             self.texts.append(text)
             return {"inserted": 1}
 
-    class FakeGen:
-        def generate_code(self, analysis_type, params, method_context=None):
-            return "# s"
-
-    class FakeExec:
-        def execute_code(self, code):
-            raise RuntimeError("R boom")
-
     builder = FakeKBBuilder()
     wm = WorkflowManager(
         intent_parser=FakeIntent(),
         knowledge_client=None,
-        r_executor=FakeExec(),
+        r_executor=FakeExec(side_effect=lambda _: (_ for _ in ()).throw(RuntimeError("R boom"))),
         visualizer=None,
-        r_script_generator=FakeGen(),
+        r_script_generator=FakeGen(return_value="# s"),
         knowledge_builder=builder,
     )
     try:
@@ -355,33 +272,16 @@ def test_de_failure_does_not_write_knowledge():
 def test_de_success_returns_explanation_field():
     from src.control.workflow_manager import WorkflowManager
 
-    class FakeIntent:
-        def parse(self, user_input, context=None):
-            return {"type": "analysis", "analysis_type": "differential_expression",
-                    "original_input": user_input}
-        def extract_parameters(self, user_input):
-            return {"input_files": ["counts.csv"]}
-
     class FakeExplainer:
         def generate_llm_explanation(self, data, question):
             return "解说文本"
-
-    class FakeGen:
-        def generate_code(self, analysis_type, params, method_context=None):
-            return "# s"
-
-    class FakeExec:
-        def execute_code(self, code):
-            class R:
-                returncode = 0
-            return R()
 
     wm = WorkflowManager(
         intent_parser=FakeIntent(),
         knowledge_client=None,
         r_executor=FakeExec(),
         visualizer=None,
-        r_script_generator=FakeGen(),
+        r_script_generator=FakeGen(return_value="# s"),
         explainer=FakeExplainer(),
     )
     result = wm.execute_workflow("做差异表达")
@@ -423,15 +323,8 @@ def test_fetch_candidates_include_reason_and_confirm_detail():
         def get(self, source):
             return FakeFetcher()
 
-    class FakeIntent:
-        def parse(self, user_input, context=None):
-            return {"type": "fetch_data", "original_input": user_input}
-
-        def extract_parameters(self, user_input):
-            return {}
-
     wm = WorkflowManager(
-        intent_parser=FakeIntent(),
+        intent_parser=FakeIntent(parse_return={"type": "fetch_data", "original_input": ""}),
         knowledge_client=None,
         r_executor=None,
         visualizer=None,
@@ -489,28 +382,6 @@ def test_de_retries_after_repair_then_succeeds():
     from src.analysis.r_executor import RExecutorError
     from src.control.workflow_manager import WorkflowManager
 
-    class FakeIntent:
-        def parse(self, user_input, context=None):
-            return {"type": "analysis", "analysis_type": "differential_expression",
-                    "original_input": user_input}
-        def extract_parameters(self, user_input):
-            return {"input_files": ["counts.csv"]}
-
-    class FakeGen:
-        def generate_code(self, analysis_type, params, method_context=None):
-            return "# attempt"
-
-    class FlakyExec:
-        def __init__(self):
-            self.n = 0
-        def execute_code(self, code):
-            self.n += 1
-            if self.n == 1:
-                raise RExecutorError("first fail")
-            class R:
-                returncode = 0
-            return R()
-
     class FakeRepairer:
         def __init__(self):
             self.calls = []
@@ -519,10 +390,21 @@ def test_de_retries_after_repair_then_succeeds():
             return "# repaired"
 
     rep = FakeRepairer()
+    call_count = {"n": 0}
+    def flaky_side_effect(code):
+        call_count["n"] += 1
+        if call_count["n"] == 1:
+            raise RExecutorError("first fail")
+        class R:
+            returncode = 0
+        return R()
+
     wm = WorkflowManager(
-        intent_parser=FakeIntent(), knowledge_client=None,
-        r_executor=FlakyExec(), visualizer=None,
-        r_script_generator=FakeGen(),
+        intent_parser=FakeIntent(),
+        knowledge_client=None,
+        r_executor=FakeExec(side_effect=flaky_side_effect),
+        visualizer=None,
+        r_script_generator=FakeGen(return_value="# attempt"),
         code_repairer=rep, max_repair_attempts=2,
     )
     result = wm.execute_workflow("做差异表达")
@@ -1074,18 +956,11 @@ def test_lazy_ingest_kb_miss_gene_triggers_search(tmp_path):
 def test_intent_parse_receives_context_history():
     from src.control.workflow_manager import WorkflowManager
 
-    class SpyIntent:
-        def __init__(self):
-            self.seen_context = None
-
-        def parse(self, user_input, context=None):
-            self.seen_context = context
-            return {"type": "general", "original_input": user_input}
-
-        def extract_parameters(self, user_input):
-            return {}
-
-    spy = SpyIntent()
+    spy = FakeIntent(
+        track_context=True,
+        parse_return={"type": "general", "original_input": ""},
+        extract_params_return={},
+    )
     wm = WorkflowManager(
         intent_parser=spy, knowledge_client=None, r_executor=None, visualizer=None
     )
@@ -1100,14 +975,6 @@ def test_de_explanation_receives_real_stats(tmp_path):
     csv_file = tmp_path / "in.csv"
     csv_file.write_text("gene,s1,s2\nG1,1,2\nG2,3,4\nG3,5,6\n", encoding="utf-8")
 
-    class FakeIntent:
-        def parse(self, user_input, context=None):
-            return {"type": "analysis", "analysis_type": "differential_expression",
-                    "original_input": user_input}
-
-        def extract_parameters(self, user_input):
-            return {"input_files": ["x.csv"]}
-
     class CapturingExplainer:
         def __init__(self):
             self.data = None
@@ -1116,26 +983,24 @@ def test_de_explanation_receives_real_stats(tmp_path):
             self.data = data
             return "ok"
 
-    class FakeGen:
-        def generate_code(self, analysis_type, params, method_context=None):
-            return "# s"
+    def exec_side_effect(code: str):
+        out = str(csv_file.with_suffix(".de_results.csv"))
+        with open(out, "w", encoding="utf-8") as f:
+            f.write("gene,padj\nG1,0.001\nG2,0.2\nG3,0.8\n")
 
-    class FakeExec:
-        def execute_code(self, code):
-            out = str(csv_file.with_suffix(".de_results.csv"))
-            with open(out, "w", encoding="utf-8") as f:
-                f.write("gene,padj\nG1,0.001\nG2,0.2\nG3,0.8\n")
+        class R:
+            returncode = 0
 
-            class R:
-                returncode = 0
-
-            return R()
+        return R()
 
     exp = CapturingExplainer()
     wm = WorkflowManager(
-        intent_parser=FakeIntent(), knowledge_client=None,
-        r_executor=FakeExec(), visualizer=None,
-        r_script_generator=FakeGen(), explainer=exp,
+        intent_parser=FakeIntent(),
+        knowledge_client=None,
+        r_executor=FakeExec(side_effect=exec_side_effect),
+        visualizer=None,
+        r_script_generator=FakeGen(return_value="# s"),
+        explainer=exp,
         require_script_confirmation=False,
     )
     context = {"downloaded_assets": [{"access_path": str(csv_file)}]}
@@ -1150,19 +1015,11 @@ def test_unsupported_analysis_type_returns_error():
     """pathway/visualization 不得再假成功。"""
     from src.control.workflow_manager import WorkflowManager
 
-    class FakeIntent:
-        def parse(self, user_input, context=None):
-            return {
-                "type": "analysis",
-                "analysis_type": "pathway_analysis",
-                "original_input": user_input,
-            }
-
-        def extract_parameters(self, user_input):
-            return {}
-
     manager = WorkflowManager(
-        intent_parser=FakeIntent(),
+        intent_parser=FakeIntent(
+            parse_return={"type": "analysis", "analysis_type": "pathway_analysis", "original_input": ""},
+            extract_params_return={},
+        ),
         knowledge_client=MockKnowledgeClient(),
         r_executor=MockRExecutor(),
         visualizer=MockVisualizer(),

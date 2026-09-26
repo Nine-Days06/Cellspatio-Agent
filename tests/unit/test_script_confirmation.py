@@ -1,41 +1,15 @@
 """脚本执行前人工确认（HITL）"""
 from src.control.workflow_manager import WorkflowManager
-
-
-class FakeIntent:
-    def parse(self, user_input, context=None):
-        return {"type": "analysis", "analysis_type": "differential_expression",
-                "original_input": user_input}
-
-    def extract_parameters(self, user_input):
-        return {"input_files": ["counts.csv"]}
-
-
-class FakeGen:
-    def generate_code(self, analysis_type, params, method_context=None):
-        return "#!/usr/bin/env Rscript\n# generated"
-
-
-class FakeExec:
-    def __init__(self):
-        self.codes = []
-
-    def execute_code(self, code):
-        self.codes.append(code)
-
-        class R:
-            returncode = 0
-
-        return R()
+from tests.unit.fakes import FakeExec, FakeGen, FakeIntent
 
 
 def _make(require: bool) -> WorkflowManager:
     return WorkflowManager(
         intent_parser=FakeIntent(),
         knowledge_client=None,
-        r_executor=FakeExec(),
+        r_executor=FakeExec(track_codes=True),
         visualizer=None,
-        r_script_generator=FakeGen(),
+        r_script_generator=FakeGen(return_value="#!/usr/bin/env Rscript\n# generated"),
         require_script_confirmation=require,
     )
 

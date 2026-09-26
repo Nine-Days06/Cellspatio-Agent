@@ -1,52 +1,13 @@
 """单细胞/空间分析工作流"""
 from src.control.workflow_manager import WorkflowManager
-
-
-class SCIntent:
-    def parse(self, user_input, context=None):
-        return {"type": "analysis", "analysis_type": "single_cell",
-                "original_input": user_input}
-
-    def extract_parameters(self, user_input):
-        return {"input_files": ["scrna.csv"]}
-
-
-class SpatialIntent:
-    def parse(self, user_input, context=None):
-        return {"type": "analysis", "analysis_type": "spatial",
-                "original_input": user_input}
-
-    def extract_parameters(self, user_input):
-        return {"input_files": ["spatial_data"]}
-
-
-class RecordingGen:
-    def __init__(self):
-        self.last = None
-
-    def generate_code(self, analysis_type, params, method_context=None):
-        self.last = {"type": analysis_type, "params": params}
-        return f"#!/usr/bin/env Rscript\n# {analysis_type}"
-
-
-class FakeExec:
-    def __init__(self):
-        self.codes = []
-
-    def execute_code(self, code):
-        self.codes.append(code)
-
-        class R:
-            returncode = 0
-
-        return R()
+from tests.unit.fakes import FakeExec, FakeGen, FakeIntent
 
 
 def _wm(intent, require=False):
-    gen = RecordingGen()
+    gen = FakeGen(return_value="# script", track_calls=True)
     wm = WorkflowManager(
         intent_parser=intent, knowledge_client=None,
-        r_executor=FakeExec(), visualizer=None,
+        r_executor=FakeExec(track_codes=True), visualizer=None,
         r_script_generator=gen,
         require_script_confirmation=require,
     )
@@ -56,7 +17,11 @@ def _wm(intent, require=False):
 def test_single_cell_routes_and_output_names(tmp_path):
     f = tmp_path / "m.csv"
     f.write_text("c1,c2\nG1,1,2\n", encoding="utf-8")
-    wm, gen = _wm(SCIntent(), require=False)
+    sc_intent = FakeIntent(
+        parse_return={"type": "analysis", "analysis_type": "single_cell", "original_input": ""},
+        extract_params_return={"input_files": ["scrna.csv"]},
+    )
+    wm, gen = _wm(sc_intent, require=False)
     ctx = {"downloaded_assets": [{"access_path": str(f)}]}
     result = wm.execute_workflow("做单细胞聚类", context=ctx)
     assert result["status"] == "success"
@@ -67,7 +32,11 @@ def test_single_cell_routes_and_output_names(tmp_path):
 
 
 def test_single_cell_no_data_generates_script_for_confirmation(tmp_path):
-    wm, _ = _wm(SCIntent(), require=False)
+    sc_intent = FakeIntent(
+        parse_return={"type": "analysis", "analysis_type": "single_cell", "original_input": ""},
+        extract_params_return={"input_files": ["scrna.csv"]},
+    )
+    wm, _ = _wm(sc_intent, require=False)
     result = wm.execute_workflow("做单细胞聚类")
     assert result["status"] == "needs_script_confirmation"
     assert "未检测到数据文件" in result["message"]
@@ -77,7 +46,11 @@ def test_single_cell_no_data_generates_script_for_confirmation(tmp_path):
 def test_single_cell_confirmation_flow(tmp_path):
     f = tmp_path / "m.csv"
     f.write_text("c1,c2\nG1,1,2\n", encoding="utf-8")
-    wm, _ = _wm(SCIntent(), require=True)
+    sc_intent = FakeIntent(
+        parse_return={"type": "analysis", "analysis_type": "single_cell", "original_input": ""},
+        extract_params_return={"input_files": ["scrna.csv"]},
+    )
+    wm, _ = _wm(sc_intent, require=True)
     ctx = {"downloaded_assets": [{"access_path": str(f)}]}
     result = wm.execute_workflow("做单细胞聚类", context=ctx)
     assert result["status"] == "needs_script_confirmation"
@@ -94,7 +67,11 @@ def test_single_cell_confirmation_flow(tmp_path):
 def test_spatial_routes(tmp_path):
     d = tmp_path / "spatial_run"
     d.mkdir()
-    wm, gen = _wm(SpatialIntent(), require=False)
+    spatial_intent = FakeIntent(
+        parse_return={"type": "analysis", "analysis_type": "spatial", "original_input": ""},
+        extract_params_return={"input_files": ["spatial_data"]},
+    )
+    wm, gen = _wm(spatial_intent, require=False)
     ctx = {"downloaded_assets": [{"access_path": str(d)}]}
     result = wm.execute_workflow("分析空间转录组", context=ctx)
     assert result["status"] == "success"
@@ -105,7 +82,11 @@ def test_spatial_routes(tmp_path):
 
 
 def test_execute_confirmed_script_accepts_sc_and_spatial():
-    wm, _ = _wm(SCIntent(), require=True)
+    sc_intent = FakeIntent(
+        parse_return={"type": "analysis", "analysis_type": "single_cell", "original_input": ""},
+        extract_params_return={"input_files": ["scrna.csv"]},
+    )
+    wm, _ = _wm(sc_intent, require=True)
     r1 = wm.execute_confirmed_script("single_cell", {"input_file": "a", "output_file": "b", "marker_file": "c"}, "# s")
     assert r1["status"] == "success"
     r2 = wm.execute_confirmed_script("spatial", {"input_file": "d", "output_file": "e", "plot_file": "f"}, "# s")
