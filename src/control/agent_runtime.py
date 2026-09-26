@@ -10,9 +10,12 @@ from __future__ import annotations
 
 import json
 import logging
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from src.control.tools import SYSTEM_PROMPT, TERMINAL_STATUSES, TOOL_SCHEMAS
+
+if TYPE_CHECKING:
+    from src.control.router import ModalRouter
 
 logger = logging.getLogger(__name__)
 
@@ -23,11 +26,12 @@ MAX_HISTORY = 10
 class AgentRuntime:
     """LLM tool loop; workflow_manager provides *_for_agent execution face."""
 
-    def __init__(self, llm_client, model: str, workflow_manager, router=None):
+    def __init__(self, llm_client, model: str, workflow_manager,
+                 router: "ModalRouter | None" = None):
         self.llm_client = llm_client
         self.model = model
         self.workflow_manager = workflow_manager
-        self.router = router  # ModalRouter | None：分类/最佳实践提示注入
+        self.router = router  # 分类/最佳实践提示注入
 
     def execute(self, user_input: str, context: dict[str, Any] | None = None) -> dict[str, Any]:
         context = dict(context) if context else {}

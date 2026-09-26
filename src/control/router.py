@@ -1,6 +1,7 @@
 """模态路由器：任务分类 → Skill 分发 → 回退链 + 自动记忆。"""
 from __future__ import annotations
 
+import logging
 from typing import Any
 
 from src.control.classifier import TaskClassifier
@@ -8,6 +9,8 @@ from src.control.kg_memory import KGMemory
 from src.skills.loader import SkillLoader
 from src.skills.registry import SkillRegistry
 from src.skills.base import SkillBase, SkillContext
+
+logger = logging.getLogger(__name__)
 
 
 class ModalRouter:
@@ -66,8 +69,8 @@ class ModalRouter:
             entities = self.kg_memory.query_entities(query)
             if entities:
                 return "\n".join(entities[:3])
-        except Exception:
-            pass
+        except Exception as e:  # noqa: BLE001 - 查询失败降级为无提示
+            logger.debug("best_practices query failed: %s", e)
         return None
 
     def hint(self, user_input: str) -> dict[str, Any]:

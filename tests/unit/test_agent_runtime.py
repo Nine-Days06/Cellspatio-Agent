@@ -202,3 +202,15 @@ def test_router_hint_failure_does_not_block():
     rt = AgentRuntime(llm_client=None, model="m", workflow_manager=object(),
                       router=BrokenRouter())
     assert rt._route_hint("任意输入") is None
+
+
+def test_build_messages_general_hint_not_injected():
+    """hint modality=general 时 system prompt 保持原样（不追加路由段）。"""
+    from src.control.tools import SYSTEM_PROMPT
+    from src.control.agent_runtime import AgentRuntime
+
+    rt = AgentRuntime(llm_client=None, model="m", workflow_manager=object())
+    messages = rt._build_messages("差异表达", {},
+                                  hint={"modality": "general", "skill": None,
+                                        "best_practices": None})
+    assert messages[0]["content"] == SYSTEM_PROMPT
