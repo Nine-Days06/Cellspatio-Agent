@@ -10,19 +10,17 @@ readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [
     "streamlit>=1.28.0",
-    "gradio>=4.0.0",
     "lightrag-hku>=1.0.0",
-    "langchain>=0.1.0",
     "python-dotenv>=1.0.0",
     "pydantic>=2.0.0",
     "httpx>=0.24.0",
-    "rpy2>=3.5.0",
-    "faiss-cpu>=1.7.4",
     "matplotlib>=3.7.0",
     "seaborn>=0.12.0",
     "pandas>=2.0.0",
     "numpy>=1.24.0",
     "plotly>=5.18.0",
+    "openai>=1.0.0",
+    "zhipuai>=2.1.0",
 ]
 
 [project.optional-dependencies]

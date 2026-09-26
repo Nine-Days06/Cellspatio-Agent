@@ -7,15 +7,6 @@ requests>=2.31.0
 # XML 解析（比标准库 xml.etree 更快且容错性更好）
 lxml>=5.1.0
 
-# 数据处理（CSV 导出等）
-pandas>=2.1.0
-
-# TF-IDF（可选，relevance_scorer 中按需引用）
-scikit-learn>=1.4.0
-
-# 进度条（可选，在大批量处理时改善体验）
-tqdm>=4.66.0
-
 # LLM 验证（DeepSeek 等 OpenAI 兼容 API）
 openai>=1.0.0
 
