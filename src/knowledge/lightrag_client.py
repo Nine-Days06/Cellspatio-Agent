@@ -133,7 +133,7 @@ class LightRAGClient:
         return h
 
     def _initialize_rag(self):
-        """使用真实 LLM（云端 DeepSeek 等）与 embedding（本地 Ollama bge-m3）初始化"""
+        """使用真实 LLM（云端 DeepSeek 等）与 embedding（本地 Ollama，默认 bge-m3:latest，见 EMBEDDING_MODEL）初始化"""
         if self._rag is None:
             try:
                 from lightrag import LightRAG

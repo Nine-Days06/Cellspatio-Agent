@@ -51,13 +51,27 @@ def build_llm_func(provider: str | None = None) -> tuple:
 def build_embedding_func(embedding_func=None):
     """返回 LightRAG 可用的 embedding 函数
 
-    默认使用 Ollama bge-m3（lightrag.llm.ollama.ollama_embed 内置的
-    EmbeddingFunc，1024 维、model_name='bge-m3:latest'）。
+    模型名取自 src.config.EMBEDDING_MODEL（env EMBEDDING_MODEL，未设时
+    默认 bge-m3），即 Ollama 的 bge-m3:latest；模型名生效于 Ollama 调用
+    （embed_model）与 LightRAG 的 model_name 属性（向量库隔离/建库锁定）。
     调用方可通过 OLLAMA_HOST 或 config['ollama_url'] 指向本地 Ollama。
     传入自定义 embedding_func 时原样返回。
     """
     if embedding_func is not None:
         return embedding_func
+    from dataclasses import replace
+    from functools import partial
+
     from lightrag.llm.ollama import ollama_embed
 
-    return ollama_embed
+    from src.config import EMBEDDING_MODEL
+
+    # Ollama 裸名等价 :latest 标签：补 tag 后与历史硬编码默认值
+    # bge-m3:latest 完全一致（env 未设或设为 bge-m3 时行为零变化）
+    model = EMBEDDING_MODEL if ":" in EMBEDDING_MODEL else f"{EMBEDDING_MODEL}:latest"
+    # .func 取未包装的原始函数，用 partial 绑定 embed_model 使模型名真正生效
+    return replace(
+        ollama_embed,
+        func=partial(ollama_embed.func, embed_model=model),
+        model_name=model,
+    )
