@@ -24,13 +24,12 @@ REM Install Python dependencies
 echo Installing Python dependencies...
 pip install --upgrade pip
 pip install -r requirements.txt
+python -m pip install -e .[dev]
 
-REM Install R dependencies (if R is available)
+REM Check R availability (R packages are installed manually)
 where Rscript >nul 2>nul
 if %errorlevel% equ 0 (
-    echo Installing R dependencies...
-    Rscript -e "if (!requireNamespace('renv', quietly = TRUE)) install.packages('renv')"
-    Rscript -e "renv::restore()"
+    echo R found
 ) else (
     echo Warning: R not installed, some analysis features may not be available
 )
