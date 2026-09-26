@@ -81,3 +81,22 @@ def test_agent_wires_modal_router_into_runtime(monkeypatch):
     )
     assert getattr(agent, "modal_router", None) is not None
     assert agent.agent_runtime.router is agent.modal_router
+
+
+def test_agent_wires_kg_memory_into_recorder_and_router(monkeypatch):
+    """CellSpatioAgent 必须把 KGMemory 装配进 WorkflowRecorder（激活 finish_run 闭环）与 ModalRouter。"""
+    from src.main import CellSpatioAgent
+
+    fake_client = object()
+    monkeypatch.setattr(
+        "src.main.get_current_llm", lambda: (fake_client, "test-model")
+    )
+    monkeypatch.setattr(
+        "src.main.LightRAGClient.__init__", lambda self, *a, **k: None
+    )
+    agent = CellSpatioAgent(
+        config={"knowledge_dir": "tmp_kb_wiring", "data_dir": "tmp_data_wiring"}
+    )
+    recorder = agent.workflow_recorder
+    assert getattr(recorder, "kg_memory", None) is not None
+    assert agent.modal_router.kg_memory is recorder.kg_memory  # 同一实例复用

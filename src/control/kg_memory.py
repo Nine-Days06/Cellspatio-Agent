@@ -30,26 +30,31 @@ async def _mock_embedding(texts: list[str], **kwargs) -> np.ndarray:
 class KGMemory:
     """WorkflowRecorder → LightRAG 知识图谱增量写入。"""
 
-    def __init__(self, working_dir: Path | str, workspace: str | None = None):
+    def __init__(self, working_dir: Path | str, workspace: str | None = None,
+                 llm_model_func=None, embedding_func=None):
         self.working_dir = Path(working_dir)
         self.working_dir.mkdir(parents=True, exist_ok=True)
-        
-        embedding_func = EmbeddingFunc(
-            embedding_dim=768,
-            func=_mock_embedding,
-            max_token_size=8192,
-        )
-        
+
+        # 生产传入 llm_factory 的真实函数；缺省保持 mock（测试/评测态）
+        if embedding_func is None:
+            embedding_func = EmbeddingFunc(
+                embedding_dim=768,
+                func=_mock_embedding,
+                max_token_size=8192,
+            )
+        if llm_model_func is None:
+            llm_model_func = _mock_llm
+
         # Use workspace for LightRAG's shared storage isolation
         # If not provided, use working_dir name + random suffix for test isolation
         if workspace is None:
             import uuid
             workspace = f"{self.working_dir.name}_{uuid.uuid4().hex[:8]}"
-        
+
         self._rag = LightRAG(
             working_dir=str(self.working_dir),
             embedding_func=embedding_func,
-            llm_model_func=_mock_llm,
+            llm_model_func=llm_model_func,
             workspace=workspace,
         )
         self._workspace = workspace

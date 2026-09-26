@@ -10,6 +10,7 @@ from src.analysis.visualization import Visualizer
 from src.config import get_current_llm
 from src.control.agent_runtime import AgentRuntime
 from src.control.intent_parser import IntentParser
+from src.control.kg_memory import KGMemory
 from src.control.r_script_generator import RScriptGenerator
 from src.control.router import ModalRouter
 from src.control.workflow_manager import WorkflowManager
@@ -18,6 +19,7 @@ from src.data.registry import FetcherRegistry
 from src.data.storage import FetcherStorage
 from src.knowledge.knowledge_builder import KnowledgeBuilder
 from src.knowledge.lightrag_client import LightRAGClient
+from src.knowledge.llm_factory import build_embedding_func, build_llm_func
 from src.skills.loader import SkillLoader
 from src.skills.registry import SkillRegistry
 
@@ -56,9 +58,23 @@ class CellSpatioAgent:
                     break
         if not repo_root:
             repo_root = "."
+
+        # P3c 记忆闭环：真实 LLM/embedding 的 KGMemory，finish_run 时增量写入
+        try:
+            kg_llm_func, _ = build_llm_func()
+            self.kg_memory = KGMemory(
+                working_dir=Path(repo_root) / ".wrroc" / "kg_memory",
+                llm_model_func=kg_llm_func,
+                embedding_func=build_embedding_func(),
+            )
+        except Exception as e:  # noqa: BLE001 - LLM 配置缺失时记忆闭环降级为 mock
+            logger.warning("KGMemory real func init failed, fallback to mock: %s", e)
+            self.kg_memory = KGMemory(working_dir=Path(repo_root) / ".wrroc" / "kg_memory")
+
         self.workflow_recorder = WorkflowRecorder(
             wrroc_base_dir=str(Path(repo_root) / ".wrroc"),
-            repo_root=Path(repo_root)
+            repo_root=Path(repo_root),
+            kg_memory=self.kg_memory,
         )
 
         llm_cfg = self.config.get("llm", {})
@@ -124,7 +140,8 @@ class CellSpatioAgent:
         self.skill_registry = SkillRegistry(skills_dir=Path(repo_root) / "skills")
         self.skill_loader = SkillLoader(self.skill_registry)
         self.modal_router = ModalRouter(
-            registry=self.skill_registry, loader=self.skill_loader
+            registry=self.skill_registry, loader=self.skill_loader,
+            kg_memory=self.kg_memory,
         )
 
         # AgentRuntime: LLM tool loop; fallback to legacy workflow
