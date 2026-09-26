@@ -1,8 +1,8 @@
 """Tool-calling runtime: LLM picks tool → WorkflowManager executes → HITL short-circuit.
 
-Fallback strategy: no LLM, SDK exception, or response without tool_calls
-and unparsable → fall back to WorkflowManager.execute_workflow legacy intent path
-(still served by IntentParser.parse / extract_parameters), ensuring offline/tests work.
+Fallback strategy: no LLM or SDK exception → fall back to WorkflowManager.execute_workflow
+legacy intent path (still served by IntentParser.parse / extract_parameters), ensuring
+offline/tests work. Response without tool_calls returns general_response directly.
 Optional router (ModalRouter.hint) injects modality/skill/best-practice hints
 into the system prompt when wired by CellSpatioAgent.
 """
