@@ -5,6 +5,7 @@
 - 内存记录，显式 export_json/export_jsonl 导出
 - 线程安全：contextvars 天然隔离，单 run_id 串行记录
 - 完成时自动落盘到 WRROCStore
+- 自动写入 LightRAG 知识图谱 (KGMemory)
 """
 from __future__ import annotations
 
@@ -13,6 +14,7 @@ import uuid
 from pathlib import Path
 from typing import Any
 
+from src.control.kg_memory import KGMemory
 from src.control.wrroc_store import WRROCStore
 from src.schemas.workflow import (
     AnalysisType,
@@ -54,9 +56,10 @@ class WorkflowRecorder:
         recorder.finish_run(run_id)  # 自动落盘到 WRROCStore
     """
 
-    def __init__(self, wrroc_base_dir: str = ".wrroc", repo_root: Path | str | None = None):
+    def __init__(self, wrroc_base_dir: str = ".wrroc", repo_root: Path | str | None = None, kg_memory: KGMemory | None = None):
         self.store = WRROCStore(Path(wrroc_base_dir))
         self.repo_root = Path(repo_root) if repo_root else Path.cwd()
+        self.kg_memory = kg_memory
 
     @classmethod
     def get_context(cls) -> dict[str, WorkflowExecution]:
@@ -167,7 +170,7 @@ class WorkflowRecorder:
         exec_.add_step(step)
 
     def finish_run(self, run_id: str) -> Path:
-        """结束记录，返回完整 WorkflowExecution，并自动落盘到 WRROCStore + 创建 Git 快照。"""
+        """结束记录，返回完整 WorkflowExecution，并自动落盘到 WRROCStore + 创建 Git 快照 + 写入 LightRAG 知识图谱。"""
         exec_ = self._require_execution(run_id)
         # 转换为 WorkflowRun 并持久化
         run = self._to_workflow_run(exec_)
@@ -176,6 +179,9 @@ class WorkflowRecorder:
         from src.control.snapshot_manager import SnapshotManager
         mgr = SnapshotManager(self.repo_root)
         mgr.create_snapshot(run.run_id, commit_msg=f"Snapshot for {run.run_id}")
+        # 自动写入 LightRAG 知识图谱
+        if self.kg_memory:
+            self.kg_memory.ingest(exec_)
         return wf_path
 
     def _to_workflow_run(self, exec_: WorkflowExecution) -> WorkflowRun:
