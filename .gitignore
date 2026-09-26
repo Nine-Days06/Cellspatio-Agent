@@ -34,6 +34,7 @@ data/raw/
 data/import/
 data/lineage.jsonl
 knowledge_base/
+knowledge_base_methods/
 *.log
 .env
 .omo
@@ -51,7 +52,6 @@ pubmed-etl/data/
 output/
 
 # Docs
-docs/snapshots/
 docs/superpowers
 
 # Snapshots (Git worktree 快照)
