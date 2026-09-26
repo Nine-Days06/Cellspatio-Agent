@@ -73,6 +73,19 @@ class KGMemory:
             asyncio.set_event_loop(self._loop)
         return self._loop
 
+    def close(self) -> None:
+        """优雅关闭内部事件循环：先取消 pending 后台任务，再关循环，避免销毁告警。"""
+        if self._loop is None or self._loop.is_closed():
+            return
+        pending = [t for t in asyncio.all_tasks(self._loop) if not t.done()]
+        for task in pending:
+            task.cancel()
+        if pending:
+            self._loop.run_until_complete(
+                asyncio.gather(*pending, return_exceptions=True)
+            )
+        self._loop.close()
+
     def _ensure_initialized(self) -> None:
         """确保存储已初始化。"""
         if not self._initialized:

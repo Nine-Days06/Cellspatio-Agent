@@ -67,4 +67,4 @@ def test_kg_memory_accepts_custom_funcs(tmp_path):
     mem.ingest(_make_run())  # 沿用该文件已有的 fake execution 构造方式
     assert calls["llm"] >= 1  # ainsert 触发实体提取 → 走注入的 llm
     assert calls["embed"] >= 1  # embedding 也被调用
-    mem._loop.close()
+    mem.close()
