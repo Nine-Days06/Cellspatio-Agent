@@ -2,6 +2,15 @@
 
 交互式人类单细胞与空间/时序组学数据分析与知识问答系统，基于 LightRAG 和 Python + R 混合架构。
 
+## 📚 文档
+
+| 文档 | 说明 |
+|---|---|
+| **[使用指南](./docs/user/usage_guide.md)** | 详细操作手册：安装、配置、数据获取/分析/知识问答、溯源复现、FAQ 与已知限制 |
+| [项目间接口规范](./docs/api/inter_project_interface.md) | 主项目与 pubmed-etl 的接口约定 |
+
+> README 为项目概览；日常使用请阅读[使用指南](./docs/user/usage_guide.md)。
+
 ## 功能特性
 
 - **引导式分析**：自然语言驱动的人类单细胞与空间/时序组学数据分析
