@@ -17,6 +17,11 @@
 - **快照分支**：Git worktree 自动创建 `snapshots/<run_id>/`，锁定代码+数据+环境
 - **一键复现**：`python -m src.cli.replay <run_id>` 恢复 worktree、数据、环境、结果
 - **可扩展**：支持外部 API 集成和模块化扩展
+- **KG 记忆体系**：WorkflowRecorder → LightRAG 增量写入，自然语言查询历史运行/步骤/输出
+- **技能自固化**：执行→记忆→检索→优化闭环，同类任务自动获得最佳实践
+- **技能平台**：Manifest/Base/Registry/Loader 四件套，热重载毫秒级迭代
+- **模态感知路由**：TaskClassifier + ModalRouter，Skill 分发 + 回退链 + KG 注入
+- **Eval v2**：Skill路由/KG写入/KG查询/最佳实践注入全自动化评测
 
 ## 快速开始
 
@@ -87,6 +92,18 @@ streamlit run src/ui/app.py
 智能体: 已写入 1 条文档至 LightRAG 知识库
 ```
 
+### KG 记忆查询
+```
+用户: 上次那个差异表达分析用的什么参数？
+智能体: run-abc123 使用 DESeq2，FDR=0.05，log2FC=1，输入 GSE123456...
+```
+
+### 技能自固化演示
+```
+用户: 单细胞聚类最佳参数是什么？
+智能体: 基于历史 3 次运行，推荐 resolution=0.5, n_neighbors=15（见 run-xxx, run-yyy）
+```
+
 ### LLM 供应商切换
 ```
 .env 中设置：AGENT_LLM_PROVIDER=zhipu （或 deepseek/openai）
@@ -113,7 +130,16 @@ cellspatio-agent/
 │   │   ├── wrroc_store.py        # WRROC 落盘存储
 │   │   ├── snapshot_manager.py   # Git worktree 快照管理
 │   │   ├── replay.py             # 复现接口
-│   │   └── r_script_generator.py # R 脚本生成
+│   │   ├── r_script_generator.py # R 脚本生成
+│   │   ├── kg_memory.py          # KG Memory: Workflow→LightRAG 增量写入
+│   │   ├── kg_query.py           # KG Query: 自然语言查询接口
+│   │   ├── router.py             # ModalRouter: 任务分类→Skill分发
+│   │   └── classifier.py         # TaskClassifier: 关键词/规则分类
+│   ├── skills/          # 技能平台
+│   │   ├── base.py        # SkillBase: 技能接口+自动记忆+最佳实践
+│   │   ├── loader.py      # SkillLoader: 动态加载+热重载
+│   │   ├── registry.py    # SkillRegistry: 技能清单+版本+依赖
+│   │   └── manifest.py    # SkillManifest: 元数据+依赖+IO Schema
 │   ├── schemas/         # Schema 定义
 │   │   ├── workflow.py          # Workflow JSON Schema
 │   │   └── lineage.py           # Lineage 图谱模型
@@ -139,6 +165,9 @@ cellspatio-agent/
 ├── r_scripts/           # R 分析脚本
 ├── tests/               # 测试
 ├── docs/                # 文档
+├── evals/               # 评测体系
+│   ├── cases.jsonl           # 金标用例
+│   └── run_eval.py           # 评测运行器 (--scripted/--live/--p3d)
 ├── setup.bat            # Windows 一键安装脚本
 └── .env.example         # 环境变量示例
 ```
@@ -155,6 +184,15 @@ python -m pytest tests/integration/
 
 # 全量测试
 python -m pytest tests/
+
+# P3d 专项评测（Skill路由+KG写入/查询+最佳实践）
+python -m evals.run_eval --p3d
+
+# Scripted 模式（工具路由金标回放）
+python -m evals.run_eval --scripted
+
+# Live 模式（真实 LLM 路由准确率）
+python -m evals.run_eval --live --provider zhipu
 ```
 
 ### 代码风格
