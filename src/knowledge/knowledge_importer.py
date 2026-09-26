@@ -7,6 +7,8 @@ from typing import Any
 
 import pandas as pd
 
+from src.knowledge.article_text import convert_article_to_text
+
 logger = logging.getLogger(__name__)
 
 
@@ -24,7 +26,7 @@ class KnowledgeImporter:
             
             articles = data if isinstance(data, list) else data.get("articles", [])
             
-            texts = [self._convert_article_to_text(a) for a in articles]
+            texts = [convert_article_to_text(a) for a in articles]
             count = self.client.insert_documents(texts)
             
             logger.info(f"Imported {count} articles from JSON: {json_path}")
@@ -45,7 +47,7 @@ class KnowledgeImporter:
             df = pd.read_sql_query(query, conn)
             conn.close()
             
-            texts = [self._convert_article_to_text(row.to_dict()) for _, row in df.iterrows()]
+            texts = [convert_article_to_text(row.to_dict()) for _, row in df.iterrows()]
             count = self.client.insert_documents(texts)
             
             logger.info(f"Imported {count} articles from SQLite: {db_path}")
@@ -60,7 +62,7 @@ class KnowledgeImporter:
         try:
             df = pd.read_csv(csv_path)
             
-            texts = [self._convert_article_to_text(row.to_dict()) for _, row in df.iterrows()]
+            texts = [convert_article_to_text(row.to_dict()) for _, row in df.iterrows()]
             count = self.client.insert_documents(texts)
             
             logger.info(f"Imported {count} articles from CSV: {csv_path}")
@@ -110,59 +112,3 @@ class KnowledgeImporter:
             return self.import_from_sqlite(str(file_path))
         else:
             return {"success": False, "error": f"Unsupported file type: {file_path.suffix}"}
-    
-    def _convert_article_to_text(self, article: dict[str, Any]) -> str:
-        """将文献转换为 LightRAG 可接受的文本格式"""
-        text_parts = []
-        
-        if article.get("title"):
-            text_parts.append(f"标题：{article['title']}")
-        if article.get("abstract"):
-            text_parts.append(f"摘要：{article['abstract']}")
-        
-        keywords = article.get("keywords", "")
-        if isinstance(keywords, str):
-            keywords = [k.strip() for k in keywords.split(",") if k.strip()]
-        elif isinstance(keywords, list):
-            pass
-        else:
-            keywords = []
-        if keywords:
-            text_parts.append(f"关键词：{', '.join(keywords)}")
-        
-        mesh_terms = article.get("mesh_terms", "")
-        if isinstance(mesh_terms, str):
-            mesh_terms = [m.strip() for m in mesh_terms.split(",") if m.strip()]
-        elif isinstance(mesh_terms, list):
-            pass
-        else:
-            mesh_terms = []
-        if mesh_terms:
-            text_parts.append(f"MeSH词：{', '.join(mesh_terms)}")
-        
-        authors = article.get("authors", "")
-        if isinstance(authors, str):
-            authors = [a.strip() for a in authors.split(",") if a.strip()]
-        elif isinstance(authors, list):
-            pass
-        else:
-            authors = []
-        if authors:
-            text_parts.append(f"作者：{', '.join(authors)}")
-        
-        if article.get("year"):
-            text_parts.append(f"年份：{article['year']}")
-        if article.get("journal"):
-            text_parts.append(f"期刊：{article['journal']}")
-        if article.get("omics_type"):
-            text_parts.append(f"组学类型：{article['omics_type']}")
-        if article.get("pmid"):
-            text_parts.append(f"PMID：{article['pmid']}")
-            text_parts.append(
-                f"链接：https://pubmed.ncbi.nlm.nih.gov/{article['pmid']}/"
-            )
-        if article.get("doi"):
-            doi = str(article["doi"]).removeprefix("https://doi.org/")
-            text_parts.append(f"DOI：{doi}")
-
-        return "\n".join(text_parts)

@@ -3,6 +3,7 @@ import os
 import tempfile
 
 from src.knowledge.knowledge_importer import KnowledgeImporter
+from src.knowledge.article_text import convert_article_to_text
 
 
 class MockLightRAGClient:
@@ -49,10 +50,8 @@ def test_import_from_csv():
         os.unlink(csv_path)
 
 def test_convert_article_to_text():
-    client = MockLightRAGClient()
-    importer = KnowledgeImporter(client)
     article = {"pmid": "12345", "title": "Test Article", "abstract": "Test abstract", "keywords": ["test", "multi-omics"], "year": 2020, "journal": "Test Journal", "doi": "10.1000/xyz"}
-    text = importer._convert_article_to_text(article)
+    text = convert_article_to_text(article)
     assert "标题：Test Article" in text
     assert "摘要：Test abstract" in text
     assert "年份：2020" in text

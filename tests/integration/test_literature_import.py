@@ -10,6 +10,7 @@ import pytest
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
 from src.knowledge.knowledge_importer import KnowledgeImporter
+from src.knowledge.article_text import convert_article_to_text
 
 
 class MockLightRAGClient:
@@ -126,8 +127,6 @@ def test_import_directory(mock_client, sample_json_file, sample_csv_file):
 
 def test_article_to_text_conversion(mock_client):
     """测试文章转文本格式"""
-    importer = KnowledgeImporter(mock_client)
-    
     article = {
         "pmid": "12345678",
         "title": "Test Article",
@@ -139,7 +138,7 @@ def test_article_to_text_conversion(mock_client):
         "journal": "Test Journal"
     }
     
-    text = importer._convert_article_to_text(article)
+    text = convert_article_to_text(article)
     
     assert "标题：Test Article" in text
     assert "摘要：Test abstract" in text
