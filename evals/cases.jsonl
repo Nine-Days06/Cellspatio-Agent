@@ -7,3 +7,9 @@
 {"id": "know-method-1", "input": "差异表达分析为什么用 DESeq2 而不是 TPM？", "expect_tool": "query_knowledge", "expect_args": {}}
 {"id": "general-1", "input": "你好", "expect_tool": null, "expect_args": {}}
 {"id": "unsupported-1", "input": "帮我做个通路富集分析", "expect_tool": null, "expect_args": {}}
+{"id": "skill-route-1", "input": "分析单细胞数据", "expect_skill": "single_cell_analysis", "expect_modality": "analysis"}
+{"id": "skill-route-2", "input": "下载 GEO 数据集", "expect_skill": "fetch_geo", "expect_modality": "fetch"}
+{"id": "skill-route-3", "input": "查询基因功能", "expect_skill": "knowledge_query", "expect_modality": "knowledge"}
+{"id": "kg-ingest-1", "input": "run_id=test-001 差异表达分析 完成", "expect_kg_write": true, "expect_entities": ["test-001", "differential_expression"]}
+{"id": "kg-query-1", "input": "test-001 的分析结果", "expect_kg_read": true, "expect_match": ["test-001"]}
+{"id": "best-practice-1", "input": "单细胞聚类最佳参数", "expect_best_practice": true, "expect_inject": true}

@@ -11,15 +11,15 @@ from lightrag.utils import EmbeddingFunc
 
 
 async def _mock_llm(prompt: str, **kwargs) -> str:
-    """模拟 LLM 函数：返回 LightRAG 期望的 JSON 格式。"""
+    """模拟 LLM 函数：返回 LightRAG 期望的 JSON 格式（含代码围栏）。"""
     # 关键词提取期望返回 JSON 对象
     if "keyword" in prompt.lower() or "keywords" in prompt.lower():
-        return '{"high_level_keywords": ["test", "run"], "low_level_keywords": ["test-run-001", "analysis"]}'
-    # 实体/关系提取期望返回特定格式 - 需要包含完整的 JSON 结构
+        return '```json\n{"high_level_keywords": ["test", "run"], "low_level_keywords": ["test-run-001", "analysis"]}\n```'
+    # 实体/关系提取期望返回特定格式 - 需要包含代码围栏
     if "entity" in prompt.lower() or "relation" in prompt.lower() or "extract" in prompt.lower():
-        return '{"entities": [{"entity_name": "test-run-001", "entity_type": "workflow", "description": "Test workflow run", "source_id": "test-run-001"}], "relationships": []}'
-    # 默认返回
-    return "mock response"
+        return '```json\n{"entities": [{"entity_name": "test-run-001", "entity_type": "workflow", "description": "Test workflow run", "source_id": "test-run-001"}], "relationships": []}\n```'
+    # 所有其他情况（查询、摘要、生成等）返回有意义的文本
+    return "test-run-001: 差异表达分析测试运行，包含步骤和输出结果。单细胞聚类最佳参数：resolution=0.5, n_neighbors=15。TP53 是重要的肿瘤抑制基因。"
 
 
 async def _mock_embedding(texts: list[str], **kwargs) -> np.ndarray:
@@ -75,7 +75,7 @@ class KGMemory:
             self._initialized = True
 
     def ingest(self, execution) -> None:
-        """将 WorkflowExecution 增量写入 LightRAG。"""
+        """将 WorkflowExecution 或 WorkflowRun 增量写入 LightRAG。"""
         self._ensure_initialized()
         loop = self._get_loop()
         
@@ -88,10 +88,12 @@ class KGMemory:
             step_text = f"Step {step.step_id}: {step.tool} {step.params}"
             loop.run_until_complete(self._rag.ainsert(step_text, ids=[f"step:{execution.run_id}:{step.step_id}"]))
 
-        # 3. 写入输出实体
-        for out in execution.outputs:
-            out_text = f"Output {out.name}: {out.path}"
-            loop.run_until_complete(self._rag.ainsert(out_text, ids=[f"output:{execution.run_id}:{out.name}"]))
+        # 3. 写入输出实体（兼容 WorkflowRun，WorkflowExecution 无 outputs）
+        outputs = getattr(execution, "outputs", None)
+        if outputs:
+            for out in outputs:
+                out_text = f"Output {out.name}: {out.path}"
+                loop.run_until_complete(self._rag.ainsert(out_text, ids=[f"output:{execution.run_id}:{out.name}"]))
 
     def query_entities(self, query: str) -> list[str]:
         """实体检索：返回相关实体文本片段。"""

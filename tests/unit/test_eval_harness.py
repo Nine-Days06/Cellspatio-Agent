@@ -22,13 +22,15 @@ def test_cases_file_has_required_fields_and_known_tools():
         assert case["id"] not in ids
         ids.add(case["id"])
         assert case["input"]
-        assert case["expect_tool"] in names
-        if case["expect_tool"] == "run_analysis":
-            assert case["expect_args"]["analysis_type"] in (
-                "differential_expression",
-                "single_cell",
-                "spatial",
-            )
+        # 支持两种格式：原有工具路由格式和 P3d 扩展格式
+        if "expect_tool" in case:
+            assert case["expect_tool"] in names
+            if case["expect_tool"] == "run_analysis":
+                assert case["expect_args"]["analysis_type"] in (
+                    "differential_expression",
+                    "single_cell",
+                    "spatial",
+                )
 
 
 def test_run_eval_scripted_mode_scores_perfect_on_oracle():
