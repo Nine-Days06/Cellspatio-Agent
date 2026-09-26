@@ -153,8 +153,3 @@ class RExecutor:
                 f.write(code)
             
             return self.execute_script(temp_script)
-    
-    def install_package(self, package_name: str) -> subprocess.CompletedProcess:
-        """安装 R 包"""
-        code = f"if (!requireNamespace('{package_name}', quietly = TRUE)) {{ install.packages('{package_name}') }}"
-        return self.execute_code(code)
