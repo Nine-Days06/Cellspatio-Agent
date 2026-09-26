@@ -59,10 +59,12 @@ AGENT_LLM_PROVIDER=zhipu
 DEEPSEEK_API_KEY=your_key
 ZHIPU_API_KEY=your_key
 
-# PubMed/NCBI/KEGG
+# PubMed/NCBI（KEGG 走免费接口，无需 key）
 NCBI_API_KEY=your_key
 NCBI_EMAIL=your_email
-KEGG_API_KEY=your_key
+
+# Ollama embedding 模型（未设时默认 bge-m3）
+# EMBEDDING_MODEL=bge-m3
 ```
 
 ### 运行
@@ -124,10 +126,7 @@ streamlit run src/ui/app.py
 cellspatio-agent/
 ├── src/                 # 源代码
 │   ├── main.py          # 入口
-│   ├── config.py        # 配置（LLM 供应商、API Key、代理）
-│   ├── logger.py        # 统一日志
-│   ├── error_handler.py # 全局错误处理
-│   ├── performance.py   # 性能监控
+│   ├── config.py        # 配置（LLM 供应商、API Key）
 │   ├── ui/              # Streamlit 界面
 │   │   └── app.py       # Web 应用入口
 │   ├── control/         # 控制层
@@ -157,8 +156,7 @@ cellspatio-agent/
 │   │   ├── knowledge_builder.py  # 批量构建
 │   │   ├── knowledge_importer.py # 文献导入
 │   │   ├── llm_factory.py        # LLM/embedding 工厂
-│   │   ├── api_gateway.py        # 外部 API 网关
-│   │   └── import_config.py      # 知识库导入配置
+│   │   └── article_text.py       # 文章转文本公共函数
 │   ├── analysis/        # 分析层
 │   │   ├── r_executor.py         # R 执行器
 │   │   ├── visualization.py      # 可视化
@@ -166,12 +164,8 @@ cellspatio-agent/
 │   └── data/            # 数据层
 │       ├── fetchers/             # 公共数据库 Fetcher（GEO/KEGG/UniProt）
 │       ├── registry.py           # Fetcher 注册表
-│       ├── storage.py            # 本地存储
-│       ├── data_loader.py        # 数据加载
-│       ├── metadata_manager.py   # 元数据管理
-│       └── cache.py              # 缓存
+│       └── storage.py            # 本地存储
 ├── pubmed-etl/          # 独立文献批量下载与清洗工具（单细胞+时空方向）
-├── r_scripts/           # R 分析脚本
 ├── tests/               # 测试
 ├── docs/                # 文档
 ├── evals/               # 评测体系
@@ -206,6 +200,9 @@ python -m evals.run_eval --live --provider zhipu
 
 ### 代码风格
 ```bash
+# 安装开发工具（black/ruff/pytest；setup.bat 已自动包含）
+pip install -e .[dev]
+
 # 格式化代码
 black src/ tests/
 

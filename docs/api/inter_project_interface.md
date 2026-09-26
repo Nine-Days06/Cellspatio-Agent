@@ -2,7 +2,7 @@
 
 ## 概述
 
-本文档定义 pubmed-etl（人类多组学文献处理项目）与 multiomics-agent（人类多组学分析智能体）之间的接口规范。
+本文档定义 pubmed-etl（人类多组学文献处理项目）与 cellspatio-agent（人类多组学分析智能体）之间的接口规范。
 
 ## 数据流向
 
@@ -39,7 +39,7 @@ pubmed-etl --step export → data/output/articles_*.csv → data/import/ → imp
 - 每次导出 = 符合筛选条件的 PMID 集合 ∖ 已记录集合
 - 导出成功后追写本次 PMID
 
-## 导入规范（multiomics-agent 侧）
+## 导入规范（cellspatio-agent 侧）
 
 **导入目录：** `data/import/`
 
