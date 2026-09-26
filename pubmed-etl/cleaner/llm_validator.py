@@ -132,7 +132,7 @@ def _extract_json(text: str, fix_glm_multi_array: bool = False) -> list | None:
     return None
 
 
-SYSTEM_PROMPT = (
+SYSTEM_PROMPT_COMMON = (
     """你是一个人类单细胞与空间/时序组学文献筛选专家。
 你的任务是判断每篇 PubMed 文献的摘要是否真正与人类单细胞或空间/时序组学相关。
 
@@ -160,12 +160,26 @@ SYSTEM_PROMPT = (
 1. 摘要是否出现单细胞或空间/时序组学技术关键词？
 2. 是否为人类（或开发人类方法学）？
 3. 是否有可提取的实验/数据/实体信息（供知识图谱）？
-4. 综合给出 label: include / exclude，并给 0-1 置信度与一句理由。
+4. 综合给出 verdict: RELEVANT 或 NOT_RELEVANT，并给一句中文理由。
 
-【输出格式】
-请以 JSON 对象格式逐条回答，不要包含其他内容：
+"""
+)
+
+# 同步批量模式：一次请求判断多篇，返回结果数组
+SYSTEM_PROMPT_SYNC = SYSTEM_PROMPT_COMMON + (
+    """【输出格式】
+请以 JSON 对象格式逐条回答，必须覆盖本次输入的全部文献、不得遗漏，不要包含其他内容：
 {"results":[{"pmid":"...","verdict":"RELEVANT 或 NOT_RELEVANT",
 "reason":"请用中文简要说明判断依据，指出摘要中的组学类型、整合分析情况和研究对象"}]}
+"""
+)
+
+# Batch 模式：每篇独立请求，返回单 JSON 对象
+SYSTEM_PROMPT_BATCH = SYSTEM_PROMPT_COMMON + (
+    """【输出格式】
+请仅输出如下 JSON 对象，不要包含其他内容：
+{"pmid":"...","verdict":"RELEVANT 或 NOT_RELEVANT",
+"reason":"请用中文简要说明判断依据"}
 """
 )
 
@@ -188,7 +202,8 @@ UPDATE llm_validation SET human_review = ? WHERE pmid = ?
 def _build_batch_prompt(rows: list) -> str:
     """为一批文献构建 prompt 正文"""
     parts = [
-        "以下是需要你根据上述标准判断的文献列表，请逐条判断摘要中是否存在可提取的实体关系：\n\n"
+        "以下是需要你根据上述标准判断的文献列表，请逐条判断每篇是否与人类单细胞与空间/时序组学相关，"
+        "必须覆盖全部文献、不得遗漏：\n\n"
     ]
     for i, row in enumerate(rows, 1):
         title = (row["title"] or "").strip()
@@ -246,7 +261,7 @@ def _call_llm(rows: list) -> tuple[list[dict], list[str]]:
         try:
             resp = client.chat.completions.create(
                 messages=[
-                    {"role": "system", "content": SYSTEM_PROMPT},
+                    {"role": "system", "content": SYSTEM_PROMPT_SYNC},
                     {"role": "user", "content": prompt},
                 ],
                 **create_kwargs,
@@ -608,7 +623,7 @@ def _export_review_csv() -> Path | None:
 BATCH_CHECKPOINT_FILE = "llm_batch_progress.json"
 
 PROMPT_PREFIX = (
-    "请根据上述标准判断以下文献是否包含可用于人类单细胞与空间组学知识图谱构建的实体关系信息。\n\n"
+    "请根据上述标准判断以下文献是否与人类单细胞与空间/时序组学相关：\n\n"
 )
 
 PROMPT_OUTPUT_FORMAT = (
@@ -667,7 +682,7 @@ def _build_jsonl(rows: list) -> Path:
     jsonl_path = out_dir / f"batch_input_{ts}.jsonl"
 
     model = ZHIPU_BATCH_MODEL
-    system_content = SYSTEM_PROMPT
+    system_content = SYSTEM_PROMPT_BATCH
 
     with open(jsonl_path, "w", encoding="utf-8") as f:
         for row in rows:

@@ -46,11 +46,22 @@ EFETCH_BATCH_SIZE = 300
 
 # ── 搜索策略 ─────────────────────────────────────────────────
 # 主搜索词：聚焦人类单细胞与空间/时序组学
+# 自由词（含常见同义变体与平台名）+ MeSH 权威词，策略偏召回，
+# 精度由后端硬过滤与 LLM 二次验证兜底
 PUBMED_QUERY = (
-    '("single-cell"[Title/Abstract] OR scRNA-seq[Title/Abstract] OR '
-    '"spatial transcriptomics"[Title/Abstract] OR Visium[Title/Abstract] OR '
-    '"spatiotemporal"[Title/Abstract]) AND '
+    '("single-cell"[Title/Abstract] OR "single cell"[Title/Abstract] OR '
+    'scRNA-seq[Title/Abstract] OR snRNA-seq[Title/Abstract] OR '
+    'CITE-seq[Title/Abstract] OR '
+    '"spatial transcriptomics"[Title/Abstract] OR spatialomics[Title/Abstract] OR '
+    'Visium[Title/Abstract] OR MERFISH[Title/Abstract] OR '
+    '"Slide-seq"[Title/Abstract] OR '
+    # noexp 禁止 explode：该词默认 explode 会异常扩散（实测 10 万+命中）
+    '"Single-Cell Analysis"[MeSH Terms] OR "Spatial Transcriptomics"[MeSH Terms:noexp]) AND '
     '("Homo sapiens"[Organism] OR human[Title/Abstract] OR patients[Title/Abstract])'
+    # NOT 前置排除（检索端省下载，与后端口径对齐）：
+    # 前 7 项对应硬过滤 EXCLUDED_ARTICLE_TYPES；review 对应 LLM 排除规则5（综述默认排除）
+    ' NOT (letter[pt] OR comment[pt] OR correction[pt] OR retraction[pt] OR '
+    '"published erratum"[pt] OR editorial[pt] OR news[pt] OR review[pt])'
 )
 
 # 文献时间范围
