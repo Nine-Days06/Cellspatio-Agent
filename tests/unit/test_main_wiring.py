@@ -63,3 +63,21 @@ def test_agent_runtime_wiring(monkeypatch):
     assert call_log[0][1]["history"] == [{"role": "user", "content": "prev"}]
     assert call_log[0][1]["last_user_input"] == "测试输入"
     assert result["message"] == "ok"
+
+
+def test_agent_wires_modal_router_into_runtime(monkeypatch):
+    """CellSpatioAgent 必须把 ModalRouter 装配进 AgentRuntime。"""
+    from src.main import CellSpatioAgent
+
+    fake_client = object()
+    monkeypatch.setattr(
+        "src.main.get_current_llm", lambda: (fake_client, "test-model")
+    )
+    monkeypatch.setattr(
+        "src.main.LightRAGClient.__init__", lambda self, *a, **k: None
+    )
+    agent = CellSpatioAgent(
+        config={"knowledge_dir": "tmp_kb_wiring", "data_dir": "tmp_data_wiring"}
+    )
+    assert getattr(agent, "modal_router", None) is not None
+    assert agent.agent_runtime.router is agent.modal_router

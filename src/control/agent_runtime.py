@@ -23,10 +23,11 @@ MAX_HISTORY = 10
 class AgentRuntime:
     """LLM tool loop; workflow_manager provides *_for_agent execution face."""
 
-    def __init__(self, llm_client, model: str, workflow_manager):
+    def __init__(self, llm_client, model: str, workflow_manager, router=None):
         self.llm_client = llm_client
         self.model = model
         self.workflow_manager = workflow_manager
+        self.router = router  # ModalRouter | None：分类/最佳实践提示注入
 
     def execute(self, user_input: str, context: dict[str, Any] | None = None) -> dict[str, Any]:
         context = dict(context) if context else {}
@@ -35,7 +36,8 @@ class AgentRuntime:
         if self.llm_client is None:
             return self.workflow_manager.execute_workflow(user_input, context)
 
-        messages = self._build_messages(user_input, context)
+        hint = self._route_hint(user_input)
+        messages = self._build_messages(user_input, context, hint=hint)
         try:
             for _ in range(MAX_ROUNDS):
                 response = self.llm_client.chat.completions.create(
@@ -79,8 +81,29 @@ class AgentRuntime:
             logger.warning("tool-calling failed, fallback to legacy workflow: %s", e)
             return self.workflow_manager.execute_workflow(user_input, context)
 
-    def _build_messages(self, user_input: str, context: dict[str, Any]) -> list[dict[str, Any]]:
-        messages: list[dict[str, Any]] = [{"role": "system", "content": SYSTEM_PROMPT}]
+    def _route_hint(self, user_input: str) -> dict[str, Any] | None:
+        """调用 ModalRouter.hint；无 router 或失败时返回 None（不阻断主流程）。"""
+        if self.router is None:
+            return None
+        try:
+            return self.router.hint(user_input)
+        except Exception as e:  # noqa: BLE001 - 提示注入失败必须可降级
+            logger.warning("route hint failed, continue without: %s", e)
+            return None
+
+    def _build_messages(self, user_input: str, context: dict[str, Any],
+                        hint: dict[str, Any] | None = None) -> list[dict[str, Any]]:
+        system = SYSTEM_PROMPT
+        if hint and hint.get("modality") and hint["modality"] != "general":
+            lines = [
+                "\n\n## 任务路由提示（本地关键词分类，仅供参考）",
+                f"- 模态: {hint['modality']}",
+                f"- 建议技能: {hint.get('skill')}",
+            ]
+            if hint.get("best_practices"):
+                lines.append(f"- 历史最佳实践:\n{hint['best_practices']}")
+            system += "\n".join(lines)
+        messages: list[dict[str, Any]] = [{"role": "system", "content": system}]
         history = context.get("history") or []
         for msg in history[-MAX_HISTORY:]:
             if msg.get("role") in ("user", "assistant") and msg.get("content"):

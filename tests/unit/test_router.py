@@ -1,6 +1,6 @@
 """ModalRouter：任务分发 + 回退链测试。"""
 from pathlib import Path
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, Mock
 
 from src.control.router import ModalRouter
 from src.skills.loader import SkillLoader
@@ -42,3 +42,24 @@ def test_router_hitl_interrupt():
     # 模拟 HITL 状态
     result = router.route("分析差异表达基因", context={"script_approved": False})
     assert result["status"] == "needs_script_confirmation"
+
+
+def test_hint_returns_classification_without_loading_skill():
+    """hint 仅分类+最佳实践，不加载 Skill（skill 不存在也不报错）。"""
+    registry = SkillRegistry(Path("/tmp/skills"))
+    loader = MagicMock(spec=SkillLoader)
+    router = ModalRouter(registry, loader)
+    hint = router.hint("帮我做差异表达分析")
+    assert hint["modality"] == "analysis"
+    assert hint["skill"] == "differential_expression"
+    assert "best_practices" in hint
+
+
+def test_hint_general_when_no_keyword_match():
+    registry = SkillRegistry(Path("/tmp/skills"))
+    loader = MagicMock(spec=SkillLoader)
+    router = ModalRouter(registry, loader)
+    hint = router.hint("随便聊聊天气")
+    assert hint["modality"] == "general"
+    assert hint["skill"] is None
+    assert hint["best_practices"] is None

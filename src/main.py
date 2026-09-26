@@ -11,12 +11,15 @@ from src.config import get_current_llm
 from src.control.agent_runtime import AgentRuntime
 from src.control.intent_parser import IntentParser
 from src.control.r_script_generator import RScriptGenerator
+from src.control.router import ModalRouter
 from src.control.workflow_manager import WorkflowManager
 from src.control.workflow_recorder import WorkflowRecorder
 from src.data.registry import FetcherRegistry
 from src.data.storage import FetcherStorage
 from src.knowledge.knowledge_builder import KnowledgeBuilder
 from src.knowledge.lightrag_client import LightRAGClient
+from src.skills.loader import SkillLoader
+from src.skills.registry import SkillRegistry
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -117,11 +120,19 @@ class CellSpatioAgent:
             workflow_recorder=self.workflow_recorder,
         )
 
+        # Phase 3 接线：分类/最佳实践提示（skills_dir 无技能时 hint 仍可用）
+        self.skill_registry = SkillRegistry(skills_dir=Path(repo_root) / "skills")
+        self.skill_loader = SkillLoader(self.skill_registry)
+        self.modal_router = ModalRouter(
+            registry=self.skill_registry, loader=self.skill_loader
+        )
+
         # AgentRuntime: LLM tool loop; fallback to legacy workflow
         self.agent_runtime = AgentRuntime(
             llm_client=self.llm_client,
             model=self.llm_model,
             workflow_manager=self.workflow_manager,
+            router=self.modal_router,
         )
 
         logger.info("CellSpatioAgent initialized")

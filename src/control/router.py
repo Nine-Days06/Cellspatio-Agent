@@ -69,3 +69,20 @@ class ModalRouter:
         except Exception:
             pass
         return None
+
+    def hint(self, user_input: str) -> dict[str, Any]:
+        """轻量路由提示：仅分类 + 最佳实践查询，不加载 Skill。
+
+        生产接线入口（AgentRuntime 调用）：与 route() 分离，
+        因为 src/skills/ 尚无具体技能实现，load 必然失败。
+        """
+        classification = self.classifier.classify(user_input)
+        modality = classification["modality"]
+        skill = classification["skill"]
+        if modality == "general" or skill is None:
+            return {"modality": "general", "skill": None, "best_practices": None}
+        return {
+            "modality": modality,
+            "skill": skill,
+            "best_practices": self._query_best_practices(skill, user_input),
+        }

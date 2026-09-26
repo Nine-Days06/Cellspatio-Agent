@@ -161,3 +161,44 @@ def test_run_analysis_merges_regex_params_from_user_input():
 
     params = wm.calls[0][1]["params"]
     assert params.get("input_files") == ["data/pbmc.csv"]
+
+
+def test_router_hint_injected_into_system_prompt():
+    """传入 router 时，分类与最佳实践出现在 system prompt。"""
+    from src.control.agent_runtime import AgentRuntime
+
+    class FakeRouter:
+        def hint(self, user_input):
+            return {"modality": "analysis", "skill": "differential_expression",
+                    "best_practices": "DEG 分析建议先做质控"}
+
+    rt = AgentRuntime(llm_client=None, model="m", workflow_manager=object(),
+                      router=FakeRouter())
+    messages = rt._build_messages("差异表达", {}, hint=rt.router.hint("差异表达"))
+    assert "任务路由提示" in messages[0]["content"]
+    assert "analysis" in messages[0]["content"]
+    assert "DEG 分析建议先做质控" in messages[0]["content"]
+
+
+def test_router_none_keeps_system_prompt_unchanged():
+    """router=None 时 system prompt 与原状一致（无路由段）。"""
+    from src.control.tools import SYSTEM_PROMPT
+    from src.control.agent_runtime import AgentRuntime
+
+    rt = AgentRuntime(llm_client=None, model="m", workflow_manager=object())
+    messages = rt._build_messages("差异表达", {})
+    assert messages[0]["content"] == SYSTEM_PROMPT
+    assert rt.router is None
+
+
+def test_router_hint_failure_does_not_block():
+    """hint 抛异常时 execute 不被阻断（降级为无提示）。"""
+    from src.control.agent_runtime import AgentRuntime
+
+    class BrokenRouter:
+        def hint(self, user_input):
+            raise RuntimeError("kg down")
+
+    rt = AgentRuntime(llm_client=None, model="m", workflow_manager=object(),
+                      router=BrokenRouter())
+    assert rt._route_hint("任意输入") is None
