@@ -43,7 +43,19 @@ def test_generate_visualization_template():
 
     assert "#!/usr/bin/env Rscript" in code
     assert 'plot_type <- "volcano"' in code
+    # 真实 base R 火山图逻辑：读取 CSV、校验列、png()、plot()、abline()
+    assert "read.csv(input_file" in code
+    assert "log2FC" in code
+    assert "padj" in code
+    assert "png(output_file)" in code
+    assert "plot(" in code
+    assert "abline(" in code
+    assert "dev.off()" in code
+    # 热图分支也存在
     assert "heatmap(matrix_data" in code
+    assert "heat.colors(100)" in code
+    # PCA 分支也存在
+    assert "prcomp(" in code
 
 
 def test_de_template_param_injection():
@@ -173,3 +185,29 @@ def test_spatial_visium_template():
     assert "spatial 模板尚未实现" not in code
     assert 'output_file <- "sp.csv"' in code
     assert 'plot_file <- "spatial_plot.png"' in code
+
+
+def test_visualization_template_is_real_base_r_not_mock():
+    """Test visualization template uses real base R plotting, not rnorm stub"""
+    from src.control.r_script_generator import RScriptGenerator
+
+    code = RScriptGenerator().generate_code(
+        "visualization",
+        {"input_file": "data.csv", "output_file": "plot.png", "plot_type": "volcano"},
+    )
+    # 真实绘图逻辑
+    assert "read.csv(input_file" in code
+    assert "log2FC" in code
+    assert "padj" in code
+    assert "png(output_file)" in code
+    assert "plot(" in code
+    assert "abline(" in code
+    assert "dev.off()" in code
+    assert "cat(" in code
+    # 无 rnorm 假数据
+    assert "rnorm(" not in code
+    assert "matrix(rnorm" not in code
+    # 参数注入正确
+    assert 'input_file <- "data.csv"' in code
+    assert 'output_file <- "plot.png"' in code
+    assert 'plot_type <- "volcano"' in code

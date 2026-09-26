@@ -232,37 +232,123 @@ cat("结果已保存至:", output_file, "\\n")
 '''
 
     def _generate_visualization_code(self, params: dict[str, Any]) -> str:
-        """生成可视化 R 代码"""
+        """生成可视化 R 代码（真实 base R 绘图：火山图/热图/PCA）。
+
+        输入约定：CSV 文件。
+        - volcano: 需 log2FC 与 padj 列。
+        - heatmap: 首列为标识符时作行名，其余列为数值矩阵。
+        - pca: 数值矩阵，行=样本/特征，列=变量。
+        输出：PNG 图片写入 output_file；cat() 打印关键统计。
+        """
+        input_file = params.get("input_file", "input.csv")
+        output_file = params.get("output_file", "plot.png")
         plot_type = params.get("plot_type", "volcano")
 
         return f'''#!/usr/bin/env Rscript
-# 可视化模板
-
-# 设置绘图类型
+# 可视化（base R：火山图 / 热图 / PCA）
+input_file <- "{input_file}"
+output_file <- "{output_file}"
 plot_type <- "{plot_type}"
-
-# 示例数据
-matrix_data <- matrix(rnorm(100), nrow = 10)
 
 if (!(plot_type %in% c("volcano", "heatmap", "pca"))) {{
     stop("不支持的绘图类型: ", plot_type)
 }}
 
+# 读取数据
+data <- read.csv(input_file, stringsAsFactors = FALSE)
+
 if (plot_type == "volcano") {{
-    # Volcano Plot 火山图绘制逻辑
-    cat("绘制 Volcano Plot...\\n")
-}} else {{
-    if (plot_type == "heatmap") {{
-        # 热图绘制逻辑
-        heatmap(matrix_data)
-        cat("绘制热图...\\n")
-    }} else {{
-        if (plot_type == "pca") {{
-            # PCA 绘制逻辑
-            cat("绘制 PCA 图...\\n")
-        }}
+    # 火山图：需 log2FC 与 padj 列
+    if (!("log2FC" %in% colnames(data))) {{
+        stop("Column 'log2FC' not found in input file")
     }}
+    if (!("padj" %in% colnames(data))) {{
+        stop("Column 'padj' not found in input file")
+    }}
+
+    # 剔除缺失值，显著点（padj < 0.05）标红，其余灰色
+    volcano_data <- data[!is.na(data$log2FC) & !is.na(data$padj), ]
+    if (nrow(volcano_data) == 0) {{
+        stop("No valid points after removing NA values in 'log2FC'/'padj'")
+    }}
+    colors <- ifelse(volcano_data$padj < 0.05, "red", "gray")
+
+    # 生成火山图 PNG
+    png(output_file)
+    plot(volcano_data$log2FC, -log10(volcano_data$padj),
+         col = colors, pch = 20,
+         xlab = "log2 Fold Change",
+         ylab = "-log10(Adjusted P-value)",
+         main = "Volcano Plot")
+    abline(h = -log10(0.05), lty = 2, col = "blue")
+    dev.off()
+
+    cat("Plot type: volcano\\n")
+    cat("Total points:", nrow(volcano_data), "\\n")
+    cat("Significant points (padj < 0.05):", sum(volcano_data$padj < 0.05), "\\n")
+}} else if (plot_type == "heatmap") {{
+    # 热图：第一列为标识符时转为行名，其余列转为数值矩阵
+    if (is.character(data[[1]]) || is.factor(data[[1]])) {{
+        row_labels <- data[[1]]
+        matrix_data <- as.matrix(data[, -1, drop = FALSE])
+        rownames(matrix_data) <- row_labels
+    }} else {{
+        matrix_data <- as.matrix(data)
+    }}
+    storage.mode(matrix_data) <- "numeric"
+
+    # 校验数据满足热图聚类要求（hclust 需要至少 2 行 2 列，且含非 NA 数值）
+    if (nrow(matrix_data) < 2 || ncol(matrix_data) < 2 || all(is.na(matrix_data))) {{
+        stop("No numeric data found for heatmap")
+    }}
+
+    # 生成热图 PNG
+    png(output_file, width = 800, height = 600)
+    heatmap(matrix_data, col = heat.colors(100))
+    dev.off()
+
+    cat("Plot type: heatmap\\n")
+    cat("Rows:", nrow(matrix_data), "\\n")
+    cat("Columns:", ncol(matrix_data), "\\n")
+}} else {{
+    # PCA：数值矩阵，行=观测，列=变量
+    if (is.character(data[[1]]) || is.factor(data[[1]])) {{
+        row_labels <- data[[1]]
+        matrix_data <- as.matrix(data[, -1, drop = FALSE])
+        rownames(matrix_data) <- row_labels
+    }} else {{
+        matrix_data <- as.matrix(data)
+    }}
+    storage.mode(matrix_data) <- "numeric"
+
+    # 剔除全 NA 列
+    matrix_data <- matrix_data[, colSums(!is.na(matrix_data)) > 0, drop = FALSE]
+    if (nrow(matrix_data) < 2 || ncol(matrix_data) < 2) {{
+        stop("Insufficient numeric data for PCA")
+    }}
+
+    # 中心化并计算 PCA
+    pca_res <- prcomp(matrix_data, center = TRUE, scale. = TRUE, na.action = na.omit)
+    var_exp <- round(summary(pca_res)$importance[2, 1:2] * 100, 1)
+
+    # 绘制 PCA 散点图（PC1 vs PC2）
+    png(output_file, width = 800, height = 600)
+    plot(pca_res$x[, 1], pca_res$x[, 2],
+         pch = 20, col = "steelblue",
+         xlab = paste0("PC1 (", var_exp[1], "%)"),
+         ylab = paste0("PC2 (", var_exp[2], "%)"),
+         main = "PCA Plot")
+    text(pca_res$x[, 1], pca_res$x[, 2], labels = rownames(pca_res$x), cex = 0.6, pos = 3)
+    dev.off()
+
+    cat("Plot type: pca\\n")
+    cat("Observations:", nrow(pca_res$x), "\\n")
+    cat("Variables:", ncol(matrix_data), "\\n")
+    cat("PC1 variance:", var_exp[1], "%\\n")
+    cat("PC2 variance:", var_exp[2], "%\\n")
 }}
+
+cat("Saved to:", output_file, "\\n")
 '''
 
     def _generate_single_cell_code(self, params: dict[str, Any]) -> str:
