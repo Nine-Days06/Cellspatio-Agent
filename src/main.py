@@ -189,6 +189,11 @@ class CellSpatioAgent:
         from src.control.replay import replay_run
         return replay_run(run_id, repo_root=self.config.get("repo_root", Path.cwd()))
 
+    def close(self) -> None:
+        """释放后台资源（当前：KGMemory 事件循环）；幂等。"""
+        if getattr(self, "kg_memory", None):
+            self.kg_memory.close()
+
     def run(self, mode: str = "cli"):
         """运行智能体"""
         if mode == "cli":
@@ -203,21 +208,25 @@ class CellSpatioAgent:
         print("CellSpatio 单细胞与时空组学分析智能体已启动（CLI模式）")
         print("输入 'quit' 或 'exit' 退出\n")
 
-        while True:
-            try:
-                user_input = input("用户: ").strip()
-                if user_input.lower() in ["quit", "exit"]:
+        try:
+            while True:
+                try:
+                    user_input = input("用户: ").strip()
+                    if user_input.lower() in ["quit", "exit"]:
+                        break
+
+                    result = self.execute_workflow(user_input)
+                    print(
+                        f"智能体: {result.get('message', result.get('response', '无响应'))}\n"
+                    )
+
+                except KeyboardInterrupt:
                     break
-
-                result = self.execute_workflow(user_input)
-                print(
-                    f"智能体: {result.get('message', result.get('response', '无响应'))}\n"
-                )
-
-            except KeyboardInterrupt:
-                break
-            except Exception as e:  # noqa: BLE001 - CLI 交互循环需兜底所有异常
-                print(f"错误: {e}\n")
+                except Exception as e:  # noqa: BLE001 - CLI 交互循环需兜底所有异常
+                    print(f"错误: {e}\n")
+        finally:
+            # 退出前显式释放后台资源（KGMemory 事件循环），避免残留 pending worker
+            self.close()
 
         print("感谢使用，再见！")
 

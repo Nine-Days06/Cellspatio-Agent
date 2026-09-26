@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+import atexit
 from pathlib import Path
 
 import numpy as np
@@ -65,6 +66,9 @@ class KGMemory:
         # 在专用循环中初始化存储
         self._loop.run_until_complete(self._rag.initialize_storages())
         self._initialized = True
+        # 进程退出时优雅关闭事件循环（取消 pending worker → 关循环），
+        # 覆盖 eval/测试/生产等所有构造点，消除 "Event loop is closed" 残留告警
+        atexit.register(self.close)
 
     def _get_loop(self):
         """获取专用事件循环。"""

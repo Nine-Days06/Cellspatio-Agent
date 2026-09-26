@@ -163,37 +163,40 @@ def _run_skill_routing(cases: list[dict]) -> dict[str, Any]:
     
     with tempfile.TemporaryDirectory() as tmp:
         kg_mem = KGMemory(working_dir=Path(tmp) / "kg")
-        registry = _MockSkillRegistry()
-        loader = _MockSkillLoader(registry)
-        router = ModalRouter(registry, loader, kg_memory=kg_mem)
-        router.classifier = _MockClassifier()
-        
-        failures = []
-        passed = 0
-        
-        for case in cases:
-            # P3d: 需要 script_approved 才能通过 HITL 检查
-            result = router.route(case["input"], context={"script_approved": True})
-            expected_skill = case.get("expect_skill")
-            expected_modality = case.get("expect_modality")
-            
-            ok = (result.get("skill") == expected_skill and 
-                  result.get("modality") == expected_modality)
-            
-            if ok:
-                passed += 1
-            else:
-                failures.append({
-                    "id": case["id"],
-                    "expected_skill": expected_skill,
-                    "got_skill": result.get("skill"),
-                    "expected_modality": expected_modality,
-                    "got_modality": result.get("modality"),
-                })
-        
-        total = len(cases)
-        return {"mode": "skill_routing", "total": total, "passed": passed, "failures": failures,
-                "accuracy": passed / total if total else 0.0}
+        try:
+            registry = _MockSkillRegistry()
+            loader = _MockSkillLoader(registry)
+            router = ModalRouter(registry, loader, kg_memory=kg_mem)
+            router.classifier = _MockClassifier()
+
+            failures = []
+            passed = 0
+
+            for case in cases:
+                # P3d: 需要 script_approved 才能通过 HITL 检查
+                result = router.route(case["input"], context={"script_approved": True})
+                expected_skill = case.get("expect_skill")
+                expected_modality = case.get("expect_modality")
+
+                ok = (result.get("skill") == expected_skill and
+                      result.get("modality") == expected_modality)
+
+                if ok:
+                    passed += 1
+                else:
+                    failures.append({
+                        "id": case["id"],
+                        "expected_skill": expected_skill,
+                        "got_skill": result.get("skill"),
+                        "expected_modality": expected_modality,
+                        "got_modality": result.get("modality"),
+                    })
+
+            total = len(cases)
+            return {"mode": "skill_routing", "total": total, "passed": passed, "failures": failures,
+                    "accuracy": passed / total if total else 0.0}
+        finally:
+            kg_mem.close()  # 用完即关，避免进程退出时残留 pending worker 告警
 
 
 def _run_kg_ingest(cases: list[dict]) -> dict[str, Any]:
@@ -207,55 +210,58 @@ def _run_kg_ingest(cases: list[dict]) -> dict[str, Any]:
     
     with tempfile.TemporaryDirectory() as tmp:
         kg_mem = KGMemory(working_dir=Path(tmp) / "kg")
-        recorder = WorkflowRecorder(wrroc_base_dir=Path(tmp) / ".wrroc", kg_memory=kg_mem)
-        
-        failures = []
-        passed = 0
-        
-        for case in cases:
-            run_id = f"eval-{case['id']}"
-            intent_record = IntentRecord(
-                type=IntentType.ANALYSIS,
-                analysis_type=AnalysisType.DIFFERENTIAL_EXPRESSION,
-                original_input=case["input"]
-            )
-            param_record = ParameterRecord()
-            
-            recorder.start_execution(
-                intent={"type": "analysis", "analysis_type": "differential_expression", "original_input": case["input"]},
-                parameters={}, user_input=case["input"], context={}, run_id=run_id
-            )
-            
-            step_output = StepOutput(status=TerminalStatus.SUCCESS, result={"result_file": "out.de_results.csv"})
-            step = WorkflowStep(
-                step_id="s1",
-                step_type=StepType.ANALYSIS,
-                tool="run_analysis",
-                params={"analysis_type": "differential_expression"},
-                output=step_output
-            )
-            recorder.record_step(run_id, "s1", "analysis", "run_analysis", 
-                               {"analysis_type": "differential_expression"}, 
-                               {"status": "success", "result": {"result_file": "out.de_results.csv"}})
-            
-            # 完成运行（自动写入 KG）- 只要不报错即算通过
-            try:
-                wf_path = recorder.finish_run(run_id)
-                kg_dir = Path(tmp) / "kg"
-                workspace_dirs = list(kg_dir.glob("kg_*"))
-                ok = len(workspace_dirs) == 1  # 只要创建了 workspace 目录即算通过
-            except Exception as e:
-                ok = False
-                failures.append({"id": case["id"], "error": str(e)})
-            
-            if ok:
-                passed += 1
-            else:
-                failures.append({"id": case["id"], "error": "finish_run failed"})
-        
-        total = len(cases)
-        return {"mode": "kg_ingest", "total": total, "passed": passed, "failures": failures,
-                "accuracy": passed / total if total else 0.0}
+        try:
+            recorder = WorkflowRecorder(wrroc_base_dir=Path(tmp) / ".wrroc", kg_memory=kg_mem)
+
+            failures = []
+            passed = 0
+
+            for case in cases:
+                run_id = f"eval-{case['id']}"
+                intent_record = IntentRecord(
+                    type=IntentType.ANALYSIS,
+                    analysis_type=AnalysisType.DIFFERENTIAL_EXPRESSION,
+                    original_input=case["input"]
+                )
+                param_record = ParameterRecord()
+
+                recorder.start_execution(
+                    intent={"type": "analysis", "analysis_type": "differential_expression", "original_input": case["input"]},
+                    parameters={}, user_input=case["input"], context={}, run_id=run_id
+                )
+
+                step_output = StepOutput(status=TerminalStatus.SUCCESS, result={"result_file": "out.de_results.csv"})
+                step = WorkflowStep(
+                    step_id="s1",
+                    step_type=StepType.ANALYSIS,
+                    tool="run_analysis",
+                    params={"analysis_type": "differential_expression"},
+                    output=step_output
+                )
+                recorder.record_step(run_id, "s1", "analysis", "run_analysis",
+                                   {"analysis_type": "differential_expression"},
+                                   {"status": "success", "result": {"result_file": "out.de_results.csv"}})
+
+                # 完成运行（自动写入 KG）- 只要不报错即算通过
+                try:
+                    wf_path = recorder.finish_run(run_id)
+                    kg_dir = Path(tmp) / "kg"
+                    workspace_dirs = list(kg_dir.glob("kg_*"))
+                    ok = len(workspace_dirs) == 1  # 只要创建了 workspace 目录即算通过
+                except Exception as e:
+                    ok = False
+                    failures.append({"id": case["id"], "error": str(e)})
+
+                if ok:
+                    passed += 1
+                else:
+                    failures.append({"id": case["id"], "error": "finish_run failed"})
+
+            total = len(cases)
+            return {"mode": "kg_ingest", "total": total, "passed": passed, "failures": failures,
+                    "accuracy": passed / total if total else 0.0}
+        finally:
+            kg_mem.close()  # 用完即关，避免进程退出时残留 pending worker 告警
 
 
 def _run_kg_query(cases: list[dict]) -> dict[str, Any]:
@@ -317,55 +323,57 @@ def _run_best_practice(cases: list[dict]) -> dict[str, Any]:
     
     with tempfile.TemporaryDirectory() as tmp:
         kg_mem = KGMemory(working_dir=Path(tmp) / "kg")
-        
-        # 先写入一些最佳实践知识
-        test_run = {
-            "run_id": "bp-001",
-            "intent": {"original_input": "单细胞聚类最佳参数：resolution=0.5, n_neighbors=15"},
-            "steps": [],
-            "outputs": []
-        }
-        class FakeExec:
-            run_id = "bp-001"
-            intent = type('obj', (object,), {'original_input': "单细胞聚类最佳参数：resolution=0.5, n_neighbors=15"})()
-            steps = []
-            outputs = []
-        kg_mem.ingest(FakeExec())
-        
-        # Monkey-patch query_entities 返回固定最佳实践，避免依赖 LightRAG 提取
-        original_query_entities = kg_mem.query_entities
-        def mock_query_entities(query: str) -> list[str]:
-            return ["单细胞聚类最佳参数：resolution=0.5, n_neighbors=15", "TP53 是重要的肿瘤抑制基因"]
-        kg_mem.query_entities = mock_query_entities
-        
-        # 定义一个测试技能
-        class TestSkill(SkillBase):
-            metadata = SkillMetadata(name="test_skill", version="1.0", description="test", author="eval",
-                                     tags=[], entry_point="main", schema={})
-            async def execute(self, context): return {"result": "ok"}
-        
-        failures = []
-        passed = 0
-        
-        for case in cases:
-            if case.get("expect_best_practice"):
-                try:
-                    bp = asyncio.run(TestSkill.query_best_practices(kg_mem, case["input"]))
-                    ok = bp is not None and len(bp) > 0 and case.get("expect_inject", False)
-                except Exception as e:
-                    ok = False
-                    failures.append({"id": case["id"], "error": str(e)})
-            else:
-                ok = True
-            
-            if ok:
-                passed += 1
-            else:
-                failures.append({"id": case["id"], "error": "best_practice failed"})
-        
-        total = len(cases)
-        return {"mode": "best_practice", "total": total, "passed": passed, "failures": failures,
-                "accuracy": passed / total if total else 0.0}
+        try:
+            # 先写入一些最佳实践知识
+            test_run = {
+                "run_id": "bp-001",
+                "intent": {"original_input": "单细胞聚类最佳参数：resolution=0.5, n_neighbors=15"},
+                "steps": [],
+                "outputs": []
+            }
+            class FakeExec:
+                run_id = "bp-001"
+                intent = type('obj', (object,), {'original_input': "单细胞聚类最佳参数：resolution=0.5, n_neighbors=15"})()
+                steps = []
+                outputs = []
+            kg_mem.ingest(FakeExec())
+
+            # Monkey-patch query_entities 返回固定最佳实践，避免依赖 LightRAG 提取
+            original_query_entities = kg_mem.query_entities
+            def mock_query_entities(query: str) -> list[str]:
+                return ["单细胞聚类最佳参数：resolution=0.5, n_neighbors=15", "TP53 是重要的肿瘤抑制基因"]
+            kg_mem.query_entities = mock_query_entities
+
+            # 定义一个测试技能
+            class TestSkill(SkillBase):
+                metadata = SkillMetadata(name="test_skill", version="1.0", description="test", author="eval",
+                                         tags=[], entry_point="main", schema={})
+                async def execute(self, context): return {"result": "ok"}
+
+            failures = []
+            passed = 0
+
+            for case in cases:
+                if case.get("expect_best_practice"):
+                    try:
+                        bp = asyncio.run(TestSkill.query_best_practices(kg_mem, case["input"]))
+                        ok = bp is not None and len(bp) > 0 and case.get("expect_inject", False)
+                    except Exception as e:
+                        ok = False
+                        failures.append({"id": case["id"], "error": str(e)})
+                else:
+                    ok = True
+
+                if ok:
+                    passed += 1
+                else:
+                    failures.append({"id": case["id"], "error": "best_practice failed"})
+
+            total = len(cases)
+            return {"mode": "best_practice", "total": total, "passed": passed, "failures": failures,
+                    "accuracy": passed / total if total else 0.0}
+        finally:
+            kg_mem.close()  # 用完即关，避免进程退出时残留 pending worker 告警
 
 
 # ─────────────────────────────────────────────────────────────

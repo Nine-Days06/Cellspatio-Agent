@@ -68,3 +68,17 @@ def test_kg_memory_accepts_custom_funcs(tmp_path):
     assert calls["llm"] >= 1  # ainsert 触发实体提取 → 走注入的 llm
     assert calls["embed"] >= 1  # embedding 也被调用
     mem.close()
+
+
+def test_kg_memory_registers_atexit_close(monkeypatch, tmp_path):
+    """构造时必须向 atexit 注册 close（进程退出时优雅关闭事件循环）。"""
+    import atexit
+    registered = []
+    monkeypatch.setattr(atexit, "register", lambda cb: registered.append(cb))
+    mem = KGMemory(working_dir=tmp_path / "kg_atexit")
+    assert any(
+        getattr(cb, "__func__", None) is KGMemory.close
+        and getattr(cb, "__self__", None) is mem
+        for cb in registered
+    )
+    mem.close()
