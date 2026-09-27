@@ -42,3 +42,17 @@ def test_manifest_serialization():
     restored = SkillManifest.model_validate_json(json_str)
     assert restored.metadata.name == "test_skill"
     assert restored.metadata.version == "1.0.0"
+
+
+def test_io_schema_field():
+    """io_schema 是 SkillMetadata 正规字段（修复缩进脱落回归）。"""
+    meta = SkillMetadata(
+        name="test_skill", version="1.0.0", description="Test", author="test"
+    )
+    assert meta.io_schema == {}
+    restored = SkillMetadata.model_validate({
+        "name": "test_skill", "version": "1.0.0", "description": "Test",
+        "author": "test",
+        "io_schema": {"input": {"type": "object"}},
+    })
+    assert restored.io_schema == {"input": {"type": "object"}}

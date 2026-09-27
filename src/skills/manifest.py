@@ -19,7 +19,7 @@ class SkillMetadata(BaseModel):
     author: str
     tags: list[str] = Field(default_factory=list)
     entry_point: str = "main"
-io_schema: dict[str, Any] = Field(default_factory=dict)
+    io_schema: dict[str, Any] = Field(default_factory=dict)
 
 
 class SkillIO(BaseModel):
