@@ -49,12 +49,24 @@ EFETCH_BATCH_SIZE = 300
 # 自由词（含常见同义变体与平台名）+ MeSH 权威词，策略偏召回，
 # 精度由后端硬过滤与 LLM 二次验证兜底
 PUBMED_QUERY = (
+    # 单细胞：含拼写变体（连字符/无连字符）与染色质方向
     '("single-cell"[Title/Abstract] OR "single cell"[Title/Abstract] OR '
-    'scRNA-seq[Title/Abstract] OR snRNA-seq[Title/Abstract] OR '
+    'scRNA-seq[Title/Abstract] OR scRNAseq[Title/Abstract] OR '
+    'snRNA-seq[Title/Abstract] OR "single-cell RNA sequencing"[Title/Abstract] OR '
+    '"single nucleus"[Title/Abstract] OR '
     'CITE-seq[Title/Abstract] OR '
+    'scATAC-seq[Title/Abstract] OR snATAC-seq[Title/Abstract] OR '
+    # 空间/时序：覆盖主流平台（成像式 + 测序式）；裸 spatiotemporal 会引入
+    # 大量非组学论文，限定为 transcriptomics/omics 组合
     '"spatial transcriptomics"[Title/Abstract] OR spatialomics[Title/Abstract] OR '
     'Visium[Title/Abstract] OR MERFISH[Title/Abstract] OR '
-    '"Slide-seq"[Title/Abstract] OR '
+    '"Slide-seq"[Title/Abstract] OR Slide-seqV2[Title/Abstract] OR '
+    '"Stereo-seq"[Title/Abstract] OR seqFISH[Title/Abstract] OR '
+    'STARmap[Title/Abstract] OR Xenium[Title/Abstract] OR '
+    'GeoMx[Title/Abstract] OR CosMx[Title/Abstract] OR '
+    '"spatial ATAC-seq"[Title/Abstract] OR '
+    '"spatiotemporal transcriptomics"[Title/Abstract] OR '
+    '"spatiotemporal omics"[Title/Abstract] OR '
     # noexp 禁止 explode：该词默认 explode 会异常扩散（实测 10 万+命中）
     '"Single-Cell Analysis"[MeSH Terms] OR "Spatial Transcriptomics"[MeSH Terms:noexp]) AND '
     '("Homo sapiens"[Organism] OR human[Title/Abstract] OR patients[Title/Abstract])'
@@ -68,7 +80,8 @@ PUBMED_QUERY = (
 SEARCH_YEAR_MIN = 2000
 SEARCH_YEAR_MAX = datetime.now().year
 
-# 每次搜索覆盖的年数，防止单次搜索结果超过 10,000 条分页限制
+# 每次搜索的初分段年数；单段命中超过 10,000 条硬限制时，
+# downloader 会按日期自动对半细分（年→月→日），保证不截断
 SEARCH_SLICE_YEARS = 5
 
 # 发表年份硬过滤范围（与检索范围保持一致）

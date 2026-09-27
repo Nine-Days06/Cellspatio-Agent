@@ -26,7 +26,7 @@ PubMed E-utilities 下载的是 **XML 格式的元数据**（标题、摘要、�
 ## 搜索策略
 
 `config/settings.py` 中的 `PUBMED_QUERY` 为默认搜索词，聚焦：
-1. 明确提及 `single-cell` / `scRNA-seq` / `spatial transcriptomics` / `Visium` / `spatiotemporal`
+1. 明确提及单细胞技术（`single-cell` / `scRNA-seq` / `snRNA-seq` / `scATAC-seq` / CITE-seq 等）或空间/时序组学平台（`spatial transcriptomics` / Visium / MERFISH / Slide-seq / Stereo-seq / Xenium / GeoMx / spatiotemporal transcriptomics 等）
 2. 且与人类相关（Homo sapiens / human / patients）
 
 可用 `--query` 参数覆盖默认搜索词。
