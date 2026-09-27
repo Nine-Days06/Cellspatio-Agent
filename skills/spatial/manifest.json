@@ -1,0 +1,15 @@
+{
+  "metadata": {
+    "name": "spatial",
+    "version": "1.0.0",
+    "description": "空间转录组分析编排：校验输入并产出分析方案",
+    "author": "CellSpatio",
+    "tags": ["analysis", "spatial"],
+    "entry_point": "main"
+  },
+  "inputs": [{ "name": "user_input", "type": "str", "description": "用户原始输入" }],
+  "outputs": [
+    { "name": "analysis_type", "type": "str", "description": "分析类型" },
+    { "name": "plan", "type": "list", "description": "分析方案步骤" }
+  ]
+}

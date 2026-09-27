@@ -1,0 +1,15 @@
+{
+  "metadata": {
+    "name": "differential_expression",
+    "version": "1.0.0",
+    "description": "bulk 差异表达分析编排：校验输入并产出分析方案",
+    "author": "CellSpatio",
+    "tags": ["analysis", "differential-expression"],
+    "entry_point": "main"
+  },
+  "inputs": [{ "name": "user_input", "type": "str", "description": "用户原始输入" }],
+  "outputs": [
+    { "name": "analysis_type", "type": "str", "description": "分析类型" },
+    { "name": "plan", "type": "list", "description": "分析方案步骤" }
+  ]
+}
