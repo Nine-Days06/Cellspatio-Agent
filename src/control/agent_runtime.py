@@ -160,6 +160,8 @@ class AgentRuntime:
             return wm.search_datasets_for_agent(args.get("query", user_input), params, context)
         if name == "query_knowledge":
             return wm.query_knowledge_for_agent(args.get("query", user_input), context)
+        if name == "query_memory":
+            return wm.query_memory_for_agent(args.get("query", user_input), context)
         return {
             "status": "error",
             "type": "general_response",

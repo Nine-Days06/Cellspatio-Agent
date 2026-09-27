@@ -57,6 +57,10 @@ class FakeWM:
         self.calls.append(("query_knowledge", {"query": query}))
         return self.results["query_knowledge"]
 
+    def query_memory_for_agent(self, query, context):
+        self.calls.append(("query_memory", {"query": query}))
+        return self.results["query_memory"]
+
     def execute_workflow(self, user_input, context=None):
         self.fallback_calls.append(user_input)
         return {"status": "success", "type": "general_response", "message": "fallback"}
@@ -150,6 +154,22 @@ def test_query_knowledge_dispatch():
 
     assert wm.calls == [("query_knowledge", {"query": "TP53 在癌症中的作用"})]
     assert result["type"] == "knowledge_response"
+
+
+def test_query_memory_dispatch():
+    """query_memory 工具调用分发到 workflow_manager，返回记忆问答终态。"""
+    llm = FakeLLM([_tool_call_response("query_memory", {"query": "上次差异表达用的什么参数"})])
+    wm = FakeWM({"query_memory": {
+        "status": "success", "type": "memory_response",
+        "response": "run-abc123 使用 DESeq2，FDR=0.05",
+    }})
+    runtime, wm = _make_runtime(llm, wm)
+
+    result = runtime.execute("上次那个差异表达分析用的什么参数？")
+
+    assert wm.calls == [("query_memory", {"query": "上次差异表达用的什么参数"})]
+    assert result["type"] == "memory_response"
+    assert result["status"] == "success"
 
 
 def test_run_analysis_merges_regex_params_from_user_input():
