@@ -2,6 +2,7 @@ from pathlib import Path
 
 from src.control.intent_parser import IntentParser
 from src.control.workflow_manager import WorkflowManager
+from src.control.workflow_recorder import WorkflowRecorder
 from src.data.fetchers.base import AssetInfo, AssetMeta
 from tests.unit.fakes import FakeExec, FakeGen, FakeIntent
 
@@ -1059,3 +1060,72 @@ def test_query_memory_without_kg_query_returns_error():
     result = manager.query_memory_for_agent("上次用了什么参数", {})
     assert result["status"] == "error"
     assert result["type"] == "memory_response"
+
+
+class SpyRecorder:
+    """记录 start/step/finish 调用：不触盘、不建快照、不写 KG。"""
+
+    def __init__(self):
+        self.starts = []
+        self.steps = []
+        self.finishes = []
+
+    def start_execution(self, intent, parameters, user_input, context, run_id=None):
+        rid = run_id or f"run-spy-{len(self.starts) + 1}"
+        self.starts.append({"run_id": rid, "intent": intent, "user_input": user_input})
+        return rid
+
+    def record_step(self, run_id, step_id, step_type, tool, params, output=None):
+        self.steps.append({"run_id": run_id, "step_id": step_id})
+
+    def finish_run(self, run_id):
+        self.finishes.append(run_id)
+        return Path("spy") / run_id / "workflow.json"
+
+
+def _make_spy_manager(**kwargs):
+    """默认 manager + SpyRecorder，模拟生产 recorder 注入。"""
+    manager = _make_manager(**kwargs)
+    manager.workflow_recorder = SpyRecorder()
+    return manager
+
+
+def test_run_analysis_for_agent_records_run():
+    """主路径 run_analysis_for_agent 应 start→finish 记录闭环，步骤携带同一 run_id。"""
+    manager = _make_spy_manager()
+    result = manager.run_analysis_for_agent(
+        "differential_expression",
+        {"question": "差异表达"},
+        {"last_user_input": "做差异表达分析"},
+    )
+    spy = manager.workflow_recorder
+    assert len(spy.starts) == 1
+    assert spy.starts[0]["intent"]["type"] == "analysis"
+    assert spy.finishes == [spy.starts[0]["run_id"]]
+    # record_step 守卫打通：所有步骤携带同一 run_id
+    assert spy.steps
+    assert all(s["run_id"] == spy.starts[0]["run_id"] for s in spy.steps)
+    # 无输入文件 → needs_input 终态（finish 仍应执行，镜像 legacy）
+    assert result["status"] == "needs_input"
+
+
+def test_run_analysis_for_agent_finish_run_persists_wrroc(tmp_path, monkeypatch):
+    """真实 WorkflowRecorder：finish_run 应落盘 .wrroc/<run_id>/workflow.json。"""
+    monkeypatch.setattr(
+        "src.control.snapshot_manager.SnapshotManager.create_snapshot",
+        lambda self, run_id, commit_msg=None: tmp_path / "snap",
+    )
+    manager = _make_manager()
+    manager.workflow_recorder = WorkflowRecorder(wrroc_base_dir=str(tmp_path / "wrroc"))
+
+    result = manager.run_analysis_for_agent(
+        "differential_expression",
+        {"question": "差异表达"},
+        {"last_user_input": "做差异表达分析"},
+    )
+
+    wf_files = list((tmp_path / "wrroc").glob("*/workflow.json"))
+    assert result["status"] == "needs_input"
+    assert len(wf_files) == 1
+    assert wf_files[0].parent.name.startswith("run-")
+    assert "run_id" in wf_files[0].read_text(encoding="utf-8")

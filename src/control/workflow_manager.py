@@ -3,6 +3,8 @@ import logging
 import os
 import re
 import uuid
+from collections.abc import Iterator
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
 
@@ -959,6 +961,27 @@ class WorkflowManager:
         }
 
     # ── AgentRuntime 执行面（tool-calling）────────────────────
+    @contextmanager
+    def _record_run(
+        self, intent: dict[str, Any], parameters: dict[str, Any], context: dict[str, Any]
+    ) -> Iterator[str | None]:
+        """主路径（*_for_agent）记录闭环：start → yield run_id → finish_run。
+
+        无 recorder 时透传 None；不用 try/finally——异常时不 finish，
+        与 legacy execute_workflow 行为一致。
+        """
+        if not self.workflow_recorder:
+            yield None
+            return
+        run_id = self.workflow_recorder.start_execution(
+            intent=intent,
+            parameters=parameters,
+            user_input=context.get("last_user_input") or intent.get("original_input", ""),
+            context=context,
+        )
+        yield run_id
+        self.workflow_recorder.finish_run(run_id)
+
     def search_datasets_for_agent(
         self, query: str, params: dict[str, Any], context: dict[str, Any] | None = None
     ) -> dict[str, Any]:
@@ -999,7 +1022,7 @@ class WorkflowManager:
     def run_analysis_for_agent(
         self, analysis_type: str, params: dict[str, Any], context: dict[str, Any] | None = None
     ) -> dict[str, Any]:
-        """Agent 面向的分析执行入口：校验类型白名单 → 构造 intent → 调用内部工作流"""
+        """Agent 面向的分析执行入口：校验类型白名单 → 构建 intent → 记录闭环内调用内部工作流。"""
         context = context or {}
         from src.control.tools import SUPPORTED_ANALYSIS_TYPES
 
@@ -1014,4 +1037,5 @@ class WorkflowManager:
             "analysis_type": analysis_type,
             "original_input": context.get("last_user_input", "") or params.get("question", ""),
         }
-        return self._execute_analysis_workflow(intent, params, context)
+        with self._record_run(intent, params, context) as run_id:
+            return self._execute_analysis_workflow(intent, params, context, run_id)
