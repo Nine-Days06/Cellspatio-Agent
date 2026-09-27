@@ -14,7 +14,7 @@ import json
 import threading
 import requests
 from pathlib import Path
-from datetime import datetime
+from datetime import date, datetime
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from config.settings import (
@@ -111,13 +111,78 @@ def _generate_year_slices(slice_size: int = 5) -> list[tuple[int, int]]:
     return slices
 
 
+# ── 自适应日期切分（突破 NCBI 单查询 10k 硬限制） ──────────────
+# NCBI 对 esearch/efetch 的 retstart 限制为 10,000（实测带 WebEnv 也 400），
+# 单次查询命中超过 10k 时只能拆小查询。策略：先按年份初分段，
+# 超限的段按日期对半递归细分（年→月→日），直到每段 ≤ SAFE_LEAF_COUNT。
+
+SAFE_LEAF_COUNT = 9500   # 叶子切片目标命中上限（留余量给切分期间的新入库）
+_FETCH_HARD_LIMIT = 10000  # NCBI retstart 硬限制，翻页兜底断点
+
+
+def _fetch_count(query: str, mindate: str, maxdate: str) -> int:
+    """esearch 只取命中总数（retmax=0），用于判断是否需要继续切分"""
+    params = {
+        **_base_params(),
+        "db": "pubmed",
+        "term": query,
+        "datetype": "pdat",
+        "mindate": str(mindate),
+        "maxdate": str(maxdate),
+        "retmax": 0,
+        "rettype": "json",
+        "retmode": "json",
+    }
+    r = _get(f"{EUTILS_BASE}/esearch.fcgi", params)
+    result = _safe_json(r)["esearchresult"]
+    if "ERROR" in result:
+        raise RuntimeError(result["ERROR"])
+    time.sleep(REQUEST_INTERVAL)
+    return int(result["count"])
+
+
+def _split_range(lo: str, hi: str) -> tuple[tuple[str, str], tuple[str, str]] | None:
+    """把 [lo, hi]（YYYY/MM/DD）按日期对半拆为互斥两段；已到单日则返回 None"""
+    d_lo = datetime.strptime(lo, "%Y/%m/%d").date()
+    d_hi = datetime.strptime(hi, "%Y/%m/%d").date()
+    if d_lo >= d_hi:
+        return None
+    mid = d_lo + (d_hi - d_lo) // 2
+    right_lo = date.fromordinal(mid.toordinal() + 1)
+    return (
+        (f"{d_lo:%Y/%m/%d}", f"{mid:%Y/%m/%d}"),
+        (f"{right_lo:%Y/%m/%d}", f"{d_hi:%Y/%m/%d}"),
+    )
+
+
+def _collect_pmids(query: str, lo: str, hi: str) -> list[str]:
+    """递归收集 [lo, hi] 全量 PMID：命中 ≤ SAFE_LEAF_COUNT 直接翻页取，
+    否则按日期对半拆分递归，保证每个叶子切片都能取全（不触发 10k 截断）"""
+    count = _fetch_count(query, lo, hi)
+    if count <= SAFE_LEAF_COUNT:
+        logger.info(f"  切片 {lo}-{hi}: {count} 篇，翻页获取")
+        return fetch_pmid_list(query, mindate=lo, maxdate=hi)
+
+    parts = _split_range(lo, hi)
+    if parts is None:
+        # 理论不可达：单日命中超 10k。降级取前 10k 并告警
+        logger.warning(f"  单日 {lo} 命中 {count} 仍超 10k，降级截断（请报告此问题）")
+        return fetch_pmid_list(query, mindate=lo, maxdate=hi)
+
+    left, right = parts
+    logger.info(f"  切片 {lo}-{hi}: {count} 篇 > {SAFE_LEAF_COUNT}，拆分 → {left} | {right}")
+    return _collect_pmids(query, *left) + _collect_pmids(query, *right)
+
+
 def fetch_pmid_list(query: str = PUBMED_QUERY,
-                    mindate: int | None = None,
-                    maxdate: int | None = None) -> list[str]:
+                    mindate: int | str | None = None,
+                    maxdate: int | str | None = None) -> list[str]:
     """
-    通过 esearch + efetch 获取全部匹配的 PMID。
-    注意：esearch 的 retstart 限制为 9999，
-    超过 10000 条需利用 WebEnv + efetch(rettype='uilist') 获取。
+    通过 esearch + efetch 获取单个日期切片内的全部 PMID。
+    mindate/maxdate 支持 "2000" 或 "2025/06/01" 两种格式。
+    注意：esearch/efetch 的 retstart 硬限制为 10000；
+    调用方应保证切片命中 ≤ SAFE_LEAF_COUNT（_collect_pmids 负责），
+    此处的 10k break 仅作兜底断言。
     """
     logger.info("开始 esearch，获取 WebEnv ...")
     lo = mindate if mindate is not None else SEARCH_YEAR_MIN
@@ -153,8 +218,8 @@ def fetch_pmid_list(query: str = PUBMED_QUERY,
     page_size = 5000 
     for start in range(0, total, page_size):
         if start >= 10000:
-            logger.warning(f"检测到结果数 ({total}) 超过 PubMed API 的 10,000 条分页限制。")
-            logger.warning("仅能获取前 10,000 条记录。如需更多，请尝试分年份搜索。")
+            logger.error(f"触发 NCBI 10k 硬限制（切片 {lo}-{hi} 命中超限未被切分），本切片结果被截断。")
+            logger.error("这是自适应切分的兜底分支，正常不应出现，请报告。")
             break
             
         p = {
@@ -281,12 +346,16 @@ def run_download(query: str = PUBMED_QUERY) -> list[Path]:
     logger.info("=" * 60)
 
     slices = _generate_year_slices(SEARCH_SLICE_YEARS)
-    logger.info(f"年份切片: {SEARCH_SLICE_YEARS} 年/段，共 {len(slices)} 段")
+    logger.info(
+        f"年份初分段: {SEARCH_SLICE_YEARS} 年/段，共 {len(slices)} 段；"
+        f"单段命中 > {SAFE_LEAF_COUNT} 时按日期自动对半细分"
+    )
 
     all_pmids = []
     for idx, (lo, hi) in enumerate(slices, 1):
         logger.info(f"--- 切片 {idx}/{len(slices)}: {lo}-{hi} ---")
-        pmids = fetch_pmid_list(query, mindate=lo, maxdate=hi)
+        # 顶层传完整日期，保证递归拆分时边界互斥且可按日对半
+        pmids = _collect_pmids(query, f"{lo}/01/01", f"{hi}/12/31")
         all_pmids.extend(pmids)
         logger.info(f"  切片累计: {len(all_pmids)} 篇")
 
