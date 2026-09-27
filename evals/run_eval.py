@@ -143,6 +143,15 @@ class _MockSkill:
         self.name = name
         self.kg_memory = kg_memory
 
+    async def setup(self, context):
+        pass
+
+    async def execute(self, context):
+        return {"mock": True}
+
+    async def teardown(self, context):
+        pass
+
 
 class _MockClassifier:
     """Mock 任务分类器。"""
@@ -178,7 +187,8 @@ def _run_skill_routing(cases: list[dict]) -> dict[str, Any]:
                 expected_skill = case.get("expect_skill")
                 expected_modality = case.get("expect_modality")
 
-                ok = (result.get("skill") == expected_skill and
+                ok = (result.get("status") == "success" and
+                      result.get("skill") == expected_skill and
                       result.get("modality") == expected_modality)
 
                 if ok:
@@ -187,6 +197,7 @@ def _run_skill_routing(cases: list[dict]) -> dict[str, Any]:
                     failures.append({
                         "id": case["id"],
                         "expected_skill": expected_skill,
+                        "got_status": result.get("status"),
                         "got_skill": result.get("skill"),
                         "expected_modality": expected_modality,
                         "got_modality": result.get("modality"),

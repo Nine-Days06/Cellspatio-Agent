@@ -1,8 +1,10 @@
 """模态路由器：任务分类 → Skill 分发 → 回退链 + 自动记忆。"""
 from __future__ import annotations
 
+import asyncio
 import logging
 from typing import Any
+from uuid import uuid4
 
 from src.control.classifier import TaskClassifier
 from src.control.kg_memory import KGMemory
@@ -47,14 +49,32 @@ class ModalRouter:
             
             # 创建实例并注入 KGMemory
             skill_instance = self.loader.create_instance(skill_name, kg_memory=self.kg_memory)
-            
-            # 这里简化：实际应调用 skill.execute()
+
+            # P3c/P3d: 生命周期挂点 setup → execute → teardown（teardown 内自动记忆）
+            skill_context = SkillContext(
+                run_id=context.get("run_id") or f"skill-{uuid4().hex[:8]}",
+                params={"user_input": user_input},
+                artifacts={},
+                best_practices=best_practices,
+            )
+
+            async def _lifecycle() -> Any:
+                await skill_instance.setup(skill_context)
+                output = await skill_instance.execute(skill_context)
+                if isinstance(output, dict):
+                    skill_context.artifacts.update(output)
+                await skill_instance.teardown(skill_context)
+                return output
+
+            output = asyncio.run(_lifecycle())
+
             return {
                 "status": "success",
                 "modality": modality,
                 "skill": skill_name,
                 "message": f"已分发到 {skill_name}",
-                "best_practices": best_practices
+                "best_practices": best_practices,
+                "output": output,
             }
         except Exception as e:  # noqa: BLE001
             return {"status": "error", "modality": modality, "skill": skill_name, "message": str(e)}
