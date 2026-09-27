@@ -11,6 +11,7 @@ from src.config import get_current_llm
 from src.control.agent_runtime import AgentRuntime
 from src.control.intent_parser import IntentParser
 from src.control.kg_memory import KGMemory
+from src.control.kg_query import KGQuery
 from src.control.r_script_generator import RScriptGenerator
 from src.control.router import ModalRouter
 from src.control.workflow_manager import WorkflowManager
@@ -134,6 +135,10 @@ class CellSpatioAgent:
             code_repairer=self.code_repairer,
             require_script_confirmation=(os.environ.get("SCRIPT_REQUIRE_CONFIRM", "1") == "1"),
             workflow_recorder=self.workflow_recorder,
+            kg_query=KGQuery(
+                working_dir=Path(repo_root) / ".wrroc" / "kg_memory",
+                kg_memory=self.kg_memory,  # 复用同一记忆库实例
+            ),
         )
 
         # Phase 3 接线：分类/最佳实践提示（skills_dir 无技能时 hint 仍可用）

@@ -100,3 +100,17 @@ def test_agent_wires_kg_memory_into_recorder_and_router(monkeypatch):
     recorder = agent.workflow_recorder
     assert getattr(recorder, "kg_memory", None) is not None
     assert agent.modal_router.kg_memory is recorder.kg_memory  # 同一实例复用
+
+def test_agent_wires_kg_query_into_workflow_manager(monkeypatch):
+    """CellSpatioAgent 必须构造 KGQuery（共享 kg_memory 实例）并注入 WorkflowManager。"""
+    from src.main import CellSpatioAgent
+
+    monkeypatch.setattr("src.main.get_current_llm", lambda: (object(), "test-model"))
+    monkeypatch.setattr("src.main.LightRAGClient.__init__", lambda self, *a, **k: None)
+    agent = CellSpatioAgent(
+        config={"knowledge_dir": "tmp_kb_wiring", "data_dir": "tmp_data_wiring"}
+    )
+    kg_query = getattr(agent.workflow_manager, "kg_query", None)
+    assert kg_query is not None
+    # 必须复用装配好的 kg_memory（同一运行记忆库），而非另建实例
+    assert kg_query._kg_memory is agent.kg_memory
