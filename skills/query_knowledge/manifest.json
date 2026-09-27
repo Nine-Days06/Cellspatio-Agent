@@ -1,0 +1,15 @@
+{
+  "metadata": {
+    "name": "query_knowledge",
+    "version": "1.0.0",
+    "description": "基于 LightRAG 知识库的自然语言问答",
+    "author": "CellSpatio",
+    "tags": ["knowledge", "rag"],
+    "entry_point": "main"
+  },
+  "inputs": [{ "name": "user_input", "type": "str", "description": "用户原始输入" }],
+  "outputs": [
+    { "name": "question", "type": "str", "description": "原始问题" },
+    { "name": "answer", "type": "str", "description": "知识库回答（未配置时为 null）" }
+  ]
+}

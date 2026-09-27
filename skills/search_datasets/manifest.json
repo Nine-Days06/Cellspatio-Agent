@@ -1,0 +1,12 @@
+{
+  "metadata": {
+    "name": "search_datasets",
+    "version": "1.0.0",
+    "description": "检索 NCBI GEO 公共数据集候选",
+    "author": "CellSpatio",
+    "tags": ["fetch", "geo"],
+    "entry_point": "main"
+  },
+  "inputs": [{ "name": "user_input", "type": "str", "description": "用户原始输入" }],
+  "outputs": [{ "name": "results", "type": "list", "description": "GSE 候选列表" }]
+}

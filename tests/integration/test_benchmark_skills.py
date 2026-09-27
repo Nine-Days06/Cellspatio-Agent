@@ -15,7 +15,13 @@ from src.skills.loader import SkillLoader
 from src.skills.registry import SkillRegistry
 
 SKILLS_DIR = Path(__file__).resolve().parents[2] / "skills"
-_BENCHMARK_SKILLS = ("differential_expression", "single_cell", "spatial")
+_BENCHMARK_SKILLS = (
+    "differential_expression",
+    "single_cell",
+    "spatial",
+    "search_datasets",
+    "query_knowledge",
+)
 
 
 def _make_router(kg_memory=None) -> ModalRouter:
@@ -94,3 +100,47 @@ def test_analysis_skill_rejects_empty_input():
     ctx = SkillContext(run_id="t", params={"user_input": ""}, artifacts={})
     with pytest.raises(ValueError, match="user_input 不能为空"):
         asyncio.run(skill.execute(ctx))
+
+
+def test_route_search_datasets_end_to_end(monkeypatch):
+    from src.data.fetchers.base import AssetMeta
+    from src.data.fetchers.geo_fetcher import GEOFetcher
+
+    def fake_search(self, query, max_results=20):
+        return [AssetMeta(asset_id="GSE123456", title="测试数据集",
+                          source="geo", asset_type="analysis")]
+
+    monkeypatch.setattr(GEOFetcher, "search", fake_search)
+    router = _make_router()
+    result = router.route("帮我下载 GSE123456 数据集", context={"script_approved": True})
+    assert result["status"] == "success"
+    assert result["skill"] == "search_datasets"
+    out = result["output"]
+    assert out["query"] == "帮我下载 GSE123456 数据集"
+    assert out["count"] == 1
+    assert out["results"][0]["asset_id"] == "GSE123456"
+
+
+def test_route_query_knowledge_end_to_end(tmp_path):
+    kg = KGMemory(working_dir=tmp_path / "kg")
+    try:
+        router = _make_router(kg_memory=kg)
+        result = router.route("查询基因功能", context={"script_approved": True})
+        assert result["status"] == "success"
+        assert result["skill"] == "query_knowledge"
+        out = result["output"]
+        assert out["question"] == "查询基因功能"
+        assert isinstance(out["answer"], str) and out["answer"]
+    finally:
+        kg.close()
+
+
+def test_route_query_knowledge_without_kg_memory():
+    router = _make_router()
+    result = router.route("查询基因功能", context={"script_approved": True})
+    assert result["status"] == "success"
+    assert result["skill"] == "query_knowledge"
+    out = result["output"]
+    assert out["question"] == "查询基因功能"
+    assert out["answer"] is None
+    assert out["reason"] == "知识库未配置"
