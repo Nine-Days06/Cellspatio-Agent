@@ -45,6 +45,7 @@ class WorkflowManager:
         max_repair_attempts: int = 2,
         require_script_confirmation: bool = False,
         workflow_recorder=None,
+        kg_query=None,
     ):
         self.intent_parser = intent_parser
         self.knowledge_client = knowledge_client
@@ -62,6 +63,7 @@ class WorkflowManager:
         self.max_repair_attempts = max_repair_attempts
         self.require_script_confirmation = require_script_confirmation
         self.workflow_recorder = workflow_recorder
+        self.kg_query = kg_query  # 运行记忆问答（KGQuery），未注入时 query_memory 返回 error
 
     def execute_workflow(
         self, user_input: str, context: dict[str, Any] | None = None
@@ -973,6 +975,26 @@ class WorkflowManager:
         intent = {"type": "knowledge_query", "original_input": query}
         params = self.intent_parser.extract_parameters(query) if self.intent_parser else {}
         return self._execute_knowledge_workflow(intent, params, context)
+
+    def query_memory_for_agent(
+        self, query: str, context: dict[str, Any] | None = None
+    ) -> dict[str, Any]:
+        """Agent 面向的运行记忆问答入口：KGQuery → .wrroc/kg_memory 生成式查询"""
+        if self.kg_query is None:
+            return {
+                "status": "error",
+                "type": "memory_response",
+                "message": "运行记忆库未启用（kg_query 未注入）。",
+            }
+        try:
+            answer = self.kg_query.query(query)
+            return {"status": "success", "type": "memory_response", "response": answer}
+        except Exception as e:  # noqa: BLE001 - 记忆查询失败降级为 error 终态
+            return {
+                "status": "error",
+                "type": "memory_response",
+                "message": f"运行记忆查询失败: {e}",
+            }
 
     def run_analysis_for_agent(
         self, analysis_type: str, params: dict[str, Any], context: dict[str, Any] | None = None

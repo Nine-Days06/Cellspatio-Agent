@@ -1028,3 +1028,34 @@ def test_unsupported_analysis_type_returns_error():
     result = manager.execute_workflow("做通路富集")
     assert result["status"] == "error"
     assert "pathway_analysis" in result["message"]
+
+
+def test_query_memory_for_agent_returns_memory_response():
+    """注入 kg_query 时，query_memory_for_agent 返回记忆问答终态。"""
+    from src.control.workflow_manager import WorkflowManager
+
+    class StubKGQuery:
+        def query(self, question, mode="hybrid"):
+            assert question == "上次差异表达用的什么参数"
+            return "run-abc123 使用 DESeq2，FDR=0.05"
+
+    manager = WorkflowManager(
+        intent_parser=FakeIntent(parse_return={}, extract_params_return={}),
+        knowledge_client=MockKnowledgeClient(),
+        r_executor=MockRExecutor(),
+        visualizer=MockVisualizer(),
+        r_script_generator=MockRScriptGenerator(),
+        kg_query=StubKGQuery(),
+    )
+    result = manager.query_memory_for_agent("上次差异表达用的什么参数", {})
+    assert result["status"] == "success"
+    assert result["type"] == "memory_response"
+    assert "DESeq2" in result["response"]
+
+
+def test_query_memory_without_kg_query_returns_error():
+    """未注入 kg_query 时返回 error，不假成功。"""
+    manager = _make_manager()
+    result = manager.query_memory_for_agent("上次用了什么参数", {})
+    assert result["status"] == "error"
+    assert result["type"] == "memory_response"
