@@ -1129,3 +1129,46 @@ def test_run_analysis_for_agent_finish_run_persists_wrroc(tmp_path, monkeypatch)
     assert len(wf_files) == 1
     assert wf_files[0].parent.name.startswith("run-")
     assert "run_id" in wf_files[0].read_text(encoding="utf-8")
+
+
+def test_search_datasets_for_agent_records_run():
+    """主路径 search_datasets_for_agent 应 start→finish 记录闭环。"""
+    manager = _make_spy_manager()
+    manager.search_datasets_for_agent(
+        "GSE123456",
+        {"dataset_ids": ["GSE123456"]},
+        {"last_user_input": "帮我下载 GSE123456"},
+    )
+    spy = manager.workflow_recorder
+    assert len(spy.starts) == 1
+    assert spy.starts[0]["intent"]["type"] == "fetch_data"
+    assert spy.starts[0]["intent"]["original_input"] == "GSE123456"
+    assert spy.finishes == [spy.starts[0]["run_id"]]
+
+
+def test_query_knowledge_for_agent_records_run():
+    """主路径 query_knowledge_for_agent 应 start→finish 记录闭环。"""
+    manager = _make_spy_manager()
+    result = manager.query_knowledge_for_agent(
+        "细胞凋亡的调控机制是什么",
+        {"last_user_input": "细胞凋亡的调控机制是什么"},
+    )
+    spy = manager.workflow_recorder
+    assert len(spy.starts) == 1
+    assert spy.starts[0]["intent"]["type"] == "knowledge_query"
+    assert spy.finishes == [spy.starts[0]["run_id"]]
+    assert result["status"] == "success"  # MockKnowledgeClient 返回 "mock"
+
+
+def test_query_memory_for_agent_does_not_record():
+    """query_memory 是只读操作：不开启 run 记录（守护测试，防查记忆→写记忆噪音）。"""
+    manager = _make_spy_manager()
+    result = manager.query_memory_for_agent(
+        "上次分析用了什么参数",
+        {"last_user_input": "上次分析用了什么参数"},
+    )
+    spy = manager.workflow_recorder
+    assert result["status"] == "error"  # kg_query 未注入 → error 终态（与记录决策无关）
+    assert spy.starts == []
+    assert spy.steps == []
+    assert spy.finishes == []

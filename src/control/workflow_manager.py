@@ -985,24 +985,29 @@ class WorkflowManager:
     def search_datasets_for_agent(
         self, query: str, params: dict[str, Any], context: dict[str, Any] | None = None
     ) -> dict[str, Any]:
-        """Agent 面向的数据检索入口：构造 intent → 调用内部检索工作流"""
+        """Agent 面向的数据集检索入口：构建 intent 并在记录闭环内调用内部工作流。"""
         context = context or {}
         intent = {"type": "fetch_data", "original_input": query}
-        return self._execute_fetch_data_workflow(intent, params, context)
+        with self._record_run(intent, params, context) as run_id:
+            return self._execute_fetch_data_workflow(intent, params, context, run_id)
 
     def query_knowledge_for_agent(
         self, query: str, context: dict[str, Any] | None = None
     ) -> dict[str, Any]:
-        """Agent 面向的知识查询入口：构造 intent → 调用内部知识工作流"""
+        """Agent 面向的知识查询入口：构建 intent 并在记录闭环内调用内部工作流。"""
         context = context or {}
         intent = {"type": "knowledge_query", "original_input": query}
         params = self.intent_parser.extract_parameters(query) if self.intent_parser else {}
-        return self._execute_knowledge_workflow(intent, params, context)
+        with self._record_run(intent, params, context) as run_id:
+            return self._execute_knowledge_workflow(intent, params, context, run_id)
 
     def query_memory_for_agent(
         self, query: str, context: dict[str, Any] | None = None
     ) -> dict[str, Any]:
-        """Agent 面向的运行记忆问答入口：KGQuery → .wrroc/kg_memory 生成式查询"""
+        """Agent 面向的运行记忆问答入口：KGQuery → .wrroc/kg_memory 生成式查询。
+
+        只读操作，刻意不纳入 run 记录闭环——记录会产生「查记忆→写记忆」噪音 run。
+        """
         if self.kg_query is None:
             return {
                 "status": "error",
