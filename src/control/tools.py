@@ -96,6 +96,24 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
             },
         },
     },
+    {
+        "type": "function",
+        "function": {
+            "name": "query_memory",
+            "description": (
+                "Query run memory (.wrroc/kg_memory) for historical run Q&A: "
+                "past run parameters, steps, outputs (e.g., 'what params did the last "
+                "differential expression use'). NOT for biology knowledge — use query_knowledge."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "query": {"type": "string", "description": "Full question verbatim"},
+                },
+                "required": ["query"],
+            },
+        },
+    },
 ]
 
 SYSTEM_PROMPT = """You are CellSpatio — single-cell & spatial omics analysis agent.
@@ -104,7 +122,8 @@ Strictly follow these rules to choose actions:
 1. User wants to run analysis (differential expression / single-cell clustering / spatial transcriptomics) → call run_analysis, analysis_type MUST be from enum.
 2. User wants to search or download public data (GEO/KEGG/UniProt) → call search_datasets.
 3. User asks biology knowledge, methods, gene/pathway meaning → call query_knowledge.
-4. Chit-chat, greetings, unrelated → do NOT call tools, reply briefly.
+4. User asks about past/historical runs (parameters, steps, outputs, "上次/之前/历史运行") → call query_memory.
+5. Chit-chat, greetings, unrelated → do NOT call tools, reply briefly.
 
 Constraints:
 - At most ONE tool call per turn; tool results returned by system, you MUST NOT fabricate tool outputs.
