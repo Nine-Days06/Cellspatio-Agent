@@ -10,6 +10,9 @@
   "inputs": [{ "name": "user_input", "type": "str", "description": "用户原始输入" }],
   "outputs": [
     { "name": "analysis_type", "type": "str", "description": "分析类型" },
-    { "name": "plan", "type": "list", "description": "分析方案步骤" }
+    { "name": "plan", "type": "list", "description": "分析方案步骤" },
+    { "name": "user_input", "type": "str", "description": "用户原始输入" },
+    { "name": "required_inputs", "type": "list", "description": "必需输入清单" },
+    { "name": "best_practices", "type": "str", "description": "注入的最佳实践（可为 null）" }
   ]
 }
