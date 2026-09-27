@@ -116,9 +116,9 @@ class _MockSkillRegistry:
     """Mock 技能注册表。"""
     def __init__(self):
         self.skills = {
-            "single_cell_analysis": {"modality": "analysis"},
-            "fetch_geo": {"modality": "fetch"},
-            "knowledge_query": {"modality": "knowledge"},
+            "single_cell": {"modality": "analysis"},
+            "search_datasets": {"modality": "fetch"},
+            "query_knowledge": {"modality": "knowledge"},
         }
     
     def get(self, name):
@@ -157,11 +157,11 @@ class _MockClassifier:
     """Mock 任务分类器。"""
     def classify(self, user_input):
         if "单细胞" in user_input or "scRNA" in user_input:
-            return {"modality": "analysis", "skill": "single_cell_analysis"}
+            return {"modality": "analysis", "skill": "single_cell"}
         elif "下载" in user_input and "GEO" in user_input:
-            return {"modality": "fetch", "skill": "fetch_geo"}
+            return {"modality": "fetch", "skill": "search_datasets"}
         elif "查询" in user_input or "作用" in user_input:
-            return {"modality": "knowledge", "skill": "knowledge_query"}
+            return {"modality": "knowledge", "skill": "query_knowledge"}
         return {"modality": "general", "skill": None}
 
 
