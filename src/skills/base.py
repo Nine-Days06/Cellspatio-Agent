@@ -1,12 +1,17 @@
 """Skill 基类：定义技能接口与生命周期 + 自动记忆。"""
 from __future__ import annotations
 
+import asyncio
+import logging
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
+from types import SimpleNamespace
 from typing import Any, Optional
 
 from src.control.kg_memory import KGMemory
 from src.skills.manifest import SkillMetadata
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -47,9 +52,29 @@ class SkillBase(ABC):
             await self._record_execution(context)
     
     async def _record_execution(self, context: SkillContext) -> None:
-        """将技能执行记录写入知识图谱。"""
-        # 简化：这里只记录关键信息，实际可扩展
-        pass
+        """将技能执行记录写入知识图谱（best-effort：失败仅记日志，不阻断执行）。"""
+        try:
+            record = SimpleNamespace(
+                run_id=context.run_id,
+                intent=SimpleNamespace(
+                    original_input=f"skill:{self.metadata.name} {context.params}"
+                ),
+                steps=[
+                    SimpleNamespace(
+                        step_id="execute",
+                        tool=self.metadata.name,
+                        params=context.params,
+                    )
+                ],
+                outputs=[
+                    SimpleNamespace(name=str(k), path=str(v))
+                    for k, v in (context.artifacts or {}).items()
+                ],
+            )
+            # KGMemory 自持独立事件循环，须经工作线程调用以避免嵌套 loop RuntimeError
+            await asyncio.to_thread(self.kg_memory.ingest, record)
+        except Exception as e:  # noqa: BLE001 - 记忆写入失败不阻断技能执行
+            logger.warning("skill execution record failed: %s", e)
     
     @classmethod
     async def query_best_practices(cls, kg_memory: KGMemory, task_description: str) -> Optional[str]:
