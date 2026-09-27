@@ -62,13 +62,14 @@ class KGMemory:
         # 创建专用事件循环，在其中初始化存储并执行所有操作
         # 避免与 pytest-asyncio 的全局事件循环冲突
         self._loop = asyncio.new_event_loop()
+        # 进程退出时优雅关闭事件循环（取消 pending worker → 关循环），覆盖 eval/测试/生产
+        # 等所有构造点，消除 "Event loop is closed" 残留告警；注册后即使后续存储初始化失败，
+        # 退出时循环仍会关闭（close() 只依赖 _loop 且幂等，对半初始化对象安全）
+        atexit.register(self.close)
         self._initialized = False
         # 在专用循环中初始化存储
         self._loop.run_until_complete(self._rag.initialize_storages())
         self._initialized = True
-        # 进程退出时优雅关闭事件循环（取消 pending worker → 关循环），
-        # 覆盖 eval/测试/生产等所有构造点，消除 "Event loop is closed" 残留告警
-        atexit.register(self.close)
 
     def _get_loop(self):
         """获取专用事件循环。"""
