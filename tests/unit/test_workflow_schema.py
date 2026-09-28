@@ -78,6 +78,15 @@ def test_parameter_record_extraction():
     assert params.dataset_ids == ["GSE123456"]
 
 
+def test_parameter_record_preserves_skill_plan():
+    """skill_plan 作为方案载荷随 run_params 持久化（计划 1 任务 2 扩 scope 修复）。"""
+    plan = {"analysis_type": "differential_expression", "plan": ["质控", "DESeq2"]}
+    record = ParameterRecord(skill_plan=plan)
+    assert record.skill_plan == plan
+    # 默认 None：旧记录（无该键）反序列化向后兼容
+    assert ParameterRecord().skill_plan is None
+
+
 def test_step_output_serialization():
     """StepOutput 序列化包含结果与错误信息。"""
     output = StepOutput(

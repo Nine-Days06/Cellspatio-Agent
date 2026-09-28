@@ -64,6 +64,7 @@ class ParameterRecord(BaseModel):
     genes: list[str] = Field(default_factory=list)
     sources: list[str] = Field(default_factory=list)
     dataset_ids: list[str] = Field(default_factory=list)
+    skill_plan: dict[str, Any] | None = None
 
 
 class StepOutput(BaseModel):

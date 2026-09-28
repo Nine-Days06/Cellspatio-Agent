@@ -211,3 +211,18 @@ def test_recorder_contextvar_isolation():
     assert len(r2.steps) == 1
     assert r1.steps[0].output.status.value == "success"
     assert r2.steps[0].output.status.value == "needs_input"
+
+
+def test_start_execution_preserves_skill_plan():
+    """start_execution 入参中的 skill_plan 不再被白名单吞掉。"""
+    import tempfile
+    recorder = WorkflowRecorder(wrroc_base_dir=tempfile.mkdtemp())
+    plan = {"analysis_type": "differential_expression", "plan": ["质控"]}
+    run_id = recorder.start_execution(
+        intent={"type": "analysis", "analysis_type": "differential_expression", "original_input": "x", "confidence": 1.0},
+        parameters={"input_files": ["a.csv"], "skill_plan": plan},
+        user_input="x",
+        context={},
+    )
+    exec_ = recorder.get_record(run_id)
+    assert exec_.parameters.skill_plan == plan
