@@ -179,17 +179,6 @@ def _render_candidate_selector(agent: Any):
             st.rerun()
 
 
-def _render_references(references: list[dict[str, Any]]) -> None:
-    """结构化引用单独渲染（与正文分离，避免与 LLM 自造段混淆）"""
-    if not references:
-        return
-    from src.knowledge.lightrag_client import format_reference
-
-    st.markdown("**来源**")
-    for ref in references:
-        st.markdown(f"- {format_reference(ref)}")
-
-
 def _summarize_result(result: dict[str, Any]) -> tuple[str, list[dict[str, Any]]]:
     """结果 → (聊天文本, 引用列表)。当次渲染与历史落盘共用，保证文本一致。"""
     references: list[dict[str, Any]] = []
@@ -208,15 +197,19 @@ def _summarize_result(result: dict[str, Any]) -> tuple[str, list[dict[str, Any]]
     explanation = result.get("explanation")
     if explanation:
         response = f"{response}\n\n---\n**结果解读**\n\n{explanation}"
+    if references:
+        from src.knowledge.lightrag_client import format_reference
+
+        lines = "\n".join(f"- {format_reference(r)}" for r in references)
+        response = f"{response}\n\n**来源**\n{lines}"
     return response, references
 
 
 def _render_chat_result(result: dict[str, Any]) -> None:
-    """按结果类型渲染聊天回复（文本与历史落盘同源）"""
-    content, references = _summarize_result(result)
+    """按结果类型渲染聊天回复（文本与历史落盘同源，含来源段）"""
+    content, _references = _summarize_result(result)
     with st.chat_message("assistant"):
         st.markdown(content)
-        _render_references(references)
         if result.get("results"):
             render_analysis_results(result["results"])
 

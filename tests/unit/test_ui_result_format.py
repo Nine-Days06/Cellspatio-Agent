@@ -20,6 +20,7 @@ def test_knowledge_response_with_references():
     assert "TP53 是抑癌基因" in content
     assert "**结果解读**" in content
     assert "综合知识库回答" in content
+    assert "**来源**" in content
     assert len(refs) == 1
     assert refs[0]["url"] == "pubmed:123"
 
@@ -47,6 +48,7 @@ def test_analysis_result_with_capsule():
     )
     content, refs = _summarize_result(result)
     assert "分析完成: DESeq2 差异表达完成" in content
+    assert "\n\n复现胶囊" in content
     assert "snapshots/run-abc" in content
     assert refs == []
 
