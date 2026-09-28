@@ -205,3 +205,18 @@ def test_render_script_confirmation_renders_buttons_not_script():
     mock_st.code.assert_not_called()
     assert col1.button.called
     assert col2.button.called
+
+
+def test_render_analysis_results_renders_image_b64_chart():
+    """持久化的 matplotlib 图表（image_b64 dict）应被解码渲染。"""
+    import base64
+    from unittest.mock import patch
+
+    from src.ui.components import render_analysis_results
+
+    png = base64.b64encode(b"\x89PNG-fakebytes").decode()
+    with patch("src.ui.components.st") as mock_st:
+        render_analysis_results({"charts": [{"type": "image", "image_b64": png}]})
+    mock_st.image.assert_called_once()
+    assert mock_st.image.call_args[0][0] == b"\x89PNG-fakebytes"
+    mock_st.warning.assert_not_called()  # 不应落入"未知图表类型"

@@ -1,3 +1,4 @@
+import base64
 from typing import Any
 
 import pandas as pd
@@ -69,6 +70,10 @@ def render_analysis_results(results: dict[str, Any], key_prefix: str = ""):
             # matplotlib Figure
             elif hasattr(chart, "savefig"):
                 st.pyplot(chart)
+            # 持久化后的 matplotlib 图（image_b64 dict）
+            elif isinstance(chart, dict) and chart.get("type") == "image" \
+                    and chart.get("image_b64"):
+                st.image(base64.b64decode(chart["image_b64"]))
             # plotly fig dict（未来）
             elif isinstance(chart, dict) and chart.get("data"):
                 st.plotly_chart(chart, use_container_width=True)
