@@ -96,3 +96,5 @@ def test_render_analysis_results_accepts_key_prefix():
 
     _, kwargs = mock_st.selectbox.call_args
     assert kwargs["key"] == "hist_0_gene_followup_select"
+    _, btn_kwargs = mock_st.button.call_args
+    assert btn_kwargs["key"] == "hist_0_gene_followup_btn"

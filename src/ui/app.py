@@ -54,13 +54,7 @@ def run_prompt(agent: Any, prompt: str) -> None:
         return
 
     _render_chat_result(result)
-    msg: dict[str, Any] = {
-        "role": "assistant",
-        "content": _summarize_result(result)[0],
-    }
-    if result.get("results"):
-        msg["results"] = result["results"]
-    st.session_state["messages"].append(msg)
+    st.session_state["messages"].append(_build_assistant_message(result))
 
 
 def create_app(agent: Any):
@@ -211,6 +205,17 @@ def _summarize_result(result: dict[str, Any]) -> tuple[str, list[dict[str, Any]]
     return response, references
 
 
+def _build_assistant_message(result: dict[str, Any]) -> dict[str, Any]:
+    """构造 assistant 历史消息；含分析结果时附加 results 供重放渲染"""
+    msg: dict[str, Any] = {
+        "role": "assistant",
+        "content": _summarize_result(result)[0],
+    }
+    if result.get("results"):
+        msg["results"] = result["results"]
+    return msg
+
+
 def _render_chat_result(result: dict[str, Any]) -> None:
     """按结果类型渲染聊天回复（文本与历史落盘同源，含来源段）"""
     content, _references = _summarize_result(result)
@@ -248,13 +253,7 @@ def _render_script_confirmation(agent: Any) -> None:
         st.session_state.awaiting_script_confirmation = False
         st.session_state.pending_script = None
         _render_chat_result(result)
-        exec_msg: dict[str, Any] = {
-            "role": "assistant",
-            "content": _summarize_result(result)[0],
-        }
-        if result.get("results"):
-            exec_msg["results"] = result["results"]
-        st.session_state.messages.append(exec_msg)
+        st.session_state.messages.append(_build_assistant_message(result))
         st.rerun()
     if col2.button("取消", key="cancel_script_btn"):
         st.session_state.awaiting_script_confirmation = False
