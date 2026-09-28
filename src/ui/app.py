@@ -55,7 +55,7 @@ def run_prompt(agent: Any, prompt: str) -> None:
 
     _render_chat_result(result)
     st.session_state["messages"].append(
-        {"role": "assistant", "content": _format_result(result)}
+        {"role": "assistant", "content": _summarize_result(result)[0]}
     )
 
 
@@ -190,55 +190,35 @@ def _render_references(references: list[dict[str, Any]]) -> None:
         st.markdown(f"- {format_reference(ref)}")
 
 
-def _render_chat_result(result: dict[str, Any]):
-    """按结果类型渲染聊天回复"""
+def _summarize_result(result: dict[str, Any]) -> tuple[str, list[dict[str, Any]]]:
+    """结果 → (聊天文本, 引用列表)。当次渲染与历史落盘共用，保证文本一致。"""
     references: list[dict[str, Any]] = []
-    if result.get('type') == 'knowledge_response':
-        response = result.get('response', '无响应')
-        references = list(result.get('references') or [])
-    elif result.get('type') == 'fetch_result':
-        asset = result.get('asset', {})
+    if result.get("type") == "knowledge_response":
+        response = result.get("response", "无响应")
+        references = list(result.get("references") or [])
+    elif result.get("type") == "fetch_result":
+        asset = result.get("asset", {})
         response = f"已下载 {asset.get('asset_id')} → `{asset.get('access_path')}`"
-    elif result.get('results'):
-        st.info(f"分析完成: {result.get('message', '')}")
-        render_analysis_results(result["results"])
-        response = "分析结果已生成，请查看下方图表。"
-        if result.get('capsule_dir'):
+    elif result.get("results"):
+        response = f"分析完成: {result.get('message', '')}"
+        if result.get("capsule_dir"):
             response += f"\n\n复现胶囊：`{result['capsule_dir']}`"
     else:
-        response = result.get('message', '处理完成')
-    explanation = result.get('explanation')
+        response = result.get("message", "处理完成")
+    explanation = result.get("explanation")
     if explanation:
         response = f"{response}\n\n---\n**结果解读**\n\n{explanation}"
+    return response, references
+
+
+def _render_chat_result(result: dict[str, Any]) -> None:
+    """按结果类型渲染聊天回复（文本与历史落盘同源）"""
+    content, references = _summarize_result(result)
     with st.chat_message("assistant"):
-        st.markdown(response)
+        st.markdown(content)
         _render_references(references)
-
-
-def _format_result(result: dict[str, Any]) -> str:
-    """将结果格式化为聊天消息文本"""
-    references: list[dict[str, Any]] = []
-    if result.get('type') == 'knowledge_response':
-        response = result.get('response', '无响应')
-        references = list(result.get('references') or [])
-    elif result.get('type') == 'fetch_result':
-        asset = result.get('asset', {})
-        response = f"已下载 {asset.get('asset_id')} → `{asset.get('access_path')}`"
-    elif result.get('results'):
-        response = f"分析完成: {result.get('message', '')}"
-        if result.get('capsule_dir'):
-            response += f"\n复现胶囊：`{result['capsule_dir']}`"
-    else:
-        response = result.get('message', '处理完成')
-    explanation = result.get('explanation')
-    if explanation:
-        response = f"{response}\n\n---\n**结果解读**\n\n{explanation}"
-    if references:
-        from src.knowledge.lightrag_client import format_reference
-
-        lines = "\n".join(f"- {format_reference(r)}" for r in references)
-        response = f"{response}\n\n**来源**\n{lines}"
-    return response
+        if result.get("results"):
+            render_analysis_results(result["results"])
 
 
 def _format_script_confirmation(result: dict[str, Any]) -> str:
@@ -270,7 +250,7 @@ def _render_script_confirmation(agent: Any) -> None:
         st.session_state.pending_script = None
         _render_chat_result(result)
         st.session_state.messages.append(
-            {"role": "assistant", "content": _format_result(result)}
+            {"role": "assistant", "content": _summarize_result(result)[0]}
         )
         st.rerun()
     if col2.button("取消", key="cancel_script_btn"):
