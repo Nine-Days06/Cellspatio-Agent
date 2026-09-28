@@ -80,3 +80,80 @@ def select_recent(window: list[dict], budget: int | None = None
         total += cost
         split = i
     return window[:split], window[split:]
+
+
+SUMMARY_PROMPT = (
+    "你是会话记忆压缩器。将给定的对话历史压缩为结构化中文摘要，"
+    "保留足以让 AI 无缝续接任务的事实，剔除冗余与寒暄。\n"
+    "严格按以下 Markdown 结构输出，不要输出结构之外的说明文字：\n"
+    "## 目标\n## 关键约束与决策\n### 已完成\n### 进行中\n### 阻塞\n"
+    "## 下一步\n## 相关文件与命令"
+)
+
+
+def summarize(llm_client, model: str, prior: str | None,
+              messages: list[dict]) -> str:
+    """调用 LLM 生成增量摘要；结果为空时抛 ValueError（交由 maybe_compact 降级）。"""
+    conversation = "\n".join(
+        f"[{msg.get('role')}] {msg.get('content')}" for msg in messages
+    )
+    user_content = (
+        f"<prior-summary>\n{prior or '（无）'}\n</prior-summary>\n\n"
+        f"<conversation>\n{conversation}\n</conversation>"
+    )
+    response = llm_client.chat.completions.create(
+        model=model,
+        messages=[
+            {"role": "system", "content": SUMMARY_PROMPT},
+            {"role": "user", "content": user_content},
+        ],
+        temperature=0,
+        max_tokens=2048,
+    )
+    text = (response.choices[0].message.content or "").strip()
+    if not text:
+        raise ValueError("摘要结果为空")
+    return text
+
+
+def maybe_compact(summary: str | None, offset: int, prepared: list[dict],
+                  llm_summarize, system: str | None = None
+                  ) -> tuple[str | None, int]:
+    """超硬阈值时摘要压缩；任何失败降级为硬截断，绝不抛异常。
+
+    Args:
+        summary: 当前累积摘要（无则 None）
+        offset:  prepared 中已被摘要消化的前缀长度
+        prepared: prepare_history 的产物（全量历史）
+        llm_summarize: callable(prior, older_messages) -> str；None 表示跳过压缩
+        system: system prompt（None 时读真实 SYSTEM_PROMPT）
+
+    Returns:
+        (新摘要, 新 offset)
+    """
+    window = prepared[offset:]
+    if not should_compact(summary, window, system=system):
+        return summary, offset
+    if llm_summarize is None:
+        return summary, offset
+    older, _recent = select_recent(window)
+    if not older:
+        return summary, offset
+    try:
+        new_summary = llm_summarize(summary, older)
+    except Exception as exc:  # noqa: BLE001 降级回退，绝不阻断本轮回答
+        logger.warning("会话摘要失败，降级为硬截断：%s", exc)
+        return summary, _hard_trim(summary, offset, prepared, system)
+    if not new_summary or not str(new_summary).strip():
+        logger.warning("会话摘要结果为空，降级为硬截断")
+        return summary, _hard_trim(summary, offset, prepared, system)
+    return str(new_summary).strip(), offset + len(older)
+
+
+def _hard_trim(summary: str | None, offset: int, prepared: list[dict],
+               system: str | None = None) -> int:
+    """无 LLM 时丢弃最旧历史直至低于阈值，至少保留最后 1 条。"""
+    while (offset < len(prepared) - 1
+           and should_compact(summary, prepared[offset:], system=system)):
+        offset += 1
+    return offset
