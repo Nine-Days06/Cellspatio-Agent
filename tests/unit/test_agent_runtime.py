@@ -349,3 +349,45 @@ def test_run_analysis_route_failure_keeps_params_and_dispatch():
     assert wm.calls[0][0] == "run_analysis"
     assert "skill_plan" not in wm.calls[0][1]["params"]
     assert result["status"] == "needs_input"
+
+
+def test_build_messages_no_history_cap():
+    """废除 MAX_HISTORY=10：15 条历史应全部进入 messages。"""
+    from src.control.agent_runtime import AgentRuntime
+
+    wm = object.__new__(type("W", (), {}))  # 不会被用到
+    rt = AgentRuntime(llm_client=None, model="m", workflow_manager=wm)
+    history = [{"role": "user" if i % 2 == 0 else "assistant", "content": f"m{i}"}
+               for i in range(15)]
+    out = rt._build_messages("最新问题", {"history": history})
+    assert out[0]["role"] == "system"
+    assert out[-1] == {"role": "user", "content": "最新问题"}
+    # 15 条历史 + 1 条 system + 1 条当前输入
+    assert len(out) == 17
+    assert out[1]["content"] == "m0"
+    assert out[-2]["content"] == "m14"
+
+
+def test_build_messages_injects_checkpoint_after_system():
+    """context.summary 存在时，在 system 之后、历史之前注入 checkpoint。"""
+    from src.control.agent_runtime import AgentRuntime
+
+    rt = AgentRuntime(llm_client=None, model="m", workflow_manager=object())
+    history = [{"role": "user", "content": "旧问题"}, {"role": "assistant", "content": "旧回答"}]
+    out = rt._build_messages("新问题", {"history": history, "summary": "## 目标\n做差异"})
+    assert out[0]["role"] == "system"
+    assert out[1]["role"] == "user"
+    assert "<conversation-checkpoint>" in out[1]["content"]
+    assert "做差异" in out[1]["content"]
+    assert out[2] == {"role": "user", "content": "旧问题"}
+    assert out[-1] == {"role": "user", "content": "新问题"}
+
+
+def test_build_messages_without_summary_has_no_checkpoint():
+    from src.control.agent_runtime import AgentRuntime
+
+    rt = AgentRuntime(llm_client=None, model="m", workflow_manager=object())
+    out = rt._build_messages("q", {"history": [{"role": "user", "content": "a"}]})
+    assert len(out) == 3  # system + history + 当前输入
+    assert not any("<conversation-checkpoint>" in str(m.get("content"))
+                   for m in out)
