@@ -175,3 +175,33 @@ def test_run_prompt_fetch_branch_persists_prompt_message():
     assert any("找到候选数据集" in m["content"] for m in msgs)
     assert mock_st.session_state["awaiting_confirmation"] is True
     assert mock_st.session_state["fetch_candidates"] != []
+
+
+def test_render_script_confirmation_renders_buttons_not_script():
+    """确认组件只渲染按钮，不重复渲染脚本（脚本由历史消息承载）"""
+    from src.ui.app import _render_script_confirmation
+
+    mock_agent = MagicMock()
+    mock_agent.execute_confirmed_script.return_value = {
+        "status": "success",
+        "message": "完成",
+    }
+
+    with patch("src.ui.app.st") as mock_st:
+        pending = {"script": "plot(1)", "analysis_type": "de", "params": {}}
+        # 代码按属性访问 session_state（.pending_script），dict 会 AttributeError，故用 MagicMock
+        mock_st.session_state = MagicMock()
+        mock_st.session_state.pending_script = pending
+        mock_st.session_state.awaiting_script_confirmation = True
+        col1, col2 = MagicMock(), MagicMock()
+        col1.button.return_value = False
+        col2.button.return_value = False
+        mock_st.columns.return_value = (col1, col2)
+        mock_st.chat_message.return_value.__enter__ = lambda s: None
+        mock_st.chat_message.return_value.__exit__ = lambda s, *a: None
+
+        _render_script_confirmation(mock_agent)
+
+    mock_st.code.assert_not_called()
+    assert col1.button.called
+    assert col2.button.called

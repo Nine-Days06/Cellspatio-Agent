@@ -236,13 +236,12 @@ def _format_script_confirmation(result: dict[str, Any]) -> str:
 
 
 def _render_script_confirmation(agent: Any) -> None:
-    """渲染脚本确认 UI"""
+    """渲染脚本确认按钮（脚本本体由历史消息承载，此处不重复渲染）"""
     pending = st.session_state.pending_script
     if not pending:
         st.session_state.awaiting_script_confirmation = False
         return
-    st.markdown("**待执行脚本（请审阅）**")
-    st.code(pending["script"], language="r")
+    st.info("请审阅上方脚本，确认后执行")
     col1, col2 = st.columns(2)
     if col1.button("确认执行", type="primary", key="confirm_script_btn"):
         with st.spinner("执行中..."):
