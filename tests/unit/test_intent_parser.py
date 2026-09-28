@@ -71,3 +71,26 @@ def test_subtypes_listed_in_system_prompt():
     parser = IntentParser()
     assert "single_cell" in parser.system_prompt
     assert "spatial" in parser.system_prompt
+
+
+def test_parse_falls_back_when_llm_raises_provider_error():
+    """LLM 提供商异常（如占位 key 触发 401 AuthenticationError）应降级关键词解析而非抛出"""
+    from src.control.intent_parser import IntentParser
+
+    class FakeProviderError(Exception):
+        """模拟 SDK 认证异常（openai.AuthenticationError 等，非 ValueError 子类）"""
+
+    class FakeCompletions:
+        def create(self, **kwargs):
+            raise FakeProviderError("401 Unauthorized: invalid api key")
+
+    class FakeChat:
+        completions = FakeCompletions()
+
+    class FakeClient:
+        chat = FakeChat()
+
+    parser = IntentParser(llm_client=FakeClient())
+    intent = parser.parse("我想分析 RNA-seq 数据的差异表达基因")
+    assert intent["type"] == "analysis"
+    assert intent["analysis_type"] == "differential_expression"

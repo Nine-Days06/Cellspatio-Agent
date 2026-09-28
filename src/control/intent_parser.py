@@ -117,7 +117,7 @@ class IntentParser:
         if self.llm_client:
             try:
                 return self._parse_with_llm(user_input, context)
-            except (json.JSONDecodeError, AttributeError, ValueError) as e:
+            except Exception as e:  # noqa: BLE001 - parse() 契约是总是返回意图，LLM 任何失败（含提供商认证异常）都降级关键词
                 logger.warning(f"LLM intent parsing failed, fallback to keywords: {e}")
 
         return self._parse_with_keywords(user_input)
