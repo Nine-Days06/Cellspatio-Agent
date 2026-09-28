@@ -311,3 +311,41 @@ def test_skill_plan_degrades_on_failure_and_mismatch():
     for router in routers:
         rt = AgentRuntime(llm_client=None, model="m", workflow_manager=object(), router=router)
         assert rt._skill_plan("对这份数据做差异表达分析", "differential_expression") is None
+
+
+def _analysis_runtime(router, wm_results=None):
+    """构造一个只回放一次 run_analysis tool-call 的 runtime。"""
+    from src.control.agent_runtime import AgentRuntime
+
+    llm = FakeLLM([
+        _tool_call_response("run_analysis", {"analysis_type": "differential_expression"})
+    ])
+    wm = FakeWM({"run_analysis": (wm_results or {"status": "needs_input", "message": "缺输入"})})
+    return AgentRuntime(llm_client=llm, model="m", workflow_manager=wm, router=router), wm
+
+
+def test_run_analysis_injects_skill_plan_without_polluting_context():
+    """生产接线：方案挂进 params；用户的 HITL context 不得被写入 script_approved。"""
+    plan = {"analysis_type": "differential_expression",
+            "required_inputs": ["表达矩阵"], "plan": ["质控", "DESeq2"]}
+    router = _ScriptedRouter(output=plan)
+    runtime, wm = _analysis_runtime(router)
+
+    context = {"downloaded_assets": [{"access_path": "counts.csv"}]}
+    result = runtime.execute("对这份数据做差异表达分析", context=context)
+
+    assert result["status"] == "needs_input"
+    assert wm.calls[0][1]["params"]["skill_plan"] == plan
+    assert "script_approved" not in context
+
+
+def test_run_analysis_route_failure_keeps_params_and_dispatch():
+    """route() 炸了也不影响分析下发：params 无 skill_plan，终态照常返回。"""
+    router = _ScriptedRouter(raise_on_route=True)
+    runtime, wm = _analysis_runtime(router)
+
+    result = runtime.execute("对这份数据做差异表达分析", context={})
+
+    assert wm.calls[0][0] == "run_analysis"
+    assert "skill_plan" not in wm.calls[0][1]["params"]
+    assert result["status"] == "needs_input"

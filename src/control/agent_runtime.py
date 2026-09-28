@@ -177,6 +177,10 @@ class AgentRuntime:
             params = IntentParser().extract_parameters(user_input)
             if args.get("question"):
                 params["question"] = args["question"]
+            # 技能静态方案（route() 内 teardown 同时写技能执行记忆）；真实分析仍由 WorkflowManager 承担
+            plan = self._skill_plan(user_input, analysis_type)
+            if plan:
+                params["skill_plan"] = plan
             return wm.run_analysis_for_agent(analysis_type, params, context)
         if name == "search_datasets":
             params = {}
