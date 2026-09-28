@@ -28,7 +28,7 @@ class AgentRuntime:
     """LLM tool loop; workflow_manager provides *_for_agent execution face."""
 
     def __init__(self, llm_client, model: str, workflow_manager,
-                 router: "ModalRouter | None" = None):
+                 router: ModalRouter | None = None):
         self.llm_client = llm_client
         self.model = model
         self.workflow_manager = workflow_manager

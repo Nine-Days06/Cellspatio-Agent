@@ -8,9 +8,9 @@ from uuid import uuid4
 
 from src.control.classifier import TaskClassifier
 from src.control.kg_memory import KGMemory
+from src.skills.base import SkillContext
 from src.skills.loader import SkillLoader
 from src.skills.registry import SkillRegistry
-from src.skills.base import SkillBase, SkillContext
 
 logger = logging.getLogger(__name__)
 

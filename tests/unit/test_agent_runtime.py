@@ -202,8 +202,8 @@ def test_router_hint_injected_into_system_prompt():
 
 def test_router_none_keeps_system_prompt_unchanged():
     """router=None 时 system prompt 与原状一致（无路由段）。"""
-    from src.control.tools import SYSTEM_PROMPT
     from src.control.agent_runtime import AgentRuntime
+    from src.control.tools import SYSTEM_PROMPT
 
     rt = AgentRuntime(llm_client=None, model="m", workflow_manager=object())
     messages = rt._build_messages("差异表达", {})
@@ -226,8 +226,8 @@ def test_router_hint_failure_does_not_block():
 
 def test_build_messages_general_hint_not_injected():
     """hint modality=general 时 system prompt 保持原样（不追加路由段）。"""
-    from src.control.tools import SYSTEM_PROMPT
     from src.control.agent_runtime import AgentRuntime
+    from src.control.tools import SYSTEM_PROMPT
 
     rt = AgentRuntime(llm_client=None, model="m", workflow_manager=object())
     messages = rt._build_messages("差异表达", {},
