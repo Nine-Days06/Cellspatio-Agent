@@ -96,8 +96,10 @@ class ModalRouter:
     def hint(self, user_input: str) -> dict[str, Any]:
         """轻量路由提示：仅分类 + 最佳实践查询，不加载 Skill。
 
-        生产接线入口（AgentRuntime 调用）：与 route() 分离，
-        因为 src/skills/ 尚无具体技能实现，load 必然失败。
+        每轮 tool-calling 都调（AgentRuntime._route_hint），结果注入 system prompt。
+        与 route() 分工：route() 会真正 load 技能并跑 setup → execute → teardown，
+        只在确定要跑分析时由 AgentRuntime._skill_plan 调一次；
+        skills/ 下已有 5 个真实技能，load 不会失败。
         """
         classification = self.classifier.classify(user_input)
         modality = classification["modality"]

@@ -141,7 +141,7 @@ class CellSpatioAgent:
             ),
         )
 
-        # Phase 3 接线：分类/最佳实践提示（skills_dir 无技能时 hint 仍可用）
+        # Phase 3 接线：技能平台装配（skills/ 下 5 个真实技能 → hint 提示 + route 生命周期）
         self.skill_registry = SkillRegistry(skills_dir=Path(repo_root) / "skills")
         self.skill_loader = SkillLoader(self.skill_registry)
         self.modal_router = ModalRouter(
