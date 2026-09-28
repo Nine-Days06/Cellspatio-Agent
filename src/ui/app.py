@@ -36,21 +36,20 @@ def run_prompt(agent: Any, prompt: str) -> None:
             "method_context": result.get("method_context"),
         }
         st.session_state["awaiting_script_confirmation"] = True
-        with st.chat_message("assistant"):
-            st.markdown(result.get("message", "已生成 R 脚本，请审阅并确认执行"))
-            _render_script_confirmation(agent)
         st.session_state["messages"].append(
             {"role": "assistant", "content": _format_script_confirmation(result)}
         )
+        # 不在此渲染：统一由 create_app 的重放 + 条件组件（单调用点）负责
         return
 
     if result.get("type") == "fetch_data" and result.get("status") == "needs_confirmation":
         st.session_state["fetch_candidates"] = result.get("candidates", [])
         st.session_state["fetch_query"] = result.get("query", "")
         st.session_state["awaiting_confirmation"] = True
-        with st.chat_message("assistant"):
-            st.markdown(result.get("message", "找到候选数据集，请选择要下载的项："))
-        st.rerun()
+        st.session_state["messages"].append(
+            {"role": "assistant", "content": result.get("message", "找到候选数据集，请选择要下载的项：")}
+        )
+        # 不在此渲染：重放历史显示提示语，create_app 的候选选择器负责交互
         return
 
     _render_chat_result(result)

@@ -98,3 +98,80 @@ def test_render_analysis_results_accepts_key_prefix():
     assert kwargs["key"] == "hist_0_gene_followup_select"
     _, btn_kwargs = mock_st.button.call_args
     assert btn_kwargs["key"] == "hist_0_gene_followup_btn"
+
+
+def test_run_prompt_script_branch_only_sets_state_no_render():
+    """needs_script_confirmation 分支应只设状态+落历史，不调用 _render_script_confirmation"""
+    from src.ui import app as app_mod
+    from src.ui.app import run_prompt
+
+    mock_agent = MagicMock()
+    mock_agent.execute_workflow.return_value = {
+        "status": "needs_script_confirmation",
+        "script": "plot(1)",
+        "analysis_type": "de",
+        "params": {},
+        "message": "请审阅脚本",
+    }
+
+    with patch("src.ui.app.st") as mock_st, \
+         patch.object(app_mod, "_render_script_confirmation") as mock_render:
+        mock_st.session_state = {
+            "messages": [],
+            "downloaded_assets": [],
+            "awaiting_confirmation": False,
+            "awaiting_script_confirmation": False,
+            "pending_script": None,
+            "fetch_candidates": [],
+            "fetch_query": "",
+        }
+        mock_st.chat_message.return_value.__enter__ = lambda s: None
+        mock_st.chat_message.return_value.__exit__ = lambda s, *a: None
+        mock_st.spinner.return_value.__enter__ = lambda s: None
+        mock_st.spinner.return_value.__exit__ = lambda s, *a: None
+        mock_st.rerun = lambda: None
+        mock_st.markdown = lambda *a, **k: None
+
+        run_prompt(mock_agent, "做差异表达")
+
+    mock_render.assert_not_called()
+    assert mock_st.session_state["awaiting_script_confirmation"] is True
+    assert any("请审阅脚本" in m["content"] for m in mock_st.session_state["messages"])
+
+
+def test_run_prompt_fetch_branch_persists_prompt_message():
+    """fetch needs_confirmation 分支的提示语必须入历史，rerun 后不丢失"""
+    from src.ui.app import run_prompt
+
+    mock_agent = MagicMock()
+    mock_agent.execute_workflow.return_value = {
+        "status": "needs_confirmation",
+        "type": "fetch_data",
+        "candidates": [{"source": "GEO", "asset_id": "GSE1", "title": "t", "reason": "r"}],
+        "query": "肝癌 RNA-seq",
+        "message": "找到候选数据集，请选择要下载的项：",
+    }
+
+    with patch("src.ui.app.st") as mock_st:
+        mock_st.session_state = {
+            "messages": [],
+            "downloaded_assets": [],
+            "awaiting_confirmation": False,
+            "awaiting_script_confirmation": False,
+            "pending_script": None,
+            "fetch_candidates": [],
+            "fetch_query": "",
+        }
+        mock_st.chat_message.return_value.__enter__ = lambda s: None
+        mock_st.chat_message.return_value.__exit__ = lambda s, *a: None
+        mock_st.spinner.return_value.__enter__ = lambda s: None
+        mock_st.spinner.return_value.__exit__ = lambda s, *a: None
+        mock_st.rerun = lambda: None
+        mock_st.markdown = lambda *a, **k: None
+
+        run_prompt(mock_agent, "下载数据")
+
+    msgs = mock_st.session_state["messages"]
+    assert any("找到候选数据集" in m["content"] for m in msgs)
+    assert mock_st.session_state["awaiting_confirmation"] is True
+    assert mock_st.session_state["fetch_candidates"] != []
