@@ -23,8 +23,6 @@ STARTER_PRESETS: list[dict[str, str]] = [
 
 def render_starter_presets() -> str | None:
     """空会话时渲染分组预设按钮；返回被点击的 prompt，否则 None"""
-    import streamlit as st
-
     st.markdown("#### 不知道从哪开始？试试这些")
     groups: dict[str, list[dict[str, str]]] = {}
     for p in STARTER_PRESETS:

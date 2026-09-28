@@ -2,6 +2,7 @@ import sys
 from pathlib import Path
 from typing import Any
 
+import pandas as pd
 import streamlit as st
 
 # 保证以 `streamlit run src/ui/app.py` 启动时，模块级导入也能 `import src.*`
@@ -150,8 +151,6 @@ def _render_candidate_selector(agent: Any):
             st.json(md)
         # 若存在多项，简易对比表
         if len(candidates) > 1:
-            import pandas as pd
-
             rows = []
             for c in candidates:
                 row = {"id": c["asset_id"], "title": c["title"], "source": c["source"]}
@@ -269,14 +268,6 @@ def _render_script_confirmation(agent: Any) -> None:
 
 def _bootstrap():
     """streamlit run src/ui/app.py 入口：初始化 agent 并渲染界面"""
-    import sys
-    from pathlib import Path
-
-    # 保证以 `streamlit run src/ui/app.py` 启动时能 `import src.*`
-    root = Path(__file__).resolve().parents[2]
-    if str(root) not in sys.path:
-        sys.path.insert(0, str(root))
-
     from src.main import CellSpatioAgent
 
     create_app(CellSpatioAgent())
