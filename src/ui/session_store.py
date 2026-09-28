@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import base64
+import io
 import json
 import logging
 import os
@@ -35,7 +36,9 @@ CREATE TABLE IF NOT EXISTS messages (
     content TEXT NOT NULL,
     timestamp TEXT NOT NULL,
     results TEXT,
-    pending_script TEXT
+    pending_script TEXT,
+    -- 短连接模型下 append_message 串行取 MAX(seq)+1，唯一约束兜底防并发串号
+    UNIQUE(session_id, seq)
 );
 CREATE INDEX IF NOT EXISTS idx_messages_session ON messages(session_id, seq);
 """
@@ -55,8 +58,6 @@ def _encode_results(results: dict[str, Any] | None) -> str | None:
         encoded = []
         for chart in charts:
             if hasattr(chart, "savefig"):            # matplotlib Figure
-                import io
-
                 buf = io.BytesIO()
                 chart.savefig(buf, format="png", dpi=120, bbox_inches="tight")
                 encoded.append({
