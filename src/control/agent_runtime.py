@@ -3,8 +3,9 @@
 Fallback strategy: no LLM or SDK exception → fall back to WorkflowManager.execute_workflow
 legacy intent path (still served by IntentParser.parse / extract_parameters), ensuring
 offline/tests work. Response without tool_calls returns general_response directly.
-Optional router (ModalRouter.hint) injects modality/skill/best-practice hints
-into the system prompt when wired by CellSpatioAgent.
+Optional router (ModalRouter) is used two ways when wired by CellSpatioAgent:
+hint() injects modality/skill/best-practice hints into the system prompt every round;
+route() runs the analysis skill lifecycle once the LLM actually picks run_analysis.
 """
 from __future__ import annotations
 
@@ -94,6 +95,30 @@ class AgentRuntime:
         except Exception as e:  # noqa: BLE001 - 提示注入失败必须可降级
             logger.warning("route hint failed, continue without: %s", e)
             return None
+
+    def _skill_plan(self, user_input: str, analysis_type: str) -> dict[str, Any] | None:
+        """调 route() 取分析技能静态方案；任何异常/不适用情形都返回 None（不阻断主流程）。
+
+        与 hint() 分工：hint() 每轮只分类 + 查最佳实践并注入 system prompt；
+        本方法在确定要跑分析时真正 load 技能并跑 setup → execute → teardown，
+        teardown 内向 KGMemory 写技能执行记忆（生产可达的记忆通道）。
+
+        分析类技能 execute() 只产静态方案（无 I/O），不替代 WorkflowManager 的真实分析；
+        R 脚本 HITL 门在 WorkflowManager._generate_or_finish 独立生效，故此处显式传
+        script_approved=True，且只传新建 dict，不污染调用方 context。
+        """
+        hint = self._route_hint(user_input)
+        if not hint or hint.get("modality") != "analysis":
+            return None
+        try:
+            result = self.router.route(user_input, context={"script_approved": True})
+        except Exception as e:  # noqa: BLE001 - 技能路由失败必须可降级
+            logger.warning("skill route failed, continue without plan: %s", e)
+            return None
+        output = result.get("output") or {}
+        if result.get("status") != "success" or output.get("analysis_type") != analysis_type or "plan" not in output:
+            return None
+        return output
 
     def _build_messages(self, user_input: str, context: dict[str, Any],
                         hint: dict[str, Any] | None = None) -> list[dict[str, Any]]:

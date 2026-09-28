@@ -234,3 +234,80 @@ def test_build_messages_general_hint_not_injected():
                                   hint={"modality": "general", "skill": None,
                                         "best_practices": None})
     assert messages[0]["content"] == SYSTEM_PROMPT
+
+
+class _ScriptedRouter:
+    """同时实现 hint() 与 route() 的路由器替身；route 记录调用参数。"""
+
+    def __init__(self, modality="analysis", output=None, raise_on_route=False):
+        self.modality = modality
+        self.output = output
+        self.raise_on_route = raise_on_route
+        self.route_calls: list[tuple[str, dict]] = []
+
+    def hint(self, user_input):
+        return {"modality": self.modality, "skill": None, "best_practices": None}
+
+    def route(self, user_input, context=None):
+        self.route_calls.append((user_input, dict(context or {})))
+        if self.raise_on_route:
+            raise RuntimeError("classifier down")
+        return {"status": "success", "modality": self.modality, "skill": "stub",
+                "output": self.output}
+
+
+def test_skill_plan_none_without_router():
+    """router=None 时不产方案也不报错（离线路径保持原状）。"""
+    from src.control.agent_runtime import AgentRuntime
+
+    rt = AgentRuntime(llm_client=None, model="m", workflow_manager=object())
+    assert rt._skill_plan("对这份数据做差异表达分析", "differential_expression") is None
+
+
+def test_skill_plan_returns_output_for_analysis_input():
+    """分析类输入：route() 被调且返回静态方案；HITL 门以新建 dict 显式放行。"""
+    from src.control.agent_runtime import AgentRuntime
+
+    plan = {"analysis_type": "differential_expression", "plan": ["质控", "DESeq2"]}
+    router = _ScriptedRouter(output=plan)
+    rt = AgentRuntime(llm_client=None, model="m", workflow_manager=object(), router=router)
+
+    assert rt._skill_plan("对这份数据做差异表达分析", "differential_expression") == plan
+    assert router.route_calls == [("对这份数据做差异表达分析", {"script_approved": True})]
+
+
+def test_skill_plan_skips_non_analysis_modality():
+    """非分析类输入不调 route()：fetch/knowledge 技能真实打网络，不得重复执行。"""
+    from src.control.agent_runtime import AgentRuntime
+
+    router = _ScriptedRouter(modality="fetch", output={"query": "x", "count": 0})
+    rt = AgentRuntime(llm_client=None, model="m", workflow_manager=object(), router=router)
+
+    assert rt._skill_plan("帮我下载 GSE123456 数据集", "differential_expression") is None
+    assert router.route_calls == []
+
+
+def test_skill_plan_degrades_on_failure_and_mismatch():
+    """route 抛异常 / status 非 success / analysis_type 不一致 → 一律降级为 None。"""
+    from src.control.agent_runtime import AgentRuntime
+
+    class ErrorRouter(_ScriptedRouter):
+        def route(self, user_input, context=None):
+            self.route_calls.append((user_input, dict(context or {})))
+            return {"status": "error", "modality": "analysis", "message": "boom"}
+
+    class MismatchRouter(_ScriptedRouter):
+        def route(self, user_input, context=None):
+            self.route_calls.append((user_input, dict(context or {})))
+            return {"status": "success", "modality": "analysis", "skill": "single_cell",
+                    "output": {"analysis_type": "single_cell", "plan": ["聚类"]}}
+
+    routers = [
+        _ScriptedRouter(raise_on_route=True),
+        ErrorRouter(),
+        MismatchRouter(),
+        _ScriptedRouter(output={"analysis_type": "differential_expression"}),
+    ]
+    for router in routers:
+        rt = AgentRuntime(llm_client=None, model="m", workflow_manager=object(), router=router)
+        assert rt._skill_plan("对这份数据做差异表达分析", "differential_expression") is None
