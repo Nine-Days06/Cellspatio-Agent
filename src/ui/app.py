@@ -10,12 +10,20 @@ _root = Path(__file__).resolve().parents[2]
 if str(_root) not in sys.path:
     sys.path.insert(0, str(_root))
 
+from src.control import compact
 from src.ui.components import render_analysis_results, render_starter_presets
+from src.ui.session_store import SessionStore
+
+
+def _get_store() -> SessionStore:
+    """每次新建会话存储（短连接模型，无缓存必要）。"""
+    return SessionStore()
 
 
 def run_prompt(agent: Any, prompt: str) -> None:
     """统一执行：显示用户消息 → workflow → 渲染/确认流 → 入历史"""
     st.session_state["messages"].append({"role": "user", "content": prompt})
+    st.session_state["_scroll_pending"] = True
     with st.chat_message("user"):
         st.markdown(prompt)
 
@@ -59,17 +67,33 @@ def run_prompt(agent: Any, prompt: str) -> None:
 
 def create_app(agent: Any):
     """创建 Streamlit 应用"""
-    
+    store = _get_store()
+
+    # 会话状态初始化（必须早于侧边栏与历史渲染）
+    _init_session_state(store)
+    _persist_new_messages(store)
+
     st.title("CellSpatio 单细胞与时空组学分析智能体")
     st.caption("单细胞与空间/时序组学分析 · LightRAG 知识问答")
-    
-    # 侧边栏配置
+
+    # 软阈值提醒（不阻断）
+    if compact.should_soft_warn(
+        st.session_state.get("chat_summary"),
+        compact.prepare_history(st.session_state["messages"]),
+    ):
+        st.warning(
+            f"会话上下文已接近上限（约 {compact.SOFT_TRIGGER:,} token），"
+            "继续对话将自动压缩早期记忆。"
+        )
+
+    # 侧边栏：会话列表 + 设置 + 知识库状态
     with st.sidebar:
+        _render_session_sidebar(store)
         st.header("设置")
         external_api = st.checkbox("启用外部 API 查询", value=False)
         if external_api:
             st.info("外部 API 已启用，将查询最新文献和数据库。")
-        
+
         st.header("知识库状态")
         if st.button("刷新", key="kb_stats_refresh"):
             st.session_state.pop("kb_stats", None)
@@ -81,28 +105,14 @@ def create_app(agent: Any):
                 st.session_state.kb_stats = {"error": str(e), "initialized": False}
                 st.error(f"知识库状态获取失败: {e}")
         st.json(st.session_state.kb_stats)
-    
-    # 初始化会话状态
-    if "messages" not in st.session_state:
-        st.session_state.messages = []
-    if "fetch_candidates" not in st.session_state:
-        st.session_state.fetch_candidates = []
-    if "awaiting_confirmation" not in st.session_state:
-        st.session_state.awaiting_confirmation = False
-    if "awaiting_script_confirmation" not in st.session_state:
-        st.session_state.awaiting_script_confirmation = False
-    if "pending_script" not in st.session_state:
-        st.session_state.pending_script = None
-    if "downloaded_assets" not in st.session_state:
-        st.session_state.downloaded_assets = []
-    
+
     # 显示聊天历史（带分析结果的消息在重放时重新渲染图表）
     for idx, message in enumerate(st.session_state.messages):
         with st.chat_message(message["role"]):
             st.markdown(message["content"])
             if message.get("results"):
                 render_analysis_results(message["results"], key_prefix=f"hist_{idx}_")
-    
+
     # 候选选择器（在聊天输入之前渲染，避免重复渲染问题）
     if st.session_state.get("awaiting_confirmation"):
         _render_candidate_selector(agent)
@@ -263,6 +273,138 @@ def _render_script_confirmation(agent: Any) -> None:
             {"role": "assistant", "content": "已取消本次脚本执行。"}
         )
         st.rerun()
+
+
+def _init_session_state(store: SessionStore) -> None:
+    """初始化会话状态；无当前会话时恢复最近会话或新建。"""
+    defaults = {
+        "messages": [],
+        "fetch_candidates": [],
+        "awaiting_confirmation": False,
+        "awaiting_script_confirmation": False,
+        "pending_script": None,
+        "downloaded_assets": [],
+        "chat_summary": None,
+        "summary_upto": 0,
+        "persisted_count": 0,
+    }
+    for key, value in defaults.items():
+        if key not in st.session_state:
+            st.session_state[key] = value
+
+    if isinstance(st.session_state.get("current_session_id"), str):
+        return  # 已绑定会话
+    sessions = store.list_sessions()
+    if sessions and not st.session_state["messages"]:
+        _load_session(store, sessions[0]["id"])
+    else:
+        st.session_state["current_session_id"] = store.create_session()
+        st.session_state["persisted_count"] = 0
+
+
+def _reset_session_state() -> None:
+    """新建/切换会话时清空消息与瞬态状态。"""
+    st.session_state["messages"] = []
+    st.session_state["persisted_count"] = 0
+    st.session_state["chat_summary"] = None
+    st.session_state["summary_upto"] = 0
+    st.session_state["downloaded_assets"] = []
+    st.session_state["fetch_candidates"] = []
+    st.session_state["awaiting_confirmation"] = False
+    st.session_state["awaiting_script_confirmation"] = False
+    st.session_state["pending_script"] = None
+    st.session_state["_scroll_pending"] = True
+
+
+def _load_session(store: SessionStore, session_id: str) -> None:
+    """加载会话：恢复消息、摘要、资产；最新 pending 脚本强制过期。"""
+    session = store.get_session(session_id) or {}
+    messages = store.get_messages(session_id)
+
+    _reset_session_state()
+    st.session_state["current_session_id"] = session_id
+    st.session_state["messages"] = messages
+    st.session_state["chat_summary"] = session.get("summary")
+    st.session_state["summary_upto"] = session.get("summary_upto") or 0
+    st.session_state["downloaded_assets"] = session.get("downloaded_assets") or []
+    st.session_state["persisted_count"] = len(messages)
+
+    # 仅看最新一条带 pending_script 的消息
+    for msg in reversed(messages):
+        ps = msg.get("pending_script")
+        if not ps:
+            continue
+        if ps.get("status") in ("pending", "expired"):
+            if ps["status"] == "pending":
+                ps["status"] = "expired"
+                store.set_script_status(session_id, "expired")
+            st.session_state["pending_script"] = {
+                "script": ps.get("script", ""),
+                "analysis_type": ps.get("analysis_type"),
+                "params": ps.get("params") or {},
+                "method_context": ps.get("method_context"),
+                "user_request": ps.get("user_request", ""),
+                "status": "expired",
+            }
+            st.session_state["awaiting_script_confirmation"] = True
+        break
+
+
+def _persist_new_messages(store: SessionStore) -> None:
+    """增量落盘新消息 + 更新会话元数据；失败仅告警不阻断。"""
+    sid = st.session_state.get("current_session_id")
+    if not isinstance(sid, str):
+        return
+    try:
+        messages = st.session_state["messages"]
+        start = st.session_state.get("persisted_count", 0)
+        for msg in messages[start:]:
+            store.append_message(
+                sid,
+                role=msg.get("role", "assistant"),
+                content=str(msg.get("content") or ""),
+                results=msg.get("results"),
+                pending_script=msg.get("pending_script"),
+            )
+        st.session_state["persisted_count"] = len(messages)
+        store.update_session_meta(
+            sid,
+            summary=st.session_state.get("chat_summary"),
+            summary_upto=st.session_state.get("summary_upto") or 0,
+            downloaded_assets=st.session_state.get("downloaded_assets") or [],
+        )
+    except Exception as e:  # noqa: BLE001 - 持久化失败不阻断对话
+        st.warning(f"会话落盘失败：{e}")
+
+
+def _render_session_sidebar(store: SessionStore) -> None:
+    """侧边栏会话区：新建 / 切换 / 删除。"""
+    st.header("会话")
+    if st.button("＋ 新会话", key="new_session_btn"):
+        st.session_state["current_session_id"] = store.create_session()
+        _reset_session_state()
+        st.rerun()
+
+    for sess in store.list_sessions():
+        cols = st.columns([4, 1])
+        is_current = sess["id"] == st.session_state.get("current_session_id")
+        label = f"{sess['title']}（{sess['message_count']}）"
+        if cols[0].button(
+            label, key=f"sess_{sess['id']}",
+            type="primary" if is_current else "secondary",
+        ):
+            _load_session(store, sess["id"])
+            st.rerun()
+        if cols[1].button("🗑", key=f"del_{sess['id']}"):
+            store.delete_session(sess["id"])
+            if sess["id"] == st.session_state.get("current_session_id"):
+                remaining = store.list_sessions()
+                if remaining:
+                    _load_session(store, remaining[0]["id"])
+                else:
+                    st.session_state["current_session_id"] = store.create_session()
+                    _reset_session_state()
+            st.rerun()
 
 
 def _bootstrap():

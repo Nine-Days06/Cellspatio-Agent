@@ -157,3 +157,9 @@ def _hard_trim(summary: str | None, offset: int, prepared: list[dict],
            and should_compact(summary, prepared[offset:], system=system)):
         offset += 1
     return offset
+
+
+def should_soft_warn(summary: str | None, window: list[dict],
+                     system: str | None = None) -> bool:
+    """是否达到软提醒阈值（UI 警告，不触发压缩）。"""
+    return context_tokens(summary, window, system=system) > SOFT_TRIGGER

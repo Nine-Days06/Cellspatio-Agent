@@ -183,3 +183,11 @@ def test_maybe_compact_empty_llm_result_falls_back(monkeypatch):
     summary, offset = maybe_compact(None, 0, prepared, lambda p, o: "", system="")
     assert summary is None
     assert offset > 0
+
+
+def test_should_soft_warn_below_soft_trigger(monkeypatch):
+    from src.control.compact import should_soft_warn
+
+    monkeypatch.setattr(compact, "SOFT_TRIGGER", 5)
+    assert should_soft_warn("s" * 40, [], system="") is True   # 10 > 5
+    assert should_soft_warn("", [], system="") is False
