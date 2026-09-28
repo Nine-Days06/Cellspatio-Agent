@@ -70,12 +70,16 @@ def create_app(agent: Any):
             st.info("外部 API 已启用，将查询最新文献和数据库。")
         
         st.header("知识库状态")
-        try:
-            stats = agent.knowledge_client.get_statistics()
-            st.json(stats)
-        except Exception as e:  # noqa: BLE001 - UI 容错，知识库不可用时降级展示
-            st.error(f"知识库状态获取失败: {e}")
-            st.json({"working_dir": "knowledge_base", "initialized": False})
+        if st.button("刷新", key="kb_stats_refresh"):
+            st.session_state.pop("kb_stats", None)
+            st.rerun()
+        if "kb_stats" not in st.session_state:
+            try:
+                st.session_state.kb_stats = agent.knowledge_client.get_statistics()
+            except Exception as e:  # noqa: BLE001 - UI 容错，知识库不可用时降级展示
+                st.session_state.kb_stats = {"error": str(e), "initialized": False}
+                st.error(f"知识库状态获取失败: {e}")
+        st.json(st.session_state.kb_stats)
     
     # 初始化会话状态
     if "messages" not in st.session_state:
