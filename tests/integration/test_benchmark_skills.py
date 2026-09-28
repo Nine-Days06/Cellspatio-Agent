@@ -144,3 +144,72 @@ def test_route_query_knowledge_without_kg_memory():
     assert out["question"] == "查询基因功能"
     assert out["answer"] is None
     assert out["reason"] == "知识库未配置"
+
+
+def test_production_route_records_skill_memory(tmp_path):
+    """生产接线闭环：AgentRuntime → route() → 真实技能 teardown → KGMemory.ingest。
+
+    与既有 test_route_writes_skill_memory 的差别：那个直接调 route()，
+    这个走生产真实调用方（AgentRuntime.execute → _dispatch），证明通道在生产可达。
+    """
+    import json
+    from types import SimpleNamespace
+
+    from src.control.agent_runtime import AgentRuntime
+    from src.control.kg_memory import KGMemory
+
+    class _ScriptedLLM:
+        """回放一次 run_analysis tool-call，避免依赖真实 LLM。"""
+
+        def __init__(self):
+            self.chat = SimpleNamespace(completions=SimpleNamespace(create=self._create))
+
+        def _create(self, **kwargs):
+            tc = SimpleNamespace(
+                id="call_run_analysis",
+                type="function",
+                function=SimpleNamespace(
+                    name="run_analysis",
+                    arguments=json.dumps(
+                        {"analysis_type": "differential_expression"}, ensure_ascii=False
+                    ),
+                ),
+            )
+            message = SimpleNamespace(content=None, tool_calls=[tc])
+            return SimpleNamespace(choices=[SimpleNamespace(message=message)])
+
+    class _StubWM:
+        """WorkflowManager 面替身：只记录下发的 analysis params 并回 needs_input 终态。"""
+
+        def __init__(self):
+            self.params = None
+
+        def run_analysis_for_agent(self, analysis_type, params, context):
+            self.params = params
+            return {"status": "needs_input", "type": "analysis", "message": "缺输入"}
+
+    real = KGMemory(working_dir=tmp_path / "kg")
+    try:
+        kg = _RecordingKGMemory(real)
+        router = _make_router(kg_memory=kg)
+        wm = _StubWM()
+        runtime = AgentRuntime(
+            llm_client=_ScriptedLLM(), model="fake", workflow_manager=wm, router=router,
+        )
+
+        result = runtime.execute("对这份数据做差异表达分析", context={"downloaded_assets": []})
+
+        # 真实分析仍由 WorkflowManager 面负责（needs_input 是 TERMINAL_STATUSES 之一）
+        assert result["status"] == "needs_input"
+        # 技能静态方案进了生产 analysis params
+        plan = wm.params["skill_plan"]
+        assert plan["analysis_type"] == "differential_expression"
+        assert plan["plan"] and plan["required_inputs"]
+        # teardown 记忆通道：生产可达
+        assert len(kg.records) == 1
+        record = kg.records[0]
+        assert record.run_id.startswith("skill-")
+        assert record.steps[0].tool == "differential_expression"
+        assert record.intent.original_input.startswith("skill:differential_expression")
+    finally:
+        real.close()
