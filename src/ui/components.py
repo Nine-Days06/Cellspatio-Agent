@@ -41,8 +41,11 @@ def render_starter_presets() -> str | None:
     return clicked
 
 
-def render_analysis_results(results: dict[str, Any]):
-    """渲染分析结果"""
+def render_analysis_results(results: dict[str, Any], key_prefix: str = ""):
+    """渲染分析结果
+
+    key_prefix: 历史重放时为 widget key 加前缀，避免 DuplicateElementId。
+    """
     if not results:
         st.warning("没有可显示的结果")
         return
@@ -74,7 +77,7 @@ def render_analysis_results(results: dict[str, Any]):
             else:
                 st.warning("未知图表类型，已跳过")
 
-    render_gene_followup(results)
+    render_gene_followup(results, key_prefix=key_prefix)
 
 
 def gene_followup_prompt(gene: str) -> str:
@@ -85,10 +88,11 @@ def gene_followup_prompt(gene: str) -> str:
     return f"{g} 的功能、通路关系和研究意义是什么？"
 
 
-def render_gene_followup(results: dict[str, Any]) -> None:
-    """结果表含 gene 列时，提供选择并写入 auto_prompt"""
-    import streamlit as st
+def render_gene_followup(results: dict[str, Any], key_prefix: str = "") -> None:
+    """结果表含 gene 列时，提供选择并写入 auto_prompt
 
+    key_prefix: widget key 前缀，多条历史消息重放时保证 key 唯一。
+    """
     data = results.get("data")
     if not data:
         return
@@ -102,6 +106,6 @@ def render_gene_followup(results: dict[str, Any]) -> None:
     if not genes:
         return
     st.markdown("#### 追问知识库")
-    gene = st.selectbox("选择基因", genes, key="gene_followup_select")
-    if st.button("查询该基因", key="gene_followup_btn"):
+    gene = st.selectbox("选择基因", genes, key=f"{key_prefix}gene_followup_select")
+    if st.button("查询该基因", key=f"{key_prefix}gene_followup_btn"):
         st.session_state.auto_prompt = gene_followup_prompt(gene)

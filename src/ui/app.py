@@ -54,9 +54,13 @@ def run_prompt(agent: Any, prompt: str) -> None:
         return
 
     _render_chat_result(result)
-    st.session_state["messages"].append(
-        {"role": "assistant", "content": _summarize_result(result)[0]}
-    )
+    msg: dict[str, Any] = {
+        "role": "assistant",
+        "content": _summarize_result(result)[0],
+    }
+    if result.get("results"):
+        msg["results"] = result["results"]
+    st.session_state["messages"].append(msg)
 
 
 def create_app(agent: Any):
@@ -94,10 +98,12 @@ def create_app(agent: Any):
     if "downloaded_assets" not in st.session_state:
         st.session_state.downloaded_assets = []
     
-    # 显示聊天历史
-    for message in st.session_state.messages:
+    # 显示聊天历史（带分析结果的消息在重放时重新渲染图表）
+    for idx, message in enumerate(st.session_state.messages):
         with st.chat_message(message["role"]):
             st.markdown(message["content"])
+            if message.get("results"):
+                render_analysis_results(message["results"], key_prefix=f"hist_{idx}_")
     
     # 候选选择器（在聊天输入之前渲染，避免重复渲染问题）
     if st.session_state.get("awaiting_confirmation"):
@@ -242,9 +248,13 @@ def _render_script_confirmation(agent: Any) -> None:
         st.session_state.awaiting_script_confirmation = False
         st.session_state.pending_script = None
         _render_chat_result(result)
-        st.session_state.messages.append(
-            {"role": "assistant", "content": _summarize_result(result)[0]}
-        )
+        exec_msg: dict[str, Any] = {
+            "role": "assistant",
+            "content": _summarize_result(result)[0],
+        }
+        if result.get("results"):
+            exec_msg["results"] = result["results"]
+        st.session_state.messages.append(exec_msg)
         st.rerun()
     if col2.button("取消", key="cancel_script_btn"):
         st.session_state.awaiting_script_confirmation = False
