@@ -20,6 +20,19 @@ def _get_store() -> SessionStore:
     return SessionStore()
 
 
+def _make_llm_summarize(agent: Any):
+    """按 agent 的 LLM 客户端构造摘要调用器；无客户端时返回 None（跳过压缩）。"""
+    client = getattr(agent, "llm_client", None)
+    if client is None:
+        return None
+    model = getattr(agent, "llm_model", "") or ""
+
+    def _summarize(prior, older):
+        return compact.summarize(client, model, prior, older)
+
+    return _summarize
+
+
 def run_prompt(agent: Any, prompt: str) -> None:
     """统一执行：显示用户消息 → workflow → 渲染/确认流 → 入历史"""
     st.session_state["messages"].append({"role": "user", "content": prompt})
@@ -27,9 +40,21 @@ def run_prompt(agent: Any, prompt: str) -> None:
     with st.chat_message("user"):
         st.markdown(prompt)
 
-    # 组装 context：history（推送前的历史）+ downloaded_assets + 当前输入
+    # 上下文压缩：准备历史 → 超阈值摘要 → 取最近窗口
+    prepared = compact.prepare_history(st.session_state["messages"][:-1])
+    summary, offset = compact.maybe_compact(
+        st.session_state.get("chat_summary"),
+        st.session_state.get("summary_upto", 0),
+        prepared,
+        _make_llm_summarize(agent),
+    )
+    st.session_state["chat_summary"] = summary
+    st.session_state["summary_upto"] = offset
+    _older, recent = compact.select_recent(prepared[offset:])
+
     context = {
-        "history": list(st.session_state["messages"][:-1]),
+        "history": recent,
+        "summary": summary,
         "downloaded_assets": st.session_state.get("downloaded_assets", []),
         "last_user_input": prompt,
     }
@@ -43,10 +68,16 @@ def run_prompt(agent: Any, prompt: str) -> None:
             "analysis_type": result.get("analysis_type"),
             "params": result.get("params") or {},
             "method_context": result.get("method_context"),
+            "user_request": prompt,
+            "status": "pending",
         }
         st.session_state["awaiting_script_confirmation"] = True
         st.session_state["messages"].append(
-            {"role": "assistant", "content": _format_script_confirmation(result)}
+            {
+                "role": "assistant",
+                "content": _format_script_confirmation(result),
+                "pending_script": dict(st.session_state["pending_script"]),
+            }
         )
         # 不在此渲染：统一由 create_app 的重放 + 条件组件（单调用点）负责
         return
@@ -309,14 +340,20 @@ def _format_script_confirmation(result: dict[str, Any]) -> str:
 
 
 def _render_script_confirmation(agent: Any) -> None:
-    """渲染脚本确认按钮（脚本本体由历史消息承载，此处不重复渲染）"""
+    """渲染脚本确认按钮（脚本本体由历史消息承载，此处不重复渲染）。"""
     pending = st.session_state.pending_script
     if not pending:
         st.session_state.awaiting_script_confirmation = False
         return
-    st.info("请审阅上方脚本，确认后执行")
+    expired = pending.get("status") == "expired"
+    if expired:
+        st.warning("脚本已过期，请点击「重新生成」后再确认执行")
+    else:
+        st.info("请审阅上方脚本，确认后执行")
+
     col1, col2 = st.columns(2)
-    if col1.button("确认执行", type="primary", key="confirm_script_btn"):
+    if col1.button("确认执行", type="primary", key="confirm_script_btn",
+                   disabled=expired):
         with st.spinner("执行中..."):
             result = agent.execute_confirmed_script(
                 pending["analysis_type"],
@@ -324,18 +361,38 @@ def _render_script_confirmation(agent: Any) -> None:
                 pending["script"],
                 method_context=pending.get("method_context"),
             )
+        _set_script_status("confirmed")
         st.session_state.awaiting_script_confirmation = False
         st.session_state.pending_script = None
         _render_chat_result(result)
         st.session_state.messages.append(_build_assistant_message(result))
         st.rerun()
     if col2.button("取消", key="cancel_script_btn"):
+        _set_script_status("cancelled")
         st.session_state.awaiting_script_confirmation = False
         st.session_state.pending_script = None
         st.session_state.messages.append(
             {"role": "assistant", "content": "已取消本次脚本执行。"}
         )
         st.rerun()
+
+    if expired and st.button("重新生成", key="regen_script_btn"):
+        st.session_state.awaiting_script_confirmation = False
+        st.session_state.pending_script = None
+        # 用原用户请求触发一次重新生成
+        st.session_state["auto_prompt"] = pending.get("user_request", "")
+        st.rerun()
+
+
+def _set_script_status(status: str) -> None:
+    """把当前会话最新脚本消息状态写回存储（无会话绑定时静默跳过）。"""
+    sid = st.session_state.get("current_session_id")
+    if not isinstance(sid, str):
+        return
+    try:
+        SessionStore().set_script_status(sid, status)
+    except Exception as e:  # noqa: BLE001 - 状态落盘失败不阻断确认流程
+        st.warning(f"脚本状态落盘失败：{e}")
 
 
 def _init_session_state(store: SessionStore) -> None:

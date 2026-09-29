@@ -140,3 +140,28 @@ def test_soft_threshold_warning_shown(monkeypatch):
     assert not _exception(at), f"App raised: {at.exception}"
     warnings = [str(w.value) for w in at.warning]
     assert any("上下文已接近上限" in w for w in warnings)
+
+
+def test_v6_restore_expired_script_confirmation():
+    """重启恢复 pending 脚本 → 标记 expired 且「确认执行」禁用。"""
+    store = SessionStore()
+    sid = store.create_session("脚本会话")
+    store.append_message(sid, "user", "做差异表达")
+    store.append_message(
+        sid, "assistant", "已生成 R 脚本，请审阅",
+        pending_script={"script": "print(1)", "analysis_type": "de",
+                        "params": {}, "status": "pending"},
+    )
+
+    at = AppTest.from_string(_APP, default_timeout=30)
+    at.run()
+    assert not _exception(at), f"App raised: {at.exception}"
+
+    confirm = at.button("confirm_script_btn")
+    assert confirm.disabled is True          # 过期后禁用
+    warnings = [str(w.value) for w in at.warning]
+    assert any("脚本已过期" in w for w in warnings)
+    assert "regen_script_btn" in [b.key for b in at.button]  # 提供重新生成
+    # 库中的状态已被改为 expired
+    persisted = store.get_messages(sid)[1]["pending_script"]["status"]
+    assert persisted == "expired"
