@@ -91,3 +91,52 @@ def test_v2_switch_between_sessions():
     contents = [str(m.value) for m in at.markdown]
     expected = "问题一" if target == sid1 else "问题二"
     assert any(expected in c for c in contents)
+
+
+def test_bubble_css_and_markers_rendered():
+    """CSS 与气泡 marker 应随应用注入。"""
+    at = AppTest.from_string(_APP, default_timeout=30)
+    at.run()
+    assert not _exception(at), f"App raised: {at.exception}"
+    all_md = "\n".join(str(m.value) for m in at.markdown)
+    assert ":has(.cs-bubble-user)" in all_md
+    assert ":has(.cs-bubble-assistant)" in all_md
+    assert 'class="cs-bubble cs-bubble-user"' in all_md or "cs-bubble-user" in all_md
+
+
+def test_render_scroll_flushes_on_flag(monkeypatch):
+    """_scroll_pending 为真时应注入滚动脚本并清掉标记。"""
+    from unittest.mock import patch
+
+    from src.ui import app as app_mod
+
+    with patch("src.ui.app.st") as mock_st:
+        mock_st.session_state = {"_scroll_pending": True}
+        app_mod._render_scroll()
+    html_calls = [c for c in mock_st.html.call_args_list
+                  if "scrollTo" in str(c)]
+    assert html_calls, "应注入滚动脚本"
+    assert "_scroll_pending" not in mock_st.session_state  # 已 pop
+
+
+def test_render_scroll_noop_without_flag():
+    from unittest.mock import patch
+
+    from src.ui import app as app_mod
+
+    with patch("src.ui.app.st") as mock_st:
+        mock_st.session_state = {}
+        app_mod._render_scroll()
+    mock_st.html.assert_not_called()
+
+
+def test_soft_threshold_warning_shown(monkeypatch):
+    """超过软阈值时应用显示警告（经模块属性 patch 生效）。"""
+    from src.control import compact as compact_mod
+
+    monkeypatch.setattr(compact_mod, "SOFT_TRIGGER", 1)
+    at = AppTest.from_string(_APP, default_timeout=30)
+    at.run()
+    assert not _exception(at), f"App raised: {at.exception}"
+    warnings = [str(w.value) for w in at.warning]
+    assert any("上下文已接近上限" in w for w in warnings)

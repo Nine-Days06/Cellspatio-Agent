@@ -65,6 +65,66 @@ def run_prompt(agent: Any, prompt: str) -> None:
     st.session_state["messages"].append(_build_assistant_message(result))
 
 
+_BUBBLE_CSS = """
+<style>
+div[data-testid="stChatMessage"]:has(.cs-bubble-user) {
+    background: #2563eb;
+    border-radius: 4px 16px 16px 4px;
+    padding: 8px 14px;
+    align-self: flex-end;
+    margin-left: auto;
+    max-width: 80%;
+}
+div[data-testid="stChatMessage"]:has(.cs-bubble-user) p,
+div[data-testid="stChatMessage"]:has(.cs-bubble-user) li {
+    color: #ffffff;
+}
+div[data-testid="stChatMessage"]:has(.cs-bubble-assistant) {
+    background: #e9eaed;
+    border-radius: 16px 4px 4px 16px;
+    padding: 8px 14px;
+    align-self: flex-start;
+    margin-right: auto;
+    max-width: 80%;
+}
+.cs-bubble { display: none; }
+p:has(> .cs-bubble) { display: none; }
+</style>
+"""
+
+
+def _render_bubble(message: dict[str, Any], idx: int) -> None:
+    """按角色渲染左右气泡；results 在列外全宽渲染。"""
+    role = message.get("role", "assistant")
+    marker = f'<span class="cs-bubble cs-bubble-{role}"></span>'
+    if role == "user":
+        cols = st.columns([1, 4])
+        target = cols[1]
+    else:
+        cols = st.columns([4, 1])
+        target = cols[0]
+    with target, st.chat_message(role):
+        st.html(marker, unsafe_allow_javascript=True)
+        st.markdown(message.get("content") or "")
+    # 图表/统计在列外，保持全宽
+    if message.get("results"):
+        render_analysis_results(message["results"], key_prefix=f"hist_{idx}_")
+
+
+def _render_scroll() -> None:
+    """有待滚动标记时注入一次性滚动脚本（st.html 安全执行）。"""
+    if not st.session_state.pop("_scroll_pending", False):
+        return
+    st.html(
+        "<script>"
+        "const c = parent.document.querySelector('[data-testid=\"stChatMessage\"]');"
+        "if (c) { c.scrollIntoView({block: 'end'}); }"
+        "window.scrollTo(0, document.body.scrollHeight);"
+        "</script>",
+        unsafe_allow_javascript=True,
+    )
+
+
 def create_app(agent: Any):
     """创建 Streamlit 应用"""
     store = _get_store()
@@ -106,12 +166,12 @@ def create_app(agent: Any):
                 st.error(f"知识库状态获取失败: {e}")
         st.json(st.session_state.kb_stats)
 
+    # 气泡样式（一次注入）
+    st.markdown(_BUBBLE_CSS, unsafe_allow_html=True)
+
     # 显示聊天历史（带分析结果的消息在重放时重新渲染图表）
-    for idx, message in enumerate(st.session_state.messages):
-        with st.chat_message(message["role"]):
-            st.markdown(message["content"])
-            if message.get("results"):
-                render_analysis_results(message["results"], key_prefix=f"hist_{idx}_")
+    for idx, message in enumerate(st.session_state["messages"]):
+        _render_bubble(message, idx)
 
     # 候选选择器（在聊天输入之前渲染，避免重复渲染问题）
     if st.session_state.get("awaiting_confirmation"):
@@ -137,6 +197,8 @@ def create_app(agent: Any):
     if prompt := st.chat_input("请输入您的问题或分析需求"):
         run_prompt(agent, prompt)
         st.rerun()
+
+    _render_scroll()
 
 
 def _render_candidate_selector(agent: Any):
