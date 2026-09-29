@@ -171,7 +171,9 @@ def test_abort_on_tool_status_start_skips_dispatch():
 
 
 def test_tool_status_end_emit_result_is_ignored():
-    """phase=end 的 emit 返回值被忽略：工作照常进入下一轮（已产出工具结果不能丢）。"""
+    """phase=end 的 emit 返回值被忽略：工作照常进入下一轮（已产出工具结果不能丢）。
+    注意：delta 事件也会推给同一回调，断言仅过滤 tool_status 类型。
+    """
     class EndOnlySink(EventSink):
         def __call__(self, event: dict) -> bool:
             self.events.append(event)
@@ -189,7 +191,7 @@ def test_tool_status_end_emit_result_is_ignored():
 
     assert wm.calls == [("query_knowledge", {"query": "y"})]
     assert result["message"] == "答"
-    assert [e.get("phase") for e in sink.events] == ["start", "end"]
+    assert [e.get("phase") for e in sink.events if e.get("type") == "tool_status"] == ["start", "end"]
 
 
 def test_stream_ignores_chunks_without_choices():
