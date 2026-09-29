@@ -107,7 +107,7 @@ div[data-testid="stChatMessage"]:has(.cs-bubble-user) {
     max-width: 80%;
 }
 div[data-testid="stChatMessage"]:has(.cs-bubble-user) p,
-div[data-testid="stChatMessage"]:has(.cs-bubble-user") li {
+div[data-testid="stChatMessage"]:has(.cs-bubble-user) li {
     color: #ffffff;
 }
 div[data-testid="stChatMessage"]:has(.cs-bubble-assistant) {
