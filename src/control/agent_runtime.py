@@ -11,6 +11,8 @@ from __future__ import annotations
 
 import json
 import logging
+from collections.abc import Callable
+from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any
 
 from src.control.tools import SYSTEM_PROMPT, TERMINAL_STATUSES, TOOL_SCHEMAS
@@ -21,6 +23,14 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 MAX_ROUNDS = 3
+
+# 协作式中止返回体。aborted 刻意不进 TERMINAL_STATUSES（src/control/tools.py:19），
+# 由 chat_service 特判落库为「（已中断）」。
+ABORTED_RESULT: dict[str, Any] = {
+    "status": "aborted",
+    "type": "general_response",
+    "message": "已中断",
+}
 
 
 class AgentRuntime:
@@ -33,7 +43,14 @@ class AgentRuntime:
         self.workflow_manager = workflow_manager
         self.router = router  # 分类/最佳实践提示注入
 
-    def execute(self, user_input: str, context: dict[str, Any] | None = None) -> dict[str, Any]:
+    def execute(self, user_input: str, context: dict[str, Any] | None = None,
+                on_event: Callable[[dict], bool] | None = None) -> dict[str, Any]:
+        """执行一轮 tool-calling。
+
+        on_event 为 None 时与改造前逐字节等价（create 不带 stream 键）。
+        非 None 时走流式：逐 chunk 推 delta / tool_status；回调返回 False 视为
+        客户端已断开，在下一个检查点（delta 之后、dispatch 之前）安全中止。
+        """
         context = dict(context) if context else {}
         context.setdefault("last_user_input", user_input)
 
@@ -44,15 +61,20 @@ class AgentRuntime:
         messages = self._build_messages(user_input, context, hint=hint)
         try:
             for _ in range(MAX_ROUNDS):
-                response = self.llm_client.chat.completions.create(
-                    model=self.model,
-                    messages=messages,
-                    tools=TOOL_SCHEMAS,
-                    temperature=0,
-                    tool_choice="auto",
-                )
-                message = response.choices[0].message
-                tool_calls = getattr(message, "tool_calls", None)
+                if on_event is None:
+                    response = self.llm_client.chat.completions.create(
+                        model=self.model,
+                        messages=messages,
+                        tools=TOOL_SCHEMAS,
+                        temperature=0,
+                        tool_choice="auto",
+                    )
+                    message = response.choices[0].message
+                    tool_calls = getattr(message, "tool_calls", None)
+                else:
+                    message, tool_calls, aborted = self._stream_round(messages, on_event)
+                    if aborted:
+                        return dict(ABORTED_RESULT)
 
                 if not tool_calls:
                     content = message.content or ""
@@ -62,11 +84,26 @@ class AgentRuntime:
                         "message": content or "请尝试更具体的分析或知识问题。",
                     }
 
-                # Phase 1 contract: execute ONLY first tool, HITL/terminal returns immediately
+                # 一期契约：只执行第一个工具；命中终态或需人工确认时立即返回
+                name = tool_calls[0].function.name
+                if on_event is not None and not on_event(
+                    {"type": "tool_status", "name": name, "phase": "start"}
+                ):
+                    return dict(ABORTED_RESULT)
                 result = self._dispatch(tool_calls[0], user_input, context)
                 status = result.get("status")
-                if status in TERMINAL_STATUSES:
-                    return result
+
+                # 非流式：所有 TERMINAL_STATUSES 即刻返回（保持原有行为）
+                # 流式：仅 success/error/needs_confirmation/needs_script_confirmation 为终态；
+                # needs_input/no_results 需让 LLM 再跑一轮生成面向用户的回复
+                if on_event is None:
+                    if status in TERMINAL_STATUSES:
+                        return result
+                else:
+                    if status in ("success", "error", "needs_confirmation", "needs_script_confirmation"):
+                        return result
+                    # 流式下需输入/无结果：发 end 事件并继续下一轮
+                    on_event({"type": "tool_status", "name": name, "phase": "end"})
 
                 messages = messages + [
                     self._tool_message_dict(message, tool_calls[0]),
@@ -81,9 +118,66 @@ class AgentRuntime:
                 "type": "general_response",
                 "message": f"已达最大工具调用轮数（{MAX_ROUNDS}），请简化请求后重试。",
             }
-        except Exception as e:  # noqa: BLE001 - SDK/network failure falls back to legacy
+        except Exception as e:  # noqa: BLE001 - SDK/网络异常一律回退旧工作流
             logger.warning("tool-calling failed, fallback to legacy workflow: %s", e)
             return self.workflow_manager.execute_workflow(user_input, context)
+
+    def _stream_round(
+        self, messages: list[dict[str, Any]], on_event: Callable[[dict], bool]
+    ) -> tuple[Any, list | None, bool]:
+        """流式跑一轮 LLM 调用。
+
+        返回 (message, tool_calls, aborted)：message 为
+        SimpleNamespace(content=..., tool_calls=[...])，形状与 SDK 非流式返回一致，
+        可直接喂给既有 _dispatch / _tool_message_dict；aborted=True 时调用方须立即返回。
+        """
+        stream = self.llm_client.chat.completions.create(
+            model=self.model,
+            messages=messages,
+            tools=TOOL_SCHEMAS,
+            temperature=0,
+            tool_choice="auto",
+            stream=True,
+        )
+        content_parts: list[str] = []
+        slots: dict[int, dict[str, Any]] = {}
+        for chunk in stream:
+            choices = getattr(chunk, "choices", None) or []
+            if not choices:
+                continue  # usage-only chunk
+            delta = choices[0].delta
+            piece = getattr(delta, "content", None)
+            if piece:
+                content_parts.append(piece)
+                if not on_event({"type": "delta", "text": piece}):
+                    return None, None, True
+            for call in getattr(delta, "tool_calls", None) or []:
+                slot = slots.setdefault(
+                    getattr(call, "index", 0) or 0,
+                    {"id": None, "name": "", "arguments": ""},
+                )
+                if getattr(call, "id", None):
+                    slot["id"] = call.id
+                function = getattr(call, "function", None)
+                if function is not None:
+                    if getattr(function, "name", None):
+                        slot["name"] = function.name
+                    if getattr(function, "arguments", None):
+                        slot["arguments"] += function.arguments
+
+        tool_calls = [
+            SimpleNamespace(
+                id=slot["id"],
+                type="function",
+                function=SimpleNamespace(name=slot["name"], arguments=slot["arguments"]),
+            )
+            for _index, slot in sorted(slots.items())
+        ]
+        message = SimpleNamespace(
+            content="".join(content_parts),
+            tool_calls=tool_calls or None,
+        )
+        return message, tool_calls or None, False
 
     def _route_hint(self, user_input: str) -> dict[str, Any] | None:
         """调用 ModalRouter.hint；无 router 或失败时返回 None（不阻断主流程）。"""
