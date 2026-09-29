@@ -23,6 +23,7 @@ def create_app(agent: Any) -> FastAPI:
     app = FastAPI(title="CellSpatio API")
     app.state.agent = agent
     app.include_router(routes_sessions.router)
+    # router 必须先于 StaticFiles 挂载，否则 /api/* 会被 SPA 回退拦截
     if _WEB_DIST.is_dir():
         app.mount("/", StaticFiles(directory=_WEB_DIST, html=True))
     return app

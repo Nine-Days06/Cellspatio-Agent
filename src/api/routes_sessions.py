@@ -90,5 +90,6 @@ def _restore_pending(store: SessionStore, session_id: str,
                 "user_request": pending.get("user_request", ""),
                 "status": "expired",
             }
+        # 只看最新一条 pending_script，更早的不再考虑
         return None
     return None

@@ -177,13 +177,13 @@ def test_create_app_mounts_web_dist_only_when_present(monkeypatch, tmp_path):
     app = create_app(FakeAgent())
 
     assert app.state.agent is not None
-    # include_router 后路由在 _IncludedRouter.effective_candidates() 中
+    # 使用公开 API：遍历 app.router.routes，对于 _IncludedRouter 取 original_router.routes
     def _collect_paths(app_):
         paths = set()
-        for r in app_.routes:
-            if hasattr(r, "effective_candidates"):
-                for c in r.effective_candidates():
-                    paths.add(c.path_format)
+        for r in app_.router.routes:
+            if hasattr(r, "original_router"):
+                for sub in r.original_router.routes:
+                    paths.add(getattr(sub, "path_format", getattr(sub, "path", "")))
             else:
                 paths.add(getattr(r, "path_format", getattr(r, "path", "")))
         return paths
