@@ -32,6 +32,13 @@ ABORTED_RESULT: dict[str, Any] = {
     "message": "已中断",
 }
 
+# 流式模式下的终态集合：仅 success/error/needs_confirmation/needs_script_confirmation 即刻返回。
+# needs_input/no_results 在流式下需让 LLM 再跑一轮生成面向用户的回复，故不在此集合中。
+# 与 TERMINAL_STATUSES (src/control/tools.py) 的区别：后者包含所有终态，用于非流式路径。
+STREAM_TERMINAL_STATUSES: frozenset[str] = frozenset(
+    {"success", "error", "needs_confirmation", "needs_script_confirmation"}
+)
+
 
 class AgentRuntime:
     """LLM tool loop; workflow_manager provides *_for_agent execution face."""
@@ -94,13 +101,13 @@ class AgentRuntime:
                 status = result.get("status")
 
                 # 非流式：所有 TERMINAL_STATUSES 即刻返回（保持原有行为）
-                # 流式：仅 success/error/needs_confirmation/needs_script_confirmation 为终态；
+                # 流式：仅 STREAM_TERMINAL_STATUSES 为终态；
                 # needs_input/no_results 需让 LLM 再跑一轮生成面向用户的回复
                 if on_event is None:
                     if status in TERMINAL_STATUSES:
                         return result
                 else:
-                    if status in ("success", "error", "needs_confirmation", "needs_script_confirmation"):
+                    if status in STREAM_TERMINAL_STATUSES:
                         return result
                     # 流式下需输入/无结果：发 end 事件并继续下一轮
                     on_event({"type": "tool_status", "name": name, "phase": "end"})
@@ -141,6 +148,7 @@ class AgentRuntime:
         )
         content_parts: list[str] = []
         slots: dict[int, dict[str, Any]] = {}
+        current_slot: int | None = None  # 追踪当前正在累积的槽位（用于无 index 的 chunk）
         for chunk in stream:
             choices = getattr(chunk, "choices", None) or []
             if not choices:
@@ -152,8 +160,16 @@ class AgentRuntime:
                 if not on_event({"type": "delta", "text": piece}):
                     return None, None, True
             for call in getattr(delta, "tool_calls", None) or []:
+                # 防御性处理 index：OpenAI/Zhipu 兼容协议保证 tool_call chunk 恒带 index，
+                # 但为兼容潜在异常 SDK，若缺失则沿用当前槽位，无当前槽则归入槽 0。
+                raw_index = getattr(call, "index", None)
+                if raw_index is not None:
+                    slot_index = raw_index
+                    current_slot = slot_index
+                else:
+                    slot_index = current_slot if current_slot is not None else 0
                 slot = slots.setdefault(
-                    getattr(call, "index", 0) or 0,
+                    slot_index,
                     {"id": None, "name": "", "arguments": ""},
                 )
                 if getattr(call, "id", None):

@@ -23,6 +23,17 @@ def _tool_chunk(index: int, call_id: str = "", name: str = "", arguments: str = 
     )
 
 
+def _tool_chunk_no_index(call_id: str = "", name: str = "", arguments: str = "") -> SimpleNamespace:
+    """工具调用 chunk 但不带 index 字段（模拟某些 SDK 可能省略的情况）。"""
+    call = SimpleNamespace(
+        id=call_id or None,
+        function=SimpleNamespace(name=name or None, arguments=arguments or None),
+    )
+    return SimpleNamespace(
+        choices=[SimpleNamespace(delta=SimpleNamespace(content=None, tool_calls=[call]))]
+    )
+
+
 class FakeStreamLLM:
     """流式桩：每轮按脚本产出 chunk 迭代器，记录每次 create 的 kwargs。"""
 
@@ -242,3 +253,44 @@ def test_stream_rounds_capped_at_max_rounds():
     assert result["status"] == "error"
     assert "已达最大工具调用轮数" in result["message"]
     assert len(llm.calls) == MAX_ROUNDS
+
+
+def test_stream_tool_calls_accumulate_with_missing_index():
+    """工具调用 chunk 缺失 index 时，按顺序归入当前槽或新建槽，不串槽。
+
+    场景：首个 chunk 无 index，后续 chunk 有 index=0；或多个工具调用混合且部分无 index。
+    语义：无 index 的 chunk 归入当前正在累积的槽（按出现顺序），若无当前槽则归入槽 0。
+    """
+    # 情况 1：首个 chunk 无 index，后续 chunk 有 index=0 —— 应归入同一槽
+    llm = FakeStreamLLM([
+        [
+            _tool_chunk_no_index("call_1", "query_knowledge", '{"que'),
+            _tool_chunk(0, arguments='ry": "TP53"}'),
+        ],
+        [_text_chunk("抑癌基因")],
+    ])
+    wm = FakeWM({"query_knowledge": {"status": "needs_input", "message": "缺输入"}})
+    runtime, _ = _runtime(llm, wm)
+
+    result = runtime.execute("问", on_event=EventSink())
+
+    assert wm.calls == [("query_knowledge", {"query": "TP53"})]
+    assert result["message"] == "抑癌基因"
+
+    # 情况 2：单工具调用，所有 chunk 均无 index —— 应归入槽 0，arguments 拼接
+    # 模拟真实协议：arguments 分块传输，而非重复
+    llm2 = FakeStreamLLM([
+        [
+            _tool_chunk_no_index("call_a", "query_knowledge", '{"query": "'),
+            _tool_chunk_no_index(arguments='TP53"}'),
+        ],
+        [_text_chunk("done")],
+    ])
+    wm2 = FakeWM({"query_knowledge": {"status": "needs_input", "message": "缺输入"}})
+    runtime2, _ = _runtime(llm2, wm2)
+
+    result2 = runtime2.execute("问", on_event=EventSink())
+
+    # 两个 chunk 合并为一个工具调用，arguments 拼接为完整 JSON
+    assert wm2.calls == [("query_knowledge", {"query": "TP53"})]
+    assert result2["message"] == "done"
