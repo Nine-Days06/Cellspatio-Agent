@@ -65,6 +65,7 @@ def run_prompt(agent: Any, prompt: str) -> None:
     st.session_state["messages"].append(_build_assistant_message(result))
 
 
+# :has() 选择器依赖 Streamlit 1.64 的 stChatMessage DOM 结构，升级 Streamlit 时需复验
 _BUBBLE_CSS = """
 <style>
 div[data-testid="stChatMessage"]:has(.cs-bubble-user) {
@@ -117,7 +118,7 @@ def _render_scroll() -> None:
         return
     st.html(
         "<script>"
-        "const c = parent.document.querySelector('[data-testid=\"stChatMessage\"]');"
+        "const cs = parent.document.querySelectorAll('[data-testid=\"stChatMessage\"]'); const c = cs[cs.length - 1];"
         "if (c) { c.scrollIntoView({block: 'end'}); }"
         "window.scrollTo(0, document.body.scrollHeight);"
         "</script>",
