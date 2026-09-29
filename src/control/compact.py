@@ -147,7 +147,12 @@ def maybe_compact(summary: str | None, offset: int, prepared: list[dict],
     if not new_summary or not str(new_summary).strip():
         logger.warning("会话摘要结果为空，降级为硬截断")
         return summary, _hard_trim(summary, offset, prepared, system)
-    return str(new_summary).strip(), offset + len(older)
+    final = str(new_summary).strip()
+    logger.info(
+        "上下文已压缩：摘要 %d 条消息，摘要长度 %d 字符，offset %d → %d",
+        len(older), len(final), offset, offset + len(older),
+    )
+    return final, offset + len(older)
 
 
 def _hard_trim(summary: str | None, offset: int, prepared: list[dict],
