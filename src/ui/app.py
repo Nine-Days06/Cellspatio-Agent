@@ -11,6 +11,18 @@ if str(_root) not in sys.path:
     sys.path.insert(0, str(_root))
 
 from src.control import compact
+from src.control.chat_messages import (
+    build_assistant_message as _build_assistant_message,
+)
+from src.control.chat_messages import (
+    format_script_confirmation as _format_script_confirmation,
+)
+from src.control.chat_messages import (
+    make_llm_summarize as _make_llm_summarize,
+)
+from src.control.chat_messages import (
+    summarize_result as _summarize_result,
+)
 from src.ui.components import render_analysis_results, render_starter_presets
 from src.ui.session_store import SessionStore
 
@@ -18,19 +30,6 @@ from src.ui.session_store import SessionStore
 def _get_store() -> SessionStore:
     """每次新建会话存储（短连接模型，无缓存必要）。"""
     return SessionStore()
-
-
-def _make_llm_summarize(agent: Any):
-    """按 agent 的 LLM 客户端构造摘要调用器；无客户端时返回 None（跳过压缩）。"""
-    client = getattr(agent, "llm_client", None)
-    if client is None:
-        return None
-    model = getattr(agent, "llm_model", "") or ""
-
-    def _summarize(prior, older):
-        return compact.summarize(client, model, prior, older)
-
-    return _summarize
 
 
 def run_prompt(agent: Any, prompt: str) -> None:
@@ -108,7 +107,7 @@ div[data-testid="stChatMessage"]:has(.cs-bubble-user) {
     max-width: 80%;
 }
 div[data-testid="stChatMessage"]:has(.cs-bubble-user) p,
-div[data-testid="stChatMessage"]:has(.cs-bubble-user) li {
+div[data-testid="stChatMessage"]:has(.cs-bubble-user") li {
     color: #ffffff;
 }
 div[data-testid="stChatMessage"]:has(.cs-bubble-assistant) {
@@ -285,43 +284,6 @@ def _render_candidate_selector(agent: Any):
             st.rerun()
 
 
-def _summarize_result(result: dict[str, Any]) -> tuple[str, list[dict[str, Any]]]:
-    """结果 → (聊天文本, 引用列表)。当次渲染与历史落盘共用，保证文本一致。"""
-    references: list[dict[str, Any]] = []
-    if result.get("type") == "knowledge_response":
-        response = result.get("response", "无响应")
-        references = list(result.get("references") or [])
-    elif result.get("type") == "fetch_result":
-        asset = result.get("asset", {})
-        response = f"已下载 {asset.get('asset_id')} → `{asset.get('access_path')}`"
-    elif result.get("results"):
-        response = f"分析完成: {result.get('message', '')}"
-        if result.get("capsule_dir"):
-            response += f"\n\n复现胶囊：`{result['capsule_dir']}`"
-    else:
-        response = result.get("message", "处理完成")
-    explanation = result.get("explanation")
-    if explanation:
-        response = f"{response}\n\n---\n**结果解读**\n\n{explanation}"
-    if references:
-        from src.knowledge.lightrag_client import format_reference
-
-        lines = "\n".join(f"- {format_reference(r)}" for r in references)
-        response = f"{response}\n\n**来源**\n{lines}"
-    return response, references
-
-
-def _build_assistant_message(result: dict[str, Any]) -> dict[str, Any]:
-    """构造 assistant 历史消息；含分析结果时附加 results 供重放渲染"""
-    msg: dict[str, Any] = {
-        "role": "assistant",
-        "content": _summarize_result(result)[0],
-    }
-    if result.get("results"):
-        msg["results"] = result["results"]
-    return msg
-
-
 def _render_chat_result(result: dict[str, Any]) -> None:
     """按结果类型渲染聊天回复（文本与历史落盘同源，含来源段）"""
     content, _references = _summarize_result(result)
@@ -329,14 +291,6 @@ def _render_chat_result(result: dict[str, Any]) -> None:
         st.markdown(content)
         if result.get("results"):
             render_analysis_results(result["results"])
-
-
-def _format_script_confirmation(result: dict[str, Any]) -> str:
-    """将脚本确认结果格式化为聊天消息文本"""
-    return (
-        f"{result.get('message', '已生成 R 脚本，请审阅并确认执行')}\n\n"
-        f"```r\n{result.get('script', '')}\n```"
-    )
 
 
 def _render_script_confirmation(agent: Any) -> None:
