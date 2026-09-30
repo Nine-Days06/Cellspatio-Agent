@@ -23,6 +23,13 @@ class StubKB:
         return self._stats
 
 
+class StubKBReturningNone:
+    """get_statistics 返回 None（非 dict）的桩：验证 isinstance 守卫。"""
+
+    def get_statistics(self):
+        return None
+
+
 class StubExecutor:
     """最小 r_executor 替身：只提供 _resolve_rscript，可返回路径、空值或抛错。"""
 
@@ -80,6 +87,20 @@ def test_sidebar_degrades_when_knowledge_client_raises(tmp_path):
     assert body["env"]["kb_ok"] is False
 
 
+def test_sidebar_degrades_when_stats_not_dict():
+    """Minor#3：get_statistics 返回非 dict 时仍返回合法形状，不给前端 null。"""
+    agent = FakeAgent()
+    agent.knowledge_client = StubKBReturningNone()
+    agent.r_executor = StubExecutor("Rscript-not-installed-on-this-machine")
+    agent.config = {}
+
+    response = _client(agent).get("/api/sidebar")
+
+    assert response.status_code == 200
+    kb_stats = response.json()["kb_stats"]
+    assert kb_stats["initialized"] is False
+
+
 def test_sidebar_degrades_when_rscript_probe_raises(monkeypatch):
     agent = FakeAgent()
     agent.knowledge_client = StubKB()
@@ -103,6 +124,43 @@ def test_sidebar_falls_back_to_which_rscript(monkeypatch):
     body = _client(agent).get("/api/sidebar").json()
 
     assert body["env"]["rscript"] == "C:/R/bin/Rscript.exe"
+
+
+def test_sidebar_degrades_when_config_is_none(monkeypatch, tmp_path):
+    """Important#1：agent.config 为 None 不得 500，kb_path 落到合理默认值。"""
+    agent = FakeAgent()
+    agent.knowledge_client = StubKB()
+    agent.r_executor = StubExecutor(None)
+    agent.config = None
+    # 仓库根存在 knowledge_base/，切到空目录保证默认相对路径必然不存在
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr("shutil.which", lambda name: None)
+
+    response = TestClient(create_app(agent), raise_server_exceptions=False).get("/api/sidebar")
+
+    assert response.status_code == 200
+    env = response.json()["env"]
+    assert env["kb_path"] == "./knowledge_base"
+    assert env["kb_ok"] is False
+    assert env["rscript"] is None
+
+
+def test_sidebar_degrades_when_config_attribute_missing(monkeypatch, tmp_path):
+    """Important#1：agent 无 config 属性同样不得 500。"""
+    agent = FakeAgent()
+    agent.knowledge_client = StubKB()
+    agent.r_executor = StubExecutor(None)
+    delattr(agent, "config")
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr("shutil.which", lambda name: None)
+
+    response = TestClient(create_app(agent), raise_server_exceptions=False).get("/api/sidebar")
+
+    assert response.status_code == 200
+    env = response.json()["env"]
+    assert env["kb_path"] == "./knowledge_base"
+    assert env["kb_ok"] is False
+    assert env["rscript"] is None
 
 
 def test_sidebar_soft_warn_uses_session_context(monkeypatch):
@@ -141,14 +199,26 @@ def test_main_module_targets_port_8600():
 
 
 def test_open_browser_later_never_raises(monkeypatch):
+    """线程内 webbrowser.open 抛错必须被吞掉：不得留下未处理线程异常。
+
+    只断言「调用方不抛」是空洞的——线程内异常走 threading.excepthook，
+    不影响调用方；这里用 excepthook 捕获，真正感知线程内异常是否发生。
+    """
     module = importlib.import_module("src.api.__main__")
 
     def boom(url):
         raise RuntimeError("no browser")
 
     monkeypatch.setattr(module.webbrowser, "open", boom)
+    unhandled: list[BaseException] = []
+    monkeypatch.setattr(
+        threading, "excepthook", lambda args: unhandled.append(args.exc_value)
+    )
+
     module._open_browser_later("http://127.0.0.1:8600", delay=0)
 
     for thread in threading.enumerate():
         if thread.name == "open-browser":
             thread.join(timeout=2)
+
+    assert unhandled == []
