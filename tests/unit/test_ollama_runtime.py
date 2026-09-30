@@ -321,8 +321,8 @@ def test_ensure_ready_retries_pull_when_model_still_missing(monkeypatch):
     calls: list[list[str]] = []
     probes = [
         None, {"models": []}, {"models": []},   # 第一轮：启动 → 轮询 → 缺模型 → pull 失败
-        {"models": []},                          # 第二轮：探活成功（模型仍缺）
-        {"models": []},                          # 第二轮：模型检查 → 再 pull（仍失败）
+        {"models": []},                          # 第二轮：探活成功（模型仍缺）；该结果直接
+        #                                              复用给 _ensure_model，不再发第二次 GET
     ]
 
     monkeypatch.setattr(rt, "_which", lambda name: "ollama")
@@ -390,3 +390,98 @@ def test_terminate_owned_kills_when_terminate_raises():
 
     assert proc.killed is True
     assert rt.status() == {"state": "stopped", "managed": False, "detail": ""}
+
+
+def test_touch_updates_last_used(monkeypatch):
+    clock = {"t": 100.0}
+    monkeypatch.setattr(rt, "_monotonic", lambda: clock["t"])
+    rt.touch()
+    assert rt._last_used == 100.0
+    clock["t"] = 130.0
+    rt.touch()
+    assert rt._last_used == 130.0
+
+
+def test_maybe_reap_closes_managed_process_when_idle(monkeypatch):
+    """空闲超阈值且是自己启动的 → terminate。"""
+    proc = FakeProc(["ollama", "serve"])
+    monkeypatch.setattr(rt, "_idle_seconds", lambda: 600.0)
+    monkeypatch.setattr(rt, "_monotonic", lambda: 1000.0)
+    rt._last_used = 1000.0 - 601        # 已空闲 601 秒
+    rt._proc = proc
+    rt._managed = True
+
+    assert rt.maybe_reap() is True
+    assert proc.terminated is True
+    assert rt.status() == {"state": "stopped", "managed": False, "detail": ""}
+
+
+def test_maybe_reap_never_closes_external_instance(monkeypatch):
+    """外部实例（managed=False）即便空闲也不关。"""
+    proc = FakeProc(["ollama", "serve"])
+    monkeypatch.setattr(rt, "_idle_seconds", lambda: 1.0)
+    monkeypatch.setattr(rt, "_monotonic", lambda: 1000.0)
+    rt._last_used = 0.0
+    rt._proc = proc
+    rt._managed = False
+
+    assert rt.maybe_reap() is False
+    assert proc.terminated is False
+    assert proc.killed is False
+
+
+def test_maybe_reap_respects_zero_idle_minutes(monkeypatch):
+    """阈值为 0（不自动关闭）时永不关闭。"""
+    proc = FakeProc(["ollama", "serve"])
+    monkeypatch.setattr(rt, "_idle_seconds", lambda: 0.0)
+    rt._last_used = 0.0
+    rt._proc = proc
+    rt._managed = True
+
+    assert rt.maybe_reap() is False
+    assert proc.terminated is False
+
+
+def test_shutdown_if_managed_only_terminates_owned_process(monkeypatch):
+    """退出钩子：自有进程 terminate，外部进程不动。"""
+    owned = FakeProc(["ollama", "serve"])
+    external = FakeProc(["ollama", "serve"])
+    rt._proc = owned
+    rt._managed = True
+    rt.shutdown_if_managed()
+    assert owned.terminated is True
+
+    rt._proc = external
+    rt._managed = False
+    rt.shutdown_if_managed()
+    assert external.terminated is False
+
+
+def test_ensure_reaper_skipped_when_idle_minutes_zero():
+    """阈值为 0 时不创建回收线程（避免常驻线程空转）。"""
+    rt._reaper_started = False
+    rt._ensure_reaper()
+    assert rt._reaper_started is False
+
+
+def test_ensure_reaper_starts_thread_once(monkeypatch):
+    """阈值为正时创建一次 daemon 回收线程。"""
+    started: list[str] = []
+
+    class FakeThread:
+        def __init__(self, target, name, daemon):
+            started.append(name)
+            self.target = target
+            self.daemon = daemon
+
+        def start(self):
+            started.append("started")
+
+    monkeypatch.setattr(rt.threading, "Thread", FakeThread)
+    monkeypatch.setattr(rt, "_idle_seconds", lambda: 600.0)
+    rt._reaper_started = False
+    rt._ensure_reaper()
+    rt._ensure_reaper()          # 第二次不应重复创建
+
+    assert started == ["ollama-reaper", "started"]
+    assert rt._reaper_started is True

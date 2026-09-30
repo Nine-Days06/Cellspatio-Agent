@@ -10,7 +10,7 @@ embedding 唯一后端是本地 Ollama（见 llm_factory.build_embedding_func）
 """
 from __future__ import annotations
 
-import atexit  # noqa: F401 - T3 才会调用 atexit.register(shutdown_if_managed)，提前保留 import
+import atexit
 import json
 import logging
 import os
@@ -198,15 +198,22 @@ def _has_model(tags: dict[str, Any] | None) -> bool:
     return False
 
 
-def _ensure_model(host: str, exe: str, flags: int) -> bool:
+def _ensure_model(
+    host: str, exe: str, flags: int, tags: dict[str, Any] | None = None
+) -> bool:
     """确保所需 embedding 模型已就位；缺失则 `ollama pull`。
 
     返回是否具备模型。pull 的**退出码必须校验**——模型不存在等场景
     `ollama pull` 只写 stderr 并 exit=1、不抛异常，不查 rc 会误标 ready。
     失败只转 failed 状态 + 日志（硬约束 2），不抛给调用方。
+
+    `tags` 用于复用调用方**刚探到**的 /api/tags 结果：managed 分支上一步
+    探活已经拿到同一份数据，再探一次纯属多一次 HTTP 往返（模型列表不小）。
+    传 None（默认）表示没现成结果，需要自己探。
     """
     global _state, _detail
-    tags = _probe(host, PROBE_TIMEOUT)
+    if tags is None:
+        tags = _probe(host, PROBE_TIMEOUT)
     if _has_model(tags):
         return True
     with _state_lock:
@@ -254,8 +261,16 @@ def ensure_ready() -> None:
                 exe = _find_exe()
                 if exe is not None:
                     flags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
-                    if not _ensure_model(host, exe, flags):
+                    # 复用上面探活拿到的 tags，少一次 GET /api/tags
+                    if not _ensure_model(host, exe, flags, tags=tags):
                         return  # _ensure_model 已置 failed，不得覆盖成 ready
+                else:
+                    # 进程在跑但找不到 exe → 无法确认模型是否就位；不能静默标
+                    # ready（模型仍缺却报可用，用户会在下游才炸）
+                    with _state_lock:
+                        _state, _detail = "failed", "未找到 ollama 可执行文件，无法确认模型"
+                    logger.warning("ollama executable not found; cannot verify embedding model")
+                    return
             with _state_lock:
                 first_sight = not _managed and _state != "ready"
                 _state, _detail = "ready", ""
@@ -332,6 +347,7 @@ def ensure_ready() -> None:
         with _used_lock:
             _last_used = _monotonic()
         logger.info("ollama ready (managed)")
+        _ensure_reaper()          # 自启的进程才可能需要空闲回收，外部实例不建线程
 
 
 def reset_for_tests() -> None:
@@ -345,3 +361,66 @@ def reset_for_tests() -> None:
         _reaper_started = False
     with _used_lock:
         _last_used = 0.0
+
+
+def touch() -> None:
+    """标记最近一次 embedding 使用，供空闲回收判定。"""
+    global _last_used
+    with _used_lock:
+        _last_used = _monotonic()
+
+
+def maybe_reap() -> bool:
+    """空闲超过阈值且进程由本应用启动 → 关闭它。返回是否执行了关闭。
+
+    锁纪律：先取 `_start_lock` 再判定/关闭——避免在 `ensure_ready` 的
+    spawn/`_wait_ready` 进行中把刚起一半的进程回收（锁序 start→state，
+    与 `ensure_ready` 一致，无死锁）；判定与状态写入各自短持 `_state_lock`；
+    `_terminate_owned()` 必须在 `_state_lock` 锁外调用（它自行锁内摘账，
+    而 threading.Lock 不可重入）。
+    """
+    global _state, _detail
+    with _start_lock:
+        with _used_lock:
+            idle = _monotonic() - _last_used
+        limit = _idle_seconds()
+        if limit <= 0 or idle < limit:
+            return False
+        with _state_lock:
+            # 硬约束 1：只关自己启动的进程，外部实例（用户自己起的）一律放过
+            if not _managed:
+                return False
+            _state, _detail = "idle", f"空闲 {int(idle // 60)} 分钟，准备关闭"
+        logger.info("ollama idle for %.0f min, shutting down (managed process)", idle / 60)
+        _terminate_owned()      # 仅要求不持 _state_lock；_start_lock 下调用安全
+        with _state_lock:
+            _state, _detail = "stopped", ""
+        return True
+
+
+def _reaper_loop() -> None:
+    """回收线程：每 REAP_INTERVAL 秒判一次空闲。"""
+    while True:
+        _sleep(REAP_INTERVAL)
+        try:
+            maybe_reap()
+        except Exception as exc:  # noqa: BLE001 - 回收线程永不退出
+            logger.warning("ollama reaper failed: %s", exc)
+
+
+def _ensure_reaper() -> None:
+    """惰性创建回收线程（只创建一次；阈值为 0 时不建）。"""
+    global _reaper_started
+    with _state_lock:
+        if _reaper_started or _idle_seconds() <= 0:
+            return
+        _reaper_started = True
+    threading.Thread(target=_reaper_loop, name="ollama-reaper", daemon=True).start()
+
+
+def shutdown_if_managed() -> None:
+    """进程退出钩子：只终止本应用启动的 Ollama（锁外调用，函数自行摘账）。"""
+    _terminate_owned()
+
+
+atexit.register(shutdown_if_managed)
