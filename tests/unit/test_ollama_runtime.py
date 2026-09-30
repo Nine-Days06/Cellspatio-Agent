@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import itertools
 import subprocess
+import time
 
 import pytest
 
@@ -12,10 +13,17 @@ from src.knowledge import ollama_runtime as rt
 class FakeProc:
     """假 Popen：记录行为，poll 返回值可配置。"""
 
-    def __init__(self, argv: list[str], pid: int = 4242, terminate_sets_rc: bool = True):
+    def __init__(
+        self,
+        argv: list[str],
+        pid: int = 4242,
+        terminate_sets_rc: bool = True,
+        wait_rc: int = 0,
+    ):
         self.argv = argv
         self.pid = pid
         self.terminate_sets_rc = terminate_sets_rc
+        self.wait_rc = wait_rc
         self.terminated = False
         self.killed = False
         self.waited = False
@@ -35,7 +43,7 @@ class FakeProc:
 
     def wait(self, timeout=None):
         self.waited = True
-        return 0
+        return self.wait_rc
 
 
 @pytest.fixture(autouse=True)
@@ -255,6 +263,8 @@ def test_concurrent_ensure_ready_starts_single_process(monkeypatch):
     started = th.Event()
 
     def fake_spawn(argv, flags):
+        # 放大竞态窗口：持 _start_lock 期间 sleep，假锁下多线程会重复 spawn
+        time.sleep(0.01)
         with lock:
             calls.append(argv)
         started.set()
@@ -276,4 +286,107 @@ def test_concurrent_ensure_ready_starts_single_process(monkeypatch):
     for t in threads:
         t.join(timeout=5)
 
+    assert not any(t.is_alive() for t in threads), "有线程卡死（锁获取/流程挂起）"
     assert calls == [["ollama", "serve"]]
+
+
+def test_ensure_ready_marks_failed_when_pull_exits_nonzero(monkeypatch):
+    """ollama pull 退出码非 0（模型不存在等）→ failed，绝不进 ready。"""
+    calls: list[list[str]] = []
+    probes = [
+        None,                        # 启动前探活失败
+        {"models": []},              # _wait_ready 轮询成功
+        {"models": []},              # 模型检查：仍缺 → pull（rc=1）
+    ]
+
+    monkeypatch.setattr(rt, "_which", lambda name: "ollama")
+    monkeypatch.setattr(rt, "_probe", lambda host, timeout: probes.pop(0))
+    monkeypatch.setattr(
+        rt,
+        "_spawn",
+        lambda argv, flags: calls.append(argv) or FakeProc(argv, wait_rc=1),
+    )
+    monkeypatch.setattr(rt, "_monotonic", lambda: 0.0)
+
+    rt.ensure_ready()
+
+    assert calls == [["ollama", "serve"], ["ollama", "pull", "bge-m3:latest"]]
+    status = rt.status()
+    assert status["state"] == "failed"
+    assert "退出码 1" in status["detail"]
+
+
+def test_ensure_ready_retries_pull_when_model_still_missing(monkeypatch):
+    """上次 pull 失败后，本次探活成功但模型仍缺 → 自管进程补拉，不误标 ready。"""
+    calls: list[list[str]] = []
+    probes = [
+        None, {"models": []}, {"models": []},   # 第一轮：启动 → 轮询 → 缺模型 → pull 失败
+        {"models": []},                          # 第二轮：探活成功（模型仍缺）
+        {"models": []},                          # 第二轮：模型检查 → 再 pull（仍失败）
+    ]
+
+    monkeypatch.setattr(rt, "_which", lambda name: "ollama")
+    monkeypatch.setattr(rt, "_probe", lambda host, timeout: probes.pop(0))
+    monkeypatch.setattr(
+        rt,
+        "_spawn",
+        lambda argv, flags: calls.append(argv) or FakeProc(argv, wait_rc=1),
+    )
+    monkeypatch.setattr(rt, "_monotonic", lambda: 0.0)
+
+    rt.ensure_ready()
+    assert rt.status()["state"] == "failed"       # 第一轮 pull rc=1
+
+    rt.ensure_ready()                              # 第二轮：模型仍缺必须重试 pull
+
+    assert calls == [
+        ["ollama", "serve"],
+        ["ollama", "pull", "bge-m3:latest"],
+        ["ollama", "pull", "bge-m3:latest"],
+    ]
+    status = rt.status()
+    assert status["state"] == "failed"
+    assert "退出码" in status["detail"]
+
+
+def test_ensure_ready_probe_wins_when_autostart_disabled(monkeypatch):
+    """AUTOSTART=0 但用户自己的 Ollama 在跑 → 探活成功仍 ready（设计 §5：先探活后判门）。"""
+    monkeypatch.setattr(rt, "_autostart", lambda: False)
+    monkeypatch.setattr(
+        rt, "_probe", lambda host, timeout: {"models": [{"name": "bge-m3:latest"}]}
+    )
+    monkeypatch.setattr(rt, "_spawn", lambda argv, flags: pytest.fail("不应启动"))
+
+    rt.ensure_ready()
+
+    assert rt.status() == {"state": "ready", "managed": False, "detail": ""}
+
+
+def test_autostart_disabled_marks_unavailable_without_spawn(monkeypatch):
+    """AUTOSTART=0 且无实例 → unavailable 且不 spawn（设计 §9）。"""
+    monkeypatch.setattr(rt, "_autostart", lambda: False)
+    monkeypatch.setattr(rt, "_probe", lambda host, timeout: None)
+    monkeypatch.setattr(rt, "_spawn", lambda argv, flags: pytest.fail("不应启动"))
+
+    rt.ensure_ready()
+
+    status = rt.status()
+    assert status["state"] == "unavailable"
+    assert status["managed"] is False
+    assert "自动唤起已关闭" in status["detail"]
+
+
+def test_terminate_owned_kills_when_terminate_raises():
+    """terminate() 抛错 → except 里 kill 兜底，进程不因摘账而失管。"""
+
+    class ExplodingProc(FakeProc):
+        def terminate(self):
+            raise RuntimeError("boom")
+
+    proc = ExplodingProc(["ollama", "serve"])
+    rt._proc, rt._managed = proc, True     # 直接注入自管进程账目
+
+    rt._terminate_owned()
+
+    assert proc.killed is True
+    assert rt.status() == {"state": "stopped", "managed": False, "detail": ""}

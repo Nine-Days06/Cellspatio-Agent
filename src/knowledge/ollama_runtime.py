@@ -160,6 +160,14 @@ def _terminate_owned() -> None:
             proc.kill()
     except Exception as exc:  # noqa: BLE001 - 关闭失败不抛
         logger.warning("ollama terminate failed: %s", exc)
+        try:
+            proc.kill()  # terminate 抛错时兜底，避免摘账后进程失管
+        except Exception as kill_exc:  # noqa: BLE001 - 兜底失败也不抛
+            logger.warning("ollama kill failed: %s", kill_exc)
+    try:
+        proc.wait(timeout=TERMINATE_GRACE)  # 回收子进程句柄，避免 GC 期 "subprocess still running"
+    except Exception as exc:  # noqa: BLE001 - 未及时退出只记日志
+        logger.warning("ollama wait failed: %s", exc)
 
 
 def _wait_ready(host: str) -> bool:
@@ -190,17 +198,41 @@ def _has_model(tags: dict[str, Any] | None) -> bool:
     return False
 
 
+def _ensure_model(host: str, exe: str, flags: int) -> bool:
+    """确保所需 embedding 模型已就位；缺失则 `ollama pull`。
+
+    返回是否具备模型。pull 的**退出码必须校验**——模型不存在等场景
+    `ollama pull` 只写 stderr 并 exit=1、不抛异常，不查 rc 会误标 ready。
+    失败只转 failed 状态 + 日志（硬约束 2），不抛给调用方。
+    """
+    global _state, _detail
+    tags = _probe(host, PROBE_TIMEOUT)
+    if _has_model(tags):
+        return True
+    with _state_lock:
+        _state, _detail = "downloading", f"正在拉取模型 {_model()}"
+    logger.info("pulling embedding model %s (first run may take minutes)", _model())
+    try:
+        rc = _spawn([exe, "pull", _model()], flags).wait()
+    except Exception as exc:  # noqa: BLE001 - 拉取失败不抛给对话层
+        with _state_lock:
+            _state, _detail = "failed", f"拉取模型失败: {exc}"
+        logger.warning("ollama pull failed: %s", exc)
+        return False
+    if rc != 0:
+        with _state_lock:
+            _state, _detail = "failed", f"拉取模型失败（退出码 {rc}）"
+        logger.warning("ollama pull exited with code %s", rc)
+        return False
+    return True
+
+
 def ensure_ready() -> None:
     """确保 Ollama 可用：探活 → 按需启动 → 按需拉模型。
 
     幂等；并发调用只启动一个进程；任何失败都不抛异常，只转状态与日志。
     """
     global _state, _detail, _managed, _proc, _last_used, _last_probe_ok
-
-    if not _autostart():
-        with _state_lock:
-            _state, _detail = "unavailable", "自动唤起已关闭（OLLAMA_AUTOSTART=0）"
-        return
 
     # 全流程串行化；状态字段只短持 _state_lock（见代码块后的「锁分工」说明）
     with _start_lock:
@@ -214,7 +246,16 @@ def ensure_ready() -> None:
             return
 
         host = _host()
-        if _probe(host, PROBE_TIMEOUT) is not None:
+        tags = _probe(host, PROBE_TIMEOUT)
+        if tags is not None:
+            if _managed:
+                # 我们自己启动的进程：上次 pull 可能失败导致模型仍缺，补拉重试；
+                # managed=False 的外部实例一律不 pull（不改用户环境）
+                exe = _find_exe()
+                if exe is not None:
+                    flags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+                    if not _ensure_model(host, exe, flags):
+                        return  # _ensure_model 已置 failed，不得覆盖成 ready
             with _state_lock:
                 first_sight = not _managed and _state != "ready"
                 _state, _detail = "ready", ""
@@ -227,8 +268,10 @@ def ensure_ready() -> None:
             return
 
         # 探活失败：先看是不是我们启动的进程仍在启动中
+        # （poll 是 OS 系统调用，快照后放锁外执行，_state_lock 只做毫秒级保护）
         with _state_lock:
-            starting = _managed and _proc is not None and _proc.poll() is None
+            managed_snap, proc_snap = _managed, _proc
+        starting = managed_snap and proc_snap is not None and proc_snap.poll() is None
         if starting:
             if _wait_ready(host):
                 with _state_lock:
@@ -240,6 +283,14 @@ def ensure_ready() -> None:
                 _terminate_owned()          # 锁外调用：函数自行锁内摘账
                 with _state_lock:
                     _state, _detail = "failed", f"启动超时（{int(START_TIMEOUT)}s）"
+                logger.warning("ollama start timed out after %ss", int(START_TIMEOUT))
+            return
+
+        # autostart 门：探活失败（外部实例不在）且非启动中才判——设计 §5
+        # 「探活 → 失败后才判 autostart」，避免误报「已关闭」掩盖可用实例
+        if not _autostart():
+            with _state_lock:
+                _state, _detail = "unavailable", "自动唤起已关闭（OLLAMA_AUTOSTART=0）"
             return
 
         exe = _find_exe()
@@ -273,18 +324,8 @@ def ensure_ready() -> None:
             logger.warning("ollama start timed out after %ss", int(START_TIMEOUT))
             return
 
-        tags = _probe(host, PROBE_TIMEOUT)
-        if not _has_model(tags):
-            with _state_lock:
-                _state, _detail = "downloading", f"正在拉取模型 {_model()}"
-            logger.info("pulling embedding model %s (first run may take minutes)", _model())
-            try:
-                _spawn([exe, "pull", _model()], flags).wait()
-            except Exception as exc:  # noqa: BLE001 - 拉取失败不抛给对话层
-                with _state_lock:
-                    _state, _detail = "failed", f"拉取模型失败: {exc}"
-                logger.warning("ollama pull failed: %s", exc)
-                return
+        if not _ensure_model(host, exe, flags):
+            return  # _ensure_model 已置 failed，不得覆盖成 ready
         with _state_lock:
             _state, _detail = "ready", ""
             _last_probe_ok = _monotonic()
