@@ -102,6 +102,12 @@ NCBI_EMAIL   = os.environ.get("NCBI_EMAIL", "")
 # 本地 Ollama（embedding 用）
 EMBEDDING_MODEL = os.environ.get("EMBEDDING_MODEL", "bge-m3")
 # 自动唤起：embedding 首次被使用时若 Ollama 未运行则拉起 ollama serve
-OLLAMA_AUTOSTART = os.environ.get("OLLAMA_AUTOSTART", "1") not in ("0", "false", "False")
+OLLAMA_AUTOSTART = os.environ.get("OLLAMA_AUTOSTART", "1").strip().lower() not in (
+    "0", "false", "no", "off", "",
+)
 # 自动关闭：空闲超过该分钟数后关闭「本应用启动的」Ollama（<=0 表示不自动关闭）
-OLLAMA_IDLE_MINUTES = int(os.environ.get("OLLAMA_IDLE_MINUTES", "10"))
+try:
+    OLLAMA_IDLE_MINUTES = int(os.environ.get("OLLAMA_IDLE_MINUTES", "10"))
+except ValueError:
+    # 手误的环境变量不该让整个应用起不来：回退默认并留痕
+    OLLAMA_IDLE_MINUTES = 10
