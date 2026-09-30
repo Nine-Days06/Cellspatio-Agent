@@ -10,6 +10,8 @@ import threading
 import time
 import webbrowser
 
+import uvicorn
+
 logger = logging.getLogger(__name__)
 
 HOST = "127.0.0.1"
@@ -26,3 +28,18 @@ def _open_browser_later(url: str, delay: float = 1.5) -> None:
             logger.info("open browser skipped: %s", exc)
 
     threading.Thread(target=_open, name="open-browser", daemon=True).start()
+
+
+def main() -> None:
+    """构建真实 agent 并跑 uvicorn（单进程，单机本地，无认证）。"""
+    from src.api.app import create_app
+    from src.main import CellSpatioAgent
+
+    logging.basicConfig(level=logging.INFO)
+    app = create_app(CellSpatioAgent())
+    _open_browser_later(f"http://{HOST}:{PORT}")
+    uvicorn.run(app, host=HOST, port=PORT)
+
+
+if __name__ == "__main__":
+    main()
