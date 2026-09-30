@@ -127,3 +127,141 @@ def test_spawn_default_uses_devnull_and_no_window_flag(monkeypatch):
     assert captured["stdout"] is subprocess.DEVNULL
     assert captured["stderr"] is subprocess.DEVNULL
     assert captured["creationflags"] == subprocess.CREATE_NO_WINDOW
+
+
+def test_ensure_ready_starts_ollama_and_waits_until_ready(monkeypatch):
+    """探活失败 → 拉起 ollama serve → 轮询到就绪 → state=ready 且 managed=True。"""
+    calls: list[list[str]] = []
+    # 三次探活：启动前(None) → _wait_ready 轮询成功 → 启动后重探确认模型
+    probes = [
+        None,
+        {"models": [{"name": "bge-m3:latest"}]},
+        {"models": [{"name": "bge-m3:latest"}]},
+    ]
+
+    monkeypatch.setattr(rt, "_which", lambda name: "ollama")
+    monkeypatch.setattr(rt, "_probe", lambda host, timeout: probes.pop(0))
+    monkeypatch.setattr(
+        rt, "_spawn", lambda argv, flags: calls.append(argv) or FakeProc(argv)
+    )
+    monkeypatch.setattr(rt, "_monotonic", lambda: 0.0)
+
+    rt.ensure_ready()
+
+    assert calls == [["ollama", "serve"]]
+    assert rt.status() == {"state": "ready", "managed": True, "detail": ""}
+
+
+def test_ensure_ready_times_out_and_terminates_started_process(monkeypatch):
+    """启动后一直探活不到 → 终止自启进程并标 failed。"""
+    procs: list[FakeProc] = []
+
+    def fake_spawn(argv, flags):
+        proc = FakeProc(argv)
+        procs.append(proc)
+        return proc
+
+    clock = {"t": 0.0}
+
+    def fake_clock():
+        clock["t"] += 1.0
+        return clock["t"]
+
+    monkeypatch.setattr(rt, "_which", lambda name: "ollama")
+    monkeypatch.setattr(rt, "_probe", lambda host, timeout: None)
+    monkeypatch.setattr(rt, "_spawn", fake_spawn)
+    # 每次轮询推进 1 秒，超过 START_TIMEOUT=30 → 必然超时
+    monkeypatch.setattr(rt, "_monotonic", fake_clock)
+
+    rt.ensure_ready()
+
+    assert procs and procs[0].terminated is True
+    assert rt.status()["state"] == "failed"
+    assert "超时" in rt.status()["detail"]
+
+
+def test_ensure_ready_pulls_model_when_missing(monkeypatch):
+    """就绪但模型不在列表 → 执行 ollama pull。"""
+    calls: list[list[str]] = []
+    probes = [
+        None,                        # 启动前探活失败
+        {"models": []},              # 启动后轮询第一次就成功（空模型列表）
+        {"models": []},              # 拉取后再探活
+    ]
+
+    monkeypatch.setattr(rt, "_which", lambda name: "ollama")
+    monkeypatch.setattr(rt, "_probe", lambda host, timeout: probes.pop(0))
+    monkeypatch.setattr(
+        rt, "_spawn", lambda argv, flags: calls.append(argv) or FakeProc(argv)
+    )
+    monkeypatch.setattr(rt, "_monotonic", lambda: 0.0)
+
+    rt.ensure_ready()
+
+    assert calls == [["ollama", "serve"], ["ollama", "pull", "bge-m3:latest"]]
+    assert rt.status()["state"] == "ready"
+
+
+def test_ensure_ready_skips_pull_when_model_present(monkeypatch):
+    """模型已在列表中 → 不触发 pull。"""
+    calls: list[list[str]] = []
+    tags = {"models": [{"name": "bge-m3:latest"}]}
+    monkeypatch.setattr(rt, "_which", lambda name: "ollama")
+    monkeypatch.setattr(rt, "_probe", lambda host, timeout: tags)
+    monkeypatch.setattr(
+        rt, "_spawn", lambda argv, flags: calls.append(argv) or FakeProc(argv)
+    )
+    monkeypatch.setattr(rt, "_monotonic", lambda: 0.0)
+
+    rt.ensure_ready()
+
+    assert calls == []          # 首次探活就成功，根本没启动
+    assert rt.status()["managed"] is False
+
+
+def test_ensure_ready_marks_unavailable_without_executable(monkeypatch):
+    """找不到可执行文件 → unavailable，且不启动任何进程。"""
+    monkeypatch.setattr(rt, "_which", lambda name: None)
+    monkeypatch.setattr(rt.os, "name", "posix")     # 跳过 Windows 兜底
+    monkeypatch.setattr(rt, "_probe", lambda host, timeout: None)
+    monkeypatch.setattr(rt, "_spawn", lambda argv, flags: pytest.fail("不应启动"))
+
+    rt.ensure_ready()
+
+    status = rt.status()
+    assert status["state"] == "unavailable"
+    assert status["managed"] is False
+    assert "未找到" in status["detail"]
+
+
+def test_concurrent_ensure_ready_starts_single_process(monkeypatch):
+    """8 线程并发首次调用 → ollama serve 只被启动一次。"""
+    import threading as th
+
+    calls: list[list[str]] = []
+    lock = th.Lock()
+    started = th.Event()
+
+    def fake_spawn(argv, flags):
+        with lock:
+            calls.append(argv)
+        started.set()
+        return FakeProc(argv)
+
+    monkeypatch.setattr(rt, "_which", lambda name: "ollama")
+
+    def fake_probe(host, timeout):
+        # 启动前失败；spawn 发生后视为就绪
+        return {"models": [{"name": "bge-m3:latest"}]} if started.is_set() else None
+
+    monkeypatch.setattr(rt, "_probe", fake_probe)
+    monkeypatch.setattr(rt, "_spawn", fake_spawn)
+    monkeypatch.setattr(rt, "_monotonic", lambda: 0.0)
+
+    threads = [th.Thread(target=rt.ensure_ready) for _ in range(8)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join(timeout=5)
+
+    assert calls == [["ollama", "serve"]]

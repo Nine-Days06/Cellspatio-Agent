@@ -132,29 +132,165 @@ def status() -> dict[str, Any]:
         return {"state": _state, "managed": _managed, "detail": _detail}
 
 
-def ensure_ready() -> None:
-    """占位版：探活 Ollama 并更新状态，供 T4 的 embedding 包裹层调用。
+# ── T2 追加：启动流程锁 ──
+# _start_lock：串行化「探活→启动→拉模型」，避免与 _state_lock（只保护状态读写）
+# 混用导致 status() 阻塞
+_start_lock = threading.Lock()
 
-    - 探活成功 → ready（外部实例，managed=False）
-    - 探活失败且找不到可执行文件 → unavailable
-    - 「探活失败但有 exe → 拉起进程」的启动分支属 T2，此处保持原状态
-    任何异常都不抛出（硬约束 2），只记日志。
+
+def _terminate_owned() -> None:
+    """关闭本应用启动的 Ollama；外部实例（managed=False）一律不碰。
+
+    锁契约：调用方**不得**持有 `_state_lock`（threading.Lock 不可重入）。
+    本函数自行分两段——锁内「摘账」（快照 proc、清空 _proc/_managed，
+    防止其他线程重入同一进程），锁外做进程操作（terminate → 等
+    TERMINATE_GRACE → kill），避免长时间阻塞 `status()`。
     """
-    global _state, _detail, _last_probe_ok
-    try:
-        if _probe(_host(), PROBE_TIMEOUT) is not None:
-            with _state_lock:
-                # T2 替换本函数时同样禁止在成功路径重置 _managed（设计 §5：managed 保持原值）
-                _state, _detail = "ready", ""
-                _last_probe_ok = _monotonic()
+    global _managed, _proc
+    with _state_lock:
+        proc = _proc
+        if proc is None or not _managed:
             return
-        # 探活失败：启动分支 T2 补齐，T1 只标记「彻底不可用」
-        exe = _find_exe()
+        _proc = None
+        _managed = False
+    try:
+        proc.terminate()
+        _sleep(TERMINATE_GRACE)
+        if proc.poll() is None:
+            proc.kill()
+    except Exception as exc:  # noqa: BLE001 - 关闭失败不抛
+        logger.warning("ollama terminate failed: %s", exc)
+
+
+def _wait_ready(host: str) -> bool:
+    """轮询探活直到就绪或超过 START_TIMEOUT。"""
+    deadline = _monotonic() + START_TIMEOUT
+    while _monotonic() < deadline:
+        if _probe(host, PROBE_TIMEOUT) is not None:
+            return True
+        _sleep(POLL_INTERVAL)
+    return False
+
+
+def _has_model(tags: dict[str, Any] | None) -> bool:
+    """tags 里是否已有所需 embedding 模型（裸名视为同一模型的 tag 变体）。"""
+    if not isinstance(tags, dict):
+        return False
+    models = tags.get("models")
+    if not isinstance(models, list):
+        return False
+    want = _model()
+    bare = want.split(":")[0]
+    for item in models:
+        if not isinstance(item, dict):
+            continue
+        name = item.get("name") or item.get("model") or ""
+        if name == want or str(name).split(":")[0] == bare:
+            return True
+    return False
+
+
+def ensure_ready() -> None:
+    """确保 Ollama 可用：探活 → 按需启动 → 按需拉模型。
+
+    幂等；并发调用只启动一个进程；任何失败都不抛异常，只转状态与日志。
+    """
+    global _state, _detail, _managed, _proc, _last_used, _last_probe_ok
+
+    if not _autostart():
         with _state_lock:
-            if exe is None:
-                _state, _detail = "unavailable", "ollama 服务未响应且未找到可执行文件"
-    except Exception:  # 硬约束 2：失败只转状态不抛出
-        logger.exception("ensure_ready 执行异常")
+            _state, _detail = "unavailable", "自动唤起已关闭（OLLAMA_AUTOSTART=0）"
+        return
+
+    # 全流程串行化；状态字段只短持 _state_lock（见代码块后的「锁分工」说明）
+    with _start_lock:
+        now = _monotonic()
+        # 探活节流：5 秒内已成功探活且状态正常则不重复发 HTTP
+        with _state_lock:
+            throttled = _state == "ready" and (now - _last_probe_ok) < THROTTLE_WINDOW
+        if throttled:
+            with _used_lock:
+                _last_used = now
+            return
+
+        host = _host()
+        if _probe(host, PROBE_TIMEOUT) is not None:
+            with _state_lock:
+                first_sight = not _managed and _state != "ready"
+                _state, _detail = "ready", ""
+                _last_probe_ok = now
+            if first_sight:
+                # 首次探测到外部实例：明确记日志，后续一律不接管不关闭
+                logger.info("ollama already running at %s, leaving it untouched", host)
+            with _used_lock:
+                _last_used = now
+            return
+
+        # 探活失败：先看是不是我们启动的进程仍在启动中
+        with _state_lock:
+            starting = _managed and _proc is not None and _proc.poll() is None
+        if starting:
+            if _wait_ready(host):
+                with _state_lock:
+                    _state, _detail = "ready", ""
+                    _last_probe_ok = _monotonic()
+                with _used_lock:
+                    _last_used = _monotonic()
+            else:
+                _terminate_owned()          # 锁外调用：函数自行锁内摘账
+                with _state_lock:
+                    _state, _detail = "failed", f"启动超时（{int(START_TIMEOUT)}s）"
+            return
+
+        exe = _find_exe()
+        if exe is None:
+            with _state_lock:
+                _state, _detail = "unavailable", "未找到 ollama 可执行文件"
+            logger.warning("ollama executable not found; auto-start disabled")
+            return
+
+        with _state_lock:
+            _state, _detail = "starting", ""
+        flags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+        try:
+            proc = _spawn([exe, "serve"], flags)
+        except Exception as exc:  # noqa: BLE001 - 启动失败不抛给对话层
+            with _state_lock:
+                _proc = None
+                _managed = False
+                _state, _detail = "unavailable", f"启动失败: {exc}"
+            logger.warning("ollama start failed: %s", exc)
+            return
+        with _state_lock:
+            _proc = proc
+            _managed = True
+        logger.info("ollama started (managed), pid=%s", getattr(proc, "pid", "?"))
+
+        if not _wait_ready(host):
+            _terminate_owned()              # 锁外调用：函数自行锁内摘账
+            with _state_lock:
+                _state, _detail = "failed", f"启动超时（{int(START_TIMEOUT)}s）"
+            logger.warning("ollama start timed out after %ss", int(START_TIMEOUT))
+            return
+
+        tags = _probe(host, PROBE_TIMEOUT)
+        if not _has_model(tags):
+            with _state_lock:
+                _state, _detail = "downloading", f"正在拉取模型 {_model()}"
+            logger.info("pulling embedding model %s (first run may take minutes)", _model())
+            try:
+                _spawn([exe, "pull", _model()], flags).wait()
+            except Exception as exc:  # noqa: BLE001 - 拉取失败不抛给对话层
+                with _state_lock:
+                    _state, _detail = "failed", f"拉取模型失败: {exc}"
+                logger.warning("ollama pull failed: %s", exc)
+                return
+        with _state_lock:
+            _state, _detail = "ready", ""
+            _last_probe_ok = _monotonic()
+        with _used_lock:
+            _last_used = _monotonic()
+        logger.info("ollama ready (managed)")
 
 
 def reset_for_tests() -> None:
