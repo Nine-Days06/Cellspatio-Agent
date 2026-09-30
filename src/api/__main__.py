@@ -32,10 +32,13 @@ def _open_browser_later(url: str, delay: float = 1.5) -> None:
 
 def main() -> None:
     """构建真实 agent 并跑 uvicorn（单进程，单机本地，无认证）。"""
+    # 先配置日志再导入 src.*：src.main 模块级已 basicConfig(INFO)，
+    # 若放导入之后则本调用成为 no-op，且导入期日志依赖 src.main 副作用。
+    logging.basicConfig(level=logging.INFO)
+
     from src.api.app import create_app
     from src.main import CellSpatioAgent
 
-    logging.basicConfig(level=logging.INFO)
     app = create_app(CellSpatioAgent())
     _open_browser_later(f"http://{HOST}:{PORT}")
     uvicorn.run(app, host=HOST, port=PORT)

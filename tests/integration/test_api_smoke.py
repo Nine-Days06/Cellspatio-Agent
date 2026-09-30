@@ -154,7 +154,7 @@ def test_data_confirm_flow_persists_asset_for_next_turn(client, agent):
     assert SessionStore().get_session(sid)["downloaded_assets"]
 
 
-def test_main_boots_real_agent_and_runs_uvicorn(monkeypatch):
+def test_main_wires_agent_and_runs_uvicorn(monkeypatch):
     """main() 必须：构建真实 agent → 延迟开浏览器 → 用 127.0.0.1:8600 跑 uvicorn。
 
     CellSpatioAgent 与 uvicorn 都被替换，因此本测试不碰 LLM、不起真服务。
