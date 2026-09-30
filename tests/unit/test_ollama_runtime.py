@@ -485,3 +485,23 @@ def test_ensure_reaper_starts_thread_once(monkeypatch):
 
     assert started == ["ollama-reaper", "started"]
     assert rt._reaper_started is True
+
+
+def test_ensure_ready_fails_when_managed_but_executable_missing(monkeypatch):
+    """自启进程在跑、但找不到 exe → 标 failed，绝不误报 ready。
+
+    回归守卫：`ensure_ready` 的 managed 分支拿不到 exe 时无法确认模型是否就位，
+    以前会静默落到后面标 ready（模型仍缺却报可用），用户要到下游嵌入才炸。
+    """
+    monkeypatch.setattr(rt, "_probe", lambda host, timeout: {"models": []})
+    monkeypatch.setattr(rt, "_which", lambda name: None)
+    monkeypatch.setattr(rt.os, "name", "posix")      # 跳过 Windows 兜底 → exe 必然 None
+    monkeypatch.setattr(rt, "_spawn", lambda argv, flags: pytest.fail("不应启动或拉模型"))
+    # 直接注入自管进程账目：探活已成功，流程不会再 spawn，用例只关心 exe 缺失路径
+    rt._proc, rt._managed = FakeProc(["ollama", "serve"]), True
+
+    rt.ensure_ready()
+
+    status = rt.status()
+    assert status["state"] == "failed"
+    assert "未找到" in status["detail"]
