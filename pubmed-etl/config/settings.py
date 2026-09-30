@@ -77,7 +77,7 @@ PUBMED_QUERY = (
 )
 
 # 文献时间范围
-SEARCH_YEAR_MIN = 2000
+SEARCH_YEAR_MIN = 1900
 SEARCH_YEAR_MAX = datetime.now().year
 
 # 每次搜索的初分段年数；单段命中超过 10,000 条硬限制时，
