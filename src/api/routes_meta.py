@@ -11,7 +11,7 @@ from typing import Any
 
 from fastapi import APIRouter, Request
 
-from src.control import compact
+from src.api.chat_service import soft_warn_for
 from src.ui.session_store import SessionStore
 
 logger = logging.getLogger(__name__)
@@ -68,14 +68,7 @@ def _soft_warn(session_id: str | None) -> bool:
     if not session_id:
         return False
     try:
-        store = SessionStore()
-        session = store.get_session(session_id)
-        if session is None:
-            return False
-        return bool(compact.should_soft_warn(
-            session.get("summary"),
-            compact.prepare_history(store.get_messages(session_id)),
-        ))
+        return soft_warn_for(SessionStore(), session_id)
     except Exception as exc:  # noqa: BLE001 - 软警告探测失败按未触发处理
         logger.warning("soft warn probe failed: %s", exc)
         return False

@@ -7,8 +7,9 @@ import pytest
 from fastapi.testclient import TestClient
 
 from src.api.app import create_app
+from src.api.chat_service import session_lock
 from src.ui.session_store import SessionStore
-from tests.unit.fakes import FakeAgent
+from tests.unit.fakes import FakeAgent, FakeRuntime
 
 
 @pytest.fixture
@@ -67,6 +68,22 @@ def test_delete_session_removes_it(client):
 
 def test_delete_unknown_session_returns_404(client):
     assert client.delete("/api/sessions/nope").status_code == 404
+
+
+def test_delete_while_task_running_returns_409(client):
+    """M4：生成中删除会让 worker 落库失败 → 持锁时 DELETE 必须 409 拒绝。"""
+    sid = client.post("/api/sessions", json={}).json()["session"]["id"]
+    lock = session_lock(sid)
+    assert lock.acquire(blocking=False) is True
+    try:
+        response = client.delete(f"/api/sessions/{sid}")
+    finally:
+        lock.release()
+
+    assert response.status_code == 409
+    assert response.json()["detail"] == "该会话已有任务在进行"
+    # 会话未被删除
+    assert client.get(f"/api/sessions/{sid}/messages").status_code == 200
 
 
 def test_messages_of_unknown_session_returns_404(client):
@@ -167,6 +184,72 @@ def test_soft_warn_flag_reflects_context_size(client, monkeypatch):
     body = client.get(f"/api/sessions/{sid}/messages").json()
 
     assert body["soft_warn"] is True
+
+
+def test_soft_warn_uses_offset_window_across_rest_sidebar_and_chat(client, monkeypatch):
+    """Important#2：REST 横幅 / sidebar / SSE compressed 统一 offset 口径，杜绝互相矛盾。
+
+    构造 summary 非空且 summary_upto>0 的会话。spy 只在窗口含「已被摘要消化的
+    旧消息」时返回 True——旧 REST 全量口径会把它算进窗口触发告警，offset 口径
+    只看摘要之后的窗口，两者结果必然分叉。
+    """
+    from src.api import chat_service
+    from src.control import compact
+
+    sid = client.post("/api/sessions", json={}).json()["session"]["id"]
+    store = SessionStore()
+    store.append_message(sid, "user", "已被摘要消化的旧消息")
+    store.append_message(sid, "assistant", "窗口内的新消息")
+    store.update_session_meta(sid, summary="## 目标\n旧上下文", summary_upto=1)
+
+    seen: list[list[str]] = []
+
+    def spy(summary, window, system=None):
+        contents = [str(m.get("content") or "") for m in window]
+        seen.append(contents)
+        return any("已被摘要消化的旧消息" in c for c in contents)
+
+    monkeypatch.setattr(compact, "should_soft_warn", spy)
+
+    rest = client.get(f"/api/sessions/{sid}/messages").json()["soft_warn"]
+    sidebar = client.get(f"/api/sidebar?session_id={sid}").json()["soft_warn"]
+
+    events: list[dict] = []
+
+    def emit(event):
+        events.append(event)
+        return True
+
+    chat_service.run_turn(FakeAgent(runtime=FakeRuntime()), store, sid, "继续", emit)
+    compressed = any(e["type"] == "compressed" for e in events)
+
+    # 三处口径一致：都不告警（旧全量口径会把摘要前消息算进来 → True，即矛盾点）
+    assert rest is False
+    assert sidebar is False
+    assert compressed is False
+    # 且每处记录到的窗口都从 offset 开始，不含已被摘要消化的旧消息
+    assert seen and all("已被摘要消化的旧消息" not in w for w in seen)
+    # REST/sidebar 精确等于摘要后的窗口；chat 侧另含本轮已落库的 prompt
+    assert seen[0] == ["窗口内的新消息"]
+    assert seen[1] == ["窗口内的新消息"]
+    assert seen[2] == ["窗口内的新消息", "继续"]
+
+
+def test_unhandled_store_error_returns_structured_500(monkeypatch):
+    """Important#1：端点内部异常 → 500 且为 {"detail":...} JSON，不再泄漏 text/plain。"""
+    client = TestClient(create_app(FakeAgent()), raise_server_exceptions=False)
+    sid = client.post("/api/sessions", json={}).json()["session"]["id"]
+
+    def _boom(self, session_id):
+        raise RuntimeError("db down")
+
+    monkeypatch.setattr(SessionStore, "get_messages", _boom)
+
+    response = client.get(f"/api/sessions/{sid}/messages")
+
+    assert response.status_code == 500
+    assert response.headers["content-type"].startswith("application/json")
+    assert "db down" in response.json()["detail"]
 
 
 def test_create_app_mounts_web_dist_only_when_present(monkeypatch, tmp_path):

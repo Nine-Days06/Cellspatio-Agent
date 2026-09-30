@@ -7,9 +7,8 @@ from typing import Any
 from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel
 
-from src.api.chat_service import session_lock
+from src.api.chat_service import session_lock, soft_warn_for
 from src.api.events import wire_message
-from src.control import compact
 from src.control.chat_messages import build_assistant_message
 from src.ui.session_store import SessionStore
 
@@ -53,7 +52,14 @@ def create_session(body: CreateSessionRequest | None = None) -> dict[str, Any]:
 def delete_session(session_id: str) -> dict[str, Any]:
     store = _store()
     _require_session(store, session_id)
-    store.delete_session(session_id)
+    # 生成中删除会让 worker 落库失败 → 与 chat/confirm 同一把非阻塞会话锁
+    lock = session_lock(session_id)
+    if not lock.acquire(blocking=False):
+        raise HTTPException(status_code=409, detail="该会话已有任务在进行")
+    try:
+        store.delete_session(session_id)
+    finally:
+        lock.release()
     return {"deleted": session_id}
 
 
@@ -62,14 +68,11 @@ def list_messages(session_id: str, restore: int = 0) -> dict[str, Any]:
     store = _store()
     session = _require_session(store, session_id)
     messages = store.get_messages(session_id)
-    soft_warn = compact.should_soft_warn(
-        session.get("summary"), compact.prepare_history(messages)
-    )
     return {
         "session": session,
         "messages": [wire_message(m) for m in messages],
         "pending_script": _restore_pending(store, session_id, messages) if restore else None,
-        "soft_warn": soft_warn,
+        "soft_warn": soft_warn_for(store, session_id),
     }
 
 
@@ -139,9 +142,10 @@ def confirm(body: ConfirmRequest, request: Request) -> dict[str, Any]:
         lock.release()
 
 
-def _latest_pending_raw(session_id: str) -> dict[str, Any] | None:
+def _latest_pending_raw(store: SessionStore,
+                        session_id: str) -> dict[str, Any] | None:
     """从库里反查最新一条带 pending_script 的消息（不做过期改写）。"""
-    for msg in reversed(SessionStore().get_messages(session_id)):
+    for msg in reversed(store.get_messages(session_id)):
         if msg.get("pending_script"):
             return msg["pending_script"]
     return None
@@ -149,7 +153,7 @@ def _latest_pending_raw(session_id: str) -> dict[str, Any] | None:
 
 def _confirm_script(agent: Any, store: SessionStore,
                     body: ConfirmRequest) -> dict[str, Any]:
-    pending = _latest_pending_raw(body.session_id)
+    pending = _latest_pending_raw(store, body.session_id)
     if pending is None or pending.get("status") != "pending":
         raise HTTPException(status_code=409, detail="没有待确认的脚本")
 

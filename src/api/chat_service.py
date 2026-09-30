@@ -33,6 +33,20 @@ def session_lock(session_id: str) -> threading.Lock:
         return lock
 
 
+def soft_warn_for(store: SessionStore, session_id: str) -> bool:
+    """会话上下文软阈值判定——REST 横幅与 SSE compressed 的唯一口径。
+
+    统一 offset 口径：summary + prepare_history(全量消息)[summary_upto:]，
+    与 run_turn 压缩后的实际窗口一致；会话不存在返回 False（404 由调用方处理）。
+    """
+    session = store.get_session(session_id)
+    if session is None:
+        return False
+    prepared = compact.prepare_history(store.get_messages(session_id))
+    offset = session.get("summary_upto") or 0
+    return bool(compact.should_soft_warn(session.get("summary"), prepared[offset:]))
+
+
 def _persist(store: SessionStore, session_id: str, content: str,
              results: dict[str, Any] | None = None,
              pending_script: dict[str, Any] | None = None) -> dict[str, Any]:
@@ -66,7 +80,7 @@ def run_turn(agent: Any, store: SessionStore, session_id: str, prompt: str,
     )
     store.update_session_meta(session_id, summary=summary, summary_upto=offset)
     _older, recent = compact.select_recent(prepared[offset:])
-    if compact.should_soft_warn(summary, prepared[offset:]):
+    if soft_warn_for(store, session_id):
         emit(make_event("compressed", soft_warn=True))
 
     context = {
