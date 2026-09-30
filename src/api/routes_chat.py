@@ -63,9 +63,10 @@ async def chat(body: ChatRequest, request: Request) -> StreamingResponse:
         try:
             try:
                 run_turn(agent, store, body.session_id, body.prompt, emit)
-            except Exception as exc:  # noqa: BLE001 - 任何失败都要变成 error 事件
-                logger.warning("chat run_turn failed: %s", exc)
-                emit(make_event("error", message=str(exc), retryable=True))
+            except Exception as exc:  # 任何失败都要变成 error 事件
+                logger.exception("chat run_turn failed")  # except 块内自动带 traceback
+                emit(make_event("error", message=str(exc) or type(exc).__name__,
+                                retryable=True))
         finally:
             lock.release()
             try:

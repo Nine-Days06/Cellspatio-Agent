@@ -17,7 +17,7 @@ _WEB_DIST = Path(__file__).resolve().parents[2] / "web" / "dist"
 def create_app(agent: Any) -> FastAPI:
     """构建 FastAPI 应用；agent 挂到 app.state，路由经 request.app.state.agent 取用。
 
-    本任务只挂 routes_sessions；T5 加 routes_chat，T7 加 routes_meta，
+    当前挂载 routes_sessions + routes_chat；T7 将再加 routes_meta，
     每次都改这一处，避免预先 import 尚未存在的模块。
     """
     app = FastAPI(title="CellSpatio API")

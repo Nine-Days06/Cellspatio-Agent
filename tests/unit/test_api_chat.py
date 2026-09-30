@@ -1,4 +1,4 @@
-"""POST /api/chat：SSE 事件序列、404 / 409、error 事件、aborted 落库。"""
+"""POST /api/chat：SSE 事件序列、404 / 409、error 事件；协作式中止链路由 T1/T3 分层覆盖。"""
 from __future__ import annotations
 
 import json
@@ -6,6 +6,7 @@ import json
 import pytest
 from fastapi.testclient import TestClient
 
+from src.api import chat_service
 from src.api.app import create_app
 from src.api.chat_service import session_lock
 from src.ui.session_store import SessionStore
@@ -84,6 +85,8 @@ def test_stream_emits_confirm_card_for_script_branch(client):
 
 def test_unknown_session_returns_404(client):
     assert client.post("/api/chat", json={"session_id": "nope", "prompt": "hi"}).status_code == 404
+    # 404 在抢锁之前返回，不应创建锁条目
+    assert "nope" not in chat_service._locks
 
 
 def test_concurrent_generation_on_same_session_returns_409(client):
@@ -120,6 +123,9 @@ def test_runtime_exception_becomes_error_event(client):
     events = _stream(client, sid, "问个问题")
 
     assert events[-1] == {"type": "error", "message": "知识库炸了", "retryable": True}
+    # error 事件产生后锁必须已释放，否则后续请求全部 409
+    assert session_lock(sid).acquire(blocking=False) is True
+    session_lock(sid).release()
 
 
 def test_user_message_persisted_even_when_runtime_fails(client):
