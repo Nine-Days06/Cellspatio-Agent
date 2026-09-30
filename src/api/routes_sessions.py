@@ -1,6 +1,7 @@
 """会话 CRUD、消息恢复端点：SessionStore 逐请求短连接。"""
 from __future__ import annotations
 
+import logging
 from typing import Any
 
 from fastapi import APIRouter, HTTPException, Request
@@ -11,6 +12,8 @@ from src.api.events import wire_message
 from src.control import compact
 from src.control.chat_messages import build_assistant_message
 from src.ui.session_store import SessionStore
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api", tags=["sessions"])
 
@@ -120,13 +123,18 @@ def confirm(body: ConfirmRequest, request: Request) -> dict[str, Any]:
     _require_session(store, body.session_id)
     lock = session_lock(body.session_id)
     if not lock.acquire(blocking=False):
-        raise HTTPException(status_code=409, detail="该会话已有生成任务在进行")
+        raise HTTPException(status_code=409, detail="该会话已有任务在进行")
     try:
         if body.action == "data_confirm":
             return _confirm_data(agent, store, body)
         if body.action in ("script_confirm", "script_cancel"):
             return _confirm_script(agent, store, body)
         raise HTTPException(status_code=400, detail=f"未知动作: {body.action}")
+    except HTTPException:
+        raise  # 已结构化的 4xx 直接透传，勿吞成 502
+    except Exception as exc:  # 兜底：任意失败都保持 {"detail":...} JSON 契约
+        logger.exception("confirm action failed: %s", body.action)
+        raise HTTPException(status_code=502, detail=str(exc) or type(exc).__name__) from exc
     finally:
         lock.release()
 
@@ -164,19 +172,31 @@ def _confirm_script(agent: Any, store: SessionStore,
     return {"message": wire_message(store.get_messages(body.session_id)[-1])}
 
 
+def _asset_key(asset: dict[str, Any], source: str) -> tuple[str, Any]:
+    """已下载资产的去重键 (source, asset_id)；历史记录缺 source 字段时用请求 source。"""
+    return (asset.get("source") or source, asset.get("asset_id"))
+
+
 def _confirm_data(agent: Any, store: SessionStore,
                   body: ConfirmRequest) -> dict[str, Any]:
     if not body.source or not body.asset_id:
         raise HTTPException(status_code=400, detail="缺少 source 或 asset_id")
 
-    result = agent.confirm_and_download(body.source, body.asset_id,
-                                        query=body.query or "")
+    try:
+        result = agent.confirm_and_download(body.source, body.asset_id,
+                                            query=body.query or "")
+    except KeyError as exc:  # fetcher_registry.get 未注册 source
+        raise HTTPException(status_code=400,
+                            detail=f"未知数据源: {body.source}") from exc
     asset = result.get("asset")
     if asset:
         session = store.get_session(body.session_id) or {}
         assets = list(session.get("downloaded_assets") or [])
-        assets.append(asset)
-        store.update_session_meta(body.session_id, downloaded_assets=assets)
+        key = _asset_key(asset, body.source)
+        # 重复确认：下载可重复，但同一资产只落库一次（避免污染 run_turn 上下文）
+        if key not in {_asset_key(a, body.source) for a in assets}:
+            assets.append(asset)
+            store.update_session_meta(body.session_id, downloaded_assets=assets)
         content = f"已下载 {body.asset_id} → `{asset.get('access_path')}`"
     else:
         content = result.get("message", "数据下载未完成。")
