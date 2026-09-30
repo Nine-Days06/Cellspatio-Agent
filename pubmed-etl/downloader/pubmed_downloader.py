@@ -79,6 +79,28 @@ def _get(url: str, params: dict, retries: int = 5) -> requests.Response:
             time.sleep(2 ** attempt)
 
 
+def _post(url: str, data: dict, retries: int = 5) -> requests.Response:
+    """带重试的 POST 请求（处理 429 / 5xx）；参数放请求体，避免长查询词触发 414 URI Too Long"""
+    kwargs = {"timeout": 60}
+    if PROXY:
+        kwargs["proxies"] = {"http": PROXY, "https": PROXY}
+    for attempt in range(1, retries + 1):
+        try:
+            r = requests.post(url, data=data, **kwargs)
+            if r.status_code == 429:
+                wait = 2 ** attempt
+                logger.warning(f"Rate limited, waiting {wait}s (attempt {attempt})")
+                time.sleep(wait)
+                continue
+            r.raise_for_status()
+            return r
+        except requests.RequestException as e:
+            if attempt == retries:
+                raise
+            logger.warning(f"Request failed ({e}), retrying {attempt}/{retries}")
+            time.sleep(2 ** attempt)
+
+
 def _safe_json(r: requests.Response) -> dict:
     """处理 NCBI 可能返回的带非法控制字符的 JSON"""
     try:
@@ -133,7 +155,8 @@ def _fetch_count(query: str, mindate: str, maxdate: str) -> int:
         "rettype": "json",
         "retmode": "json",
     }
-    r = _get(f"{EUTILS_BASE}/esearch.fcgi", params)
+    # 长查询词 URL 编码后易超请求行上限（414），term 走 POST 请求体
+    r = _post(f"{EUTILS_BASE}/esearch.fcgi", params)
     result = _safe_json(r)["esearchresult"]
     if "ERROR" in result:
         raise RuntimeError(result["ERROR"])
@@ -199,7 +222,8 @@ def fetch_pmid_list(query: str = PUBMED_QUERY,
         "rettype": "json",
         "retmode": "json",
     }
-    r = _get(f"{EUTILS_BASE}/esearch.fcgi", params)
+    # 长查询词 URL 编码后易超请求行上限（414），term 走 POST 请求体
+    r = _post(f"{EUTILS_BASE}/esearch.fcgi", params)
     result = _safe_json(r)["esearchresult"]
     
     if "ERROR" in result:

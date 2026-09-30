@@ -1,15 +1,21 @@
+import sys
 import unittest
+from pathlib import Path
 from unittest.mock import Mock, patch
+from urllib.parse import urlencode
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from config.settings import SEARCH_YEAR_MAX, SEARCH_YEAR_MIN
-from downloader.pubmed_downloader import _collect_pmids, _split_range, fetch_pmid_list
+from downloader.pubmed_downloader import _collect_pmids, _fetch_count, _split_range, fetch_pmid_list
 
 
 class TestPubmedDownloaderDateRange(unittest.TestCase):
     @patch("downloader.pubmed_downloader.time.sleep")
     @patch("downloader.pubmed_downloader._safe_json")
+    @patch("downloader.pubmed_downloader._post")
     @patch("downloader.pubmed_downloader._get")
-    def test_esearch_should_include_2020_to_now_date_range(self, mock_get, mock_safe_json, _mock_sleep):
+    def test_esearch_should_include_2020_to_now_date_range(self, mock_get, mock_post, mock_safe_json, _mock_sleep):
         mock_safe_json.return_value = {
             "esearchresult": {
                 "count": "2",
@@ -21,16 +27,79 @@ class TestPubmedDownloaderDateRange(unittest.TestCase):
         esearch_resp = Mock()
         efetch_resp = Mock()
         efetch_resp.text = "1\n2\n"
-        mock_get.side_effect = [esearch_resp, efetch_resp]
+        mock_post.return_value = esearch_resp
+        mock_get.return_value = efetch_resp
 
         pmids = fetch_pmid_list("potato")
 
         self.assertEqual(pmids, ["1", "2"])
-        first_call_args, _ = mock_get.call_args_list[0]
-        params = first_call_args[1]
+        # esearch 走 POST（term 在请求体），日期参数随同一 params 传入
+        post_url, params = mock_post.call_args.args
+        self.assertTrue(post_url.endswith("/esearch.fcgi"))
         self.assertEqual(params["datetype"], "pdat")
         self.assertEqual(params["mindate"], str(SEARCH_YEAR_MIN))
         self.assertEqual(params["maxdate"], str(SEARCH_YEAR_MAX))
+
+
+class TestEsearchPostLongTerm(unittest.TestCase):
+    """414 URI Too Long 回归：长查询词必须经 esearch POST 请求体传输"""
+
+    # ~6.5k 字符长查询（上游修复 commit 实测 ~6000 字符触发 414）
+    LONG_QUERY = (
+        '("single-cell"[Title/Abstract] OR "spatial transcriptomics"[Title/Abstract]) AND '
+        * 80
+    )
+
+    @patch("downloader.pubmed_downloader.time.sleep")
+    @patch("downloader.pubmed_downloader._safe_json")
+    @patch("downloader.pubmed_downloader._get")
+    @patch("downloader.pubmed_downloader._post")
+    def test_count_esearch_sends_long_term_via_post(self, mock_post, mock_get, mock_safe_json, _mock_sleep):
+        """计数调用（retmax=0）：term 走 POST 请求体，绝不出现在 URL query"""
+        # 前提断言：长词 URL 编码后已超 2000 字符，GET 方式必然 414
+        self.assertGreater(len(urlencode({"term": self.LONG_QUERY})), 2000)
+
+        mock_post.return_value = Mock()
+        mock_safe_json.return_value = {"esearchresult": {"count": "123"}}
+
+        count = _fetch_count(self.LONG_QUERY, "2020/01/01", "2020/12/31")
+
+        self.assertEqual(count, 123)
+        mock_post.assert_called_once()
+        url, data = mock_post.call_args.args
+        self.assertTrue(url.endswith("/esearch.fcgi"))
+        self.assertEqual(data["term"], self.LONG_QUERY)
+        self.assertEqual(data["retmax"], 0)
+        mock_get.assert_not_called()
+
+    @patch("downloader.pubmed_downloader.time.sleep")
+    @patch("downloader.pubmed_downloader._safe_json")
+    @patch("downloader.pubmed_downloader._get")
+    @patch("downloader.pubmed_downloader._post")
+    def test_history_esearch_uses_post_and_efetch_stays_get(self, mock_post, mock_get, mock_safe_json, _mock_sleep):
+        """usehistory=y 主调用走 POST；efetch 分页保持 GET"""
+        mock_safe_json.return_value = {
+            "esearchresult": {"count": "2", "webenv": "test_webenv", "querykey": "1"}
+        }
+        mock_post.return_value = Mock()
+        efetch_resp = Mock()
+        efetch_resp.text = "1\n2\n"
+        mock_get.return_value = efetch_resp
+
+        pmids = fetch_pmid_list(self.LONG_QUERY)
+
+        self.assertEqual(pmids, ["1", "2"])
+        # esearch → POST，term/usehistory 在请求体
+        mock_post.assert_called_once()
+        post_url, post_data = mock_post.call_args.args
+        self.assertTrue(post_url.endswith("/esearch.fcgi"))
+        self.assertEqual(post_data["term"], self.LONG_QUERY)
+        self.assertEqual(post_data["usehistory"], "y")
+        # efetch 分页 → 保持 GET，且不携带 term
+        self.assertEqual(mock_get.call_count, 1)
+        get_url, get_params = mock_get.call_args.args
+        self.assertTrue(get_url.endswith("/efetch.fcgi"))
+        self.assertNotIn("term", get_params)
 
 
 class TestSplitRange(unittest.TestCase):
