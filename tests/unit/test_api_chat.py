@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import threading
 
 import pytest
 from fastapi.testclient import TestClient
@@ -99,7 +100,8 @@ def test_concurrent_generation_on_same_session_returns_409(client):
         lock.release()
 
     assert response.status_code == 409
-    assert "生成任务" in response.json()["detail"]
+    # 文案与 confirm / delete 端点统一（不特指生成任务）
+    assert response.json()["detail"] == "该会话已有任务在进行"
 
 
 def test_lock_is_released_after_stream_completes(client):
@@ -109,6 +111,44 @@ def test_lock_is_released_after_stream_completes(client):
 
     assert session_lock(sid).acquire(blocking=False) is True
     session_lock(sid).release()
+
+
+def test_thread_start_failure_releases_lock(monkeypatch):
+    """M5：acquire 成功到 Thread.start 之间抛异常，锁不得泄漏成永久 409。"""
+    client = TestClient(create_app(FakeAgent()), raise_server_exceptions=False)
+    sid = _new_session(client)
+
+    real_start = threading.Thread.start
+
+    def _boom(self):
+        # TestClient 自身的 portal 线程必须正常启动，只让 worker 起不来
+        if self.name == "chat-worker":
+            raise RuntimeError("thread start failed")
+        return real_start(self)
+
+    monkeypatch.setattr(threading.Thread, "start", _boom)
+
+    response = client.post("/api/chat", json={"session_id": sid, "prompt": "hi"})
+
+    assert response.status_code == 500
+    # 锁已归还：会话仍可再次抢锁（未泄漏）
+    assert session_lock(sid).acquire(blocking=False) is True
+    session_lock(sid).release()
+
+
+def test_stream_combines_delta_tool_status_done_sequence(client):
+    """规格 §7：单条流内 delta → tool_status → done 组合序列。"""
+    sid = _new_session(client)
+    client.app.state.agent.agent_runtime = FakeRuntime(
+        events=[{"type": "delta", "text": "开始分析。"},
+                {"type": "tool_status", "name": "run_analysis", "phase": "start"}],
+        default={"status": "success", "message": "分析完成", "results": None},
+    )
+
+    events = _stream(client, sid, "做差异表达")
+
+    assert [e["type"] for e in events] == ["delta", "tool_status", "done"]
+    assert events[1]["label"] == "运行分析"
 
 
 def test_runtime_exception_becomes_error_event(client):

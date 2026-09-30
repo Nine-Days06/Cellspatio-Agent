@@ -43,38 +43,42 @@ async def chat(body: ChatRequest, request: Request) -> StreamingResponse:
 
     lock = session_lock(body.session_id)
     if not lock.acquire(blocking=False):
-        raise HTTPException(status_code=409, detail="该会话已有生成任务在进行")
+        raise HTTPException(status_code=409, detail="该会话已有任务在进行")
 
-    loop = asyncio.get_running_loop()
-    queue: asyncio.Queue = asyncio.Queue()
-    abort = threading.Event()
+    try:
+        loop = asyncio.get_running_loop()
+        queue: asyncio.Queue = asyncio.Queue()
+        abort = threading.Event()
 
-    def emit(event: dict[str, Any]) -> bool:
-        """工作线程侧发射。已中止或事件循环已关时返回 False（协作式取消信号）。"""
-        if abort.is_set():
-            return False
-        try:
-            loop.call_soon_threadsafe(queue.put_nowait, event)
-        except RuntimeError:  # pragma: no cover - loop 已关闭
-            return False
-        return True
-
-    def worker() -> None:
-        try:
+        def emit(event: dict[str, Any]) -> bool:
+            """工作线程侧发射。已中止或事件循环已关时返回 False（协作式取消信号）。"""
+            if abort.is_set():
+                return False
             try:
-                run_turn(agent, store, body.session_id, body.prompt, emit)
-            except Exception as exc:  # 任何失败都要变成 error 事件
-                logger.exception("chat run_turn failed")  # except 块内自动带 traceback
-                emit(make_event("error", message=str(exc) or type(exc).__name__,
-                                retryable=True))
-        finally:
-            lock.release()
-            try:
-                loop.call_soon_threadsafe(queue.put_nowait, None)
-            except RuntimeError:  # pragma: no cover - loop 已关闭，线程收尾即可
-                pass
+                loop.call_soon_threadsafe(queue.put_nowait, event)
+            except RuntimeError:  # pragma: no cover - loop 已关闭
+                return False
+            return True
 
-    threading.Thread(target=worker, name="chat-worker", daemon=True).start()
+        def worker() -> None:
+            try:
+                try:
+                    run_turn(agent, store, body.session_id, body.prompt, emit)
+                except Exception as exc:  # 任何失败都要变成 error 事件
+                    logger.exception("chat run_turn failed")  # except 块内自动带 traceback
+                    emit(make_event("error", message=str(exc) or type(exc).__name__,
+                                    retryable=True))
+            finally:
+                lock.release()
+                try:
+                    loop.call_soon_threadsafe(queue.put_nowait, None)
+                except RuntimeError:  # pragma: no cover - loop 已关闭，线程收尾即可
+                    pass
+
+        threading.Thread(target=worker, name="chat-worker", daemon=True).start()
+    except Exception:  # 起流前失败必须先还锁，否则会话永久 409
+        lock.release()
+        raise
 
     async def event_stream() -> AsyncIterator[str]:
         try:

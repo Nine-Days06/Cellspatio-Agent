@@ -8,6 +8,13 @@
 - compressed   {soft_warn}                     压缩软阈值提醒
 - done         {message_id, message}           结果已持久化
 - error        {message, retryable}            可恢复失败
+
+前端契约注记：
+① chart.plotly_json 是 JSON **字符串**，前端需 JSON.parse 后再喂 Plotly；
+② done 载荷是规格 {message_id} 的超集，另含 message（完整线路消息，供对账）；
+③ error.retryable 当前实现恒为 True（后端尚无不可恢复错误的细分）；
+④ 打开会话必须带 ?restore=1，否则 pending_script 永不转 expired（见
+   routes_sessions._restore_pending 的过期语义）。
 """
 from __future__ import annotations
 

@@ -28,17 +28,26 @@ def _sink(events=None, abort_types=()):
 
 def test_user_message_is_persisted_before_runtime_runs(store):
     sid = store.create_session()
-    runtime = FakeRuntime()
+    roles_at_execute: list[list[str]] = []
+
+    class RecordingRuntime(FakeRuntime):
+        """执行瞬间回读 store，验证用户消息在运行时启动前已落库。"""
+
+        def execute(self, user_input, context=None, on_event=None):
+            roles_at_execute.append([m["role"] for m in store.get_messages(sid)])
+            return super().execute(user_input, context, on_event)
+
+    runtime = RecordingRuntime()
     emit = _sink()
 
     run_turn(FakeAgent(runtime=runtime), store, sid, "你好", emit)
 
+    # 运行时执行时回读：仅 user 已在库（assistant 尚未写入）
+    assert roles_at_execute == [["user"]]
     messages = store.get_messages(sid)
-    # 用户消息先落库，运行时执行后助手消息也落库
     assert [m["role"] for m in messages] == ["user", "assistant"]
     assert messages[0]["content"] == "你好"
     assert len(runtime.calls) == 1
-    # 运行时执行前用户消息必须已落库（emit 至少收到 done）
     assert emit.collected[-1]["type"] == "done"
 
 

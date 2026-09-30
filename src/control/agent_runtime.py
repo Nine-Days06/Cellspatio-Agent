@@ -91,7 +91,8 @@ class AgentRuntime:
                         "message": content or "请尝试更具体的分析或知识问题。",
                     }
 
-                # 一期契约：只执行第一个工具；命中终态或需人工确认时立即返回
+                # 一期契约：只执行第一个工具；是否立即返回见下方
+                # 流式/非流式的终态集合判定（STREAM_TERMINAL_STATUSES）
                 name = tool_calls[0].function.name
                 if on_event is not None and not on_event(
                     {"type": "tool_status", "name": name, "phase": "start"}

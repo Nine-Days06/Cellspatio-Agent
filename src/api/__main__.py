@@ -1,4 +1,4 @@
-"""python -m src.api 的启动参数与浏览器工具：main() 由 T8 补齐。
+"""python -m src.api 的启动入口：main() 构建 agent、起 uvicorn 并延迟开浏览器。
 
 端口 8600（避开开发期暂存的 Streamlit 8501）。前端构建产物存在时由
 create_app 挂载在 / ，因此本入口在计划 2 之前同样可用（仅 API）。
