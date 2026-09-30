@@ -1,4 +1,5 @@
 """LightRAG 的 LLM 与 embedding 函数工厂"""
+import asyncio
 import logging
 
 logger = logging.getLogger(__name__)
@@ -70,8 +71,24 @@ def build_embedding_func(embedding_func=None):
     # bge-m3:latest 完全一致（env 未设或设为 bge-m3 时行为零变化）
     model = EMBEDDING_MODEL if ":" in EMBEDDING_MODEL else f"{EMBEDDING_MODEL}:latest"
     # .func 取未包装的原始函数，用 partial 绑定 embed_model 使模型名真正生效
-    return replace(
-        ollama_embed,
-        func=partial(ollama_embed.func, embed_model=model),
-        model_name=model,
-    )
+    inner = partial(ollama_embed.func, embed_model=model)
+
+    async def _guarded(texts, **kwargs):
+        """按需唤起 Ollama 后委托原始实现。
+
+        透明性保证：签名与返回值形状不变、不抛新异常（ensure 失败也继续委托），
+        因此对 LightRAG 与 KGMemory 两个调用方零感知。
+        """
+        from src.knowledge import ollama_runtime
+
+        try:
+            # ensure_ready 最坏持 _start_lock 30s+（启动轮询，pull 全程更久），
+            # 必须 to_thread 卸载到工作线程——同步直调会冻结整个事件循环
+            # （连 /api/sidebar 的请求一起卡死）
+            await asyncio.to_thread(ollama_runtime.ensure_ready)
+            ollama_runtime.touch()  # 毫秒级时间戳写入，保持同步即可
+        except Exception as exc:  # noqa: BLE001 - 保活失败不应影响 embedding
+            logger.warning("ollama ensure failed: %s", exc)
+        return await inner(texts, **kwargs)
+
+    return replace(ollama_embed, func=_guarded, model_name=model)
