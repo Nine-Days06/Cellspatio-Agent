@@ -407,13 +407,19 @@ def test_maybe_reap_closes_managed_process_when_idle(monkeypatch):
     proc = FakeProc(["ollama", "serve"])
     monkeypatch.setattr(rt, "_idle_seconds", lambda: 600.0)
     monkeypatch.setattr(rt, "_monotonic", lambda: 1000.0)
+    rt._state = "ready"                 # 回收门：只在 ready 状态回收
     rt._last_used = 1000.0 - 601        # 已空闲 601 秒
     rt._proc = proc
     rt._managed = True
 
     assert rt.maybe_reap() is True
     assert proc.terminated is True
-    assert rt.status() == {"state": "stopped", "managed": False, "detail": ""}
+    # detail 不能被清空：sidebar 上要能看到「为什么停了」
+    assert rt.status() == {
+        "state": "stopped",
+        "managed": False,
+        "detail": "空闲 10 分钟，已关闭",
+    }
 
 
 def test_maybe_reap_never_closes_external_instance(monkeypatch):
@@ -467,10 +473,12 @@ def test_ensure_reaper_skipped_when_idle_minutes_zero():
 def test_ensure_reaper_starts_thread_once(monkeypatch):
     """阈值为正时创建一次 daemon 回收线程。"""
     started: list[str] = []
+    created: list[tuple[str, bool]] = []
 
     class FakeThread:
         def __init__(self, target, name, daemon):
             started.append(name)
+            created.append((name, daemon))
             self.target = target
             self.daemon = daemon
 
@@ -485,6 +493,9 @@ def test_ensure_reaper_starts_thread_once(monkeypatch):
 
     assert started == ["ollama-reaper", "started"]
     assert rt._reaper_started is True
+    # daemon=True 是唯一安全阀：_reaper_loop 循环体无 break/return，被改成 False
+    # 会让应用退出时永久挂死（本特性最难排查的失败模式）
+    assert created == [("ollama-reaper", True)]
 
 
 def test_ensure_ready_fails_when_managed_but_executable_missing(monkeypatch):
@@ -505,3 +516,189 @@ def test_ensure_ready_fails_when_managed_but_executable_missing(monkeypatch):
     status = rt.status()
     assert status["state"] == "failed"
     assert "未找到" in status["detail"]
+
+
+# ── 回收线程不变量（审查 I-1/I-2/I-3、M-1/M-7/M-9 的回归锁）──
+
+
+def test_ensure_ready_starts_reaper_on_recovery_path(monkeypatch):
+    """恢复路径（上次 pull 失败、本次探活成功）也必须起回收线程。
+
+    回归守卫（审查 I-1）：`_ensure_reaper` 只挂在「本次真的 spawn 了新进程」
+    的分支末尾时，从未 spawn 的恢复路径拿不到空闲回收 —— 生产可达：首次
+    `ollama pull` 因网络失败 → failed+managed=True，下次提问走探活成功路径。
+    """
+    created: list[tuple[str, bool]] = []
+
+    class FakeThread:
+        def __init__(self, target, name, daemon):
+            created.append((name, daemon))
+
+        def start(self):
+            pass
+
+    monkeypatch.setattr(rt.threading, "Thread", FakeThread)
+    monkeypatch.setattr(rt, "_idle_seconds", lambda: 600.0)
+    monkeypatch.setattr(rt, "_which", lambda name: "ollama")
+    monkeypatch.setattr(
+        rt, "_probe", lambda host, timeout: {"models": [{"name": "bge-m3:latest"}]}
+    )
+    rt._state = "failed"                             # 不命中 ready 节流
+    rt._proc, rt._managed = FakeProc(["ollama", "serve"]), True   # 上次已自启
+
+    rt.ensure_ready()
+
+    assert rt.status()["state"] == "ready"
+    assert created == [("ollama-reaper", True)]
+    assert rt._reaper_started is True
+
+
+def test_maybe_reap_never_reaps_failed_managed_process(monkeypatch):
+    """failed 状态（模型缺失等）不回收：否则洗掉失败原因 + 反复付冷启动。
+
+    回归守卫（审查 I-2）：`_ensure_model` 失败只写 failed、不碰 `_proc`，
+    而失败路径不刷新 `_last_used` → idle 远超阈值 → 回收线程把唯一的诊断
+    信息（detail）擦成空，还让注定失败的 pull 按请求反复起进程。
+    """
+    proc = FakeProc(["ollama", "serve"])
+    monkeypatch.setattr(rt, "_idle_seconds", lambda: 600.0)
+    monkeypatch.setattr(rt, "_monotonic", lambda: 1000.0)
+    rt._state, rt._detail = "failed", "拉取模型失败（退出码 1）"
+    rt._last_used = 0.0             # 失败路径不刷新活跃时间
+    rt._proc = proc
+    rt._managed = True
+
+    assert rt.maybe_reap() is False
+    assert proc.terminated is False
+    assert proc.killed is False
+    # 失败原因必须原样留着给 sidebar
+    assert rt.status() == {
+        "state": "failed",
+        "managed": True,
+        "detail": "拉取模型失败（退出码 1）",
+    }
+
+
+def test_maybe_reap_takes_start_lock():
+    """回收与启动互斥（审查 I-3 最关键的不变量）：`_start_lock` 被占时必须等。
+
+    没有互斥时，60s 的回收 tick 会把正在 spawn/拉模型的进程 terminate 掉。
+    """
+    import threading as th
+
+    finished = th.Event()
+    rt._start_lock.acquire()
+    reaper = th.Thread(target=lambda: (rt.maybe_reap(), finished.set()))
+    reaper.start()
+    try:
+        assert finished.wait(0.2) is False, "未与启动流程互斥：回收线程直接开跑了"
+    finally:
+        rt._start_lock.release()     # 断言失败也必须放锁，否则线程永久卡死
+    reaper.join(timeout=5)
+    assert finished.is_set() is True
+    assert reaper.is_alive() is False
+
+
+def test_reap_does_not_interrupt_model_pull(monkeypatch):
+    """模型下载期间回收必须让路（审查 I-3）：几分钟的 pull 不能被 tick 打断。"""
+    import threading as th
+
+    pull_started = th.Event()
+    release_pull = th.Event()
+    proc = FakeProc(["ollama", "serve"])
+
+    def blocking_spawn(argv, flags):
+        spawned = FakeProc(argv)
+        if len(argv) > 1 and argv[1] == "pull":
+            def slow_wait(timeout=None):
+                pull_started.set()
+                release_pull.wait(timeout=5)
+                return 0
+            spawned.wait = slow_wait
+        return spawned
+
+    monkeypatch.setattr(rt, "_which", lambda name: "ollama")
+    monkeypatch.setattr(rt, "_probe", lambda host, timeout: {"models": []})
+    monkeypatch.setattr(rt, "_spawn", blocking_spawn)
+    monkeypatch.setattr(rt, "_idle_seconds", lambda: 600.0)
+    monkeypatch.setattr(rt, "_monotonic", lambda: 10_000.0)
+    rt._state = "failed"                                 # 不命中节流
+    rt._last_used = 0.0                                  # idle=10000s，远超阈值
+    rt._proc, rt._managed = proc, True                   # 自启进程正在被使用
+
+    ensure_thread = th.Thread(target=rt.ensure_ready)
+    ensure_thread.start()
+    try:
+        assert pull_started.wait(5) is True, "ensure_ready 没走到 pull"
+        reap_finished = th.Event()
+        reaper = th.Thread(target=lambda: (rt.maybe_reap(), reap_finished.set()))
+        reaper.start()
+        assert reap_finished.wait(0.2) is False, "pull 期间回收不该完成"
+        assert proc.terminated is False, "pull 期间自启进程被误杀"
+    finally:
+        release_pull.set()
+        ensure_thread.join(timeout=5)
+    reaper.join(timeout=5)
+    assert reap_finished.is_set() is True, "锁释放后回收应完成"
+
+
+def test_terminate_owned_kills_when_wait_times_out():
+    """terminate 后宽限期内没退出 → kill 强杀（审查 M-1 的新分支）。
+
+    原实现是无条件盲睡 5s；改为 wait(timeout) 后必须覆盖超时强杀这条路径。
+    """
+    class StubbornProc(FakeProc):
+        def wait(self, timeout=None):
+            self.waited = True
+            if not self.killed:
+                raise subprocess.TimeoutExpired(cmd="ollama", timeout=timeout or 0)
+            return -9
+
+    proc = StubbornProc(["ollama", "serve"])
+    rt._proc, rt._managed = proc, True
+
+    rt._terminate_owned()
+
+    assert proc.terminated is True
+    assert proc.killed is True
+    assert rt.status()["managed"] is False
+
+
+def test_ensure_reaper_rolls_back_when_thread_start_fails(monkeypatch):
+    """线程起不来必须回滚 `_reaper_started`（审查 M-7）。
+
+    否则空闲回收永久静默失效，且没有任何报错——最难排查的失败模式。
+    """
+    class ExplodingThread:
+        def __init__(self, target, name, daemon):
+            self.daemon = daemon
+
+        def start(self):
+            raise RuntimeError("can't start new thread")
+
+    monkeypatch.setattr(rt.threading, "Thread", ExplodingThread)
+    monkeypatch.setattr(rt, "_idle_seconds", lambda: 600.0)
+    rt._reaper_started = False
+
+    rt._ensure_reaper()
+
+    assert rt._reaper_started is False
+
+
+def test_reset_for_tests_clears_all_state():
+    """单测隔离钩子必须清干净全部模块状态（设计 §9，此前无直接测试）。"""
+    rt._state, rt._detail = "ready", "某个 detail"
+    rt._managed, rt._proc = True, FakeProc(["ollama", "serve"])
+    rt._last_used = 1234.5
+    rt._last_probe_ok = 99.0
+    rt._reaper_started = True
+
+    rt.reset_for_tests()
+
+    assert rt._state == "stopped"
+    assert rt._detail == ""
+    assert rt._managed is False
+    assert rt._proc is None
+    assert rt._last_used == 0.0
+    assert rt._last_probe_ok == -1e9
+    assert rt._reaper_started is False

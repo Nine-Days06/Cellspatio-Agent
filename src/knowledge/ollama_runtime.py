@@ -72,6 +72,10 @@ _proc: subprocess.Popen | None = None
 _last_used = 0.0
 _last_probe_ok = -1e9
 _reaper_started = False
+# _reaper_stop：回收线程的休眠/退出开关。用 Event.wait() 而非 time.sleep()——
+# 打桩 _sleep 的测试里 sleep 会变成零延迟空转（实测瞬时 20 万次迭代＝100% CPU），
+# Event.wait 既是可中断的睡眠，又让 reset_for_tests 能立刻叫醒并停掉线程。
+_reaper_stop = threading.Event()
 
 
 def _autostart() -> bool:
@@ -127,7 +131,11 @@ def _find_exe() -> str | None:
 
 
 def status() -> dict[str, Any]:
-    """当前 Ollama 状态：state / managed / detail，供侧边栏展示。"""
+    """当前 Ollama 状态：state / managed / detail，供侧边栏展示。
+
+    这三个键被 T1 测试与设计 §6 锁定。若 sidebar 要展示「空闲剩余时间」，
+    请新增独立访问器（如 `idle_for()`），不要往这里加第 4 个键。
+    """
     with _state_lock:
         return {"state": _state, "managed": _managed, "detail": _detail}
 
@@ -143,8 +151,12 @@ def _terminate_owned() -> None:
 
     锁契约：调用方**不得**持有 `_state_lock`（threading.Lock 不可重入）。
     本函数自行分两段——锁内「摘账」（快照 proc、清空 _proc/_managed，
-    防止其他线程重入同一进程），锁外做进程操作（terminate → 等
-    TERMINATE_GRACE → kill），避免长时间阻塞 `status()`。
+    防止其他线程重入同一进程），锁外做进程操作（terminate → 等宽限期
+    → 超时才 kill），避免长时间阻塞 `status()`。
+
+    终止时序用 POSIX 常规的「terminate → wait(timeout) → 超时才 kill」，
+    **不做无条件盲睡**：Windows 上 TerminateProcess 即刻生效，盲睡 5s 纯属
+    浪费（且拖住并发的 ensure_ready、给每次进程退出加 5s）。
     """
     global _managed, _proc
     with _state_lock:
@@ -155,19 +167,21 @@ def _terminate_owned() -> None:
         _managed = False
     try:
         proc.terminate()
-        _sleep(TERMINATE_GRACE)
-        if proc.poll() is None:
+        try:
+            proc.wait(timeout=TERMINATE_GRACE)   # 顺带回收子进程句柄，避免 GC 期 "subprocess still running"
+        except subprocess.TimeoutExpired:
+            # 宽限期内没退出（信号被忽略/进程卡在内核态）→ 强杀
             proc.kill()
+            try:
+                proc.wait(timeout=TERMINATE_GRACE)
+            except Exception as exc:  # noqa: BLE001 - 兜底失败也不抛
+                logger.warning("ollama wait after kill failed: %s", exc)
     except Exception as exc:  # noqa: BLE001 - 关闭失败不抛
         logger.warning("ollama terminate failed: %s", exc)
         try:
             proc.kill()  # terminate 抛错时兜底，避免摘账后进程失管
         except Exception as kill_exc:  # noqa: BLE001 - 兜底失败也不抛
             logger.warning("ollama kill failed: %s", kill_exc)
-    try:
-        proc.wait(timeout=TERMINATE_GRACE)  # 回收子进程句柄，避免 GC 期 "subprocess still running"
-    except Exception as exc:  # noqa: BLE001 - 未及时退出只记日志
-        logger.warning("ollama wait failed: %s", exc)
 
 
 def _wait_ready(host: str) -> bool:
@@ -239,7 +253,7 @@ def ensure_ready() -> None:
 
     幂等；并发调用只启动一个进程；任何失败都不抛异常，只转状态与日志。
     """
-    global _state, _detail, _managed, _proc, _last_used, _last_probe_ok
+    global _state, _detail, _managed, _proc, _last_probe_ok   # _last_used 归 touch() 所有
 
     # 全流程串行化；状态字段只短持 _state_lock（见代码块后的「锁分工」说明）
     with _start_lock:
@@ -248,8 +262,7 @@ def ensure_ready() -> None:
         with _state_lock:
             throttled = _state == "ready" and (now - _last_probe_ok) < THROTTLE_WINDOW
         if throttled:
-            with _used_lock:
-                _last_used = now
+            touch()
             return
 
         host = _host()
@@ -278,8 +291,11 @@ def ensure_ready() -> None:
             if first_sight:
                 # 首次探测到外部实例：明确记日志，后续一律不接管不关闭
                 logger.info("ollama already running at %s, leaving it untouched", host)
-            with _used_lock:
-                _last_used = now
+            touch()
+            # 恢复路径（上次 pull 失败、本次探活成功）也必须起回收线程：
+            # 本次请求没 spawn 过进程，若只挂在 spawn 分支末尾就会静默失去空闲回收
+            if _managed:
+                _ensure_reaper()
             return
 
         # 探活失败：先看是不是我们启动的进程仍在启动中
@@ -292,8 +308,9 @@ def ensure_ready() -> None:
                 with _state_lock:
                     _state, _detail = "ready", ""
                     _last_probe_ok = _monotonic()
-                with _used_lock:
-                    _last_used = _monotonic()
+                touch()
+                if _managed:      # 该分支必然 managed（starting 的前提），门只为与 spawn 分支语义一致
+                    _ensure_reaper()
             else:
                 _terminate_owned()          # 锁外调用：函数自行锁内摘账
                 with _state_lock:
@@ -344,8 +361,7 @@ def ensure_ready() -> None:
         with _state_lock:
             _state, _detail = "ready", ""
             _last_probe_ok = _monotonic()
-        with _used_lock:
-            _last_used = _monotonic()
+        touch()
         logger.info("ollama ready (managed)")
         _ensure_reaper()          # 自启的进程才可能需要空闲回收，外部实例不建线程
 
@@ -361,6 +377,9 @@ def reset_for_tests() -> None:
         _reaper_started = False
     with _used_lock:
         _last_used = 0.0
+    # set() 叫醒并停掉上一轮可能还在跑的回收线程，clear() 让下一轮能重新起
+    _reaper_stop.set()
+    _reaper_stop.clear()
 
 
 def touch() -> None:
@@ -373,11 +392,19 @@ def touch() -> None:
 def maybe_reap() -> bool:
     """空闲超过阈值且进程由本应用启动 → 关闭它。返回是否执行了关闭。
 
+    回收门是 `_state == "ready"`：failed 说明模型缺失/拉取失败等，detail 是
+    sidebar 上唯一的诊断信息，此时回收会把它洗成空，还让注定失败的 pull 按
+    请求反复付冷启动。starting/downloading 全程在 `_start_lock` 内、回收线程
+    根本看不到它们，所以 gate ready 即精确。
+
     锁纪律：先取 `_start_lock` 再判定/关闭——避免在 `ensure_ready` 的
-    spawn/`_wait_ready` 进行中把刚起一半的进程回收（锁序 start→state，
-    与 `ensure_ready` 一致，无死锁）；判定与状态写入各自短持 `_state_lock`；
-    `_terminate_owned()` 必须在 `_state_lock` 锁外调用（它自行锁内摘账，
-    而 threading.Lock 不可重入）。
+    spawn/`_wait_ready`/`_ensure_model`（几分钟的 pull）进行中把进程回收掉；
+    判定与状态写入各自短持 `_state_lock`；`_terminate_owned()` 必须在
+    `_state_lock` 锁外调用（它自行锁内摘账，而 threading.Lock 不可重入）。
+
+    最承重的不变量：`_managed = True` **只在持有 `_start_lock` 的启动路径里
+    被赋值**（进程账目只有启动流程会写），所以拿到 `_start_lock` 之后不可能
+    正处在起进程的过程中——这就是「不会误杀启动中进程」的根本依据。
     """
     global _state, _detail
     with _start_lock:
@@ -388,20 +415,20 @@ def maybe_reap() -> bool:
             return False
         with _state_lock:
             # 硬约束 1：只关自己启动的进程，外部实例（用户自己起的）一律放过
-            if not _managed:
+            if not _managed or _state != "ready":
                 return False
             _state, _detail = "idle", f"空闲 {int(idle // 60)} 分钟，准备关闭"
         logger.info("ollama idle for %.0f min, shutting down (managed process)", idle / 60)
         _terminate_owned()      # 仅要求不持 _state_lock；_start_lock 下调用安全
         with _state_lock:
-            _state, _detail = "stopped", ""
+            # detail 保留关闭原因：sidebar 上要能看到「为什么停了」
+            _state, _detail = "stopped", f"空闲 {int(idle // 60)} 分钟，已关闭"
         return True
 
 
 def _reaper_loop() -> None:
-    """回收线程：每 REAP_INTERVAL 秒判一次空闲。"""
-    while True:
-        _sleep(REAP_INTERVAL)
+    """回收线程：每 REAP_INTERVAL 秒判一次空闲（Event 等待，可被 stop 打断）。"""
+    while not _reaper_stop.wait(REAP_INTERVAL):
         try:
             maybe_reap()
         except Exception as exc:  # noqa: BLE001 - 回收线程永不退出
@@ -415,11 +442,24 @@ def _ensure_reaper() -> None:
         if _reaper_started or _idle_seconds() <= 0:
             return
         _reaper_started = True
-    threading.Thread(target=_reaper_loop, name="ollama-reaper", daemon=True).start()
+    _reaper_stop.clear()      # 上一轮 reset_for_tests 可能置位过，先复位再起线程
+    thread = threading.Thread(target=_reaper_loop, name="ollama-reaper", daemon=True)
+    try:
+        thread.start()
+    except RuntimeError:
+        # 起线程失败必须回滚，否则空闲回收永久静默失效且无任何报错
+        with _state_lock:
+            _reaper_started = False
+        logger.warning("ollama reaper thread failed to start", exc_info=True)
 
 
 def shutdown_if_managed() -> None:
-    """进程退出钩子：只终止本应用启动的 Ollama（锁外调用，函数自行摘账）。"""
+    """进程退出钩子：只终止本应用启动的 Ollama（锁外调用，函数自行摘账）。
+
+    刻意**不取** `_start_lock`：退出时进程正在启动/拉模型就意味着不能马上杀，
+    等它反而更糟（退出钩子会把整个解释器挂住直到对方释放锁）。此时抢锁外
+    terminate 是正确取舍——最坏情况是刚起的进程被立刻关掉，下次提问重启。
+    """
     _terminate_owned()
 
 
