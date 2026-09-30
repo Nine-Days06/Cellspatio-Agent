@@ -39,18 +39,19 @@ class FakeProc:
 
 @pytest.fixture(autouse=True)
 def clean_runtime(monkeypatch):
-    """每个用例前重置模块状态，并冻结配置读取、禁止起回收线程。"""
+    """每个用例前重置模块状态，并冻结配置读取、探活与回收线程（单测不发真实 HTTP）。"""
     rt.reset_for_tests()
     monkeypatch.setattr(rt, "_autostart", lambda: True)
     monkeypatch.setattr(rt, "_idle_seconds", lambda: 0.0)
     monkeypatch.setattr(rt, "_which", lambda name: None)
     monkeypatch.setattr(rt, "_sleep", lambda seconds: None)
+    monkeypatch.setattr(rt, "_probe", lambda host, timeout: None)
     yield
     rt.reset_for_tests()
 
 
 def test_status_shape_has_exactly_three_keys():
-    rt.ensure_ready()  # 未探测，默认 stopped
+    rt.ensure_ready()  # 探活被夹具 stub 为失败：找到 exe 则保持 stopped（T1 不启动），找不到则 unavailable
     status = rt.status()
     assert set(status) == {"state", "managed", "detail"}
     assert isinstance(status["state"], str)
@@ -76,7 +77,7 @@ def test_ensure_ready_never_manages_external_instance(monkeypatch):
 
     rt.ensure_ready()
 
-    assert rt.status()["managed"] is False
+    assert rt.status() == {"state": "ready", "managed": False, "detail": ""}
 
 
 def test_find_exe_prefers_path_lookup(monkeypatch):

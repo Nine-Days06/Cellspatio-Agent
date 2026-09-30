@@ -140,11 +140,12 @@ def ensure_ready() -> None:
     - 「探活失败但有 exe → 拉起进程」的启动分支属 T2，此处保持原状态
     任何异常都不抛出（硬约束 2），只记日志。
     """
-    global _state, _detail, _managed, _last_probe_ok
+    global _state, _detail, _last_probe_ok
     try:
         if _probe(_host(), PROBE_TIMEOUT) is not None:
             with _state_lock:
-                _state, _detail, _managed = "ready", "", False
+                # T2 替换本函数时同样禁止在成功路径重置 _managed（设计 §5：managed 保持原值）
+                _state, _detail = "ready", ""
                 _last_probe_ok = _monotonic()
             return
         # 探活失败：启动分支 T2 补齐，T1 只标记「彻底不可用」
@@ -153,7 +154,7 @@ def ensure_ready() -> None:
             if exe is None:
                 _state, _detail = "unavailable", "ollama 服务未响应且未找到可执行文件"
     except Exception:  # 硬约束 2：失败只转状态不抛出
-        logger.exception("ensure_ready 探活失败")
+        logger.exception("ensure_ready 执行异常")
 
 
 def reset_for_tests() -> None:
@@ -164,6 +165,6 @@ def reset_for_tests() -> None:
         _managed = False
         _state, _detail = "stopped", ""
         _last_probe_ok = -1e9
+        _reaper_started = False
     with _used_lock:
         _last_used = 0.0
-    _reaper_started = False
