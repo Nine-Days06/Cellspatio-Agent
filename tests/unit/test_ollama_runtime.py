@@ -1,6 +1,7 @@
 """Ollama 自动唤起/关闭的单测：全部用假依赖，不真起进程、不发真实 HTTP。"""
 from __future__ import annotations
 
+import itertools
 import subprocess
 
 import pytest
@@ -39,13 +40,24 @@ class FakeProc:
 
 @pytest.fixture(autouse=True)
 def clean_runtime(monkeypatch):
-    """每个用例前重置模块状态，并冻结配置读取、探活与回收线程（单测不发真实 HTTP）。"""
+    """每个用例前重置模块状态，并冻结配置读取、探活与回收线程（单测不发真实 HTTP）。
+
+    五个注入点 `_probe`/`_which`/`_sleep`/`_spawn`/`_monotonic` 全部由夹具兜底冻结：
+    任何未自行 stub 的用例都不可能起真实进程、也不可能忙等；
+    各用例可在测试体内自行 monkeypatch 覆盖（测试体在夹具之后执行）。
+    """
     rt.reset_for_tests()
     monkeypatch.setattr(rt, "_autostart", lambda: True)
     monkeypatch.setattr(rt, "_idle_seconds", lambda: 0.0)
     monkeypatch.setattr(rt, "_which", lambda name: None)
     monkeypatch.setattr(rt, "_sleep", lambda seconds: None)
     monkeypatch.setattr(rt, "_probe", lambda host, timeout: None)
+    # 兜底：夹具冻结 _spawn/_monotonic，未自行 stub 的用例不可能起真实进程，
+    # 且 _wait_ready 的轮询会因时钟推进而立刻结束（不会忙等 30s）。
+    # 各用例可在测试体内自行 monkeypatch 覆盖（测试体在夹具之后执行）。
+    monkeypatch.setattr(rt, "_spawn", lambda argv, flags: FakeProc(argv))
+    ticks = itertools.count(step=1.0)
+    monkeypatch.setattr(rt, "_monotonic", lambda: next(ticks))
     yield
     rt.reset_for_tests()
 
