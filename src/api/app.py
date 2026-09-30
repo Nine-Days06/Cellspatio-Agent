@@ -7,7 +7,7 @@ from typing import Any
 from fastapi import FastAPI
 from fastapi.staticfiles import StaticFiles
 
-from src.api import routes_chat, routes_sessions
+from src.api import routes_chat, routes_meta, routes_sessions
 
 # 前端构建产物目录。计划 1 阶段尚不存在，守卫保证无前端也能起服务；
 # 抽成模块常量是为了让 T4 测试能 monkeypatch 覆盖「存在 / 不存在」两条分支。
@@ -24,6 +24,7 @@ def create_app(agent: Any) -> FastAPI:
     app.state.agent = agent
     app.include_router(routes_sessions.router)
     app.include_router(routes_chat.router)
+    app.include_router(routes_meta.router)
     # router 必须先于 StaticFiles 挂载，否则 /api/* 会被 SPA 回退拦截
     if _WEB_DIST.is_dir():
         app.mount("/", StaticFiles(directory=_WEB_DIST, html=True))
