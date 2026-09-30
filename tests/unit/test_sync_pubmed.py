@@ -38,7 +38,13 @@ def test_sync_and_import_full(tmp_path):
     (output_dir / "articles_20260921_130000.csv").write_text("x", encoding="utf-8")
 
     import_dir = tmp_path / "import"
-    fake_import = {"success": True, "total_count": 1, "imported_files": ["articles_20260921_130000.csv"]}
+    fake_import = {
+        "success": True,
+        "total_count": 1,
+        "new_count": 1,
+        "imported_files": ["articles_20260921_130000.csv"],
+        "skipped_files": [],
+    }
 
     with mock.patch("sync_pubmed.subprocess.run"), \
          mock.patch("sync_pubmed.import_via_cli", return_value=fake_import) as m_cli:
@@ -47,6 +53,71 @@ def test_sync_and_import_full(tmp_path):
     m_cli.assert_called_once()
     assert result["imported"] == 1
     assert (import_dir / "articles_20260921_130000.csv").exists()
+
+
+def test_sync_and_import_only_imports_the_new_csv(tmp_path):
+    """默认路径只导入本次复制的单个 CSV，不扫描整个目录"""
+    output_dir = tmp_path / "data" / "output"
+    output_dir.mkdir(parents=True)
+    (output_dir / "articles_20260921_140000.csv").write_text("x", encoding="utf-8")
+
+    import_dir = tmp_path / "import"
+    # 历史 CSV 已在台账中，目录里也真实存在
+    import_dir.mkdir()
+    (import_dir / "articles_20260901_090000.csv").write_text("old", encoding="utf-8")
+
+    fake_import = {
+        "success": True,
+        "total_count": 1,
+        "new_count": 1,
+        "imported_files": ["articles_20260921_140000.csv"],
+        "skipped_files": ["articles_20260901_090000.csv"],
+    }
+
+    with mock.patch("sync_pubmed.subprocess.run"), \
+         mock.patch("sync_pubmed.import_via_cli", return_value=fake_import) as m_cli:
+        sync_pubmed.sync_and_import(etl_dir=tmp_path, import_dir=import_dir)
+
+    kwargs = m_cli.call_args.kwargs
+    assert kwargs["csv_name"] == "articles_20260921_140000.csv"
+    assert kwargs["reimport_all"] is False
+
+
+def test_sync_and_import_imported_is_new_count_not_scanned(tmp_path):
+    """imported 反映新批次文章数，而非本次扫描提交的总数"""
+    output_dir = tmp_path / "data" / "output"
+    output_dir.mkdir(parents=True)
+    (output_dir / "articles_20260921_150000.csv").write_text("x", encoding="utf-8")
+
+    fake_import = {"success": True, "total_count": 500, "new_count": 3,
+                   "imported_files": ["articles_20260921_150000.csv"], "skipped_files": []}
+
+    with mock.patch("sync_pubmed.subprocess.run"), \
+         mock.patch("sync_pubmed.import_via_cli", return_value=fake_import):
+        result = sync_pubmed.sync_and_import(etl_dir=tmp_path, import_dir=tmp_path / "import")
+
+    assert result["imported"] == 3
+
+
+def test_sync_and_import_reimport_all_scans_whole_directory(tmp_path):
+    """--reimport-all 时忽略台账，改为全量导入目录"""
+    output_dir = tmp_path / "data" / "output"
+    output_dir.mkdir(parents=True)
+    (output_dir / "articles_20260921_160000.csv").write_text("x", encoding="utf-8")
+
+    fake_import = {"success": True, "total_count": 500, "new_count": 3,
+                   "imported_files": ["a.csv"], "skipped_files": []}
+
+    with mock.patch("sync_pubmed.subprocess.run"), \
+         mock.patch("sync_pubmed.import_via_cli", return_value=fake_import) as m_cli:
+        result = sync_pubmed.sync_and_import(
+            etl_dir=tmp_path, import_dir=tmp_path / "import", reimport_all=True
+        )
+
+    kwargs = m_cli.call_args.kwargs
+    assert kwargs["csv_name"] is None
+    assert kwargs["reimport_all"] is True
+    assert result["imported"] == 3
 
 
 def test_sync_and_import_skips_import_when_requested(tmp_path):
@@ -86,3 +157,18 @@ def test_main_parses_args_and_calls_sync(tmp_path):
         rc = sync_pubmed.main(["--etl-dir", str(etl_dir), "--import-dir", str(tmp_path / "import")])
     assert rc == 0
     m_sync.assert_called_once()
+    assert m_sync.call_args.kwargs["reimport_all"] is False
+
+
+def test_main_parses_reimport_all_flag(tmp_path):
+    etl_dir = tmp_path / "etl"
+    etl_dir.mkdir()
+    fake = {"exported": 0, "imported": 0, "failed": 0}
+    with mock.patch("sync_pubmed.sync_and_import", return_value=fake) as m_sync:
+        rc = sync_pubmed.main([
+            "--etl-dir", str(etl_dir),
+            "--import-dir", str(tmp_path / "import"),
+            "--reimport-all",
+        ])
+    assert rc == 0
+    assert m_sync.call_args.kwargs["reimport_all"] is True

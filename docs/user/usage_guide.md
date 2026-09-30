@@ -2,7 +2,7 @@
 
 > **文档定位**：[README](../../README.md) 是项目概览与功能列表，本指南是**详细操作手册**，面向实验生物学家与数据分析用户，覆盖安装、配置、三大核心操作（数据获取 / 数据分析 / 知识问答）、溯源复现与常见问题。
 >
-> 本指南内容以代码实际行为为准。最后核对日期：2026-09-26（参考环境：Windows / Python 3.12.10 / R 4.6.1 / Streamlit 1.64.0）。
+> 本指南内容以代码实际行为为准。最后核对日期：2026-09-30（参考环境：Windows / Python 3.12.10 / R 4.6.1 / Streamlit 1.64.0）。
 
 ## 目录
 
@@ -289,19 +289,24 @@ data/raw/
 ### 8.2 文献一键同步（pubmed-etl → 知识库）
 
 ```bash
-python sync_pubmed.py                 # 导出 pubmed-etl 结果 → 复制到 data/import/ → 导入知识库
+python sync_pubmed.py                 # 导出 pubmed-etl 结果 → 复制到 data/import/ → 只增量导入本次新 CSV
 python sync_pubmed.py --no-import     # 只导出，不导入
+python sync_pubmed.py --reimport-all  # 忽略台账，全量重导 data/import/ 下所有文件
 ```
+
+- **台账**：已导入批次记录在 `data/import/import_ledger.json`（按 CSV 文件名记账），重复运行是空操作（`imported: 0`）；删除或清空该文件即触发一次有意的全量重导。
+- **输出**：`{'exported': 1, 'imported': 12, 'failed': 0, 'csv': '...'}`。其中 `imported` 是本次**新批次文章数**（首次提交给 LightRAG 的数量），不是扫描数；也不等于知识库实际新增的文档数——LightRAG 内部按内容哈希/文件名去重，且不返回逐文档去重信号，该数字无法观测。
 
 ### 8.3 从目录批量导入
 
 目录中的 `*.json` 与 `*.csv` 文件（文献记录：标题、摘要、关键词、MeSH、作者、年份、期刊、PMID、DOI 等字段）会被转为文本写入知识库：
 
 ```bash
-python -c "from src.knowledge.import_cli import main; raise SystemExit(main(['--dir', 'data/import']))"
+python -c "from src.knowledge.import_cli import main; raise SystemExit(main(['--dir', 'data/import']))"                       # 增量：跳过台账已记录的文件
+python -c "from src.knowledge.import_cli import main; raise SystemExit(main(['--dir', 'data/import', '--reimport-all']))"      # 全量：忽略台账重导所有文件
 ```
 
-> `python -m src.knowledge.import_cli` 当前无法直接运行（模块缺少 `__main__` 入口，已知限制），请使用上面的写法。
+> `python -m src.knowledge.import_cli` 当前无法直接运行（模块缺少 `__main__` 入口，已知限制），请使用上面的写法。目录导入与 8.2 共用同一份台账，重复执行为空操作；输出会分别给出提交总数与新批次篇数。
 
 ### 8.4 按需补库
 
@@ -378,7 +383,7 @@ python main.py --step pdf | pdf-retry                            # OA 全文下�
 | validate / import-review / export | LLM 验证 / 复核 / 导出 | ❌ 需单独执行 |
 | pdf / pdf-retry | 全文 PDF 下载 | ❌ |
 
-主要输出：`pubmed-etl/data/processed/multiomics_lit.db`、`pubmed-etl/data/output/*.csv`、`pubmed-etl/data/pdfs/`。完成后用 `python sync_pubmed.py`（第 8.2 节）送入主项目知识库。
+主要输出：`pubmed-etl/data/processed/multiomics_lit.db`、`pubmed-etl/data/output/*.csv`、`pubmed-etl/data/pdfs/`。完成后用 `python sync_pubmed.py`（第 8.2 节）送入主项目知识库——导出侧只导出新 PMID（`exported_pmids.txt`），导入侧按台账只读取新 CSV（`data/import/import_ledger.json`），两侧均为增量，重复执行为空操作。
 
 ## 12. 开发者评测
 
