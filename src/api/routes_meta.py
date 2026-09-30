@@ -33,9 +33,9 @@ def _kb_stats(agent: Any) -> dict[str, Any]:
 
 
 def _env_status(agent: Any) -> dict[str, Any]:
-    """环境自检：Rscript 可执行文件 + 知识库目录是否存在。
+    """环境自检：Rscript 可执行文件 + 知识库目录 + Ollama 保活状态。
 
-    三段探测各自 try/except：r_executor 缺失/config 缺失/which 失败
+    四段探测各自 try/except：r_executor 缺失/config 缺失/which 失败
     一律降级成响应里的标记（rscript=None、kb_path 默认值），绝不 500。
     """
     rscript: str | None = None
@@ -60,7 +60,14 @@ def _env_status(agent: Any) -> dict[str, Any]:
     except Exception as exc:  # noqa: BLE001 - config 缺失/非 dict 降级默认值
         logger.warning("kb path probe failed: %s", exc)
         kb_path, kb_ok = "./knowledge_base", False
-    return {"rscript": rscript, "kb_path": kb_path, "kb_ok": kb_ok}
+    from src.knowledge import ollama_runtime
+
+    try:
+        ollama = ollama_runtime.status()
+    except Exception as exc:  # noqa: BLE001 - 自检失败不阻断
+        logger.warning("ollama status failed: %s", exc)
+        ollama = {"state": "error", "managed": False, "detail": str(exc)}
+    return {"rscript": rscript, "kb_path": kb_path, "kb_ok": kb_ok, "ollama": ollama}
 
 
 def _soft_warn(session_id: str | None) -> bool:

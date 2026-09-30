@@ -222,3 +222,42 @@ def test_open_browser_later_never_raises(monkeypatch):
             thread.join(timeout=2)
 
     assert unhandled == []
+
+
+def test_sidebar_env_includes_ollama_status(tmp_path):
+    """env.ollama 三个字段必须存在，供前端展示保活状态。"""
+    agent = FakeAgent()
+    agent.knowledge_client = StubKB()
+    agent.r_executor = StubExecutor(str(_rscript_file(tmp_path)))
+    agent.config = {"knowledge_dir": str(tmp_path)}
+
+    body = _client(agent).get("/api/sidebar").json()
+
+    ollama = body["env"]["ollama"]
+    assert set(ollama) == {"state", "managed", "detail"}
+    assert isinstance(ollama["state"], str)
+    assert isinstance(ollama["managed"], bool)
+    assert isinstance(ollama["detail"], str)
+
+
+def test_sidebar_env_ollama_degrades_when_status_raises(tmp_path, monkeypatch):
+    """status() 异常时降级为 error 标记，绝不让 /api/sidebar 500。"""
+    from src.knowledge import ollama_runtime
+
+    def boom():
+        raise RuntimeError("state file corrupted")
+
+    monkeypatch.setattr(ollama_runtime, "status", boom)
+
+    agent = FakeAgent()
+    agent.knowledge_client = StubKB()
+    agent.r_executor = StubExecutor(str(_rscript_file(tmp_path)))
+    agent.config = {"knowledge_dir": str(tmp_path)}
+
+    response = _client(agent).get("/api/sidebar")
+
+    assert response.status_code == 200
+    ollama = response.json()["env"]["ollama"]
+    assert ollama["state"] == "error"
+    assert ollama["managed"] is False
+    assert "corrupted" in ollama["detail"]
