@@ -23,12 +23,12 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from config.settings import (
     DB_PATH, PMC_S3_URL, PDF_DIR,
-    REQUEST_INTERVAL, OUTPUT_DIR, PROXY
+    REQUEST_INTERVAL, OUTPUT_DIR, PROXY, LOG_DIR
 )
 from utils.db import get_conn
 from utils.logger import get_logger
 
-logger = get_logger("pdf_downloader")
+logger = get_logger("pdf_downloader", log_dir=LOG_DIR)
 
 # PMC OA S3 桶中 ListObjectsV2 响应的 XML 命名空间
 S3_XML_NS = "http://s3.amazonaws.com/doc/2006-03-01/"

@@ -22,10 +22,11 @@ from config.settings import (
     REQUEST_INTERVAL, EFETCH_BATCH_SIZE,
     PUBMED_QUERY, RAW_XML_DIR,
     SEARCH_YEAR_MIN, SEARCH_YEAR_MAX, SEARCH_SLICE_YEARS,
+    LOG_DIR,
 )
 from utils.logger import get_logger
 
-logger = get_logger("downloader")
+logger = get_logger("downloader", log_dir=LOG_DIR)
 
 # 全局速率限制器，保证并发请求不超出 NCBI API 频率限制
 class _RateLimiter:

@@ -26,11 +26,11 @@ import sqlite3
 from pathlib import Path
 from lxml import etree
 
-from config.settings import DB_PATH, RAW_XML_DIR
+from config.settings import DB_PATH, RAW_XML_DIR, LOG_DIR
 from utils.db import init_db, get_conn
 from utils.logger import get_logger
 
-logger = get_logger("parser")
+logger = get_logger("parser", log_dir=LOG_DIR)
 
 INSERT_SQL = """
 INSERT OR IGNORE INTO articles
