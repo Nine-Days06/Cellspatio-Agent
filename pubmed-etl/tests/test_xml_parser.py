@@ -1,11 +1,7 @@
 """xml_parser 回归测试：PubMed XML 中 doi/pmc 只应取自 ArticleIdList，
 不得被 ReferenceList（参考文献）里的 ArticleId 覆盖。"""
-import sys
 import tempfile
 import unittest
-from pathlib import Path
-
-sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from parser.xml_parser import parse_article
 from lxml import etree
 

@@ -1,10 +1,6 @@
-import sys
 import unittest
-from pathlib import Path
 from unittest.mock import Mock, patch
 from urllib.parse import urlencode
-
-sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from config.settings import SEARCH_YEAR_MAX, SEARCH_YEAR_MIN
 from downloader.pubmed_downloader import _collect_pmids, _fetch_count, _split_range, fetch_pmid_list
