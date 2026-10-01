@@ -127,3 +127,53 @@ describe('错误处理', () => {
     })
   })
 })
+
+describe('restore 标记时机（成功后才标记）', () => {
+  it('A：首次 fetchMessages 网络失败后，同会话重试仍带 restore=1', async () => {
+    let calls = 0
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
+      lastRequest = { url: String(input), init }
+      calls += 1
+      if (calls === 1) throw new Error('网络抖动')
+      return jsonResponse(200, {
+        session: { id: 's-retry' },
+        messages: [],
+        pending_script: null,
+        soft_warn: false,
+      })
+    })
+    await expect(fetchMessages('s-retry')).rejects.toMatchObject({ status: 0 })
+    await fetchMessages('s-retry')
+    expect(lastRequest?.url).toBe('/api/sessions/s-retry/messages?restore=1')
+  })
+
+  it('B：首次成功后，同会话后续不带 restore=1', async () => {
+    mockFetch(() =>
+      jsonResponse(200, {
+        session: { id: 's-once' },
+        messages: [],
+        pending_script: null,
+        soft_warn: false,
+      }),
+    )
+    await fetchMessages('s-once')
+    expect(lastRequest?.url).toBe('/api/sessions/s-once/messages?restore=1')
+    await fetchMessages('s-once')
+    expect(lastRequest?.url).toBe('/api/sessions/s-once/messages')
+  })
+
+  it('C：会话 A 成功后，会话 B 首次仍带 restore=1（标记互独立）', async () => {
+    mockFetch((url) =>
+      jsonResponse(200, {
+        session: { id: url.includes('s-a') ? 's-a' : 's-b' },
+        messages: [],
+        pending_script: null,
+        soft_warn: false,
+      }),
+    )
+    await fetchMessages('s-a')
+    expect(lastRequest?.url).toBe('/api/sessions/s-a/messages?restore=1')
+    await fetchMessages('s-b')
+    expect(lastRequest?.url).toBe('/api/sessions/s-b/messages?restore=1')
+  })
+})
