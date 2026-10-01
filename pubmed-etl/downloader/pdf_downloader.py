@@ -3,8 +3,8 @@
 PMC Open Access PDF 下载器
 流程：
   1. 从数据库读取 LLM 判定相关的带有 PMC ID 的文献。
-  2. 调用 PMC OA API 获取这些 PMC ID 对应的 PDF 下载链接。
-  3. 转换为 HTTPS 链接并下载到指定目录。
+  2. 通过 PMC Cloud Service（AWS S3）获取这些 PMC ID 对应的 PDF/TXT 下载链接。
+  3. 将 s3:// URI 转换为 HTTPS 直链并下载到指定目录。
   4. 支持断点续传（跳过已存在文件）。
 """
 
@@ -22,13 +22,18 @@ import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from config.settings import (
-    DB_PATH, PMC_OA_API, PDF_DIR,
+    DB_PATH, PMC_S3_URL, PDF_DIR,
     REQUEST_INTERVAL, OUTPUT_DIR, PROXY
 )
 from utils.db import get_conn
 from utils.logger import get_logger
 
 logger = get_logger("pdf_downloader")
+
+# PMC OA S3 桶中 ListObjectsV2 响应的 XML 命名空间
+S3_XML_NS = "http://s3.amazonaws.com/doc/2006-03-01/"
+# 元数据中的 s3:// 协议前缀（aria2c 不支持，需转换为 HTTPS）
+S3_URI_PREFIX = "s3://pmc-oa-opendata/"
 
 MIN_VALID_FILE_BYTES = 1024
 
@@ -41,12 +46,18 @@ ARIA2C_MIN_SPLIT_SIZE = "1M"
 PDF_CHECKPOINT_FILENAME = "pdf_download_progress.json"
 RETRY_CHECKPOINT_INTERVAL = 10
 
+
+class OATransportError(Exception):
+    """OA 数据源传输失败（超时/连接错误/429、5xx 重试耗尽），应记为 network_fail 稍后重试。"""
+
 # ── API 调用与解析 ───────────────────────────────────────────
 
 def normalize_pmc_asset_url(url: str) -> str:
     """
-    将 OA API 返回的资源链接标准化为当前可访问的 HTTPS 路径。
+    【历史遗留】将 FTP 时代缓存/失败清单中的旧 OA 资源链接转为可访问的 HTTPS 路径。
 
+    仅用于读取存量 oa_download_links_*.csv / failed_downloads_*.csv 中的历史链接；
+    新链接来自 S3 元数据（由 _s3_uri_to_https 转换），不经过本函数。
     背景：PMC 在 2026-04 调整了 FTP/Cloud 目录结构，旧路径
     /pub/pmc/... 需迁移到 /pub/pmc/deprecated/...。
     """
@@ -88,9 +99,9 @@ def normalize_pmc_id(value: str) -> str | None:
     return normalized
 
 def _request_oa_with_retry(
-    url: str, params: dict | list, max_retries: int = 3, timeout: int = 45
+    url: str, params: dict | list | None, max_retries: int = 3, timeout: int = 45
 ) -> requests.Response | None:
-    """带指数退避重试的 OA API GET 请求。429/5xx 可重试，其他 4xx 不重试。"""
+    """带指数退避重试的 OA 数据源 GET 请求。429/5xx 可重试，其他 4xx 不重试；404 原样返回由调用方分类。"""
     kwargs: dict = {"params": params, "timeout": timeout}
     if PROXY:
         kwargs["proxies"] = {"http": PROXY, "https": PROXY}
@@ -107,6 +118,9 @@ def _request_oa_with_retry(
                 logger.warning(f"OA API server error ({r.status_code}), waiting {wait}s (attempt {attempt}/{max_retries})")
                 time.sleep(wait)
                 continue
+            if r.status_code == 404:
+                # 404 不是请求错误：桶中无该对象，交由调用方判为 not_oa
+                return r
             r.raise_for_status()
             return r
         except requests.Timeout:
@@ -129,47 +143,151 @@ def _request_oa_with_retry(
     return None
 
 
+def _request_json_with_retry(
+    url: str, max_retries: int = 3, timeout: int = 30
+) -> requests.Response | None:
+    """云元数据（JSON 响应、无查询参数）GET 请求，复用 _request_oa_with_retry 的重试/代理逻辑。"""
+    return _request_oa_with_retry(url, params=None, max_retries=max_retries, timeout=timeout)
+
+
+def _s3_uri_to_https(url: str) -> str:
+    """
+    将云元数据中的 s3://pmc-oa-opendata/... URI 转为 HTTPS 直链。
+    下载走 aria2c，仅支持 http/https/ftp/bt，不识别 s3:// 协议，下载前必须转换；
+    非该前缀的输入（如已是 HTTPS）原样返回。
+    """
+    if not url:
+        return ""
+    uri = url.strip()
+    if uri.startswith(S3_URI_PREFIX):
+        return f"{PMC_S3_URL}/{uri[len(S3_URI_PREFIX):]}"
+    return uri
+
+
+def _list_s3_versions(pmc_id: str) -> list[int]:
+    """
+    列出某 PMCID 在 PMC OA S3 桶中的全部版本号（升序、去重）。
+    走 ListObjectsV2：GET {PMC_S3_URL}?list-type=2&prefix={PMCID}.&delimiter=/，
+    从 CommonPrefixes/Prefix 按 `^{PMCID}\\.(\\d+)/$` 严格提取版本号
+    （不命中共享数字前缀的更长 PMCID，也不命中非法前缀），跨页跟随 NextContinuationToken。
+    404 或无任何版本目录返回 []（视为非 OA）；
+    传输错误 / 429、5xx 重试耗尽时抛出 OATransportError。
+    """
+    prefix_pattern = re.compile(rf"^{re.escape(pmc_id)}\.(\d+)/$")
+    parser = etree.XMLParser(recover=True)
+    params: dict = {"list-type": "2", "prefix": f"{pmc_id}.", "delimiter": "/"}
+    versions: list[int] = []
+
+    while True:
+        r = _request_oa_with_retry(PMC_S3_URL, params=params, timeout=30)
+        if r is None:
+            raise OATransportError(f"S3 版本列表请求失败: {pmc_id}")
+        if r.status_code != 200:
+            # 404 等：桶中无该 PMCID 目录 → 非 OA
+            return []
+        try:
+            root = etree.fromstring(r.content, parser=parser)
+        except etree.XMLSyntaxError as e:
+            logger.warning(f"  S3 版本列表 XML 解析失败: {pmc_id} -> {e}")
+            raise OATransportError(f"S3 版本列表 XML 解析失败: {pmc_id}") from e
+
+        for node in root.xpath(
+            "//s3:CommonPrefixes/s3:Prefix", namespaces={"s3": S3_XML_NS}
+        ):
+            match = prefix_pattern.match((node.text or "").strip())
+            if match:
+                versions.append(int(match.group(1)))
+
+        token_node = root.find(f"{{{S3_XML_NS}}}NextContinuationToken")
+        token = (token_node.text or "").strip() if token_node is not None else ""
+        if not token:
+            break
+        params["continuation-token"] = token
+
+    return sorted(set(versions))
+
+
+def _fetch_cloud_metadata(pmc_id: str, version: int) -> dict | None:
+    """
+    获取某 PMCID 版本的云元数据 JSON：{PMC_S3_URL}/{PMCID}.{ver}/{PMCID}.{ver}.json。
+    返回含 pdf_url / text_url / is_manuscript 的字典；
+    对象不存在（404）或内容非法时返回 None（跳过该版本）；
+    传输错误 / 429、5xx 重试耗尽时抛出 OATransportError。
+    """
+    url = f"{PMC_S3_URL}/{pmc_id}.{version}/{pmc_id}.{version}.json"
+    r = _request_json_with_retry(url, timeout=30)
+    if r is None:
+        raise OATransportError(f"S3 元数据请求失败: {url}")
+    if r.status_code != 200:
+        return None
+    try:
+        data = r.json()
+    except ValueError:
+        logger.warning(f"  S3 元数据 JSON 解析失败: {url}")
+        return None
+    return data if isinstance(data, dict) else None
+
+
 def _fetch_single_oa_link(pmc_id: str) -> tuple[str, dict[str, str] | None, str]:
     """
-    查询单个 PMCID 的 OA 资源链接。
+    查询单个 PMCID 的 OA 资源链接（PMC Cloud Service on AWS S3）。
     返回 (pmc_id, links | None, status)，status ∈ {"ok", "not_oa", "network_fail"}。
+    links 键为 "pdf" / "txt"，值均为 HTTPS 直链；版本选择优先级（高→低）：
+    非作者手稿 PDF > 作者手稿 PDF > 仅文本，同级取版本号更大者。
     """
-    parser = etree.XMLParser(recover=True)
-
-    r = _request_oa_with_retry(PMC_OA_API, params={"id": pmc_id}, timeout=30)
-    if r is None:
-        logger.warning(f"  单条查询失败（网络）: {pmc_id}（API 请求失败）")
-        return pmc_id, None, "network_fail"
-
     try:
-        root = etree.fromstring(r.content, parser=parser)
-    except Exception as e:
-        logger.warning(f"  单条查询 XML 解析失败: {pmc_id} -> {e}")
+        versions = _list_s3_versions(pmc_id)
+    except OATransportError:
+        logger.warning(f"  单条查询失败（网络）: {pmc_id}（S3 版本列表请求失败）")
         return pmc_id, None, "network_fail"
 
-    error = root.find(".//error")
-    if error is not None and error.get("code") in ("idIsNotOpenAccess", "idDoesNotExist"):
+    if not versions:
         return pmc_id, None, "not_oa"
 
-    record = root.find(".//record")
-    if record is None and root.tag == "record":
-        record = root
-    if record is None:
+    best_rank = -1
+    best_version = -1
+    best_pdf = ""
+    best_txt = ""
+    try:
+        for version in versions:
+            meta = _fetch_cloud_metadata(pmc_id, version)
+            if not meta:
+                continue
+            pdf = _s3_uri_to_https(meta.get("pdf_url") or "")
+            txt = _s3_uri_to_https(meta.get("text_url") or "")
+            if pdf and not meta.get("is_manuscript"):
+                rank = 2
+            elif pdf:
+                rank = 1
+            elif txt:
+                rank = 0
+            else:
+                continue
+            if (rank, version) > (best_rank, best_version):
+                best_rank, best_version = rank, version
+                best_pdf, best_txt = pdf, txt
+    except OATransportError:
+        logger.warning(f"  单条查询失败（网络）: {pmc_id}（S3 元数据请求失败）")
         return pmc_id, None, "network_fail"
+
+    if best_rank < 0:
+        return pmc_id, None, "not_oa"
 
     links: dict[str, str] = {}
-    pdf_link_node = record.find(".//link[@format='pdf']")
-    if pdf_link_node is not None and pdf_link_node.get("href"):
-        links["pdf"] = normalize_pmc_asset_url(pdf_link_node.get("href"))
-
-    tgz_link_node = record.find(".//link[@format='tgz']")
-    if tgz_link_node is not None and tgz_link_node.get("href"):
-        links["tgz"] = normalize_pmc_asset_url(tgz_link_node.get("href"))
-
-    if not links:
-        return pmc_id, None, "network_fail"
-
+    if best_pdf:
+        links["pdf"] = best_pdf
+    if best_txt:
+        links["txt"] = best_txt
     return pmc_id, links, "ok"
+
+
+def _is_dead_cached_url(url: str) -> bool:
+    """
+    判断历史缓存链接是否指向已退役的 NCBI FTP 资源。
+    oa.fcgi 时代遗留的 ftp:// 与 ftp.ncbi.nlm.nih.gov 链接已随 OA Web Service
+    退役（oa_file/oa_package 目录已删除），缓存命中也无法下载，必须丢弃并重新解析。
+    """
+    return url.startswith("ftp://") or "ftp.ncbi.nlm.nih.gov" in url
 
 
 def load_cached_oa_links(
@@ -178,7 +296,8 @@ def load_cached_oa_links(
 ) -> dict[str, dict[str, str]]:
     """
     从历史导出的 OA 链接清单中加载可复用链接。
-    只返回当前 `pmc_ids` 范围内的记录。
+    只返回当前 `pmc_ids` 范围内的记录；
+    指向已退役 NCBI FTP 的 pdf/tgz 死链直接丢弃（避免复活无法下载的旧链接）。
     """
     if not pmc_ids:
         return {}
@@ -200,12 +319,12 @@ def load_cached_oa_links(
                         continue
 
                     links: dict[str, str] = {}
-                    pdf_url = normalize_pmc_asset_url(row.get("pdf_url", "")) if row.get("pdf_url") else ""
-                    tgz_url = normalize_pmc_asset_url(row.get("tgz_url", "")) if row.get("tgz_url") else ""
-                    if pdf_url:
-                        links["pdf"] = pdf_url
-                    if tgz_url:
-                        links["tgz"] = tgz_url
+                    raw_pdf = (row.get("pdf_url") or "").strip()
+                    raw_tgz = (row.get("tgz_url") or "").strip()
+                    if raw_pdf and not _is_dead_cached_url(raw_pdf):
+                        links["pdf"] = normalize_pmc_asset_url(raw_pdf)
+                    if raw_tgz and not _is_dead_cached_url(raw_tgz):
+                        links["tgz"] = normalize_pmc_asset_url(raw_tgz)
 
                     if links:
                         cached_links[pmc_id] = links
@@ -220,8 +339,8 @@ def fetch_oa_links(
     cached_links: dict[str, dict[str, str]] | None = None,
 ) -> tuple[dict[str, dict[str, str]], list[str]]:
     """
-    获取 PMCID 对应的 OA 资源链接（pdf/tgz）。
-    `oa.fcgi` 仅支持单 ID 查询，这里用并发 + 速率控制逐条查询。
+    获取 PMCID 对应的 OA 资源链接（pdf/txt）。
+    S3 桶按 PMCID 前缀列举，仅支持单 ID 查询，这里用并发 + 速率控制逐条查询。
     返回 (链接字典, 网络失败 PMCID 列表)；非 OA 的 PMCID 不进任何结果。
     """
     if not pmc_ids:
@@ -469,14 +588,15 @@ def _cleanup_aria2_temp_files(temp_path: Path) -> None:
 
 def download_pdf_file(url: str, dest_path: Path) -> bool:
     """
-    下载单个 PDF 文件，支持断点续传（检查是否存在）。
+    下载单个文件（PDF 或 TXT），支持断点续传（检查是否存在）。
     成功返回 True，失败返回 False。
     """
     if dest_path.exists() and dest_path.stat().st_size > MIN_VALID_FILE_BYTES: 
         return True
 
     dest_path.parent.mkdir(parents=True, exist_ok=True)
-    temp_path = dest_path.with_suffix(".pdf.part")
+    # 临时文件与目标同名加 .part（对 .pdf/.txt 均成立，避免互相干扰）
+    temp_path = dest_path.with_name(dest_path.name + ".part")
 
     try:
         if not _run_aria2c_download(url, temp_path):
@@ -496,6 +616,14 @@ def download_pdf_file(url: str, dest_path: Path) -> bool:
             dest_path.unlink()
 
         return False
+
+
+def download_txt_file(url: str, dest_path: Path) -> bool:
+    """
+    下载 S3 text_url 纯文本全文到 .txt 文件。
+    复用 download_pdf_file 的 aria2c 下载与断点续传逻辑（同样要求 ≥1KB 视为有效）。
+    """
+    return download_pdf_file(url, dest_path)
 
 
 def _select_article_pdf_member(members: list) -> tarfile.TarInfo | None:
@@ -641,14 +769,18 @@ def download_pdf_from_tgz(url: str, dest_path: Path) -> bool:
 
 def download_oa_pdf(links: dict[str, str], pdf_path: Path) -> bool:
     """
-    下载整篇正文 PDF，不做 txt 回退。
-    优先 pdf 直链；无直链或直链失败时从 tgz 包内提取正文 PDF。
+    下载整篇正文，优先级：PDF 直链 → txt 直链（S3 text_url 回退）→ tgz 包内提取（历史遗留路径）。
+    新流程仅产出 pdf/txt 直链，tgz 只可能来自存量缓存/失败清单。
     返回是否成功。
     """
     pdf_url = links.get("pdf")
+    txt_url = links.get("txt")
     tgz_url = links.get("tgz")
 
     if pdf_url and download_pdf_file(pdf_url, pdf_path):
+        return True
+
+    if txt_url and download_txt_file(txt_url, pdf_path.with_suffix(".txt")):
         return True
 
     if tgz_url and download_pdf_from_tgz(tgz_url, pdf_path):
@@ -657,6 +789,13 @@ def download_oa_pdf(links: dict[str, str], pdf_path: Path) -> bool:
     return False
 
 # ── 业务流程 ──────────────────────────────────────────────────
+
+def _local_fulltext_exists(pmid: str) -> bool:
+    """本地是否已有该文献全文（.pdf 或 .txt）。pdf 下载与 pdf-retry 共用此判据，保证两阶段口径一致。"""
+    if not pmid:
+        return False
+    return (PDF_DIR / f"{pmid}.pdf").exists() or (PDF_DIR / f"{pmid}.txt").exists()
+
 
 def run_pdf_download(db_path: Path = DB_PATH):
     """
@@ -704,31 +843,39 @@ def run_pdf_download(db_path: Path = DB_PATH):
 
     oa_links, network_failed = fetch_oa_links(pmc_ids, cached_links=cached_oa_links)
     pdf_link_count = sum(1 for links in oa_links.values() if "pdf" in links)
+    txt_link_count = sum(1 for links in oa_links.values() if "txt" in links)
     tgz_link_count = sum(1 for links in oa_links.values() if "tgz" in links)
 
     logger.info(
-        f"成功获取 {len(oa_links)} 条 OA 资源（PDF: {pdf_link_count}, TGZ: {tgz_link_count}）。"
+        f"成功获取 {len(oa_links)} 条 OA 资源"
+        f"（PDF: {pdf_link_count}, TXT: {txt_link_count}, TGZ: {tgz_link_count}）。"
     )
 
     links_csv = export_oa_links_csv(oa_links=oa_links, pmc_to_info=pmc_to_info)
     logger.info(f"已导出下载链接清单: {links_csv}")
-
-    # 网络失败项并入 failed_items，后续 --step pdf-retry 重新查链并下载
-    network_failed_items: list[dict] = []
-    for pid in network_failed:
-        info = pmc_to_info.get(pid, {})
-        network_failed_items.append({
-            "pmc_id": pid,
-            "links": {},
-            "pdf_path": PDF_DIR / f"{info.get('pmid', '')}.pdf",
-            "pmid": info.get("pmid", ""),
-        })
 
     # 3. 执行下载
     pdf_success_count = 0
     failed_count = 0
     skip_count = 0
     failed_items: list[dict] = []
+
+    # 网络失败项并入 failed_items，后续 --step pdf-retry 重新查链并下载。
+    # 先查本地全文：链接解析失败 ≠ 下载失败，本地已有 .pdf/.txt 的计入跳过、
+    # 不写入失败清单/检查点，否则已下载文献会被 pdf-retry 无限重试
+    network_failed_items: list[dict] = []
+    for pid in network_failed:
+        info = pmc_to_info.get(pid, {})
+        pmid = info.get("pmid", "")
+        if _local_fulltext_exists(pmid):
+            skip_count += 1
+            continue
+        network_failed_items.append({
+            "pmc_id": pid,
+            "links": {},
+            "pdf_path": PDF_DIR / f"{pmid}.pdf",
+            "pmid": pmid,
+        })
 
     # 使用线程池并发下载，提高效率
     with ThreadPoolExecutor(max_workers=DOWNLOAD_MAX_WORKERS) as executor:
@@ -853,9 +1000,10 @@ def run_pdf_retry(db_path: Path = DB_PATH):
             logger.info("无检查点且无失败清单，没有可重试项。")
             return
 
+    # 与 run_pdf_download 使用同一判据过滤本地已有全文，避免两阶段口径不一致
     pending = [
         item for item in pending
-        if not (item.get("pmid") and (PDF_DIR / f"{item['pmid']}.pdf").exists())
+        if not _local_fulltext_exists(item.get("pmid") or "")
     ]
     logger.info(f"过滤已下载后待重试 {len(pending)} 篇。")
 

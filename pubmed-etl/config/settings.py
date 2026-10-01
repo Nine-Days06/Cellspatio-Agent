@@ -35,8 +35,10 @@ PROXY = os.environ.get("PROXY", "") or None
 NCBI_API_KEY = os.environ.get("NCBI_API_KEY", "")
 NCBI_EMAIL   = os.environ.get("NCBI_EMAIL", "")   # NCBI 要求提供联系邮箱，建议设置到 .env
 
-# PMC Open Access Web Service API
-PMC_OA_API = "https://www.ncbi.nlm.nih.gov/pmc/utils/oa/oa.fcgi"
+# PMC OA 资源桶（PMC Cloud Service on AWS S3，公共匿名读，无需签名）
+# 注：NCBI 已于 2026-08 永久退役 PMC OA Web Service（oa.fcgi 返回 404），
+# 原 PMC_OA_API 端点不可用，OA 链接改为通过该 S3 桶列举版本与读取元数据
+PMC_S3_URL = "https://pmc-oa-opendata.s3.amazonaws.com"
 
 # API 请求间隔（秒）：有 Key 用 0.11，无 Key 用 0.34
 REQUEST_INTERVAL = 0.11 if NCBI_API_KEY else 0.34
