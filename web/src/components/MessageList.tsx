@@ -1,4 +1,5 @@
 import { useEffect, useRef, type ReactNode } from 'react'
+import { ChartBlock } from '@/components/ChartBlock'
 import { MarkdownMessage } from '@/components/MarkdownMessage'
 import { SoftWarnBanner } from '@/components/SoftWarnBanner'
 import { ToolStatus, type ToolStatusEntry } from '@/components/ToolStatus'
@@ -85,8 +86,11 @@ export function MessageList({
                     <MarkdownMessage text={message.content} />
                   )}
                   {(message.results?.charts ?? []).length > 0 && (
-                    // 图表本体在 T6 由 ChartBlock 渲染；这里只留占位以免 MessageList 依赖 T6
-                    <div data-testid="charts-slot" className="mt-2" />
+                    <div data-testid="charts-slot" className="mt-2">
+                      {(message.results?.charts ?? []).map((chart, idx) => (
+                        <ChartBlock key={`${chart.type}-${idx}`} item={chart} />
+                      ))}
+                    </div>
                   )}
                 </>
               ) : (
