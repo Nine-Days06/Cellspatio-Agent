@@ -1,8 +1,6 @@
 import unittest
 from unittest.mock import patch, Mock
-import io
 import json
-import tarfile
 import tempfile
 import csv
 from pathlib import Path
@@ -13,7 +11,6 @@ from downloader.pdf_downloader import (
     fetch_oa_links,
     load_cached_oa_links,
     download_pdf_file,
-    download_pdf_from_tgz,
     download_oa_pdf,
     export_oa_links_csv,
 )
@@ -178,16 +175,16 @@ class TestLoadCachedOaLinks(unittest.TestCase):
                 encoding="utf-8",
             )
             new_file.write_text(
-                "pmid,pmc_id,label,pdf_url,tgz_url\n"
-                "111,PMC1,高相关,https://new.example/1.pdf,\n"
-                "222,PMC2,中相关,,https://new.example/2.tgz\n",
+                "pmid,pmc_id,label,pdf_url\n"
+                "111,PMC1,高相关,https://new.example/1.pdf\n"
+                "222,PMC2,中相关,https://new.example/2.pdf\n",
                 encoding="utf-8",
             )
 
             cached = load_cached_oa_links(["PMC1", "PMC2", "PMC3"], out_dir=out_dir)
 
         self.assertEqual(cached["PMC1"]["pdf"], "https://new.example/1.pdf")
-        self.assertEqual(cached["PMC2"]["tgz"], "https://new.example/2.tgz")
+        self.assertEqual(cached["PMC2"]["pdf"], "https://new.example/2.pdf")
         self.assertNotIn("PMC3", cached)
 
     def test_should_drop_dead_ftp_links_from_cache(self):
@@ -195,12 +192,11 @@ class TestLoadCachedOaLinks(unittest.TestCase):
         with tempfile.TemporaryDirectory() as td:
             out_dir = Path(td)
             (out_dir / "oa_download_links_20260101_010101.csv").write_text(
-                "pmid,pmc_id,label,pdf_url,tgz_url\n"
-                "111,PMC1,高相关,ftp://ftp.ncbi.nlm.nih.gov/pub/pmc/oa_pdf/a/b/1.pdf,\n"
-                "222,PMC2,中相关,,https://ok.example/2.tgz\n"
-                "333,PMC3,低相关,https://ok.example/3.pdf,"
-                "ftp://ftp.ncbi.nlm.nih.gov/pub/pmc/oa_package/a/b/3.tgz\n"
-                "444,PMC4,高相关,ftp://ftp.ncbi.nlm.nih.gov/pub/pmc/oa_pdf/a/b/4.pdf,\n",
+                "pmid,pmc_id,label,pdf_url\n"
+                "111,PMC1,高相关,ftp://ftp.ncbi.nlm.nih.gov/pub/pmc/oa_pdf/a/b/1.pdf\n"
+                "222,PMC2,中相关,https://ok.example/2.pdf\n"
+                "333,PMC3,低相关,https://ok.example/3.pdf\n"
+                "444,PMC4,高相关,ftp://ftp.ncbi.nlm.nih.gov/pub/pmc/oa_pdf/a/b/4.pdf\n",
                 encoding="utf-8",
             )
 
@@ -211,10 +207,27 @@ class TestLoadCachedOaLinks(unittest.TestCase):
         # 整条记录只有死链 → 不入缓存，交由 S3 重新解析
         self.assertNotIn("PMC1", cached)
         self.assertNotIn("PMC4", cached)
-        # 死链字段被剔除，存活字段仍可用（活 PDF 保留，死 tgz 丢弃）
+        # 活链照常复用
+        self.assertEqual(cached["PMC2"]["pdf"], "https://ok.example/2.pdf")
         self.assertEqual(cached["PMC3"]["pdf"], "https://ok.example/3.pdf")
-        self.assertNotIn("tgz", cached["PMC3"])
-        self.assertEqual(cached["PMC2"]["tgz"], "https://ok.example/2.tgz")
+
+    def test_should_ignore_legacy_tgz_url_column(self):
+        """旧清单里的 tgz_url 列应被忽略，而非复活已死的包内提取路径。"""
+        with tempfile.TemporaryDirectory() as td:
+            out_dir = Path(td)
+            (out_dir / "oa_download_links_20260101_010101.csv").write_text(
+                "pmid,pmc_id,label,pdf_url,tgz_url\n"
+                "111,PMC1,高相关,,ftp://ftp.ncbi.nlm.nih.gov/pub/pmc/oa_package/a/b/1.tgz\n"
+                "222,PMC2,中相关,https://ok.example/2.pdf,https://ok.example/2.tgz\n",
+                encoding="utf-8",
+            )
+
+            cached = load_cached_oa_links(["PMC1", "PMC2"], out_dir=out_dir)
+
+        # 只有 tgz 的记录不构成可复用链接
+        self.assertNotIn("PMC1", cached)
+        self.assertNotIn("tgz", cached["PMC2"])
+        self.assertEqual(cached["PMC2"]["pdf"], "https://ok.example/2.pdf")
 
     def test_should_keep_https_s3_links_in_cache(self):
         with tempfile.TemporaryDirectory() as td:
@@ -233,229 +246,87 @@ class TestLoadCachedOaLinks(unittest.TestCase):
         )
 
 
-class TestDownloadPdfFromTgz(unittest.TestCase):
-    @patch("downloader.pdf_downloader.subprocess.run")
-    def test_should_extract_pdf_file_from_tgz(self, mock_run):
-        pdf_payload = b"%PDF-1.4\n" + (b"A" * 3000)
-        buf = io.BytesIO()
-        with tarfile.open(fileobj=buf, mode="w:gz") as tar:
-            info = tarfile.TarInfo(name="paper.pdf")
-            info.size = len(pdf_payload)
-            tar.addfile(info, io.BytesIO(pdf_payload))
-
-        tgz_bytes = buf.getvalue()
-
-        def fake_run(cmd, capture_output=True, text=True, timeout=300, check=False):
-            out_dir = Path(cmd[cmd.index("-d") + 1])
-            out_name = cmd[cmd.index("-o") + 1]
-            out_path = out_dir / out_name
-            out_path.write_bytes(tgz_bytes)
-            return Mock(returncode=0, stderr="", stdout="")
-
-        mock_run.side_effect = fake_run
-
-        with tempfile.TemporaryDirectory() as td:
-            dest = Path(td) / "out.pdf"
-            ok = download_pdf_from_tgz("https://example.org/a.tgz", dest)
-
-            self.assertTrue(ok)
-            self.assertTrue(dest.exists())
-            self.assertGreater(dest.stat().st_size, 1024)
-
-
-class TestDownloadPdfFromTgzTxtFallback(unittest.TestCase):
-    """tgz 包内无 PDF 时回退提取 nxml 转 txt"""
-
-    def _make_tgz(self, members: list[tuple[str, bytes]]) -> bytes:
-        buf = io.BytesIO()
-        with tarfile.open(fileobj=buf, mode="w:gz") as tar:
-            for name, data in members:
-                info = tarfile.TarInfo(name)
-                info.size = len(data)
-                tar.addfile(info, io.BytesIO(data))
-        return buf.getvalue()
-
-    def _fake_run(self, tgz_bytes):
-        def fake_run(cmd, capture_output=True, text=True, timeout=300, check=False):
-            out_dir = Path(cmd[cmd.index("-d") + 1])
-            out_name = cmd[cmd.index("-o") + 1]
-            out_path = out_dir / out_name
-            out_path.write_bytes(tgz_bytes)
-            return Mock(returncode=0, stderr="", stdout="")
-        return fake_run
-
-    NXML = b"""<?xml version="1.0"?>
-<article xmlns:xlink="http://www.w3.org/1999/xlink">
-  <front><article-meta>
-    <title-group><article-title>Potato CDF1 and drought</article-title></title-group>
-  </article-meta></front>
-  <body>
-    <sec><title>Introduction</title>
-      <p>Potato is an important crop.</p>
-    </sec>
-    <sec><title>Results</title>
-      <p>We found interesting results.</p>
-      <table-wrap><table><tr><td>a</td><td>b</td></tr></table></table-wrap>
-    </sec>
-  </body>
-</article>"""
-
-    @patch("downloader.pdf_downloader.subprocess.run")
-    def test_should_extract_txt_when_no_pdf_in_tgz(self, mock_run):
-        tgz_bytes = self._make_tgz([
-            ("PMC1/main.nxml", self.NXML),
-            ("PMC1/fig1.jpg", b"jpegdata"),
-        ])
-        mock_run.side_effect = self._fake_run(tgz_bytes)
-
-        with tempfile.TemporaryDirectory() as td:
-            dest = Path(td) / "out.pdf"
-            ok = download_pdf_from_tgz("https://example.org/a.tgz", dest)
-
-            txt_path = Path(td) / "out.txt"
-            self.assertTrue(ok)
-            self.assertFalse(dest.exists())
-            self.assertTrue(txt_path.exists())
-            content = txt_path.read_text(encoding="utf-8")
-            self.assertIn("Potato is an important crop.", content)
-            self.assertIn("Introduction", content)
-
-    @patch("downloader.pdf_downloader.subprocess.run")
-    def test_should_still_extract_pdf_when_pdf_present(self, mock_run):
-        pdf_payload = b"%PDF-1.4\n" + (b"A" * 3000)
-        tgz_bytes = self._make_tgz([
-            ("PMC1/main.pdf", pdf_payload),
-            ("PMC1/main.nxml", self.NXML),
-        ])
-        mock_run.side_effect = self._fake_run(tgz_bytes)
-
-        with tempfile.TemporaryDirectory() as td:
-            dest = Path(td) / "out.pdf"
-            ok = download_pdf_from_tgz("https://example.org/a.tgz", dest)
-
-            self.assertTrue(ok)
-            self.assertTrue(dest.exists())
-            self.assertFalse((Path(td) / "out.txt").exists())
-
-    @patch("downloader.pdf_downloader.subprocess.run")
-    def test_should_fail_when_no_pdf_and_no_nxml(self, mock_run):
-        tgz_bytes = self._make_tgz([("fig1.jpg", b"jpegdata")])
-        mock_run.side_effect = self._fake_run(tgz_bytes)
-
-        with tempfile.TemporaryDirectory() as td:
-            dest = Path(td) / "out.pdf"
-            ok = download_pdf_from_tgz("https://example.org/a.tgz", dest)
-
-            self.assertFalse(ok)
-            self.assertFalse((Path(td) / "out.txt").exists())
-
-
-class TestDownloadPdfFromTgzPicksArticlePdf(unittest.TestCase):
-    @patch("downloader.pdf_downloader.subprocess.run")
-    def test_should_pick_article_pdf_when_supplementary_pdf_comes_first(self, mock_run):
-        article_pdf_payload = b"%PDF-1.4\n" + (b"ARTICLE-CONTENT-ABCD" * 300)
-        supp_pdf_payload = b"%PDF-1.4\n" + (b"SUPPLEMENT-FIGURES-TABLES-YZ" * 300)
-        buf = io.BytesIO()
-
-        def add_member(tar, name, data):
-            info = tarfile.TarInfo(name)
-            info.size = len(data)
-            tar.addfile(info, io.BytesIO(data))
-
-        with tarfile.open(fileobj=buf, mode="w:gz") as tar:
-            add_member(tar, "PMC4334330/jmdh-8-091-s001.pdf", supp_pdf_payload)
-            add_member(tar, "PMC4334330/jmdh-8-091.PMC4334330.pdf", article_pdf_payload)
-            add_member(tar, "PMC4334330/jmdh-8-091.PMC4334330.nxml", b"<article/>")
-
-        tgz_bytes = buf.getvalue()
-
-        def fake_run(cmd, capture_output=True, text=True, timeout=300, check=False):
-            out_dir = Path(cmd[cmd.index("-d") + 1])
-            out_name = cmd[cmd.index("-o") + 1]
-            out_path = out_dir / out_name
-            out_path.write_bytes(tgz_bytes)
-            return Mock(returncode=0, stderr="", stdout="")
-
-        mock_run.side_effect = fake_run
-
-        with tempfile.TemporaryDirectory() as td:
-            dest = Path(td) / "out.pdf"
-            ok = download_pdf_from_tgz("https://example.org/a.tgz", dest)
-
-            self.assertTrue(ok)
-            content = dest.read_bytes()
-            self.assertIn(b"ARTICLE-CONTENT", content)
-            self.assertNotIn(b"F002;SUPPLEMENT", content)
-
-
 class TestDownloadOaPdf(unittest.TestCase):
-    @patch("downloader.pdf_downloader.download_pdf_from_tgz")
+    """正文下载优先级：PDF 直链 → txt 直链（S3 text_url 回退）。"""
+
+    @patch("downloader.pdf_downloader.download_txt_file")
     @patch("downloader.pdf_downloader.download_pdf_file")
-    def test_should_download_pdf_direct_when_pdf_link_present(self, mock_pdf, mock_pdf_from_tgz):
+    def test_should_download_pdf_direct_when_pdf_link_present(self, mock_pdf, mock_txt):
         mock_pdf.return_value = True
-        mock_pdf_from_tgz.return_value = True
 
         with tempfile.TemporaryDirectory() as td:
             base = Path(td)
             ok = download_oa_pdf(
-                links={"pdf": "https://example.org/a.pdf", "tgz": "https://example.org/a.tgz"},
+                links={"pdf": "https://example.org/a.pdf", "txt": "https://example.org/a.txt"},
                 pdf_path=base / "a.pdf",
             )
 
         self.assertTrue(ok)
         mock_pdf.assert_called_once()
-        mock_pdf_from_tgz.assert_not_called()
+        mock_txt.assert_not_called()
 
-    @patch("downloader.pdf_downloader.download_pdf_from_tgz")
+    @patch("downloader.pdf_downloader.download_txt_file")
     @patch("downloader.pdf_downloader.download_pdf_file")
-    def test_should_extract_pdf_from_tgz_when_pdf_link_missing(self, mock_pdf, mock_pdf_from_tgz):
+    def test_should_fall_back_to_txt_when_pdf_fails(self, mock_pdf, mock_txt):
+        """S3 直链 PDF 下载失败时，回退到 text_url 的纯文本全文。"""
         mock_pdf.return_value = False
-        mock_pdf_from_tgz.return_value = True
+        mock_txt.return_value = True
 
         with tempfile.TemporaryDirectory() as td:
             base = Path(td)
             ok = download_oa_pdf(
-                links={"tgz": "https://example.org/a.tgz"},
+                links={"pdf": "https://example.org/a.pdf", "txt": "https://example.org/a.txt"},
+                pdf_path=base / "a.pdf",
+            )
+
+        self.assertTrue(ok)
+        mock_pdf.assert_called_once()
+        # txt 落到同名 .txt，不覆盖 .pdf 路径
+        self.assertTrue(str(mock_txt.call_args.args[1]).endswith("a.txt"))
+
+    @patch("downloader.pdf_downloader.download_txt_file")
+    @patch("downloader.pdf_downloader.download_pdf_file")
+    def test_should_use_txt_when_no_pdf_link(self, mock_pdf, mock_txt):
+        mock_txt.return_value = True
+
+        with tempfile.TemporaryDirectory() as td:
+            base = Path(td)
+            ok = download_oa_pdf(
+                links={"txt": "https://example.org/a.txt"},
                 pdf_path=base / "a.pdf",
             )
 
         self.assertTrue(ok)
         mock_pdf.assert_not_called()
-        mock_pdf_from_tgz.assert_called_once()
+        mock_txt.assert_called_once()
 
-    @patch("downloader.pdf_downloader.download_pdf_from_tgz")
+    @patch("downloader.pdf_downloader.download_txt_file")
     @patch("downloader.pdf_downloader.download_pdf_file")
-    def test_should_extract_from_tgz_when_pdf_direct_download_fails(self, mock_pdf, mock_pdf_from_tgz):
+    def test_should_fail_when_both_links_fail(self, mock_pdf, mock_txt):
         mock_pdf.return_value = False
-        mock_pdf_from_tgz.return_value = True
+        mock_txt.return_value = False
 
         with tempfile.TemporaryDirectory() as td:
             base = Path(td)
             ok = download_oa_pdf(
-                links={"pdf": "https://example.org/a.pdf", "tgz": "https://example.org/a.tgz"},
-                pdf_path=base / "a.pdf",
-            )
-
-        self.assertTrue(ok)
-        mock_pdf.assert_called_once()
-        mock_pdf_from_tgz.assert_called_once()
-
-    @patch("downloader.pdf_downloader.download_pdf_from_tgz")
-    @patch("downloader.pdf_downloader.download_pdf_file")
-    def test_should_fail_when_pdf_unavailable(self, mock_pdf, mock_pdf_from_tgz):
-        mock_pdf.return_value = False
-        mock_pdf_from_tgz.return_value = False
-
-        with tempfile.TemporaryDirectory() as td:
-            base = Path(td)
-            ok = download_oa_pdf(
-                links={"pdf": "https://example.org/a.pdf", "tgz": "https://example.org/a.tgz"},
+                links={"pdf": "https://example.org/a.pdf", "txt": "https://example.org/a.txt"},
                 pdf_path=base / "a.pdf",
             )
 
         self.assertFalse(ok)
         mock_pdf.assert_called_once()
-        mock_pdf_from_tgz.assert_called_once()
+        mock_txt.assert_called_once()
+
+    @patch("downloader.pdf_downloader.download_txt_file")
+    @patch("downloader.pdf_downloader.download_pdf_file")
+    def test_should_fail_when_no_links(self, mock_pdf, mock_txt):
+        with tempfile.TemporaryDirectory() as td:
+            base = Path(td)
+            ok = download_oa_pdf(links={}, pdf_path=base / "a.pdf")
+
+        self.assertFalse(ok)
+        mock_pdf.assert_not_called()
+        mock_txt.assert_not_called()
 
 
 class TestAria2Download(unittest.TestCase):
@@ -814,7 +685,7 @@ class TestExportOaLinksCsv(unittest.TestCase):
     def test_should_export_required_columns_and_rows(self):
         oa_links = {
             "PMC1": {"pdf": "https://example.org/1.pdf"},
-            "PMC2": {"tgz": "https://example.org/2.tgz"},
+            "PMC2": {"txt": "https://example.org/2.txt"},
         }
         pmc_to_info = {
             "PMC1": {"pmid": "111"},
@@ -826,14 +697,18 @@ class TestExportOaLinksCsv(unittest.TestCase):
             self.assertTrue(out_path.exists())
 
             with open(out_path, "r", encoding="utf-8-sig", newline="") as f:
-                rows = list(csv.DictReader(f))
+                reader = csv.DictReader(f)
+                fieldnames = reader.fieldnames
+                rows = list(reader)
 
+        self.assertEqual(fieldnames, ["pmid", "pmc_id", "pdf_url"])
         self.assertEqual(len(rows), 2)
         self.assertEqual(rows[0]["pmid"], "111")
         self.assertEqual(rows[0]["pmc_id"], "PMC1")
-        
         self.assertEqual(rows[0]["pdf_url"], "https://example.org/1.pdf")
-        self.assertEqual(rows[1]["tgz_url"], "https://example.org/2.tgz")
+        # txt 直链不落在本清单里（无 pdf_url 的记录留空）
+        self.assertEqual(rows[1]["pmc_id"], "PMC2")
+        self.assertEqual(rows[1]["pdf_url"], "")
 
 
 class TestPdfCheckpoint(unittest.TestCase):
@@ -909,28 +784,35 @@ class TestLoadFailedItemsFromCsv(unittest.TestCase):
             ],
         )
 
-    def test_should_parse_tgz_url(self):
+    def test_should_ignore_legacy_tgz_url_column(self):
+        """旧失败清单里的 tgz_url 必须被忽略。
+
+        该列曾让 ftp 包链接流入 download_oa_pdf 的 tgz 分支，而 NCBI FTP 路径
+        已随 OA Web Service 退役，aria2c 只会永远失败并被 pdf-retry 无限重试。
+        """
         from downloader.pdf_downloader import load_failed_items_from_csv
 
         with tempfile.TemporaryDirectory() as td:
             out_dir = Path(td)
             (out_dir / "failed_downloads_20260101_010101.csv").write_text(
                 "pmid,pmc_id,pdf_url,tgz_url\n"
-                "444,PMC4,,ftp://ftp.ncbi.nlm.nih.gov/pub/pmc/oa_package/a/b/4.PMC4.tar.gz\n",
+                "444,PMC4,,ftp://ftp.ncbi.nlm.nih.gov/pub/pmc/oa_package/a/b/4.PMC4.tar.gz\n"
+                "555,PMC5,https://ok.example/5.pdf,ftp://ftp.ncbi.nlm.nih.gov/pub/pmc/oa_package/a/b/5.tgz\n",
                 encoding="utf-8-sig",
             )
 
             items = load_failed_items_from_csv(out_dir=out_dir)
 
+        # 两行都保留（重试靠 pmc_id 重新向 S3 解析，links 可为空），
+        # 但 tgz 链接不再进入 links，不会流向已死的包内提取路径
         self.assertEqual(
             items,
             [
+                {"pmid": "444", "pmc_id": "PMC4", "links": {}},
                 {
-                    "pmid": "444",
-                    "pmc_id": "PMC4",
-                    "links": {
-                        "tgz": "https://ftp.ncbi.nlm.nih.gov/pub/pmc/deprecated/oa_package/a/b/4.PMC4.tar.gz",
-                    },
+                    "pmid": "555",
+                    "pmc_id": "PMC5",
+                    "links": {"pdf": "https://ok.example/5.pdf"},
                 },
             ],
         )

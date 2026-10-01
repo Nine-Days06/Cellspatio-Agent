@@ -10,7 +10,6 @@ PMC Open Access PDF 下载器
 
 import time
 import re
-import tarfile
 import csv
 import json
 import subprocess
@@ -297,7 +296,8 @@ def load_cached_oa_links(
     """
     从历史导出的 OA 链接清单中加载可复用链接。
     只返回当前 `pmc_ids` 范围内的记录；
-    指向已退役 NCBI FTP 的 pdf/tgz 死链直接丢弃（避免复活无法下载的旧链接）。
+    指向已退役 NCBI FTP 的死链直接丢弃（避免复活无法下载的旧链接）。
+    仅读取 pdf_url：tgz 包内提取路径已随 OA Web Service 退役一并移除。
     """
     if not pmc_ids:
         return {}
@@ -320,11 +320,8 @@ def load_cached_oa_links(
 
                     links: dict[str, str] = {}
                     raw_pdf = (row.get("pdf_url") or "").strip()
-                    raw_tgz = (row.get("tgz_url") or "").strip()
                     if raw_pdf and not _is_dead_cached_url(raw_pdf):
                         links["pdf"] = normalize_pmc_asset_url(raw_pdf)
-                    if raw_tgz and not _is_dead_cached_url(raw_tgz):
-                        links["tgz"] = normalize_pmc_asset_url(raw_tgz)
 
                     if links:
                         cached_links[pmc_id] = links
@@ -414,7 +411,7 @@ def export_oa_links_csv(
 
     with open(csv_path, "w", newline="", encoding="utf-8-sig") as f:
         writer = csv.writer(f)
-        writer.writerow(["pmid", "pmc_id", "pdf_url", "tgz_url"])
+        writer.writerow(["pmid", "pmc_id", "pdf_url"])
 
         for pmc_id in sorted(oa_links.keys()):
             info = pmc_to_info.get(pmc_id, {})
@@ -423,7 +420,6 @@ def export_oa_links_csv(
                 info.get("pmid", ""),
                 pmc_id,
                 links.get("pdf", ""),
-                links.get("tgz", ""),
             ])
 
     return csv_path
@@ -434,7 +430,7 @@ def export_failed_links_csv(
 ) -> Path:
     """
     导出下载失败的链接清单（CSV），方便人工核查或补下载。
-    每行包含 pmid、pmc_id、pdf_url、tgz_url、error 类型。
+    每行包含 pmid、pmc_id、pdf_url、error 类型。
     """
     out_dir.mkdir(parents=True, exist_ok=True)
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -442,14 +438,13 @@ def export_failed_links_csv(
 
     with open(csv_path, "w", newline="", encoding="utf-8-sig") as f:
         writer = csv.writer(f)
-        writer.writerow(["pmid", "pmc_id", "pdf_url", "tgz_url"])
+        writer.writerow(["pmid", "pmc_id", "pdf_url"])
         for item in failed_items:
             links = item["links"]
             writer.writerow([
                 item.get("pmid", ""),
                 item.get("pmc_id", ""),
                 links.get("pdf", "") if links else "",
-                links.get("tgz", "") if links else "",
             ])
 
     return csv_path
@@ -508,11 +503,8 @@ def load_failed_items_from_csv(out_dir: Path = OUTPUT_DIR) -> list[dict]:
             for row in csv.DictReader(f):
                 links: dict[str, str] = {}
                 pdf_url = normalize_pmc_asset_url(row.get("pdf_url", ""))
-                tgz_url = normalize_pmc_asset_url(row.get("tgz_url", ""))
                 if pdf_url:
                     links["pdf"] = pdf_url
-                if tgz_url:
-                    links["tgz"] = tgz_url
                 items.append({
                     "pmid": row.get("pmid", ""),
                     "pmc_id": normalize_pmc_id(row.get("pmc_id", "")) or "",
@@ -626,156 +618,14 @@ def download_txt_file(url: str, dest_path: Path) -> bool:
     return download_pdf_file(url, dest_path)
 
 
-def _select_article_pdf_member(members: list) -> tarfile.TarInfo | None:
-    """
-    从 OA tgz 包成员中选择正文 PDF。
-
-    PMC OA 包中正文 PDF 通常与 .nxml/.xml 文件同名（如 BCR-**.pdf 对应 BCR-**.nxml），
-    而配图/表格等补充材料 PDF 命名不同（如 *-s001.pdf）。按 stem 优先匹配可避免取错。
-    """
-    pdf_members = [
-        m for m in members if m.isfile() and m.name.lower().endswith(".pdf")
-    ]
-    if not pdf_members:
-        return None
-    if len(pdf_members) == 1:
-        return pdf_members[0]
-
-    xml_stems = {
-        Path(m.name).stem
-        for m in members
-        if m.isfile() and m.name.lower().endswith((".nxml", ".xml"))
-    }
-    if xml_stems:
-        for pdf in pdf_members:
-            if Path(pdf.name).stem in xml_stems:
-                return pdf
-
-    return pdf_members[0]
-
-
-def extract_nxml_to_txt(tgz_path: Path, txt_path: Path) -> bool:
-    """
-    从 OA tgz 包中提取 nxml 正文全文并转存为纯文本 txt。
-    包内无 nxml 时返回 False（极端情况，视为失败）。
-    """
-    try:
-        nxml_name = None
-        with tarfile.open(tgz_path, mode="r:gz") as tar:
-            for m in tar.getmembers():
-                if m.isfile() and m.name.lower().endswith(".nxml"):
-                    nxml_name = m.name
-                    break
-            if nxml_name is None:
-                logger.warning(f"  tgz 包内未找到 nxml: {tgz_path}")
-                return False
-            nxml_bytes = tar.extractfile(nxml_name).read()
-
-        root = etree.fromstring(nxml_bytes, parser=etree.XMLParser(recover=True))
-        lines: list[str] = []
-
-        title_el = root.find(".//article-title")
-        if title_el is not None:
-            lines.append("TITLE: " + "".join(title_el.itertext()).strip())
-            lines.append("")
-
-        body = root.find(".//body")
-        if body is not None:
-            for sec in body.iter():
-                tag = etree.QName(sec).localname if isinstance(sec.tag, str) else ""
-                if tag == "title":
-                    lines.append("")
-                    lines.append("### " + "".join(sec.itertext()).strip())
-                elif tag == "p":
-                    text = "".join(sec.itertext()).strip()
-                    if text:
-                        lines.append(text)
-                elif tag == "table-wrap":
-                    for tr in sec.findall(".//tr"):
-                        cells = [
-                            "".join(td.itertext()).strip()
-                            for td in tr.findall("td")
-                        ]
-                        if cells:
-                            lines.append(" | ".join(cells))
-
-        if not lines:
-            return False
-
-        txt_path.parent.mkdir(parents=True, exist_ok=True)
-        txt_path.write_text("\n".join(lines), encoding="utf-8")
-        return True
-    except Exception as e:
-        logger.error(f"  NXML->TXT 提取失败: {tgz_path} -> {e}")
-        return False
-
-
-def download_pdf_from_tgz(url: str, dest_path: Path) -> bool:
-    """
-    从 OA tgz 包中提取 PDF，并保存为 .pdf。
-    当 `oa.fcgi` 未返回 pdf 直链但包内已有 PDF 时可作为回退策略。
-    包内有多个 PDF 时优先选择与 .nxml/.xml 同名的正文 PDF。
-    """
-    if dest_path.exists() and dest_path.stat().st_size > MIN_VALID_FILE_BYTES:
-        return True
-
-    dest_path.parent.mkdir(parents=True, exist_ok=True)
-    temp_path = dest_path.with_suffix(".pdf.part")
-    tgz_temp_path = dest_path.with_suffix(".tgz.part")
-
-    try:
-        pdf_bytes = None
-        if not _run_aria2c_download(url, tgz_temp_path):
-            raise RuntimeError("aria2c 下载 tgz 失败")
-
-        with tarfile.open(tgz_temp_path, mode="r:gz") as tar:
-            pdf_member = _select_article_pdf_member(tar.getmembers())
-
-            if pdf_member is None:
-                # 包内无 PDF（仅 nxml）时回退：提取 XML 全文转 txt
-                txt_path = dest_path.with_suffix(".txt")
-                logger.info(f"  tgz 包内无 PDF，尝试提取 XML 全文: {txt_path.name}")
-                tar.close()
-                if extract_nxml_to_txt(tgz_temp_path, txt_path):
-                    logger.info(f"  该文献无 PDF 全文，已提取 XML 全文: {txt_path}")
-                    return True
-                raise RuntimeError("tgz 包内未找到 PDF 且 XML 全文提取失败")
-
-            extracted = tar.extractfile(pdf_member)
-            if extracted is None:
-                raise RuntimeError("无法读取 tgz 包内 PDF 文件")
-            pdf_bytes = extracted.read()
-
-        if not pdf_bytes or len(pdf_bytes) <= MIN_VALID_FILE_BYTES:
-            raise RuntimeError("提取到的 PDF 过小，可能无效")
-
-        with open(temp_path, "wb") as f:
-            f.write(pdf_bytes)
-
-        if temp_path.stat().st_size <= MIN_VALID_FILE_BYTES:
-            raise RuntimeError("PDF 文件过小，可能提取失败")
-
-        temp_path.replace(dest_path)
-        return True
-    except Exception as e:
-        logger.error(f"  TGZ->PDF 提取失败: {url} -> {e}")
-        _cleanup_aria2_temp_files(temp_path)
-        if dest_path.exists() and dest_path.stat().st_size <= MIN_VALID_FILE_BYTES:
-            dest_path.unlink()
-        return False
-    finally:
-        _cleanup_aria2_temp_files(tgz_temp_path)
-
-
 def download_oa_pdf(links: dict[str, str], pdf_path: Path) -> bool:
     """
-    下载整篇正文，优先级：PDF 直链 → txt 直链（S3 text_url 回退）→ tgz 包内提取（历史遗留路径）。
-    新流程仅产出 pdf/txt 直链，tgz 只可能来自存量缓存/失败清单。
+    下载整篇正文，优先级：PDF 直链 → txt 直链（S3 text_url 回退）。
+    两者皆无则视为取链失败，由调用方计入失败清单。
     返回是否成功。
     """
     pdf_url = links.get("pdf")
     txt_url = links.get("txt")
-    tgz_url = links.get("tgz")
 
     if pdf_url and download_pdf_file(pdf_url, pdf_path):
         return True
@@ -783,8 +633,6 @@ def download_oa_pdf(links: dict[str, str], pdf_path: Path) -> bool:
     if txt_url and download_txt_file(txt_url, pdf_path.with_suffix(".txt")):
         return True
 
-    if tgz_url and download_pdf_from_tgz(tgz_url, pdf_path):
-        return True
 
     return False
 
@@ -844,11 +692,10 @@ def run_pdf_download(db_path: Path = DB_PATH):
     oa_links, network_failed = fetch_oa_links(pmc_ids, cached_links=cached_oa_links)
     pdf_link_count = sum(1 for links in oa_links.values() if "pdf" in links)
     txt_link_count = sum(1 for links in oa_links.values() if "txt" in links)
-    tgz_link_count = sum(1 for links in oa_links.values() if "tgz" in links)
 
     logger.info(
         f"成功获取 {len(oa_links)} 条 OA 资源"
-        f"（PDF: {pdf_link_count}, TXT: {txt_link_count}, TGZ: {tgz_link_count}）。"
+        f"（PDF: {pdf_link_count}, TXT: {txt_link_count}）。"
     )
 
     links_csv = export_oa_links_csv(oa_links=oa_links, pmc_to_info=pmc_to_info)
