@@ -74,3 +74,38 @@ def test_autostart_truthy_variants_are_true(val, monkeypatch):
     finally:
         monkeypatch.delenv("OLLAMA_AUTOSTART", raising=False)
         importlib.reload(config)
+
+
+# ── T1 追加：OLLAMA_AUTO_PULL 配置读取 ───────────────────────────────
+
+
+def test_auto_pull_reads_config_flag(monkeypatch):
+    """OLLAMA_AUTO_PULL 读取配置：falsy 值返回 False，truthy 值返回 True。"""
+    monkeypatch.setattr(config, "OLLAMA_AUTO_PULL", False)
+    assert rt._auto_pull() is False
+    monkeypatch.setattr(config, "OLLAMA_AUTO_PULL", True)
+    assert rt._auto_pull() is True
+
+
+@pytest.mark.parametrize("val", ["0", "false", "no", "off", ""])
+def test_auto_pull_falsy_variants_are_false(val, monkeypatch):
+    """各种 falsy 值应被识别为关闭（默认行为）。"""
+    monkeypatch.setenv("OLLAMA_AUTO_PULL", val)
+    importlib.reload(config)
+    try:
+        assert config.OLLAMA_AUTO_PULL is False
+    finally:
+        monkeypatch.delenv("OLLAMA_AUTO_PULL", raising=False)
+        importlib.reload(config)
+
+
+@pytest.mark.parametrize("val", ["1", "true", "yes", "on", " 1 "])
+def test_auto_pull_truthy_variants_are_true(val, monkeypatch):
+    """各种 truthy 值应被识别为开启。"""
+    monkeypatch.setenv("OLLAMA_AUTO_PULL", val)
+    importlib.reload(config)
+    try:
+        assert config.OLLAMA_AUTO_PULL is True
+    finally:
+        monkeypatch.delenv("OLLAMA_AUTO_PULL", raising=False)
+        importlib.reload(config)

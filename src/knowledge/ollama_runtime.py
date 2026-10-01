@@ -7,6 +7,14 @@ embedding 唯一后端是本地 Ollama（见 llm_factory.build_embedding_func）
 1. 绝不启动/关闭用户自己启动的 Ollama——探活成功即视为外部实例（managed=False）。
 2. 任何失败都不抛到调用方，只转成 status() 的状态 + 日志（保持对话链路行为不变）。
 3. 探活与启动均幂等：并发首次调用只会启动一个进程。
+
+状态机（status()["state"] 取值）：
+- stopped / starting / ready / downloading：生命周期推进
+- unavailable：找不到 ollama 可执行文件 / 自动唤起被关闭 / spawn 异常
+- failed：**尝试过但出错**（拉取 rc≠0、启动超时等）
+- needs_model：模型缺失且**没尝试**拉取（OLLAMA_AUTO_PULL=0，计划 1.6 新增）——
+  没尝试下载，等待用户决定，故给可执行指引而非报错
+- idle：空闲回收中/已关闭
 """
 from __future__ import annotations
 
@@ -94,8 +102,18 @@ def _idle_seconds() -> float:
         from src.config import OLLAMA_IDLE_MINUTES
 
         return max(0, int(OLLAMA_IDLE_MINUTES)) * 60
-    except Exception:  # noqa: BLE001 - 配置不可用时不自动关闭
+    except Exception:  # noqa: BLE001 - 配置不可用时按默认处理
         return 0.0
+
+
+def _auto_pull() -> bool:
+    """是否允许自动拉取模型（配置缺失时按关闭处理，与默认一致）。"""
+    try:
+        from src.config import OLLAMA_AUTO_PULL
+
+        return bool(OLLAMA_AUTO_PULL)
+    except Exception:  # noqa: BLE001 - 配置不可用时保持默认关闭
+        return False
 
 
 def _model() -> str:
@@ -224,12 +242,31 @@ def _ensure_model(
     `tags` 用于复用调用方**刚探到**的 /api/tags 结果：managed 分支上一步
     探活已经拿到同一份数据，再探一次纯属多一次 HTTP 往返（模型列表不小）。
     传 None（默认）表示没现成结果，需要自己探。
+
+    状态机：
+    - ready: 模型已就位
+    - downloading: 正在拉取模型
+    - failed: 拉取失败（rc≠0 或异常）
+    - needs_model: 模型缺失且未尝试拉取（OLLAMA_AUTO_PULL=0）
     """
     global _state, _detail
     if tags is None:
         tags = _probe(host, PROBE_TIMEOUT)
     if _has_model(tags):
         return True
+    # 缺模型：根据 OLLAMA_AUTO_PULL 决定行为
+    if not _auto_pull():
+        with _state_lock:
+            _state, _detail = (
+                "needs_model",
+                (
+                    f"服务已启动，但未找到模型 {_model()}。若你修改过模型目录，请确认 OLLAMA_MODELS"
+                    f" 并**重启 ollama 服务**（改环境变量后不重启不生效）；也可手动执行"
+                    f" `ollama pull {_model()}`，或设置 OLLAMA_AUTO_PULL=1 允许自动下载。"
+                ),
+            )
+        return False
+    # OLLAMA_AUTO_PULL=1：走现有 pull 流程
     with _state_lock:
         _state, _detail = "downloading", f"正在拉取模型 {_model()}"
     logger.info("pulling embedding model %s (first run may take minutes)", _model())

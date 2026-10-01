@@ -105,6 +105,9 @@ EMBEDDING_MODEL = os.environ.get("EMBEDDING_MODEL", "bge-m3")
 OLLAMA_AUTOSTART = os.environ.get("OLLAMA_AUTOSTART", "1").strip().lower() not in (
     "0", "false", "no", "off", "",
 )
+# 自动拉取：缺模型时是否自动下载（默认 0=不自动下载）。下载是用户资产决策：
+# 模型目录由服务端 OLLAMA_MODELS 决定，自动拉取可能灌到错误目录。
+OLLAMA_AUTO_PULL = os.environ.get("OLLAMA_AUTO_PULL", "0").strip().lower() in ("1", "true", "yes", "on")
 # 自动关闭：空闲超过该分钟数后关闭「本应用启动的」Ollama（<=0 表示不自动关闭）
 try:
     OLLAMA_IDLE_MINUTES = int(os.environ.get("OLLAMA_IDLE_MINUTES", "10"))

@@ -201,7 +201,7 @@ def test_ensure_ready_times_out_and_terminates_started_process(monkeypatch):
 
 
 def test_ensure_ready_pulls_model_when_missing(monkeypatch):
-    """就绪但模型不在列表 → 执行 ollama pull。"""
+    """就绪但模型不在列表且 OLLAMA_AUTO_PULL=1 → 执行 ollama pull。"""
     calls: list[list[str]] = []
     probes = [
         None,                        # 启动前探活失败
@@ -211,6 +211,7 @@ def test_ensure_ready_pulls_model_when_missing(monkeypatch):
 
     monkeypatch.setattr(rt, "_which", lambda name: "ollama")
     monkeypatch.setattr(rt, "_probe", lambda host, timeout: probes.pop(0))
+    monkeypatch.setattr(rt, "_auto_pull", lambda: True)  # 1.6 起默认关；本用例测 pull 机制
     monkeypatch.setattr(
         rt, "_spawn", lambda argv, flags: calls.append(argv) or FakeProc(argv)
     )
@@ -301,6 +302,7 @@ def test_ensure_ready_marks_failed_when_pull_exits_nonzero(monkeypatch):
 
     monkeypatch.setattr(rt, "_which", lambda name: "ollama")
     monkeypatch.setattr(rt, "_probe", lambda host, timeout: probes.pop(0))
+    monkeypatch.setattr(rt, "_auto_pull", lambda: True)  # 1.6 起默认关；本用例测 rc 校验
     monkeypatch.setattr(
         rt,
         "_spawn",
@@ -327,6 +329,7 @@ def test_ensure_ready_retries_pull_when_model_still_missing(monkeypatch):
 
     monkeypatch.setattr(rt, "_which", lambda name: "ollama")
     monkeypatch.setattr(rt, "_probe", lambda host, timeout: probes.pop(0))
+    monkeypatch.setattr(rt, "_auto_pull", lambda: True)  # 1.6 起默认关；本用例测补拉重试
     monkeypatch.setattr(
         rt,
         "_spawn",
@@ -619,6 +622,7 @@ def test_reap_does_not_interrupt_model_pull(monkeypatch):
 
     monkeypatch.setattr(rt, "_which", lambda name: "ollama")
     monkeypatch.setattr(rt, "_probe", lambda host, timeout: {"models": []})
+    monkeypatch.setattr(rt, "_auto_pull", lambda: True)  # 1.6 起默认关；本用例测 pull 期间回收让路
     monkeypatch.setattr(rt, "_spawn", blocking_spawn)
     monkeypatch.setattr(rt, "_idle_seconds", lambda: 600.0)
     monkeypatch.setattr(rt, "_monotonic", lambda: 10_000.0)
@@ -702,3 +706,116 @@ def test_reset_for_tests_clears_all_state():
     assert rt._last_used == 0.0
     assert rt._last_probe_ok == -1e9
     assert rt._reaper_started is False
+
+
+# ── T1 追加：needs_model 终态与自动拉取开关 ───────────────────────────
+
+
+def test_ensure_model_needs_model_when_auto_pull_disabled(monkeypatch):
+    """缺模型且 OLLAMA_AUTO_PULL=0 → needs_model 且不触发 pull。"""
+    calls: list[list[str]] = []
+    probes = [
+        None,  # 启动前探活失败
+        {"models": []},  # 启动后轮询成功
+        {"models": []},  # _ensure_model 自探：模型仍缺
+    ]
+
+    monkeypatch.setattr(rt, "_which", lambda name: "ollama")
+    monkeypatch.setattr(rt, "_probe", lambda host, timeout: probes.pop(0))
+    monkeypatch.setattr(rt, "_autostart", lambda: True)
+    monkeypatch.setattr(rt, "_auto_pull", lambda: False)
+    monkeypatch.setattr(
+        rt, "_spawn", lambda argv, flags: calls.append(argv) or FakeProc(argv)
+    )
+    monkeypatch.setattr(rt, "_monotonic", lambda: 0.0)
+
+    rt.ensure_ready()
+
+    # 只启动 serve，不 pull
+    assert calls == [["ollama", "serve"]]
+    status = rt.status()
+    assert status["state"] == "needs_model"
+    assert "bge-m3" in status["detail"]
+    assert "OLLAMA_AUTO_PULL" in status["detail"]
+    assert "重启" in status["detail"]  # 提醒改环境变量需重启
+
+
+def test_ensure_model_pulls_when_auto_pull_enabled(monkeypatch):
+    """缺模型但 OLLAMA_AUTO_PULL=1 → 走 pull 流程。"""
+    calls: list[list[str]] = []
+    probes = [
+        None,  # 启动前探活失败
+        {"models": []},  # 启动后轮询成功
+        {"models": []},  # 拉取后再探活
+    ]
+
+    monkeypatch.setattr(rt, "_which", lambda name: "ollama")
+    monkeypatch.setattr(rt, "_probe", lambda host, timeout: probes.pop(0))
+    monkeypatch.setattr(rt, "_autostart", lambda: True)
+    monkeypatch.setattr(rt, "_auto_pull", lambda: True)
+    monkeypatch.setattr(
+        rt, "_spawn", lambda argv, flags: calls.append(argv) or FakeProc(argv)
+    )
+    monkeypatch.setattr(rt, "_monotonic", lambda: 0.0)
+
+    rt.ensure_ready()
+
+    assert calls == [["ollama", "serve"], ["ollama", "pull", "bge-m3:latest"]]
+    assert rt.status()["state"] == "ready"
+
+
+def test_ensure_model_pull_failed_returns_failed(monkeypatch):
+    """拉取 rc≠0 → failed（回归保护，计划 1.5 已修的 C1 不得退化）。"""
+    calls: list[list[str]] = []
+    probes = [
+        None,  # 启动前探活失败
+        {"models": []},  # 启动后轮询成功
+        {"models": []},  # 模型检查：仍缺 → pull（rc=1）
+    ]
+
+    monkeypatch.setattr(rt, "_which", lambda name: "ollama")
+    monkeypatch.setattr(rt, "_probe", lambda host, timeout: probes.pop(0))
+    monkeypatch.setattr(rt, "_autostart", lambda: True)
+    monkeypatch.setattr(rt, "_auto_pull", lambda: True)
+    monkeypatch.setattr(
+        rt, "_spawn", lambda argv, flags: calls.append(argv) or FakeProc(argv, wait_rc=1)
+    )
+    monkeypatch.setattr(rt, "_monotonic", lambda: 0.0)
+
+    rt.ensure_ready()
+
+    assert calls == [["ollama", "serve"], ["ollama", "pull", "bge-m3:latest"]]
+    status = rt.status()
+    assert status["state"] == "failed"
+    assert "退出码" in status["detail"]
+
+
+def test_ensure_model_skips_pull_when_model_present(monkeypatch):
+    """模型已在列表中 → 不 pull（回归保护）。"""
+    calls: list[list[str]] = []
+    tags = {"models": [{"name": "bge-m3:latest"}]}
+    monkeypatch.setattr(rt, "_which", lambda name: "ollama")
+    monkeypatch.setattr(rt, "_probe", lambda host, timeout: tags)
+    monkeypatch.setattr(rt, "_autostart", lambda: True)
+    monkeypatch.setattr(rt, "_auto_pull", lambda: True)
+    monkeypatch.setattr(
+        rt, "_spawn", lambda argv, flags: calls.append(argv) or FakeProc(argv)
+    )
+    monkeypatch.setattr(rt, "_monotonic", lambda: 0.0)
+
+    rt.ensure_ready()
+
+    assert calls == []  # 首次探活就成功，根本没启动
+    assert rt.status()["managed"] is False
+
+
+def test_needs_model_is_valid_status(monkeypatch):
+    """needs_model 是合法状态：status() 返回三键且 state="needs_model"（不破坏三键契约）。"""
+    monkeypatch.setattr(rt, "_probe", lambda host, timeout: {"models": []})
+    monkeypatch.setattr(rt, "_auto_pull", lambda: False)
+
+    assert rt._ensure_model("http://127.0.0.1:11434", "ollama", 0) is False
+
+    status = rt.status()
+    assert set(status) == {"state", "managed", "detail"}
+    assert status["state"] == "needs_model"
