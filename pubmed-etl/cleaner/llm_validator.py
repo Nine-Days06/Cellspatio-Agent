@@ -20,6 +20,7 @@ from config.settings import (
     LLM_BATCH_SIZE, LLM_CONCURRENCY, LLM_MAX_TOKENS, LLM_MAX_RETRIES, LLM_MAX_ROUNDS,
     LLM_PROVIDER, LLM_PROVIDER_CONFIGS,
     LLM_BATCH_POLL_INTERVAL, LLM_BATCH_TIMEOUT, LLM_BATCH_AUTO_DELETE,
+    LLM_BATCH_MAX_BYTES, LLM_BATCH_MAX_REQUESTS,
     ZHIPU_API_KEY, ZHIPU_BATCH_MODEL,
 )
 from utils import now_iso
@@ -642,7 +643,12 @@ def _save_batch_checkpoint(data: dict):
     path.parent.mkdir(parents=True, exist_ok=True)
     with open(path, "w", encoding="utf-8") as f:
         json.dump(data, f, ensure_ascii=False)
-    logger.info(f"Batch 检查点已保存: batch_id={data.get('batch_id', 'N/A')}")
+    batches = data.get("batches")
+    if isinstance(batches, list):
+        ids = ",".join(str(b.get("batch_id", "?")) for b in batches)
+        logger.info(f"Batch 检查点已保存: {len(batches)} 个批次 [{ids}]")
+    else:
+        logger.info(f"Batch 检查点已保存: batch_id={data.get('batch_id', 'N/A')}")
 
 
 def _load_batch_checkpoint() -> dict | None:
@@ -655,6 +661,32 @@ def _load_batch_checkpoint() -> dict | None:
     except Exception as e:
         logger.warning(f"Batch 检查点读取失败，将重新提交: {e}")
         return None
+
+
+def _checkpoint_batches(chk: dict | None) -> list[dict]:
+    """从检查点取出批次列表，兼容 v1（单批次）与 v2（多批次）两种结构。
+
+    v1：{"batch_id": ..., "pmid_list": [...], ...}
+    v2：{"version": 2, "batches": [{"batch_id":..., "pmid_list":[...}, ...]}
+
+    返回的每个元素至少包含 batch_id 与 pmid_list；无法识别时返回空列表。
+    """
+    if not isinstance(chk, dict):
+        return []
+    batches = chk.get("batches")
+    if isinstance(batches, list) and batches:
+        return [b for b in batches if isinstance(b, dict) and b.get("batch_id")]
+    batch_id = chk.get("batch_id")
+    if batch_id:
+        return [
+            {
+                "batch_id": batch_id,
+                "input_file_id": chk.get("input_file_id"),
+                "pmid_list": chk.get("pmid_list", []) or [],
+                "status": chk.get("status"),
+            }
+        ]
+    return []
 
 
 def _clear_batch_checkpoint():
@@ -674,41 +706,137 @@ def _build_per_article_prompt(pmid: str, title: str, abstract: str) -> str:
     )
 
 
-def _build_jsonl(rows: list) -> Path:
-    """构建 batch JSONL 文件（每篇一行），返回文件路径"""
+def _batch_request_line(row: dict) -> tuple[str, str]:
+    """构建单篇文献的 batch 请求行。
+
+    返回 (json 行字符串, pmid)。custom_id 取 pmid，智谱要求文件内唯一。
+    """
+    pmid = row["pmid"]
+    article_prompt = _build_per_article_prompt(
+        pmid, row["title"] or "", row["abstract"] or ""
+    )
+    req = {
+        "custom_id": pmid,
+        "method": "POST",
+        "url": "/v4/chat/completions",
+        "body": {
+            "model": ZHIPU_BATCH_MODEL,
+            "messages": [
+                {"role": "system", "content": SYSTEM_PROMPT_BATCH},
+                {"role": "user", "content": article_prompt},
+            ],
+            "temperature": 0,
+            "max_tokens": LLM_MAX_TOKENS,
+        },
+    }
+    return json.dumps(req, ensure_ascii=False), pmid
+
+
+def _dedupe_rows(rows: list) -> list:
+    """按 custom_id 去重并保序。
+
+    智谱要求同一 batch 文件内 custom_id 唯一，重复会被整文件拒绝；
+    这里保留首次出现者并告警，避免因个别重复 PMID 导致整批失败。
+    """
+    seen: set = set()
+    out: list = []
+    dropped = 0
+    for row in rows:
+        pmid = row["pmid"]
+        if pmid in seen:
+            dropped += 1
+            continue
+        seen.add(pmid)
+        out.append(row)
+    if dropped:
+        logger.warning(
+            f"batch 输入含 {dropped} 条重复 custom_id（重复 PMID），已保留首次出现者"
+        )
+    return out
+
+
+def _build_jsonl_files(rows: list) -> list[tuple[Path, list[str]]]:
+    """按智谱 Batch 限制把文献拆成多个 JSONL 文件。
+
+    限制（见 config.settings）：单文件 ≤ LLM_BATCH_MAX_BYTES 字节、
+    ≤ LLM_BATCH_MAX_REQUESTS 个请求。任一上限将被突破即另起新文件。
+
+    Returns:
+        [(文件路径, 该文件内的 pmid 列表), ...]
+    """
+    rows = _dedupe_rows(rows)
+    max_bytes = LLM_BATCH_MAX_BYTES
+    max_requests = LLM_BATCH_MAX_REQUESTS
+
     out_dir = Path(OUTPUT_DIR)
     out_dir.mkdir(parents=True, exist_ok=True)
     ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-    jsonl_path = out_dir / f"batch_input_{ts}.jsonl"
 
-    model = ZHIPU_BATCH_MODEL
-    system_content = SYSTEM_PROMPT_BATCH
+    groups: list[tuple[Path, list[str]]] = []
+    buf: list[str] = []
+    buf_pmids: list[str] = []
+    buf_bytes = 0
 
-    with open(jsonl_path, "w", encoding="utf-8") as f:
-        for row in rows:
-            pmid = row["pmid"]
-            article_prompt = _build_per_article_prompt(
-                pmid, row["title"] or "", row["abstract"] or ""
+    def flush() -> None:
+        nonlocal buf, buf_pmids, buf_bytes
+        if not buf:
+            return
+        path = out_dir / f"batch_input_{ts}_part{len(groups) + 1}.jsonl"
+        with open(path, "w", encoding="utf-8") as f:
+            f.write("\n".join(buf) + "\n")
+        groups.append((path, list(buf_pmids)))
+        buf = []
+        buf_pmids = []
+        buf_bytes = 0
+
+    for row in rows:
+        line, pmid = _batch_request_line(row)
+        # +1 补行末换行符
+        need = len(line.encode("utf-8")) + 1
+        if need > max_bytes:
+            raise ValueError(
+                f"单条 batch 请求体积 {need} 字节已超过单文件上限 "
+                f"{max_bytes} 字节（PMID={pmid}，摘要长度 "
+                f"{len(row.get('abstract') or '')} 字符），无法再拆分；"
+                f"请缩短该文献摘要或调大 LLM_BATCH_MAX_BYTES"
             )
-            req = {
-                "custom_id": pmid,
-                "method": "POST",
-                "url": "/v4/chat/completions",
-                "body": {
-                    "model": model,
-                    "messages": [
-                        {"role": "system", "content": system_content},
-                        {"role": "user", "content": article_prompt},
-                    ],
-                    "temperature": 0,
-                    "max_tokens": LLM_MAX_TOKENS,
-                },
-            }
-            f.write(json.dumps(req, ensure_ascii=False) + "\n")
+        if buf and (buf_bytes + need > max_bytes or len(buf) >= max_requests):
+            flush()
+        buf.append(line)
+        buf_pmids.append(pmid)
+        buf_bytes += need
 
-    file_size_mb = jsonl_path.stat().st_size / (1024 * 1024)
-    logger.info(f"JSONL 已构建: {jsonl_path} ({len(rows)} 行, {file_size_mb:.2f} MB)")
-    return jsonl_path
+    flush()
+
+    total = sum(len(p) for _, p in groups)
+    logger.info(
+        f"Batch 输入已构建 {len(groups)} 个文件，共 {total} 篇"
+        f"（单文件上限 {max_bytes / 1024 / 1024:.0f}MB / {max_requests} 条）"
+    )
+    for path, pmids in groups:
+        size_mb = path.stat().st_size / (1024 * 1024)
+        logger.info(f"  {path.name}: {len(pmids)} 篇, {size_mb:.2f} MB")
+    if len(groups) > 1:
+        logger.warning(
+            f"文献量超过单文件上限，已拆分为 {len(groups)} 个 Batch 任务并行提交"
+        )
+    return groups
+
+
+def _build_jsonl(rows: list) -> Path:
+    """构建单个 batch JSONL 文件（每篇一行），返回文件路径。
+
+    仅适用于确定能装进单个文件的小批量；超出智谱限制时抛错，
+    大批量请走 _build_jsonl_files 自动拆分。
+    """
+    groups = _build_jsonl_files(rows)
+    if len(groups) > 1:
+        paths = ", ".join(str(p) for p, _ in groups)
+        raise ValueError(
+            f"该批量需拆分为 {len(groups)} 个 Batch 文件（{paths}），"
+            f"请改用 _build_jsonl_files 以正确提交多个批次"
+        )
+    return groups[0][0]
 
 
 def _parse_batch_results(jsonl_path: str, db_path: Path = DB_PATH) -> tuple[int, list[str]]:
@@ -811,32 +939,40 @@ def _run_zhipu_batch():
     from zhipuai import ZhipuAI
     client = ZhipuAI(api_key=api_key)
 
-    # ── 步骤 1：检查 checkpoint 恢复 ──
+    # ── 步骤 1：检查 checkpoint 恢复（v1 单批次 / v2 多批次）──
     chk = _load_batch_checkpoint()
     if chk:
-        batch_id = chk.get("batch_id")
-        logger.info(f"发现 Batch 检查点: batch_id={batch_id}, status={chk.get('status')}")
-        try:
-            batch_status = client.batches.retrieve(batch_id)
-            st = batch_status.status
-            if st == "completed":
-                logger.info(f"Batch 任务已完成，直接下载结果")
-                _download_and_parse_batch(client, batch_status, chk)
-                _finalize_batch(chk)
-                return
-            elif st in ("in_progress", "finalizing", "validating"):
-                logger.info(f"恢复轮询 batch_id={batch_id}")
-                _poll_until_done(client, batch_id, chk)
-                _finalize_batch(chk)
-                return
-            else:
-                logger.warning(f"Batch 任务已结束（status={st}），降级为同步模式")
-                _clear_batch_checkpoint()
-                _run_sync_validation_for_pmids(chk.get("pmid_list", []))
-                return
-        except Exception as e:
-            logger.warning(f"查询 batch 状态失败: {e}，删除检查点并重新提交")
+        pending_batches = _checkpoint_batches(chk)
+        if not pending_batches:
+            logger.warning("Batch 检查点结构无法识别，删除并重新提交")
             _clear_batch_checkpoint()
+        else:
+            logger.info(
+                f"发现 Batch 检查点: {len(pending_batches)} 个待收割批次，"
+                f"status={chk.get('status')}"
+            )
+            for entry in pending_batches:
+                batch_id = entry["batch_id"]
+                pmids = entry.get("pmid_list", []) or []
+                try:
+                    batch_status = client.batches.retrieve(batch_id)
+                    st = batch_status.status
+                    if st == "completed":
+                        logger.info(f"批次 {batch_id} 已完成，直接下载结果")
+                        _download_and_parse_batch(client, batch_status, entry)
+                    elif st in ("in_progress", "finalizing", "validating"):
+                        logger.info(f"恢复轮询 batch_id={batch_id}")
+                        _poll_until_done(client, batch_id, entry)
+                    else:
+                        logger.warning(
+                            f"批次 {batch_id} 已结束（status={st}），该批降级为同步模式"
+                        )
+                        _run_sync_validation_for_pmids(pmids)
+                except Exception as e:
+                    logger.warning(f"查询 batch {batch_id} 状态失败: {e}，该批降级同步")
+                    _run_sync_validation_for_pmids(pmids)
+            _finalize_batch(chk)
+            return
 
     # ── 步骤 2：加载待验证文献 ──
     with get_conn(DB_PATH) as conn:
@@ -858,61 +994,82 @@ def _run_zhipu_batch():
     all_pmids = [r["pmid"] for r in rows_list]
     logger.info(f"待验证文献: {len(rows_list)} 篇（Batch 模式）")
 
-    # ── 步骤 3：构建 JSONL ──
-    jsonl_path = _build_jsonl(rows_list)
-
-    # ── 步骤 4：上传文件 ──
-    logger.info("上传 Batch 文件...")
+    # ── 步骤 3：构建 JSONL（按智谱 100MB / 5 万条限制自动拆分）──
     try:
-        file_obj = client.files.create(
-            file=open(jsonl_path, "rb"),
-            purpose="batch",
-        )
-        logger.info(f"文件已上传: {file_obj.id}")
-    except Exception as e:
-        logger.error(f"上传文件失败: {e}，降级为同步模式")
-        _run_sync_validation_for_pmids(all_pmids)
+        file_groups = _build_jsonl_files(rows_list)
+    except ValueError as e:
+        logger.error(f"构建 Batch 输入失败: {e}")
         return
 
-    # ── 步骤 5：创建 Batch 任务 ──
-    logger.info("创建 Batch 任务...")
-    try:
-        batch = client.batches.create(
-            input_file_id=file_obj.id,
-            endpoint="/v4/chat/completions",
-            auto_delete_input_file=LLM_BATCH_AUTO_DELETE,
-            metadata={
-                "description": "Human multi-omics literature LLM validation",
-                "project": "cellspatio-literature-selection",
-            },
+    # 拆分后可能去重掉个别重复 PMID，以实际入库的为准
+    all_pmids = [pmid for _, pmids in file_groups for pmid in pmids]
+
+    # ── 步骤 4+5：逐个上传并创建 Batch（服务端并行执行，墙钟耗时约等于单批）──
+    submitted: list[dict] = []
+    for seq, (jsonl_path, pmids) in enumerate(file_groups, start=1):
+        logger.info(
+            f"上传第 {seq}/{len(file_groups)} 个 Batch 文件（{len(pmids)} 篇）..."
         )
-        logger.info(f"Batch 任务已提交: {batch.id}")
-    except Exception as e:
-        logger.error(f"创建 Batch 任务失败: {e}，降级为同步模式")
-        _run_sync_validation_for_pmids(all_pmids)
+        try:
+            with open(jsonl_path, "rb") as fh:
+                file_obj = client.files.create(file=fh, purpose="batch")
+            batch = client.batches.create(
+                input_file_id=file_obj.id,
+                endpoint="/v4/chat/completions",
+                auto_delete_input_file=LLM_BATCH_AUTO_DELETE,
+                metadata={
+                    "description": "Human multi-omics literature LLM validation",
+                    "project": "cellspatio-literature-selection",
+                },
+            )
+        except Exception as e:
+            logger.error(f"第 {seq} 个批次提交失败: {e}，该批降级为同步模式")
+            _run_sync_validation_for_pmids(pmids)
+            continue
+
+        logger.info(f"第 {seq} 个 Batch 已提交: {batch.id}")
+        submitted.append({
+            "batch_id": batch.id,
+            "input_file_id": file_obj.id,
+            "pmid_list": pmids,
+            "seq": seq,
+            "status": "active",
+        })
+        # 每提交一个即落盘：中途崩溃不会丢失已提交批次的续跑依据
+        _save_batch_checkpoint({
+            "version": 2,
+            "batches": list(submitted),
+            "status": "active",
+            "created_at": now_iso(),
+            "updated_at": now_iso(),
+        })
+
+    if not submitted:
+        logger.error("没有任何批次提交成功")
         return
 
-    _save_batch_checkpoint({
-        "batch_id": batch.id,
-        "input_file_id": file_obj.id,
-        "pmid_list": all_pmids,
-        "status": "active",
-        "created_at": now_iso(),
-        "updated_at": now_iso(),
-    })
+    # ── 步骤 6：逐个收割 ──
+    remaining = list(submitted)
+    for entry in submitted:
+        try:
+            _poll_until_done(client, entry["batch_id"], entry)
+        finally:
+            # _poll_until_done 在超时/失败时会清除整个检查点；多批次下这会
+            # 连带丢掉其余批次的续跑依据，故在此把未收割批次重新落盘
+            if entry in remaining:
+                remaining.remove(entry)
+            if remaining:
+                _save_batch_checkpoint({
+                    "version": 2,
+                    "batches": list(remaining),
+                    "status": "active",
+                    "created_at": now_iso(),
+                    "updated_at": now_iso(),
+                })
 
-    # ── 步骤 6：轮询 ──
-    _poll_until_done(client, batch.id, {
-        "batch_id": batch.id,
-        "input_file_id": file_obj.id,
-        "pmid_list": all_pmids,
-        "status": "active",
-        "created_at": now_iso(),
-        "updated_at": now_iso(),
-    })
-
+    # ── 步骤 7：收尾（只做一次；_finalize_batch 内会清除检查点）──
     _finalize_batch({
-        "batch_id": batch.id,
+        "batch_id": ",".join(e["batch_id"] for e in submitted),
         "pmid_list": all_pmids,
     })
 

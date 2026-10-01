@@ -137,6 +137,19 @@ LLM_BATCH_POLL_INTERVAL  = 30           # Batch 轮询间隔（秒）
 LLM_BATCH_TIMEOUT        = 86400        # Batch 超时时间（24h）
 LLM_BATCH_AUTO_DELETE    = True         # 完成后自动删除输入文件
 
+# 智谱 Batch 官方限制：单个 batch 文件 ≤ 100MB、每文件 ≤ 50000 个请求、
+# 每个 batch 文件只能包含对单个模型的请求、每个请求必须带唯一 custom_id。
+# 本项目的 batch 输入为「每篇文献一行 JSONL」，提示词固定开销约 1.1KB，
+# 行体积随摘要长度变化（实测均值约 7.6KB/行），故 100MB 字节上限通常
+# 先于 5 万条上限触发（约 1.3 万条即触顶）。超出即自动拆分为多个批次。
+#
+# 上限取 95,000,000 字节（十进制 95MB）而非 95*1024*1024：服务端对
+# "100MB" 的计量口径未明说，若按十进制 100_000_000 计算，则
+# 95*1024*1024=99,614,720 只剩 0.39% 余量，遇到行体积估算偏差就会踩线。
+# 95,000,000 对两种口径（十进制 100MB / 二进制 100MiB）都留有 5% 以上余量。
+LLM_BATCH_MAX_BYTES      = int(os.environ.get("LLM_BATCH_MAX_BYTES", "95000000"))
+LLM_BATCH_MAX_REQUESTS   = int(os.environ.get("LLM_BATCH_MAX_REQUESTS", "50000"))
+
 # Provider 配置字典 — 新增 provider 只需在此添加一项
 LLM_PROVIDER_CONFIGS = {
     "zhipu": {

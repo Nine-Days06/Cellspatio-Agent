@@ -5,6 +5,7 @@ import sqlite3
 import tempfile
 import os
 from pathlib import Path
+from unittest.mock import patch
 
 from cleaner.llm_validator import (
     _extract_json,
@@ -171,6 +172,154 @@ class TestBuildJsonl(unittest.TestCase):
             self.assertEqual(msgs[1]["role"], "user")
         finally:
             lm.OUTPUT_DIR = orig
+
+
+class TestBuildJsonlFilesSplitting(unittest.TestCase):
+    """智谱 Batch 限制：单文件 ≤ LLM_BATCH_MAX_BYTES 且 ≤ LLM_BATCH_MAX_REQUESTS。"""
+
+    def setUp(self):
+        import cleaner.llm_validator as mod
+        self.mod = mod
+        self.temp_dir = tempfile.mkdtemp()
+        self.orig_out = mod.OUTPUT_DIR
+        mod.OUTPUT_DIR = self.temp_dir
+
+    def tearDown(self):
+        import shutil
+        self.mod.OUTPUT_DIR = self.orig_out
+        shutil.rmtree(self.temp_dir, ignore_errors=True)
+
+    def _rows(self, n, abstract="A" * 200):
+        return [
+            {"pmid": f"P{i:06d}", "title": f"T{i}", "abstract": abstract}
+            for i in range(n)
+        ]
+
+    def _read_lines(self, path):
+        with open(path, "r", encoding="utf-8") as f:
+            return [ln for ln in f.read().split("\n") if ln]
+
+    def test_should_keep_small_batch_in_single_file(self):
+        groups = self.mod._build_jsonl_files(self._rows(3))
+        self.assertEqual(len(groups), 1)
+        path, pmids = groups[0]
+        self.assertEqual(len(self._read_lines(path)), 3)
+        self.assertEqual(pmids, ["P000000", "P000001", "P000002"])
+
+    def test_should_split_when_exceeding_request_limit(self):
+        rows = self._rows(25)
+        with patch.object(self.mod, "LLM_BATCH_MAX_REQUESTS", 10):
+            groups = self.mod._build_jsonl_files(rows)
+        self.assertEqual([len(p) for _, p in groups], [10, 10, 5])
+
+    def test_should_split_when_exceeding_byte_limit(self):
+        rows = self._rows(10, abstract="A" * 500)
+        one = self.mod._batch_request_line(rows[0])[0]
+        one_size = len(one.encode("utf-8")) + 1
+        # 每 3 行切一次
+        with patch.object(self.mod, "LLM_BATCH_MAX_BYTES", one_size * 3):
+            groups = self.mod._build_jsonl_files(rows)
+        self.assertEqual([len(p) for _, p in groups], [3, 3, 3, 1])
+
+    def test_should_not_exceed_either_limit_in_any_file(self):
+        rows = self._rows(40, abstract="A" * 300)
+        cap_bytes, cap_req = 8 * 1024, 7
+        with patch.object(self.mod, "LLM_BATCH_MAX_BYTES", cap_bytes), \
+             patch.object(self.mod, "LLM_BATCH_MAX_REQUESTS", cap_req):
+            groups = self.mod._build_jsonl_files(rows)
+
+        self.assertGreater(len(groups), 1)
+        total = 0
+        for path, pmids in groups:
+            size = path.stat().st_size
+            lines = self._read_lines(path)
+            self.assertLessEqual(size, cap_bytes, f"{path.name} 超出字节上限")
+            self.assertLessEqual(len(lines), cap_req, f"{path.name} 超出条数上限")
+            self.assertEqual(len(lines), len(pmids))
+            total += len(lines)
+        # 无遗漏无重复
+        self.assertEqual(total, 40)
+        flat = [p for _, pmids in groups for p in pmids]
+        self.assertEqual(len(set(flat)), 40)
+        self.assertEqual(flat, [r["pmid"] for r in rows])
+
+    def test_should_raise_when_single_request_exceeds_byte_limit(self):
+        rows = self._rows(2, abstract="A" * 5000)
+        with (
+            patch.object(self.mod, "LLM_BATCH_MAX_BYTES", 1024),
+            self.assertRaises(ValueError) as ctx,
+        ):
+            self.mod._build_jsonl_files(rows)
+        msg = str(ctx.exception)
+        self.assertIn("超过单文件上限", msg)
+        self.assertIn("P000000", msg)
+
+    def test_should_dedupe_custom_ids_keeping_first(self):
+        rows = self._rows(3)
+        rows.append({"pmid": "P000001", "title": "dup", "abstract": "dup"})
+        groups = self.mod._build_jsonl_files(rows)
+        all_ids = [p for _, pmids in groups for p in pmids]
+        self.assertEqual(len(all_ids), 3)
+        self.assertEqual(len(set(all_ids)), 3)
+
+    def test_should_write_valid_single_model_requests(self):
+        """每个 batch 文件只能含单模型请求，且 custom_id 唯一。"""
+        groups = self.mod._build_jsonl_files(self._rows(5))
+        models, ids = set(), []
+        for path, _pmids in groups:
+            for ln in self._read_lines(path):
+                req = json.loads(ln)
+                models.add(req["body"]["model"])
+                ids.append(req["custom_id"])
+        self.assertEqual(models, {self.mod.ZHIPU_BATCH_MODEL})
+        self.assertEqual(len(ids), len(set(ids)))
+
+    def test_build_jsonl_single_should_reject_multi_file_batch(self):
+        rows = self._rows(10, abstract="A" * 400)
+        with (
+            patch.object(self.mod, "LLM_BATCH_MAX_BYTES", 4096),
+            self.assertRaises(ValueError) as ctx,
+        ):
+            self.mod._build_jsonl(rows)
+        self.assertIn("_build_jsonl_files", str(ctx.exception))
+
+
+class TestCheckpointBatchesCompat(unittest.TestCase):
+    """检查点 v1（单批次）与 v2（多批次）都能被正确解析。"""
+
+    def test_should_read_v1_single_batch_checkpoint(self):
+        from cleaner.llm_validator import _checkpoint_batches
+
+        got = _checkpoint_batches({
+            "batch_id": "b1",
+            "input_file_id": "f1",
+            "pmid_list": ["1", "2"],
+            "status": "active",
+        })
+        self.assertEqual(len(got), 1)
+        self.assertEqual(got[0]["batch_id"], "b1")
+        self.assertEqual(got[0]["pmid_list"], ["1", "2"])
+
+    def test_should_read_v2_multi_batch_checkpoint(self):
+        from cleaner.llm_validator import _checkpoint_batches
+
+        got = _checkpoint_batches({
+            "version": 2,
+            "batches": [
+                {"batch_id": "b1", "pmid_list": ["1"]},
+                {"batch_id": "b2", "pmid_list": ["2", "3"]},
+            ],
+        })
+        self.assertEqual([b["batch_id"] for b in got], ["b1", "b2"])
+        self.assertEqual(got[1]["pmid_list"], ["2", "3"])
+
+    def test_should_return_empty_for_unusable_checkpoint(self):
+        from cleaner.llm_validator import _checkpoint_batches
+
+        self.assertEqual(_checkpoint_batches(None), [])
+        self.assertEqual(_checkpoint_batches({}), [])
+        self.assertEqual(_checkpoint_batches({"batches": []}), [])
+        self.assertEqual(_checkpoint_batches({"batches": [{"pmid_list": ["1"]}]}), [])
 
 
 class TestParseBatchResults(unittest.TestCase):
