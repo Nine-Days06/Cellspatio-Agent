@@ -1,4 +1,4 @@
-"""Ollama 进程自动唤起与自动关闭。
+﻿"""Ollama 进程自动唤起与自动关闭。
 
 embedding 唯一后端是本地 Ollama（见 llm_factory.build_embedding_func）。
 本模块负责：用到时按需拉起 `ollama serve`，空闲超过阈值后关闭**自己启动的**进程。
@@ -313,7 +313,7 @@ def ensure_ready() -> None:
                     flags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
                     # 复用上面探活拿到的 tags，少一次 GET /api/tags
                     if not _ensure_model(host, exe, flags, tags=tags):
-                        return  # _ensure_model 已置 failed，不得覆盖成 ready
+                        return  # _ensure_model 已置 needs_model/failed，不得覆盖成 ready
                 else:
                     # 进程在跑但找不到 exe → 无法确认模型是否就位；不能静默标
                     # ready（模型仍缺却报可用，用户会在下游才炸）
@@ -405,7 +405,7 @@ def ensure_ready() -> None:
             return
 
         if not _ensure_model(host, exe, flags):
-            return  # _ensure_model 已置 failed，不得覆盖成 ready
+            return  # _ensure_model 已置 needs_model/failed，不得覆盖成 ready
         with _state_lock:
             _state, _detail = "ready", ""
             _last_probe_ok = _monotonic()
