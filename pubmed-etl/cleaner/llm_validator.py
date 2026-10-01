@@ -711,10 +711,15 @@ def _build_jsonl(rows: list) -> Path:
     return jsonl_path
 
 
-def _parse_batch_results(jsonl_path: str) -> tuple[int, list[str]]:
+def _parse_batch_results(jsonl_path: str, db_path: Path = DB_PATH) -> tuple[int, list[str]]:
     """
     解析 batch 输出结果 JSONL，写入 llm_validation 表。
     返回 (成功数, 失败 PMID 列表)。
+
+    Args:
+        jsonl_path: batch 结果 JSONL 文件路径
+        db_path: 目标 SQLite 库路径。默认生产库；测试须传临时库，
+            否则会把夹具数据写进 data/processed/multiomics_lit.db。
     """
     success_count = 0
     failed_pmids = []
@@ -789,7 +794,7 @@ def _parse_batch_results(jsonl_path: str) -> tuple[int, list[str]]:
             reason = obj.get("reason", "")
             now = now_iso()
 
-            with get_conn(DB_PATH) as conn:
+            with get_conn(db_path) as conn:
                 conn.execute(INSERT_SQL, (pmid, verdict, reason, now))
             success_count += 1
 
