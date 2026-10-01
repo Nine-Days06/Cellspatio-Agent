@@ -809,6 +809,40 @@ def test_ensure_model_skips_pull_when_model_present(monkeypatch):
     assert rt.status()["managed"] is False
 
 
+def test_spawn_log_includes_models_dir(monkeypatch, caplog):
+    """启动日志含模型目录：设了 OLLAMA_MODELS 打其值，未设打提示。"""
+    import logging
+
+    caplog.set_level(logging.INFO)
+    monkeypatch.setattr(rt, "_which", lambda name: "ollama")
+    monkeypatch.setattr(rt, "_autostart", lambda: True)
+    monkeypatch.setattr(rt, "_auto_pull", lambda: False)  # 只看启动日志，不触发 pull
+    monkeypatch.setattr(rt, "_spawn", lambda argv, flags: FakeProc(argv))
+
+    def started_messages() -> list[str]:
+        return [r.getMessage() for r in caplog.records if "ollama started" in r.getMessage()]
+
+    # 未设 OLLAMA_MODELS → 打「默认目录」提示
+    monkeypatch.delenv("OLLAMA_MODELS", raising=False)
+    probes = [None, {"models": []}, {"models": []}]
+    monkeypatch.setattr(rt, "_probe", lambda host, timeout: probes.pop(0))
+
+    rt.ensure_ready()
+
+    assert any("未设置→服务将使用默认目录" in msg for msg in started_messages())
+
+    # 设了 OLLAMA_MODELS → 打其值
+    monkeypatch.setenv("OLLAMA_MODELS", "D:/custom/models")
+    rt.reset_for_tests()
+    caplog.clear()
+    probes = [None, {"models": []}, {"models": []}]
+    monkeypatch.setattr(rt, "_probe", lambda host, timeout: probes.pop(0))
+
+    rt.ensure_ready()
+
+    assert any("OLLAMA_MODELS=D:/custom/models" in msg for msg in started_messages())
+
+
 def test_needs_model_is_valid_status(monkeypatch):
     """needs_model 是合法状态：status() 返回三键且 state="needs_model"（不破坏三键契约）。"""
     monkeypatch.setattr(rt, "_probe", lambda host, timeout: {"models": []})

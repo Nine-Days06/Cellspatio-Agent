@@ -384,7 +384,18 @@ def ensure_ready() -> None:
         with _state_lock:
             _proc = proc
             _managed = True
-        logger.info("ollama started (managed), pid=%s", getattr(proc, "pid", "?"))
+        models_dir = os.environ.get("OLLAMA_MODELS", "")
+        if models_dir:
+            logger.info(
+                "ollama started (managed), pid=%s, OLLAMA_MODELS=%s",
+                getattr(proc, "pid", "?"),
+                models_dir,
+            )
+        else:
+            logger.info(
+                "ollama started (managed), pid=%s, OLLAMA_MODELS=<未设置→服务将使用默认目录>",
+                getattr(proc, "pid", "?"),
+            )
 
         if not _wait_ready(host):
             _terminate_owned()              # 锁外调用：函数自行锁内摘账
