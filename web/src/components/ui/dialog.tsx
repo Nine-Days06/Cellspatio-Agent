@@ -68,9 +68,8 @@ function DialogContent({
               />
             }
           >
-            <XIcon
-            />
-            <span className="sr-only">Close</span>
+            <XIcon />
+            <span className="sr-only">关闭</span>
           </DialogPrimitive.Close>
         )}
       </DialogPrimitive.Popup>
@@ -108,7 +107,7 @@ function DialogFooter({
       {children}
       {showCloseButton && (
         <DialogPrimitive.Close render={<Button variant="outline" />}>
-          Close
+          关闭
         </DialogPrimitive.Close>
       )}
     </div>
@@ -120,7 +119,7 @@ function DialogTitle({ className, ...props }: DialogPrimitive.Title.Props) {
     <DialogPrimitive.Title
       data-slot="dialog-title"
       className={cn(
-        "font-heading text-base leading-none font-medium",
+        "text-base leading-none font-medium",
         className
       )}
       {...props}
