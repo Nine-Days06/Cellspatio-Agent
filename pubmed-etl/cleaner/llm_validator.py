@@ -622,6 +622,9 @@ def _export_review_csv() -> Path | None:
 # ═══════════════════════════════════════════════════════════════
 
 BATCH_CHECKPOINT_FILE = "llm_batch_progress.json"
+# batch 请求 custom_id 前缀，沿用官方 batch 指南示例的 `request-N` 形式。
+# 裸 PMID 作 custom_id 会被智谱的长度校验拒绝（详见 _batch_custom_id）。
+BATCH_CUSTOM_ID_PREFIX = "request-"
 
 PROMPT_PREFIX = (
     "请根据上述标准判断以下文献是否与人类单细胞与空间/时序组学相关：\n\n"
@@ -706,17 +709,38 @@ def _build_per_article_prompt(pmid: str, title: str, abstract: str) -> str:
     )
 
 
+def _batch_custom_id(pmid: str) -> str:
+    """生成 batch 请求的 custom_id。
+
+    智谱对 custom_id 做了未文档化的长度校验：直接用 PMID 作 custom_id 时，
+    1960-70 年代文献的 5-6 位 PMID 会被判「custom id 长度不合法, 长度: 6」
+    而拒绝**整个文件**（本地实测，本地库中 4.90% 的 PMID 短于 8 位）。
+
+    官方 batch 指南的所有示例均使用 `request-N` 形式，故沿用该前缀：
+    长度落在 13-16 字符区间，规避下限的同时也远低于 metadata 的 64 字符上限，
+    且保持唯一（PMID 本身唯一）并可逆。
+    """
+    return f"{BATCH_CUSTOM_ID_PREFIX}{pmid}"
+
+
+def _pmid_from_custom_id(custom_id: str) -> str:
+    """从 custom_id 还原 PMID；无此前缀时原样返回（兼容历史结果文件）。"""
+    if custom_id.startswith(BATCH_CUSTOM_ID_PREFIX):
+        return custom_id[len(BATCH_CUSTOM_ID_PREFIX):]
+    return custom_id
+
+
 def _batch_request_line(row: dict) -> tuple[str, str]:
     """构建单篇文献的 batch 请求行。
 
-    返回 (json 行字符串, pmid)。custom_id 取 pmid，智谱要求文件内唯一。
+    返回 (json 行字符串, pmid)。custom_id 见 _batch_custom_id。
     """
     pmid = row["pmid"]
     article_prompt = _build_per_article_prompt(
         pmid, row["title"] or "", row["abstract"] or ""
     )
     req = {
-        "custom_id": pmid,
+        "custom_id": _batch_custom_id(pmid),
         "method": "POST",
         "url": "/v4/chat/completions",
         "body": {
@@ -865,7 +889,7 @@ def _parse_batch_results(jsonl_path: str, db_path: Path = DB_PATH) -> tuple[int,
                 continue
 
             custom_id = item.get("custom_id", "")
-            pmid = custom_id
+            pmid = _pmid_from_custom_id(custom_id)
 
             resp = item.get("response", {})
             if resp.get("status_code") != 200:

@@ -52,11 +52,16 @@ def init_db(db_path: Path) -> None:
     """初始化数据库，创建所有表"""
     db_path = Path(db_path)
     db_path.parent.mkdir(parents=True, exist_ok=True)
-    with sqlite3.connect(db_path) as conn:
+    # 注意：sqlite3 的上下文管理器只提交/回滚事务，不会关闭连接。
+    # 这里显式关闭，避免 Windows 下遗留句柄导致文件无法删除。
+    conn = sqlite3.connect(db_path)
+    try:
         conn.execute(CREATE_ARTICLES_SQL)
         conn.execute(CREATE_FILTER_LOG_SQL)
         conn.execute(CREATE_LLM_VALIDATION_SQL)
         conn.commit()
+    finally:
+        conn.close()
 
 
 @contextmanager

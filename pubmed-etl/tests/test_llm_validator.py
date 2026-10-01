@@ -150,7 +150,7 @@ class TestBuildJsonl(unittest.TestCase):
                 path = do_build(rows)
                 with open(path, "r", encoding="utf-8") as f:
                     line_data = json.loads(f.read().split("\n")[0])
-                self.assertEqual(line_data["custom_id"], "TEST1")
+                self.assertEqual(line_data["custom_id"], "request-TEST1")
                 self.assertEqual(line_data["method"], "POST")
                 self.assertEqual(line_data["url"], "/v4/chat/completions")
                 self.assertIn("model", line_data["body"])
@@ -320,6 +320,98 @@ class TestCheckpointBatchesCompat(unittest.TestCase):
         self.assertEqual(_checkpoint_batches({}), [])
         self.assertEqual(_checkpoint_batches({"batches": []}), [])
         self.assertEqual(_checkpoint_batches({"batches": [{"pmid_list": ["1"]}]}), [])
+
+
+class TestBatchCustomId(unittest.TestCase):
+    """custom_id 长度校验：裸 PMID 会被智谱拒收，须加前缀且可逆。"""
+
+    def test_should_prefix_pmid(self):
+        from cleaner.llm_validator import BATCH_CUSTOM_ID_PREFIX, _batch_custom_id
+
+        self.assertEqual(_batch_custom_id("35134567"), f"{BATCH_CUSTOM_ID_PREFIX}35134567")
+
+    def test_should_strip_prefix_back_to_pmid(self):
+        from cleaner.llm_validator import _batch_custom_id, _pmid_from_custom_id
+
+        for pmid in ("35134567", "94600", "396361", "1234567"):
+            self.assertEqual(_pmid_from_custom_id(_batch_custom_id(pmid)), pmid)
+
+    def test_should_pass_through_legacy_custom_id_without_prefix(self):
+        """历史结果文件的 custom_id 就是裸 PMID，须原样兼容。"""
+        from cleaner.llm_validator import _pmid_from_custom_id
+
+        self.assertEqual(_pmid_from_custom_id("35134567"), "35134567")
+        self.assertEqual(_pmid_from_custom_id(""), "")
+
+    def test_short_pmid_custom_id_stays_within_safe_length(self):
+        """回归：1960-70 年代文献的 5-6 位 PMID 曾导致整文件被拒。
+
+        智谱报「custom id 长度不合法, 长度: 6」；本地库中 4.90% 的 PMID
+        短于 8 位。加前缀后长度应稳定落在官方示例 request-N 的量级。
+        """
+        import cleaner.llm_validator as mod
+
+        with tempfile.TemporaryDirectory() as td:
+            orig = mod.OUTPUT_DIR
+            mod.OUTPUT_DIR = td
+            try:
+                rows = [
+                    {"pmid": "94600", "title": "T", "abstract": "A"},
+                    {"pmid": "396361", "title": "T", "abstract": "A"},
+                    {"pmid": "1234567", "title": "T", "abstract": "A"},
+                    {"pmid": "35134567", "title": "T", "abstract": "A"},
+                ]
+                groups = mod._build_jsonl_files(rows)
+                self.assertEqual(len(groups), 1)
+                path = groups[0][0]
+                with open(path, "r", encoding="utf-8") as f:
+                    ids = [
+                        json.loads(ln)["custom_id"]
+                        for ln in f.read().split("\n") if ln
+                    ]
+            finally:
+                mod.OUTPUT_DIR = orig
+
+        self.assertEqual(len(ids), 4)
+        self.assertEqual(len(set(ids)), 4)
+        for cid in ids:
+            # 官方示例 request-N 为 9-11 字符；加前缀后最短 13，最长 16
+            self.assertGreaterEqual(len(cid), 13, f"{cid} 过短，仍可能被拒")
+            self.assertLessEqual(len(cid), 16, f"{cid} 过长")
+            self.assertTrue(cid.startswith("request-"))
+
+    def test_should_map_prefixed_custom_id_back_in_results(self):
+        """结果解析须把 request-<pmid> 还原为裸 PMID 再入库。"""
+        import cleaner.llm_validator as mod
+
+        payload = {
+            "response": {
+                "status_code": 200,
+                "body": {
+                    "choices": [
+                        {"message": {"content": '{"pmid":"94600","verdict":"RELEVANT","reason":"r"}'}}
+                    ]
+                },
+            },
+            "custom_id": "request-94600",
+        }
+        with tempfile.TemporaryDirectory() as td:
+            result_path = Path(td) / "res.jsonl"
+            with open(result_path, "w", encoding="utf-8") as f:
+                f.write(json.dumps(payload, ensure_ascii=False) + "\n")
+            db_path = Path(td) / "t.db"
+            init_db(db_path)
+            # 必须显式传 db_path：_parse_batch_results 的默认参数在定义时即绑定
+            # DB_PATH，patch 模块全局对它无效（曾因此把测试数据写进生产库）
+            ok, failed = mod._parse_batch_results(str(result_path), db_path=db_path)
+
+            self.assertEqual(ok, 1)
+            self.assertEqual(failed, [])
+            import sqlite3
+            conn = sqlite3.connect(db_path)
+            got = conn.execute("SELECT pmid FROM llm_validation").fetchall()
+            conn.close()
+            self.assertEqual(got, [("94600",)])
 
 
 class TestParseBatchResults(unittest.TestCase):
