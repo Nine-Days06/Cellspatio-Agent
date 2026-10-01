@@ -26,6 +26,7 @@
 - **快照分支**：Git worktree 自动创建 `snapshots/<run_id>/`，锁定代码+数据+环境
 - **一键复现**：`python -m src.cli.replay <run_id>` 恢复 worktree、数据、环境、结果
 - **可扩展**：支持外部 API 集成和模块化扩展
+- **UI 层**：FastAPI + SSE 流式 + React 18 对话界面
 - **KG 记忆体系**：WorkflowRecorder → LightRAG 增量写入，自然语言查询历史运行/步骤/输出
 - **技能自固化**：执行→记忆→检索→优化闭环，同类任务自动获得最佳实践
 - **技能平台**：Manifest/Base/Registry/Loader 四件套，热重载毫秒级迭代
@@ -76,8 +77,9 @@ python -m src.main
 
 **Web 界面：**
 ```bash
-streamlit run src/ui/app.py
+python -m src.api
 ```
+浏览器打开 `http://127.0.0.1:8600`
 
 ## 使用示例
 
@@ -127,8 +129,8 @@ cellspatio-agent/
 ├── src/                 # 源代码
 │   ├── main.py          # 入口
 │   ├── config.py        # 配置（LLM 供应商、API Key）
-│   ├── ui/              # Streamlit 界面
-│   │   └── app.py       # Web 应用入口
+│   ├── ui/              # 会话持久化（session_store.py，被 API 层复用）
+│   │   └── session_store.py
 │   ├── control/         # 控制层
 │   │   ├── agent_runtime.py     # tool-calling 运行时（主入口）
 │   │   ├── tools.py             # 工具 schema 与系统提示词
@@ -165,6 +167,12 @@ cellspatio-agent/
 │       ├── fetchers/             # 公共数据库 Fetcher（GEO/KEGG/UniProt）
 │       ├── registry.py           # Fetcher 注册表
 │       └── storage.py            # 本地存储
+├── web/                # React 18 前端（Vite + TS + Tailwind 4）
+│   ├── src/pages/      # 页面（ChatPage 对话页）
+│   ├── src/components/ # 组件（Sidebar/MessageList/ConfirmCard/ChartBlock）
+│   ├── src/lib/        # API/SSE 客户端与类型
+│   ├── src/store/      # 状态（zustand chat store）
+│   └── dist/           # 构建产物（npm run build，由 FastAPI 挂到 /）
 ├── pubmed-etl/          # 独立文献批量下载与清洗工具（单细胞+时空方向）
 ├── tests/               # 测试
 ├── docs/                # 文档

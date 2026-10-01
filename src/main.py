@@ -236,13 +236,13 @@ class CellSpatioAgent:
         print("感谢使用，再见！")
 
     def _run_web(self):
-        """Web 界面模式 - 提示用户使用 streamlit run 启动"""
+        """Web 界面模式 - 启动 FastAPI 服务（前端 dist 挂在 /，浏览器打开 http://127.0.0.1:8600）"""
         import subprocess
         import sys
 
-        print("启动 Streamlit Web 界面...")
+        print("启动 Web 界面（FastAPI）...")
         subprocess.run(
-            [sys.executable, "-m", "streamlit", "run", "src/ui/app.py"], check=False
+            [sys.executable, "-m", "src.api"], check=False
         )
 
 
