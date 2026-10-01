@@ -24,7 +24,6 @@ from config.settings import (
     SEARCH_YEAR_MIN, SEARCH_YEAR_MAX, SEARCH_SLICE_YEARS,
 )
 from utils.logger import get_logger
-from utils import db as dbutil
 
 logger = get_logger("downloader")
 

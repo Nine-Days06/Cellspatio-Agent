@@ -11,7 +11,6 @@ PMC Open Access PDF 下载器
 import time
 import re
 import tarfile
-import io
 import csv
 import json
 import subprocess
@@ -173,44 +172,6 @@ def _fetch_single_oa_link(pmc_id: str) -> tuple[str, dict[str, str] | None, str]
     return pmc_id, links, "ok"
 
 
-def _extract_links_from_record(record) -> tuple[str | None, dict[str, str] | None]:
-    record_id = record.get("id") or record.get("pmcid") or record.get("pmc_id")
-    normalized_id = normalize_pmc_id(record_id) if record_id else None
-    if not normalized_id:
-        return None, None
-
-    links: dict[str, str] = {}
-    pdf_link_node = record.find(".//link[@format='pdf']")
-    if pdf_link_node is not None and pdf_link_node.get("href"):
-        links["pdf"] = normalize_pmc_asset_url(pdf_link_node.get("href"))
-
-    tgz_link_node = record.find(".//link[@format='tgz']")
-    if tgz_link_node is not None and tgz_link_node.get("href"):
-        links["tgz"] = normalize_pmc_asset_url(tgz_link_node.get("href"))
-
-    if not links:
-        return normalized_id, None
-
-    return normalized_id, links
-
-
-def _extract_error_pmc_ids(root) -> set[str]:
-    error_ids: set[str] = set()
-    for error in root.findall(".//error"):
-        raw_candidates = []
-        if error.get("id"):
-            raw_candidates.append(error.get("id"))
-        if error.text:
-            raw_candidates.extend(re.findall(r"PMC\d+", error.text.upper()))
-
-        for candidate in raw_candidates:
-            normalized = normalize_pmc_id(candidate)
-            if normalized:
-                error_ids.add(normalized)
-
-    return error_ids
-
-
 def load_cached_oa_links(
     pmc_ids: list[str],
     out_dir: Path = OUTPUT_DIR,
@@ -318,16 +279,6 @@ def fetch_oa_links(
         logger.warning(f"  网络失败 {len(network_failed)} 篇，将进入待重试清单（可 --step pdf-retry 续跑）。")
 
     return oa_map, network_failed
-
-
-def fetch_pdf_urls(pmc_ids: list[str]) -> dict[str, str]:
-    """
-    分批调用 PMC OA API 获取 PDF 下载链接。
-    返回 {pmc_id: pdf_url} 字典。
-    """
-    cached_links = load_cached_oa_links(pmc_ids)
-    oa_links, _ = fetch_oa_links(pmc_ids, cached_links=cached_links)
-    return {pmc_id: links["pdf"] for pmc_id, links in oa_links.items() if "pdf" in links}
 
 
 def export_oa_links_csv(

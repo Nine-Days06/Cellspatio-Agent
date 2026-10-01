@@ -9,7 +9,8 @@
   python main.py --step parse      # 仅解析 XML → SQLite
   python main.py --step clean      # 仅硬过滤
   python main.py --step pdf        # 下载 OA 全文（需先跑 LLM 验证）
-  python main.py --step validate   # LLM 二次验证（需设置 LLM_API_KEY）
+  python main.py --step pdf-retry  # 重试失败的 OA 全文下载（断点续传）
+  python main.py --step validate   # LLM 二次验证（需设置 ZHIPU_API_KEY / DEEPSEEK_API_KEY / OPENAI_API_KEY 之一）
   python main.py --step import-review  # 导入人工复核结果
   python main.py --step export         # 导出复核通过文献的原始信息 CSV
   python main.py --query "multi-omics AND human"  # 自定义搜索词

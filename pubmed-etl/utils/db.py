@@ -72,20 +72,3 @@ def get_conn(db_path: Path):
         raise
     finally:
         conn.close()
-
-
-VALID_TABLES = {"articles", "filter_log", "llm_validation"}
-
-
-def get_all_pmids(db_path: Path) -> list[str]:
-    """返回数据库中所有 PMID"""
-    with get_conn(db_path) as conn:
-        rows = conn.execute("SELECT pmid FROM articles").fetchall()
-    return [r["pmid"] for r in rows]
-
-
-def count_table(db_path: Path, table: str) -> int:
-    if table not in VALID_TABLES:
-        raise ValueError(f"Invalid table name: {table}")
-    with get_conn(db_path) as conn:
-        return conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]

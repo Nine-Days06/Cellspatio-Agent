@@ -200,21 +200,4 @@ def run_hard_filter(db_path: Path = DB_PATH) -> dict:
     }
 
 
-def get_passed_pmids(db_path: Path = DB_PATH, conn: sqlite3.Connection = None) -> list[str]:
-    """
-    返回通过硬过滤的 PMID 列表
-    （即 articles 表中不在 filter_log 里的记录）
-    """
-    query = """
-        SELECT pmid FROM articles a
-        WHERE NOT EXISTS (
-            SELECT 1 FROM filter_log f
-            WHERE f.pmid = a.pmid AND f.stage = 'hard_filter'
-        )
-    """
-    if conn is not None:
-        rows = conn.execute(query).fetchall()
-    else:
-        with get_conn(db_path) as c:
-            rows = c.execute(query).fetchall()
-    return [r["pmid"] for r in rows]
+
