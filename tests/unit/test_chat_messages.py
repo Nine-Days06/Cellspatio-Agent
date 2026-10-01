@@ -97,14 +97,3 @@ def test_make_llm_summarize_delegates_to_compact_summarize(monkeypatch):
     assert summarize("旧摘要", [{"role": "user", "content": "问"}]) == "## 目标\n做差异"
     assert seen == {"model": "m1", "prior": "旧摘要",
                     "messages": [{"role": "user", "content": "问"}]}
-
-
-def test_app_module_reexports_private_aliases():
-    """app.py 只改导入：私有名必须仍是同一实现，存量 test_ui_* 依赖它。"""
-    from src.control import chat_messages
-    from src.ui import app
-
-    assert app._summarize_result is chat_messages.summarize_result
-    assert app._build_assistant_message is chat_messages.build_assistant_message
-    assert app._format_script_confirmation is chat_messages.format_script_confirmation
-    assert app._make_llm_summarize is chat_messages.make_llm_summarize

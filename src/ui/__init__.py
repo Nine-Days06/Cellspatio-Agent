@@ -1,11 +1,8 @@
-# 用户界面模块
-"""用户界面层：Streamlit 聊天界面与可复用渲染组件。"""
-from src.ui.app import create_app as create_app
-from src.ui.components import render_analysis_results as render_analysis_results
-from src.ui.components import render_starter_presets as render_starter_presets
+"""UI 层只剩会话存储：Streamlit 前端已于计划 2 终态移除。
 
-__all__ = [
-    "create_app",
-    "render_analysis_results",
-    "render_starter_presets",
-]
+保留本包是因为 `session_store.py` 被 API 层复用（会话持久化，零改动约束）。
+**不要**在本模块导入 streamlit 或任何前端框架——那会让 API 层凭空拉起 UI 依赖。
+"""
+from src.ui.session_store import SessionStore
+
+__all__ = ["SessionStore"]

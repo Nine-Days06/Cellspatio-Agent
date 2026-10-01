@@ -48,5 +48,5 @@ if not exist ".env" (
 echo Setup completed!
 echo Run modes:
 echo   CLI mode: python -m src.main
-echo   Web UI: streamlit run src/ui/app.py
+echo   Web UI: python -m src.api
 pause
