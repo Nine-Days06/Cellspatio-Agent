@@ -96,8 +96,25 @@ def _autostart() -> bool:
         return True
 
 
+def _eager_start() -> bool:
+    """是否随应用启动预热 Ollama（配置缺失时按关闭处理，与默认一致）。"""
+    try:
+        from src.config import OLLAMA_EAGER_START
+
+        return bool(OLLAMA_EAGER_START)
+    except Exception:  # noqa: BLE001 - 配置不可用时保持默认关闭
+        return False
+
+
 def _idle_seconds() -> float:
-    """空闲关闭阈值（秒）；<=0 表示不自动关闭。"""
+    """空闲关闭阈值（秒）；<=0 表示不自动关闭。
+
+    随应用启动模式下恒返回 0（不自动关闭）：用户既然要求「一启动就备好」，
+    空闲 10 分钟后把它关掉只会让下一次提问重新付一次冷启动（约 4.2s），
+    预热就白做了。副作用是该模式下常驻约 1.4GB 内存，属用户显式选择的结果。
+    """
+    if _eager_start():
+        return 0.0
     try:
         from src.config import OLLAMA_IDLE_MINUTES
 
@@ -156,6 +173,34 @@ def status() -> dict[str, Any]:
     """
     with _state_lock:
         return {"state": _state, "managed": _managed, "detail": _detail}
+
+
+def start_mode() -> str:
+    """启动模式：`"eager"`=随程序启动预热 / `"lazy"`=按需唤起。
+
+    独立访问器而非 `status()` 的第 4 个键——`status()` 的三键契约被测试与
+    前端类型锁定，启动模式属于「配置态」而非「运行态」，两者语义不同。
+    """
+    return "eager" if _eager_start() else "lazy"
+
+
+def warm_up_async() -> bool:
+    """随应用启动后台预热 Ollama；返回是否真的起了预热线程。
+
+    只在 `OLLAMA_EAGER_START=1` 且允许自动唤起时动作。**不阻塞应用就绪**：
+    预热在守护线程里跑，冷启动那约 4 秒发生在用户读界面/敲第一句话的间隙，
+    而不是压在启动路径上。任何失败都不抛——预热失败等价于退回按需唤起。
+
+    幂等：重复调用只是多跑一次 `ensure_ready()`，它自身已幂等（探活节流 +
+    `_start_lock` 串行），不会重复拉起进程。
+    """
+    if not _eager_start() or not _autostart():
+        logger.info("ollama eager warm-up skipped (OLLAMA_EAGER_START=%s)", start_mode())
+        return False
+    thread = threading.Thread(target=ensure_ready, name="ollama-warmup", daemon=True)
+    thread.start()
+    logger.info("ollama eager warm-up started in background")
+    return True
 
 
 # ── T2 追加：启动流程锁 ──

@@ -160,6 +160,13 @@ export function Sidebar({
             <span>
               Ollama {env.ollama.state === 'ready' ? '就绪' : env.ollama.state}
             </span>
+            {/* 启动模式是只读的配置态展示（改它要改 .env 并重启，故不给切换控件） */}
+            <span
+              data-testid="ollama-start-mode"
+              className="ml-auto shrink-0 text-[10px] text-muted-foreground"
+            >
+              {env.ollama_start_mode === 'eager' ? '随程序启动' : '按需唤起'}
+            </span>
           </li>
         </ul>
         {env.ollama.state === 'needs_model' && (

@@ -87,7 +87,14 @@ export interface EnvStatus {
   rscript: string | null
   kb_path: string
   kb_ok: boolean
+  /** 运行态：恰好三键（state/managed/detail），不得加第 4 个键 */
   ollama: OllamaStatus
+  /**
+   * 启动模式（配置态，故与 ollama 平级而非嵌进去）：
+   * - `eager` = 随程序启动预热，不做空闲自动关闭
+   * - `lazy`  = 按需唤起 + 空闲自动关闭（默认）
+   */
+  ollama_start_mode: 'eager' | 'lazy'
 }
 
 export interface SidebarResponse {

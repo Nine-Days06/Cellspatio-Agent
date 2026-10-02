@@ -25,6 +25,7 @@ const DEFAULT_ENV: EnvStatus = {
   kb_path: '',
   kb_ok: false,
   ollama: { state: 'unavailable', managed: false, detail: '' },
+  ollama_start_mode: 'lazy',
 }
 
 export function ChatPage() {

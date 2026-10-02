@@ -7,7 +7,15 @@ import time
 
 import pytest
 
+from src import config
 from src.knowledge import ollama_runtime as rt
+
+# clean_runtime 夹具会把 `_autostart`/`_idle_seconds` 冻结成桩（True / 0.0）。
+# 需要验证「真实配置 → 真实阈值」这条链路的用例必须能拿回真函数，因此在导入期
+# 就把原函数引用存下来（此时夹具还没生效）。
+_REAL_AUTOSTART = rt._autostart
+_REAL_IDLE_SECONDS = rt._idle_seconds
+_REAL_EAGER_START = rt._eager_start
 
 
 class FakeProc:
@@ -423,6 +431,115 @@ def test_maybe_reap_closes_managed_process_when_idle(monkeypatch):
         "managed": False,
         "detail": "空闲 10 分钟，已关闭",
     }
+
+
+def test_maybe_reap_keeps_warm_when_eager_start_on(monkeypatch):
+    """随程序启动模式下不得空闲关闭（端到端：走真实 _idle_seconds/_eager_start）。
+
+    **必须先解除 clean_runtime 对这两个函数的冻结**：夹具把 `_idle_seconds` stub 成
+    0.0、`_autostart` stub 成 True，若不还原，本用例会因「阈值本来就是 0」而通过，
+    变成假绿——根本验证不到 eager 逻辑。
+    """
+    proc = FakeProc(["ollama", "serve"])
+    monkeypatch.setattr(rt, "_idle_seconds", _REAL_IDLE_SECONDS)
+    monkeypatch.setattr(rt, "_eager_start", _REAL_EAGER_START)
+    monkeypatch.setattr(config, "OLLAMA_EAGER_START", True)
+    monkeypatch.setattr(config, "OLLAMA_IDLE_MINUTES", 10)   # 开着，但被 eager 压制
+    monkeypatch.setattr(rt, "_monotonic", lambda: 1000.0)
+    rt._state = "ready"
+    rt._last_used = 1000.0 - 99999       # 空闲远超 10 分钟
+    rt._proc = proc
+    rt._managed = True
+
+    assert rt.maybe_reap() is False
+    assert proc.terminated is False
+    assert rt.status()["managed"] is True
+
+
+def test_maybe_reap_still_reaps_when_eager_off(monkeypatch):
+    """反向对照：未开启 eager 时，真实 _idle_seconds 仍按分钟数回收。
+
+    没有这条，上一条的「不回收」就无法归因于 eager 而不是别的因素。
+    """
+    proc = FakeProc(["ollama", "serve"])
+    monkeypatch.setattr(rt, "_idle_seconds", _REAL_IDLE_SECONDS)
+    monkeypatch.setattr(rt, "_eager_start", _REAL_EAGER_START)
+    monkeypatch.setattr(config, "OLLAMA_EAGER_START", False)
+    monkeypatch.setattr(config, "OLLAMA_IDLE_MINUTES", 10)
+    monkeypatch.setattr(rt, "_monotonic", lambda: 1000.0)
+    rt._state = "ready"
+    rt._last_used = 1000.0 - 601
+    rt._proc = proc
+    rt._managed = True
+
+    assert rt.maybe_reap() is True
+    assert proc.terminated is True
+
+
+def test_warm_up_async_skipped_when_eager_off(monkeypatch):
+    """默认（未开启）不得起预热线程——零行为变更。"""
+    from src import config
+
+    monkeypatch.setattr(config, "OLLAMA_EAGER_START", False)
+    started = []
+    monkeypatch.setattr(rt.threading, "Thread", lambda **kw: started.append(kw) or _FakeThread())
+
+    assert rt.warm_up_async() is False
+    assert started == []
+
+
+def test_warm_up_async_starts_daemon_thread_when_eager_on(monkeypatch):
+    """开启后起守护线程跑 ensure_ready，且不阻塞调用方。"""
+    monkeypatch.setattr(rt, "_eager_start", lambda: True)
+    monkeypatch.setattr(rt, "_autostart", lambda: True)
+    calls = []
+    monkeypatch.setattr(rt, "ensure_ready", lambda: calls.append("ready"))
+    captured = {}
+
+    def fake_thread(**kwargs):
+        captured.update(kwargs)
+        return _FakeThread(**kwargs)
+
+    monkeypatch.setattr(rt.threading, "Thread", fake_thread)
+
+    assert rt.warm_up_async() is True
+    assert captured["target"] is rt.ensure_ready
+    assert captured.get("daemon") is True
+    assert captured.get("name") == "ollama-warmup"
+    assert calls == ["ready"]          # 守护线程 start() 立即执行了目标
+
+
+def test_warm_up_async_skipped_when_autostart_disabled(monkeypatch):
+    """用户既关了自动唤起又开了预热 → 以自动唤起为准（不越权拉起）。
+
+    必须 patch `rt._autostart` 而非 config：clean_runtime 已把它 stub 成 True，
+    patch config 够不到被替换的函数。
+    """
+    monkeypatch.setattr(rt, "_eager_start", lambda: True)
+    monkeypatch.setattr(rt, "_autostart", lambda: False)
+    started = []
+    monkeypatch.setattr(rt.threading, "Thread", lambda **kw: started.append(kw) or _FakeThread(**kw))
+
+    assert rt.warm_up_async() is False
+    assert started == []
+
+
+class _FakeThread:
+    """最小 Thread 替身：start() 立即同步执行 target，便于断言「预热确实跑了」。"""
+
+    def __init__(self, target=None, name=None, daemon=None, **kwargs) -> None:
+        self.target = target
+        self.name = name
+        self.daemon = daemon
+        self.started = False
+
+    def start(self) -> None:
+        self.started = True
+        if self.target is not None:
+            self.target()
+
+    def join(self, timeout: float | None = None) -> None:
+        return None
 
 
 def test_maybe_reap_never_closes_external_instance(monkeypatch):

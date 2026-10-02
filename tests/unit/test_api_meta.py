@@ -261,3 +261,58 @@ def test_sidebar_env_ollama_degrades_when_status_raises(tmp_path, monkeypatch):
     assert ollama["state"] == "error"
     assert ollama["managed"] is False
     assert "corrupted" in ollama["detail"]
+
+
+# ── 启动模式（随程序启动 / 按需唤起）──────────────────────────
+
+
+def test_sidebar_env_exposes_ollama_start_mode(monkeypatch):
+    """模式是 env 的兄弟字段，不塞进 ollama（后者三键契约锁定）。"""
+    from src import config
+
+    monkeypatch.setattr(config, "OLLAMA_EAGER_START", True)
+    agent = FakeAgent()
+    agent.knowledge_client = StubKB()
+    env = _client(agent).get("/api/sidebar").json()["env"]
+
+    assert env["ollama_start_mode"] == "eager"
+    assert set(env["ollama"]) == {"state", "managed", "detail"}   # 仍是三键
+
+
+def test_sidebar_env_start_mode_lazy_by_default(monkeypatch):
+    from src import config
+
+    monkeypatch.setattr(config, "OLLAMA_EAGER_START", False)
+    agent = FakeAgent()
+    agent.knowledge_client = StubKB()
+    env = _client(agent).get("/api/sidebar").json()["env"]
+
+    assert env["ollama_start_mode"] == "lazy"
+
+
+def test_sidebar_start_mode_degrades_when_accessor_raises(monkeypatch):
+    """读不到模式只降级成 lazy，绝不让侧栏 500。"""
+    from src.knowledge import ollama_runtime
+
+    def boom() -> str:
+        raise RuntimeError("mode unavailable")
+
+    monkeypatch.setattr(ollama_runtime, "start_mode", boom)
+    agent = FakeAgent()
+    agent.knowledge_client = StubKB()
+    response = _client(agent).get("/api/sidebar")
+
+    assert response.status_code == 200
+    assert response.json()["env"]["ollama_start_mode"] == "lazy"
+
+
+def test_create_app_triggers_ollama_warm_up(monkeypatch):
+    """构建应用即触发预热入口（是否真起线程由 warm_up_async 自己判配置）。"""
+    from src.knowledge import ollama_runtime
+
+    calls: list[bool] = []
+    monkeypatch.setattr(ollama_runtime, "warm_up_async", lambda: calls.append(True) or True)
+
+    create_app(FakeAgent())
+
+    assert calls == [True]

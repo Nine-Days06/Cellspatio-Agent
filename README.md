@@ -66,6 +66,11 @@ NCBI_EMAIL=your_email
 
 # Ollama embedding 模型（未设时默认 bge-m3）
 # EMBEDDING_MODEL=bge-m3
+
+# 随程序启动 Ollama：应用启动时后台预热，省掉首次提问约 4.2s 的等待
+# （默认 0=关闭，即按需唤起 + 空闲 10 分钟自动关闭）
+# 开启后不再空闲自动关闭，期间常驻约 1.4GB 内存；应用退出时仍会关闭它
+# OLLAMA_EAGER_START=0
 ```
 
 ### 运行

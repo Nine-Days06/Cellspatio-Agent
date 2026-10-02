@@ -31,6 +31,7 @@ const healthyEnv: EnvStatus = {
   kb_path: './knowledge_base',
   kb_ok: true,
   ollama: { state: 'ready', managed: false, detail: '' },
+  ollama_start_mode: 'lazy',
 }
 
 const healthyKb: KbStats = { initialized: true }
@@ -111,7 +112,7 @@ describe('Sidebar', () => {
   it('知识库未初始化 / R 缺失 / 路径缺失 显示红点', () => {
     renderSidebar({
       kbStats: { initialized: false, error: 'kb not ready' },
-      env: { rscript: null, kb_path: './knowledge_base', kb_ok: false, ollama: { state: 'ready', managed: false, detail: '' } },
+      env: { rscript: null, kb_path: './knowledge_base', kb_ok: false, ollama: { state: 'ready', managed: false, detail: '' }, ollama_start_mode: 'lazy' },
     })
     expect(screen.getByTestId('dot-kb')).toHaveAttribute('data-state', 'error')
     expect(screen.getByTestId('dot-rscript')).toHaveAttribute('data-state', 'error')
@@ -155,6 +156,22 @@ describe('Sidebar', () => {
       env: { ...healthyEnv, ollama: { state: 'unavailable', managed: false, detail: '' } },
     })
     expect(screen.getByTestId('dot-ollama')).toHaveAttribute('data-state', 'error')
+  })
+
+  it('启动模式为 eager 时只读展示「随程序启动」', () => {
+    renderSidebar({ env: { ...healthyEnv, ollama_start_mode: 'eager' } })
+    expect(screen.getByTestId('ollama-start-mode')).toHaveTextContent('随程序启动')
+  })
+
+  it('启动模式为 lazy 时只读展示「按需唤起」', () => {
+    renderSidebar({ env: { ...healthyEnv, ollama_start_mode: 'lazy' } })
+    expect(screen.getByTestId('ollama-start-mode')).toHaveTextContent('按需唤起')
+  })
+
+  it('启动模式只读：无任何可点击的切换控件', () => {
+    renderSidebar({ env: { ...healthyEnv, ollama_start_mode: 'eager' } })
+    // 只读展示：不得出现按钮/开关，避免用户误以为点一下就能改
+    expect(screen.queryByRole('button', { name: /启动模式|随程序启动/ })).toBeNull()
   })
 })
 

@@ -67,7 +67,23 @@ def _env_status(agent: Any) -> dict[str, Any]:
     except Exception as exc:  # noqa: BLE001 - 自检失败不阻断
         logger.warning("ollama status failed: %s", exc)
         ollama = {"state": "error", "managed": False, "detail": str(exc)}
-    return {"rscript": rscript, "kb_path": kb_path, "kb_ok": kb_ok, "ollama": ollama}
+    # 启动模式是「配置态」，与 ollama 的「运行态」不同，故作兄弟字段而非塞进
+    # ollama 里——后者三键契约被测试与前端类型锁定，不得加第 4 个键。
+    try:
+        from src.knowledge.ollama_runtime import start_mode
+
+        ollama_start_mode = start_mode()
+    except Exception as exc:  # noqa: BLE001 - 读不到模式不该让侧栏 500
+        logger.warning("ollama start_mode failed: %s", exc)
+        ollama_start_mode = "lazy"
+
+    return {
+        "rscript": rscript,
+        "kb_path": kb_path,
+        "kb_ok": kb_ok,
+        "ollama": ollama,
+        "ollama_start_mode": ollama_start_mode,
+    }
 
 
 def _soft_warn(session_id: str | None) -> bool:

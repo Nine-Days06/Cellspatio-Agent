@@ -109,3 +109,71 @@ def test_auto_pull_truthy_variants_are_true(val, monkeypatch):
     finally:
         monkeypatch.delenv("OLLAMA_AUTO_PULL", raising=False)
         importlib.reload(config)
+
+
+# ── 随程序启动（OLLAMA_EAGER_START）────────────────────────────
+# 实测（隔离冷实例，端口 8611）：ollama serve 启动→/api/tags 可应答 4.22s（占首轮
+# 等待 70%），首次 embedding 的模型加载仅 1.77s（30%），热态 0.03s。
+# 因此「随程序启动拉起服务」即能吃掉大头；而常驻又要求不做空闲自动关闭，
+# 否则空闲 10 分钟后被关掉，下一次提问照样付 4.22s。
+
+
+def test_eager_start_reads_config_flag(monkeypatch):
+    monkeypatch.setattr(config, "OLLAMA_EAGER_START", True)
+    assert rt._eager_start() is True
+    monkeypatch.setattr(config, "OLLAMA_EAGER_START", False)
+    assert rt._eager_start() is False
+
+
+def test_eager_start_suppresses_idle_autoclose(monkeypatch):
+    """开启随程序启动 → 空闲阈值归零（0 = 不自动关闭），否则预热白做。"""
+    monkeypatch.setattr(config, "OLLAMA_EAGER_START", True)
+    monkeypatch.setattr(config, "OLLAMA_IDLE_MINUTES", 10)
+    assert rt._idle_seconds() == 0.0
+
+
+def test_idle_autoclose_unchanged_when_eager_off(monkeypatch):
+    """未开启时行为不变：仍按 OLLAMA_IDLE_MINUTES 空闲关闭。"""
+    monkeypatch.setattr(config, "OLLAMA_EAGER_START", False)
+    monkeypatch.setattr(config, "OLLAMA_IDLE_MINUTES", 10)
+    assert rt._idle_seconds() == 600.0
+
+
+def test_start_mode_reflects_config(monkeypatch):
+    """侧栏只读展示用：模式字符串必须随配置变化。"""
+    monkeypatch.setattr(config, "OLLAMA_EAGER_START", True)
+    assert rt.start_mode() == "eager"
+    monkeypatch.setattr(config, "OLLAMA_EAGER_START", False)
+    assert rt.start_mode() == "lazy"
+
+
+def test_eager_start_defaults_off(monkeypatch):
+    """默认 0（关闭）：不设环境变量时不得改变既有行为。"""
+    monkeypatch.delenv("OLLAMA_EAGER_START", raising=False)
+    importlib.reload(config)
+    try:
+        assert config.OLLAMA_EAGER_START is False
+    finally:
+        importlib.reload(config)
+
+
+@pytest.mark.parametrize("val", ["1", "true", "yes", "on", " 1 "])
+def test_eager_start_truthy_variants_are_true(val, monkeypatch):
+    monkeypatch.setenv("OLLAMA_EAGER_START", val)
+    importlib.reload(config)
+    try:
+        assert config.OLLAMA_EAGER_START is True
+    finally:
+        monkeypatch.delenv("OLLAMA_EAGER_START", raising=False)
+        importlib.reload(config)
+
+
+@pytest.mark.parametrize("val", ["0", "false", "no", "off", ""])
+def test_eager_start_falsy_variants_are_false(val, monkeypatch):
+    monkeypatch.setenv("OLLAMA_EAGER_START", val)
+    importlib.reload(config)
+    try:
+        assert config.OLLAMA_EAGER_START is False
+    finally:
+        monkeypatch.delenv("OLLAMA_EAGER_START", raising=False)
+        importlib.reload(config)
