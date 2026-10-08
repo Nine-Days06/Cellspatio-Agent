@@ -1,6 +1,14 @@
-"""删库重进：清空 knowledge_base 后按原 20 条 ID 重新入库（带来源 URL）"""
+"""删库重进：清空 knowledge_base 后按原 20 条 ID 重新入库（带来源 URL）
+
+⚠️ 安全约束：clear_kb() 会清空整个 knowledge_base/ 目录，其中也包含
+pubmed-etl 文献导入的 chunk、实体与关系。若文献已入库，跑本脚本会**静默删除**它们。
+因此清库前会检查 kv_store_full_docs.json：只要发现非「公共数据库 20 条」来源的
+文档（例如带 PMID / pubmed 链接的文献），就拒绝执行并提示。确需清空时显式传 --force。
+"""
 from __future__ import annotations
 
+import argparse
+import json
 import os
 import sys
 from pathlib import Path
@@ -25,8 +33,71 @@ UNIPROT_IDS = [
 ]
 GEO_IDS = ["GSE123456", "GSE48351"]
 
+# 本脚本负责重建的公共数据库来源标记（由各 ingest_text 写入）
+CURATED_HEADERS = ("# KEGG 通路:", "# UniProt 蛋白:", "# GEO 数据集:")
+DOCS_FILE = "kv_store_full_docs.json"
 
-def clear_kb() -> None:
+
+def find_foreign_docs() -> list[str]:
+    """返回不属于公共数据库 20 条来源的文档 ID 列表；无库返回空。
+
+    判据：文档正文不含任一 CURATED_HEADERS，即视为外部导入（目前只有文献）。
+    文件存在但读取/解析失败时**拒绝清库**（fail-closed）——无法确认内容就
+    不能删，避免误删文献；此时先备份或修复 knowledge_base/ 后再执行。
+    """
+    docs_path = KB_DIR / DOCS_FILE
+    if not docs_path.exists():
+        return []
+    try:
+        raw = json.loads(docs_path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+        print(f"[拒绝] 读取 {DOCS_FILE} 失败，无法校验文档来源：{exc}", file=sys.stderr)
+        print(
+            "       无法确认库中是否含文献等非公共数据库内容，拒绝清库（fail-closed）。",
+            file=sys.stderr,
+        )
+        print(
+            "       请先备份 knowledge_base/ 并修复该文件后重试。",
+            file=sys.stderr,
+        )
+        raise SystemExit(2) from exc
+
+    foreign: list[str] = []
+    for doc_id, doc in raw.items():
+        content = doc.get("content", "") if isinstance(doc, dict) else str(doc)
+        if not any(h in content for h in CURATED_HEADERS):
+            foreign.append(str(doc_id))
+    return foreign
+
+
+def clear_kb(*, force: bool = False) -> None:
+    """清空知识库目录（保留 KEEP）。
+
+    Raises:
+        SystemExit: 检测到文献等非公共数据库来源的文档且未传 force。
+    """
+    foreign = find_foreign_docs()
+    if foreign and not force:
+        print(
+            f"[拒绝] {KB_DIR.name}/ 中检测到 {len(foreign)} 个非公共数据库来源的文档"
+            "（例如 pubmed-etl 导入的文献）。",
+            file=sys.stderr,
+        )
+        print(
+            "       clear_kb() 会删除整个目录，文献 chunk/实体/关系会一并丢失。",
+            file=sys.stderr,
+        )
+        print(
+            "       如确认要连同文献一起清空，请显式传 --force；"
+            "否则先备份 knowledge_base/ 再手工删除。",
+            file=sys.stderr,
+        )
+        raise SystemExit(2)
+
+    if foreign:
+        print(f"[force] 忽略 {len(foreign)} 个非公共数据库来源的文档，继续清库")
+
+    KB_DIR.mkdir(parents=True, exist_ok=True)
     for p in KB_DIR.iterdir():
         if p.name in KEEP:
             continue
@@ -39,7 +110,15 @@ def clear_kb() -> None:
 
 
 def main() -> int:
-    clear_kb()
+    parser = argparse.ArgumentParser(description="清空并重建公共数据库知识库（20 条）")
+    parser.add_argument(
+        "--force",
+        action="store_true",
+        help="即使库中存在文献等非公共数据库来源的文档也强制清空",
+    )
+    args = parser.parse_args()
+
+    clear_kb(force=args.force)
     print("KB cleared (kept EMBEDDING_MODEL.json)")
 
     from src.knowledge.knowledge_builder import KnowledgeBuilder
