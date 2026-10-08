@@ -18,10 +18,11 @@ def _esummary_response():
             "accession": "GSE123456",
             "title": "Expression data from diabetes patients",
             "summary": "A summary of the dataset.",
-            "gdsType": "Expression profiling by array",
+            # 真实 API 键名为小写 gdstype/pdat（2026-04 实测）
+            "gdstype": "Expression profiling by array",
             "taxon": "Homo sapiens",
             "n_samples": 12,
-            "PDAT": "2024-01-01",
+            "pdat": "2024-01-01",
         },
     }}
 
@@ -144,3 +145,6 @@ def test_ingest_text_from_summary():
     assert "# GEO 数据集: GSE123456" in text
     assert "来源：https://www.ncbi.nlm.nih.gov/geo/query/acc.cgi?acc=GSE123456" in text
     assert "Expression data" in text
+    # 回归：键名用错会写成「类型：空」「发布日期：None」
+    assert "类型：Expression profiling by array" in text
+    assert "发布日期：2024-01-01" in text

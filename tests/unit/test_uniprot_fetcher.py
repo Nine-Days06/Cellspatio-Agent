@@ -37,9 +37,10 @@ def test_confirm_parses_comments_and_gene():
             "primaryAccession": "P04637",
             "proteinDescription": {"recommendedName": {"fullName": {"value": "Cellular tumor antigen p53"}}},
             "genes": [{"geneName": {"value": "TP53"}}],
+            # 真实 API 字段为 texts（复数），genes[].geneId 为空
             "comments": [
                 {"commentType": "FUNCTION",
-                 "text": [{"value": "Acts as a tumor suppressor."}]},
+                 "texts": [{"value": "Acts as a tumor suppressor."}]},
             ],
         })
 
@@ -69,8 +70,13 @@ def test_ingest_text_builds_markdown():
         return httpx.Response(200, json={
             "primaryAccession": "P04637",
             "proteinDescription": {"recommendedName": {"fullName": {"value": "p53"}}},
-            "genes": [{"geneName": {"value": "TP53"}}],
-            "comments": [{"commentType": "FUNCTION", "text": [{"value": "Tumor suppressor."}]}],
+            "genes": [{"geneName": {"value": "TP53"}, "geneId": None}],
+            # 真实 API：comment 字段为 texts（复数）；GeneID 在 crossRef 而非 genes[]
+            "comments": [{"commentType": "FUNCTION", "texts": [{"value": "Tumor suppressor."}]}],
+            "uniProtKBCrossReferences": [
+                {"database": "GeneID", "id": "7157"},
+                {"database": "HGNC", "id": "HGNC:11998"},
+            ],
         })
 
     fetcher = _fetcher_with(handler)
@@ -80,6 +86,7 @@ def test_ingest_text_builds_markdown():
     assert "来源：https://www.uniprot.org/uniprotkb/P04637" in text
     assert "基因：TP53" in text
     assert "Tumor suppressor." in text
+    assert "NCBI GeneID：7157" in text  # 取 crossRef，非空 GeneID 才写入
 
 
 def test_search_respects_max_results():

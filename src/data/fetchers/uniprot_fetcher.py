@@ -58,13 +58,17 @@ class UniProtFetcher(BaseFetcher):
         item = resp.json()
         lines = [
             f"# UniProt 蛋白: {asset_id}",
-            # URL 末段必须是 accession：LightRAG 只存 basename，`/entry` 会撞车
+            # URL 末段必须是 accession：LightRAG 只存 basename，`/entry` 会撞 key
             f"来源：https://www.uniprot.org/uniprotkb/{asset_id}",
             f"蛋白名：{self._protein_name(item)}",
             f"基因：{self._gene_name(item)}",
         ]
+        gene_id = self._gene_id(item)
+        if gene_id:
+            lines.append(f"NCBI GeneID：{gene_id}")
         for comment in item.get("comments", []):
-            for text in comment.get("text", []):
+            # API 字段为 texts（复数）：2026-04 实测 P04637 49 个 comment 均无 "text" 键
+            for text in comment.get("texts", []):
                 value = text.get("value") if isinstance(text, dict) else text
                 if isinstance(value, str):
                     lines.append(f"- {comment.get('commentType', '')}: {value}")
@@ -91,11 +95,19 @@ class UniProtFetcher(BaseFetcher):
         return ""
 
     @staticmethod
+    def _gene_id(item: dict) -> str:
+        """提取 NCBI GeneID（genes[].geneId 实测 10/10 为空，真实位置在 crossRef）"""
+        for xref in item.get("uniProtKBCrossReferences", []):
+            if xref.get("database") == "GeneID":
+                return str(xref.get("id") or "")
+        return ""
+
+    @staticmethod
     def _comments_text(item: dict, limit: int = 3) -> str:
-        """汇总前 N 条 comment 文本"""
+        """汇总前 N 条 comment 文本（API 字段为 texts 复数）"""
         texts = []
         for comment in item.get("comments", []):
-            for text in comment.get("text", []):
+            for text in comment.get("texts", []):
                 value = text.get("value") if isinstance(text, dict) else text
                 if isinstance(value, str):
                     texts.append(value)

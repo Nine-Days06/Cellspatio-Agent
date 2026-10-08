@@ -86,10 +86,10 @@ class GEOFetcher(BaseFetcher):
             f"来源：https://www.ncbi.nlm.nih.gov/geo/query/acc.cgi?acc={info.asset_id}",
             f"标题：{info.title}",
             f"摘要：{info.description}",
-            f"类型：{m.get('gdsType', '')}",
+            f"类型：{m.get('gdstype', '')}",
             f"物种：{m.get('taxon', '')}",
             f"样本数：{m.get('n_samples', '')}",
-            f"发布日期：{m.get('PDAT', '')}",
+            f"发布日期：{m.get('pdat', '')}",
         ]
         return "\n".join(lines)
 
@@ -127,8 +127,9 @@ class GEOFetcher(BaseFetcher):
             asset_type=self.asset_type,
             description=entry.get("summary", ""),
             metadata={
+                # esummary 实际键名为小写 gdstype/pdat（2026-04 实测全键表）
                 k: entry.get(k)
-                for k in ("gdsType", "taxon", "n_samples", "PDAT")
+                for k in ("gdstype", "taxon", "n_samples", "pdat")
             },
         )
 

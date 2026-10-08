@@ -23,14 +23,19 @@ os.environ.setdefault("OLLAMA_URL", "http://127.0.0.1:11434")
 KB_DIR = ROOT / "knowledge_base"
 KEEP = {"EMBEDDING_MODEL.json"}
 
+# 20 条基线 ID（来源 ca86047，2026-04 逐条实测核实）
+# KEGG 换 hsa 物种通路：map* 参考通路无 GENE/物种段（0 基因），hsa* 含 Entrez ID；
+# map04214（果蝇凋亡）无人类对应（hsa04214 404），按主题以 hsa04151 PI3K-Akt 替换。
 KEGG_IDS = [
-    "map04950", "map04214", "map04215", "map04115",
-    "map04930", "map04210", "map04940", "map04110",
+    "hsa04950", "hsa04151", "hsa04215", "hsa04115",   # MODY / PI3K-Akt / 凋亡多物种 / p53
+    "hsa04930", "hsa04210", "hsa04940", "hsa04110",   # II型糖尿病 / 凋亡 / I型糖尿病 / 细胞周期
 ]
+# UniProt 10 条：全部 Homo sapiens，GeneID 位于 uniProtKBCrossReferences（genes[].geneId 实测为空）
 UNIPROT_IDS = [
     "Q9NQ88", "P58012", "Q14644", "Q13572", "Q13813",
     "Q9Y2B4", "P04637", "Q12888", "Q7LG56", "P01308",
 ]
+# GEO 2 条：均为真实公开数据集（GSE123456 4 样本 / GSE48351 10 样本，PMID 见 esummary）
 GEO_IDS = ["GSE123456", "GSE48351"]
 
 # 本脚本负责重建的公共数据库来源标记（由各 ingest_text 写入）
