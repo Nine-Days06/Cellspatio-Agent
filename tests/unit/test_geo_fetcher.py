@@ -23,6 +23,14 @@ def _esummary_response():
             "taxon": "Homo sapiens",
             "n_samples": 12,
             "pdat": "2024-01-01",
+            # 2026-10 实测补充键
+            "pubmedids": ["34567890", "34567891"],
+            "gpl": "23126",
+            "suppfile": "CEL, CHP",
+            "samples": [
+                {"accession": "GSM3000001", "title": "control"},
+                {"accession": "GSM3000002", "title": "treated"},
+            ],
         },
     }}
 
@@ -148,3 +156,49 @@ def test_ingest_text_from_summary():
     # 回归：键名用错会写成「类型：空」「发布日期：None」
     assert "类型：Expression profiling by array" in text
     assert "发布日期：2024-01-01" in text
+
+
+def test_confirm_metadata_includes_extra_fields():
+    def handler(request):
+        if "esearch.fcgi" in str(request.url):
+            return httpx.Response(200, json=_esearch_response())
+        return httpx.Response(200, json=_esummary_response())
+
+    fetcher = _fetcher_with(handler)
+    info = fetcher.confirm("GSE123456")
+    assert info.metadata["gpl"] == "23126"
+    assert info.metadata["pubmedids"] == ["34567890", "34567891"]
+    assert info.metadata["suppfile"] == "CEL, CHP"
+    assert info.metadata["samples"][0]["accession"] == "GSM3000001"
+
+
+def test_ingest_text_includes_platform_pmids_suppfile():
+    def handler(request):
+        if "esearch.fcgi" in str(request.url):
+            return httpx.Response(200, json=_esearch_response())
+        return httpx.Response(200, json=_esummary_response())
+
+    fetcher = _fetcher_with(handler)
+    text = fetcher.ingest_text("GSE123456")
+    assert "平台：GPL23126" in text
+    assert "关联 PMID：34567890, 34567891" in text
+    assert "补充文件：CEL, CHP" in text
+    # samples 仅进 metadata，不渲染进正文
+    assert "GSM3000001" not in text
+
+
+def test_ingest_text_skips_missing_extra_fields():
+    def handler(request):
+        if "esearch.fcgi" in str(request.url):
+            return httpx.Response(200, json=_esearch_response())
+        payload = _esummary_response()
+        entry = payload["result"]["200123456"]
+        for key in ("gpl", "pubmedids", "suppfile"):
+            entry.pop(key, None)
+        return httpx.Response(200, json=payload)
+
+    fetcher = _fetcher_with(handler)
+    text = fetcher.ingest_text("GSE123456")
+    assert "平台：" not in text
+    assert "关联 PMID：" not in text
+    assert "补充文件：" not in text

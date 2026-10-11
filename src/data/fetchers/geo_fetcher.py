@@ -91,6 +91,17 @@ class GEOFetcher(BaseFetcher):
             f"样本数：{m.get('n_samples', '')}",
             f"发布日期：{m.get('pdat', '')}",
         ]
+        gpl = str(m.get("gpl") or "")
+        if gpl:
+            if not gpl.upper().startswith("GPL"):
+                gpl = f"GPL{gpl}"
+            lines.append(f"平台：{gpl}")
+        pubmedids = [str(p) for p in (m.get("pubmedids") or [])]
+        if pubmedids:
+            lines.append(f"关联 PMID：{', '.join(pubmedids)}")
+        suppfile = str(m.get("suppfile") or "").strip()
+        if suppfile:
+            lines.append(f"补充文件：{suppfile}")
         return "\n".join(lines)
 
     def _summaries_by_ids(self, idlist: list[str]) -> list[AssetMeta]:
@@ -129,7 +140,10 @@ class GEOFetcher(BaseFetcher):
             metadata={
                 # esummary 实际键名为小写 gdstype/pdat（2026-04 实测全键表）
                 k: entry.get(k)
-                for k in ("gdstype", "taxon", "n_samples", "pdat")
+                for k in (
+                    "gdstype", "taxon", "n_samples", "pdat",
+                    "pubmedids", "gpl", "suppfile", "samples",
+                )
             },
         )
 
