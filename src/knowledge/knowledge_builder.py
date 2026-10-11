@@ -49,6 +49,33 @@ class KnowledgeBuilder:
         logger.info(f"Built knowledge from UniProt: {len(accessions)} proteins, inserted {inserted}")
         return {"requested": len(accessions), "inserted": inserted}
 
+    def build_from_kegg_kgml(self, pathway_ids: list[str], fetcher=None) -> dict[str, Any]:
+        """从 KEGG 通路 KGML 结构批量构建"""
+        self._need_registry()
+        fetcher = fetcher or self.registry.get("kegg")
+        texts = [fetcher.ingest_kgml_text(pid) for pid in pathway_ids]
+        inserted = self._insert_texts(texts)
+        logger.info(f"Built knowledge from KEGG KGML: {len(pathway_ids)} pathways, inserted {inserted}")
+        return {"requested": len(pathway_ids), "inserted": inserted}
+
+    def build_from_reactome(self, st_ids: list[str], fetcher=None) -> dict[str, Any]:
+        """从 Reactome 通路批量构建"""
+        self._need_registry()
+        fetcher = fetcher or self.registry.get("reactome")
+        texts = [fetcher.ingest_text(sid) for sid in st_ids]
+        inserted = self._insert_texts(texts)
+        logger.info(f"Built knowledge from Reactome: {len(st_ids)} pathways, inserted {inserted}")
+        return {"requested": len(st_ids), "inserted": inserted}
+
+    def build_from_hpa(self, genes: list[str], fetcher=None) -> dict[str, Any]:
+        """从 HPA 蛋白条目批量构建"""
+        self._need_registry()
+        fetcher = fetcher or self.registry.get("hpa")
+        texts = [fetcher.ingest_text(g) for g in genes]
+        inserted = self._insert_texts(texts)
+        logger.info(f"Built knowledge from HPA: {len(genes)} proteins, inserted {inserted}")
+        return {"requested": len(genes), "inserted": inserted}
+
     def build_from_geo_metadata(self, gse_ids: list[str], fetcher=None) -> dict[str, Any]:
         """从 GEO 数据集元数据批量构建（供「找数据集」类问答）"""
         self._need_registry()

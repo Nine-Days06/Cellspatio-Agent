@@ -118,3 +118,44 @@ def test_build_from_cell_ontology_default_path_is_none(monkeypatch):
     result = builder.build_from_cell_ontology()
     assert result == {"requested": 2, "inserted": 2}
     assert seen["path"] is None  # 不传路径 → 交给 ensure_file 下载/缓存
+
+
+def test_build_from_kegg_kgml_batch():
+    """KGML 构建走 kegg fetcher 的 ingest_kgml_text（不是 ingest_text）"""
+    class FakeKEGG:
+        source = "kegg"
+
+        def __init__(self):
+            self.calls = []
+
+        def ingest_kgml_text(self, asset_id):
+            self.calls.append(asset_id)
+            return f"# KEGG 通路结构: {asset_id}"
+
+    fetcher = FakeKEGG()
+    client = MockLightRAGClient()
+    builder = KnowledgeBuilder(client)
+    result = builder.build_from_kegg_kgml(["hsa04110"], fetcher=fetcher)
+    assert result == {"requested": 1, "inserted": 1}
+    assert fetcher.calls == ["hsa04110"]
+    assert client.inserted_documents[0].startswith("# KEGG 通路结构:")
+
+
+def test_build_from_reactome_batch():
+    """Reactome 构建走 reactome fetcher 的 ingest_text"""
+    fetcher = FakeFetcher("reactome")
+    client = MockLightRAGClient()
+    builder = KnowledgeBuilder(client)
+    result = builder.build_from_reactome(["R-HSA-1640170", "R-HSA-109582"], fetcher=fetcher)
+    assert result == {"requested": 2, "inserted": 2}
+    assert fetcher.calls == ["R-HSA-1640170", "R-HSA-109582"]
+
+
+def test_build_from_hpa_batch():
+    """HPA 构建走 hpa fetcher 的 ingest_text"""
+    fetcher = FakeFetcher("hpa")
+    client = MockLightRAGClient()
+    builder = KnowledgeBuilder(client)
+    result = builder.build_from_hpa(["CD4", "CD8A"], fetcher=fetcher)
+    assert result == {"requested": 2, "inserted": 2}
+    assert fetcher.calls == ["CD4", "CD8A"]
