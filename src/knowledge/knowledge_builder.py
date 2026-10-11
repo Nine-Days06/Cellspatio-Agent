@@ -1,4 +1,5 @@
 import logging
+from pathlib import Path
 from typing import Any
 
 from src.knowledge.article_text import convert_article_to_text
@@ -56,6 +57,22 @@ class KnowledgeBuilder:
         inserted = self._insert_texts(texts)
         logger.info(f"Built knowledge from GEO metadata: {len(gse_ids)}, inserted {inserted}")
         return {"requested": len(gse_ids), "inserted": inserted}
+
+    def build_from_cellmarker(self, xlsx_path: str | None = None) -> dict[str, Any]:
+        """从 CellMarker 人类细胞标志物表批量构建"""
+        from src.knowledge.curated_sources import cellmarker_texts
+        texts = cellmarker_texts(Path(xlsx_path) if xlsx_path else None)
+        inserted = self._insert_texts(texts)
+        logger.info(f"Built knowledge from CellMarker: {len(texts)} docs, inserted {inserted}")
+        return {"requested": len(texts), "inserted": inserted}
+
+    def build_from_cell_ontology(self, obo_path: str | None = None) -> dict[str, Any]:
+        """从 Cell Ontology cl.obo 批量构建"""
+        from src.knowledge.curated_sources import cell_ontology_texts
+        texts = cell_ontology_texts(Path(obo_path) if obo_path else None)
+        inserted = self._insert_texts(texts)
+        logger.info(f"Built knowledge from Cell Ontology: {len(texts)} docs, inserted {inserted}")
+        return {"requested": len(texts), "inserted": inserted}
 
     def build_from_files(self, file_paths: list[str]) -> dict[str, Any]:
         """从本地文本文件批量构建"""

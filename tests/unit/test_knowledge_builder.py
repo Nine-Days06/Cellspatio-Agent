@@ -79,3 +79,40 @@ def test_build_from_pubmed_deprecated():
     builder = KnowledgeBuilder(MockLightRAGClient())
     result = builder.build_from_pubmed(["multi-omics"])
     assert result["inserted"] == 0
+
+
+def test_build_from_cellmarker(monkeypatch):
+    from pathlib import Path
+
+    import src.knowledge.curated_sources as cs
+
+    seen = {}
+
+    def fake_texts(xlsx_path=None):
+        seen["path"] = xlsx_path
+        return ["# CellMarker 细胞类型:\n## B cell"]
+
+    monkeypatch.setattr(cs, "cellmarker_texts", fake_texts)
+    client = MockLightRAGClient()
+    builder = KnowledgeBuilder(client)
+    result = builder.build_from_cellmarker("/tmp/marker.xlsx")
+    assert result == {"requested": 1, "inserted": 1}
+    assert seen["path"] == Path("/tmp/marker.xlsx")
+    assert client.inserted_documents[0].startswith("# CellMarker 细胞类型:")
+
+
+def test_build_from_cell_ontology_default_path_is_none(monkeypatch):
+    import src.knowledge.curated_sources as cs
+
+    seen = {}
+
+    def fake_texts(obo_path=None):
+        seen["path"] = obo_path
+        return ["# Cell Ontology 术语:\nCL:0000084 T cell", "# Cell Ontology 术语:\nCL:0000085 B cell"]
+
+    monkeypatch.setattr(cs, "cell_ontology_texts", fake_texts)
+    client = MockLightRAGClient()
+    builder = KnowledgeBuilder(client)
+    result = builder.build_from_cell_ontology()
+    assert result == {"requested": 2, "inserted": 2}
+    assert seen["path"] is None  # 不传路径 → 交给 ensure_file 下载/缓存
