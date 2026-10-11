@@ -5,12 +5,16 @@ ContentService 官方 REST（https://reactome.org/ContentService/）：
 - containedEvents：GET /data/pathway/<stId>/containedEvents（子事件列表，可能上百条）
 旧域名 reactome.org 实测可用；新 api.reactome.org 本机连接超时，不采用。
 """
+import logging
+import re
 import time
 from pathlib import Path
 
 import httpx
 
 from src.data.fetchers.base import AssetInfo, AssetMeta, BaseFetcher
+
+logger = logging.getLogger(__name__)
 
 
 class ReactomeFetcher(BaseFetcher):
@@ -19,9 +23,6 @@ class ReactomeFetcher(BaseFetcher):
     source = "reactome"
     asset_type = "knowledge"
     base_url = "https://reactome.org/ContentService"
-
-    def __init__(self, storage=None, client: httpx.Client | None = None):
-        super().__init__(storage=storage, client=client)
 
     def _get_json(self, path: str) -> list | dict:
         """GET JSON，遇 SSL 超时重试 2 次（实测 /search/query 偶发超时）"""
@@ -48,20 +49,27 @@ class ReactomeFetcher(BaseFetcher):
             ))
         return metas
 
+    @staticmethod
+    def _summation_text(data: dict) -> str:
+        """summation[0].text → 剥掉 HTML 标签的摘要（无则空串）"""
+        summation = data.get("summation") or []
+        text = (summation[0].get("text", "") if summation else "") or ""
+        # 摘要含 HTML 标签（实测有 <b> 等），剥掉后渲染
+        return re.sub(r"<[^>]+>", "", text)
+
     def confirm(self, asset_id: str) -> AssetInfo:
         """query 通路详情，提取标题与摘要"""
         data = self._get_json(f"/data/query/{asset_id}")
-        summation = data.get("summation") or []
-        description = (summation[0].get("text", "") if summation else "") or ""
         return AssetInfo(
             asset_id=asset_id,
             title=data.get("displayName", asset_id),
             source=self.source, asset_type=self.asset_type,
-            description=description,
+            description=self._summation_text(data),
             metadata={"is_in_disease": data.get("isInDisease", False)},
         )
 
     def download(self, asset_id: str) -> Path:
+        """reactome 是知识流数据源，无文件下载。"""
         raise NotImplementedError(f"{self.source} 是知识流数据源，无文件下载")
 
     def ingest_text(self, asset_id: str) -> str:
@@ -76,15 +84,12 @@ class ReactomeFetcher(BaseFetcher):
             lines.append(f"GO 生物过程：{go.get('displayName', '')} (GO:{go.get('accession', '')})")
         if data.get("isInDisease"):
             lines.append("疾病相关：是")
-        summation = data.get("summation") or []
-        summary = (summation[0].get("text", "") if summation else "") or ""
-        # 摘要含 HTML 标签（实测有 <b> 等），剥掉后渲染
-        import re
-        summary = re.sub(r"<[^>]+>", "", summary)
+        summary = self._summation_text(data)
         lines.append(f"摘要：{summary}" if summary else "摘要：无")
         try:
             events = self._get_json(f"/data/pathway/{asset_id}/containedEvents")
-        except RuntimeError:
+        except RuntimeError as exc:
+            logger.warning("containedEvents 拉取失败，子事件降级为空: %s: %s", asset_id, exc)
             events = []
         # 实测部分通路返回 dict 与 int（裸 dbId）混合列表（R-HSA-109582: 6/407），int 跳过
         events = [e for e in (events or []) if isinstance(e, dict)]

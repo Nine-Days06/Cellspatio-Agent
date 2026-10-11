@@ -3,14 +3,17 @@
 search_download API：GET /api/search_download.php?search=<基因>&format=json&columns=...
 实测有效列代码仅 g/gs/eg/up/pc/pe/scml（subloc/rna_ts 等被静默丢弃）；
 检索为模糊匹配（search=CD4 返回 155 条），必须按 Gene 列精确过滤。
-频率：保守 ~1 req/s（连续请求间 sleep 1.1s，实测 12 基因连打无封禁）。
+频率：保守 ≥1.1s/请求（连续请求起始间隔节流，非固定 sleep；实测 12 基因连打无封禁）。
 """
+import logging
 import time
 from pathlib import Path
 
 import httpx
 
 from src.data.fetchers.base import AssetInfo, AssetMeta, BaseFetcher
+
+logger = logging.getLogger(__name__)
 
 HPA_SEARCH_URL = "https://www.proteinatlas.org/api/search_download.php"
 HPA_COLUMNS = "g,gs,eg,up,pc,pe,scml"
@@ -28,7 +31,7 @@ class HPAFetcher(BaseFetcher):
 
     def _search_rows(self, gene: str) -> list[dict]:
         """请求 search_download 并返回 JSON 数组；精确匹配 Gene 列的条目"""
-        min_interval = 1.0 / 1.0  # ~1 req/s 保守限速
+        min_interval = 1.1  # ≥1.1s/请求（实测契约：连续请求间隔 ≥1.1s，12 基因连打无封禁）
         elapsed = time.time() - self._last_request_time
         if elapsed < min_interval:
             time.sleep(min_interval - elapsed)
@@ -46,6 +49,7 @@ class HPAFetcher(BaseFetcher):
         return exact
 
     def _to_meta(self, row: dict) -> AssetMeta:
+        """行 JSON → AssetMeta（asset_id/title 均为基因名）。"""
         gene = row.get("Gene", "")
         return AssetMeta(asset_id=gene, title=gene, source=self.source, asset_type=self.asset_type)
 
@@ -53,11 +57,13 @@ class HPAFetcher(BaseFetcher):
         """检索基因并精确过滤；可能无精确匹配 → 返回空列表"""
         try:
             rows = self._search_rows(query)
-        except ValueError:
+        except ValueError as exc:
+            logger.debug("HPA 无 %s 精确匹配，返回空列表: %s", query, exc)
             return []
         return [self._to_meta(r) for r in rows[:max_results]]
 
     def confirm(self, asset_id: str) -> AssetInfo:
+        """蛋白条目确认：精确匹配基因并提取 Ensembl/UniProt。"""
         rows = self._search_rows(asset_id)
         row = rows[0]
         classes = " ".join(row.get("Protein class") or [])
@@ -73,6 +79,7 @@ class HPAFetcher(BaseFetcher):
         )
 
     def download(self, asset_id: str) -> Path:
+        """hpa 是知识流数据源，无文件下载。"""
         raise NotImplementedError(f"{self.source} 是知识流数据源，无文件下载")
 
     def ingest_text(self, asset_id: str) -> str:
