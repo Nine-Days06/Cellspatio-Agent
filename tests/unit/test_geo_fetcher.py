@@ -202,3 +202,65 @@ def test_ingest_text_skips_missing_extra_fields():
     assert "平台：" not in text
     assert "关联 PMID：" not in text
     assert "补充文件：" not in text
+
+
+def test_local_characteristics_parses_series_matrix(tmp_path):
+    import gzip
+
+    from src.data.storage import FetcherStorage
+
+    storage = FetcherStorage(base_dir=str(tmp_path / "raw"), meta_dir=str(tmp_path / "meta"))
+    asset_dir = tmp_path / "raw" / "geo" / "GSE123456"
+    asset_dir.mkdir(parents=True)
+    content = (
+        "!Sample_characteristics_ch1\tcell line: SAS cell\tcell type: glioma\n"
+        "!Sample_characteristics_ch1\tcell line: SAS cell\tage: 60\n"
+        "!Sample_title\tt1\tt2\n"
+    )
+    with gzip.open(asset_dir / "GSE123456_series_matrix.txt.gz", "wt", encoding="utf-8") as fh:
+        fh.write(content)
+
+    fetcher = GEOFetcher(storage=storage)
+    assert fetcher._local_characteristics("GSE123456") == [
+        "- cell line: SAS cell",
+        "- cell type: glioma",
+        "- age: 60",
+    ]
+
+
+def test_local_characteristics_absent_returns_empty(tmp_path):
+    from src.data.storage import FetcherStorage
+
+    storage = FetcherStorage(base_dir=str(tmp_path / "raw"), meta_dir=str(tmp_path / "meta"))
+    # 文件缺失 → []
+    assert GEOFetcher(storage=storage)._local_characteristics("GSE000001") == []
+    # storage 未配置 → []
+    assert GEOFetcher()._local_characteristics("GSE123456") == []
+
+
+def test_ingest_text_includes_local_characteristics(tmp_path):
+    import gzip
+
+    import httpx
+
+    from src.data.storage import FetcherStorage
+
+    storage = FetcherStorage(base_dir=str(tmp_path / "raw"), meta_dir=str(tmp_path / "meta"))
+    asset_dir = tmp_path / "raw" / "geo" / "GSE123456"
+    asset_dir.mkdir(parents=True)
+    with gzip.open(asset_dir / "GSE123456_series_matrix.txt.gz", "wt", encoding="utf-8") as fh:
+        fh.write("!Sample_characteristics_ch1\tcell line: SAS cell\tdisease: glioma\n")
+
+    def handler(request):
+        if "esearch.fcgi" in str(request.url):
+            return httpx.Response(200, json=_esearch_response())
+        return httpx.Response(200, json=_esummary_response())
+
+    fetcher = GEOFetcher(
+        storage=storage,
+        client=httpx.Client(transport=httpx.MockTransport(handler)),
+    )
+    text = fetcher.ingest_text("GSE123456")
+    assert "样本特征：" in text
+    assert "- cell line: SAS cell" in text
+    assert "- disease: glioma" in text

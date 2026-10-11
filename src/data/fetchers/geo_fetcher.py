@@ -1,4 +1,5 @@
 """GEO 转录组数据获取（NCBI E-utilities + GEO FTP）"""
+import gzip
 from pathlib import Path
 from typing import Any
 
@@ -102,7 +103,41 @@ class GEOFetcher(BaseFetcher):
         suppfile = str(m.get("suppfile") or "").strip()
         if suppfile:
             lines.append(f"补充文件：{suppfile}")
+        chars = self._local_characteristics(asset_id)
+        if chars:
+            lines.append("样本特征：")
+            lines.extend(chars)
         return "\n".join(lines)
+
+    def _local_characteristics(self, asset_id: str) -> list[str]:
+        """读取本地 series_matrix 的样本特征行；无 storage 或文件缺失返回 []
+
+        只认 !Sample_characteristics_ch1 行；值形如 "cell line: SAS cell"，
+        按 key 聚合、值去重、保持首现顺序，渲染为 "- {k}: {v1, v2}"。
+        """
+        if self._storage is None:
+            return []
+        path = self._storage.get_path(
+            self.source, asset_id, filename=f"{asset_id}_series_matrix.txt.gz"
+        )
+        if not path.exists():
+            return []
+        order: list[str] = []
+        values: dict[str, list[str]] = {}
+        with gzip.open(path, "rt", encoding="utf-8", errors="replace") as fh:
+            for line in fh:
+                if not line.startswith("!Sample_characteristics_ch1"):
+                    continue
+                for value in line.rstrip("\n").split("\t")[1:]:
+                    key, sep, val = value.partition(": ")
+                    if not sep:
+                        continue
+                    if key not in values:
+                        values[key] = []
+                        order.append(key)
+                    if val not in values[key]:
+                        values[key].append(val)
+        return [f"- {key}: {', '.join(values[key])}" for key in order]
 
     def _summaries_by_ids(self, idlist: list[str]) -> list[AssetMeta]:
         """批量 esummary 并转为候选"""
