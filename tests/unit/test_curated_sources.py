@@ -80,3 +80,53 @@ def test_pack_entries_oversized_entry_own_box():
 
 def test_pack_entries_empty():
     assert _pack_entries([], "# H:") == []
+
+
+def _write_cellmarker_xlsx(path) -> None:
+    """最小 CellMarker fixture：2 个细胞类型、数值 PMID、CL 下划线写法。"""
+    import openpyxl
+
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.append(["cell_name", "cellontology_id", "tissue_type", "marker", "PMID"])
+    ws.append(["B cell", "CL_0000235", "blood", "CD19", 12345678])
+    ws.append(["B cell", "CL:0000235", "blood", "MS4A1", 12345678])
+    ws.append(["T cell", "CL_0000084", "thymus", "CD3E", 87654321])
+    ws.append(["", "CL_0000000", "empty", "GENE", 11111111])  # cell_name 空 → 跳过
+    wb.save(path)
+
+
+def test_cellmarker_texts_aggregates_entries(tmp_path):
+    from src.knowledge.curated_sources import cellmarker_texts
+
+    xlsx = tmp_path / "Cell_marker_Human.xlsx"
+    _write_cellmarker_xlsx(xlsx)
+    docs = cellmarker_texts(xlsx)
+    assert len(docs) == 1
+    doc = docs[0]
+    assert doc.startswith("# CellMarker 细胞类型:")
+    assert "## B cell" in doc
+    assert "Cell Ontology ID: CL:0000235" in doc  # CL_ 写法归一为 CL:
+    assert "组织：blood" in doc
+    assert "标志物：CD19, MS4A1" in doc  # 聚合两行、保持首现顺序
+    assert "文献：PMID 12345678（共 1 篇）" in doc  # PMID 去重
+    assert "## T cell" in doc
+    assert "CD3E" in doc
+    assert "GENE" not in doc  # cell_name 为空的行被跳过
+
+
+def test_cellmarker_texts_uses_ensure_file_when_no_path(monkeypatch, tmp_path):
+    import src.knowledge.curated_sources as cs
+
+    xlsx = tmp_path / "cached.xlsx"
+    _write_cellmarker_xlsx(xlsx)
+    called = {}
+
+    def fake_ensure(url, path, **kwargs):
+        called["url"] = url
+        return xlsx
+
+    monkeypatch.setattr(cs, "ensure_file", fake_ensure)
+    docs = cs.cellmarker_texts()  # 不传路径 → 走 ensure_file(CELLMARKER_URL)
+    assert called["url"] == cs.CELLMARKER_URL
+    assert docs
