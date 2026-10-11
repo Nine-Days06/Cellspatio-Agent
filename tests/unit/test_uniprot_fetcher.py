@@ -112,6 +112,7 @@ def test_download_raises_not_implemented():
 
 
 def test_ingest_text_includes_go_annotations():
+    """ingest_text 输出 GO 三类注释且排在 GeneID 行之后。"""
     def handler(request):
         return httpx.Response(200, json={
             "primaryAccession": "P04637",

@@ -118,7 +118,7 @@ def clear_kb(*, force: bool = False) -> None:
                     c.unlink()
 
 
-def _all_ok(results: list[tuple[str, dict]]) -> bool:
+def _all_sources_fully_inserted(results: list[tuple[str, dict]]) -> bool:
     """逐源校验：每个源 requested > 0 且 inserted == requested
 
     源间规模差异大（20 vs ~300），只看总数会漏掉单源失败。
@@ -168,7 +168,7 @@ def main() -> int:
         print(name, r)
         total += int(r.get("inserted", 0) or 0)
     print("TOTAL_INSERTED", total)
-    return 0 if _all_ok(results) else 1
+    return 0 if _all_sources_fully_inserted(results) else 1
 
 
 if __name__ == "__main__":

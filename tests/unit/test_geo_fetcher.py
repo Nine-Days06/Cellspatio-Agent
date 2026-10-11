@@ -159,6 +159,7 @@ def test_ingest_text_from_summary():
 
 
 def test_confirm_metadata_includes_extra_fields():
+    """confirm 元数据包含 gpl/pubmedids/suppfile/samples 扩展字段。"""
     def handler(request):
         if "esearch.fcgi" in str(request.url):
             return httpx.Response(200, json=_esearch_response())
@@ -173,6 +174,7 @@ def test_confirm_metadata_includes_extra_fields():
 
 
 def test_ingest_text_includes_platform_pmids_suppfile():
+    """ingest_text 渲染平台/PMID/补充文件，samples 不进正文。"""
     def handler(request):
         if "esearch.fcgi" in str(request.url):
             return httpx.Response(200, json=_esearch_response())
@@ -188,6 +190,7 @@ def test_ingest_text_includes_platform_pmids_suppfile():
 
 
 def test_ingest_text_skips_missing_extra_fields():
+    """缺少扩展字段时正文跳过对应行。"""
     def handler(request):
         if "esearch.fcgi" in str(request.url):
             return httpx.Response(200, json=_esearch_response())
@@ -205,6 +208,7 @@ def test_ingest_text_skips_missing_extra_fields():
 
 
 def test_local_characteristics_parses_series_matrix(tmp_path):
+    """从本地 series_matrix 解析样本特征并去重。"""
     import gzip
 
     from src.data.storage import FetcherStorage
@@ -229,6 +233,7 @@ def test_local_characteristics_parses_series_matrix(tmp_path):
 
 
 def test_local_characteristics_absent_returns_empty(tmp_path):
+    """本地文件缺失或未配置 storage 时返回空列表。"""
     from src.data.storage import FetcherStorage
 
     storage = FetcherStorage(base_dir=str(tmp_path / "raw"), meta_dir=str(tmp_path / "meta"))
@@ -239,6 +244,7 @@ def test_local_characteristics_absent_returns_empty(tmp_path):
 
 
 def test_ingest_text_includes_local_characteristics(tmp_path):
+    """ingest_text 合并本地 series_matrix 的样本特征。"""
     import gzip
 
     import httpx

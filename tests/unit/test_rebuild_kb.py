@@ -116,16 +116,17 @@ def test_new_curated_docs_pass_guard(monkeypatch, tmp_path):
 
 
 def test_all_ok_requires_every_source():
-    assert rebuild_kb._all_ok([
+    """逐源校验：每源 requested > 0 且 inserted == requested 才算全部成功。"""
+    assert rebuild_kb._all_sources_fully_inserted([
         ("kegg", {"requested": 8, "inserted": 8}),
         ("cellmarker", {"requested": 170, "inserted": 170}),
     ])
     # 某一源 inserted < requested → 失败
-    assert not rebuild_kb._all_ok([
+    assert not rebuild_kb._all_sources_fully_inserted([
         ("kegg", {"requested": 8, "inserted": 8}),
         ("geo", {"requested": 2, "inserted": 1}),
     ])
     # 某一源 requested == 0 → 失败
-    assert not rebuild_kb._all_ok([
+    assert not rebuild_kb._all_sources_fully_inserted([
         ("cell_ontology", {"requested": 0, "inserted": 0}),
     ])

@@ -4,11 +4,14 @@
 - _pack_entries：条目贪心装箱为定长文档
 - cellmarker_texts / cell_ontology_texts：源文件 → 入库文档列表
 """
+import logging
 import re
 from pathlib import Path
 
 import httpx
 import openpyxl
+
+logger = logging.getLogger(__name__)
 
 CELLMARKER_URL = (
     "http://117.50.127.228/CellMarker/CellMarker_download_files/file/"
@@ -46,7 +49,7 @@ def ensure_file(
     client = client or httpx.Client(timeout=timeout, follow_redirects=True)
     try:
         last: Exception | None = None
-        for _ in range(retries):
+        for _attempt, _ in enumerate(range(retries), start=1):
             try:
                 resp = client.get(url)
                 resp.raise_for_status()
@@ -56,6 +59,7 @@ def ensure_file(
                 return path
             except (httpx.HTTPError, OSError) as exc:
                 last = exc
+                logger.warning("下载失败（第 %d/%d 次，将重试）: %s: %s", _attempt, retries, url, last)
         raise RuntimeError(f"下载失败（已重试 {retries} 次）: {url}: {last}") from last
     finally:
         if own_client:
@@ -94,7 +98,7 @@ def _pack_entries(entries: list[str], header: str, max_chars: int = 3000) -> lis
     return docs
 
 
-def _cell_str(value) -> str:
+def _cell_str(value: object) -> str:
     """xlsx 单元格值归一为字符串：None → ""，整数浮点 123.0 → "123"（PMID 列实测为数值）"""
     if value is None:
         return ""

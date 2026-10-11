@@ -82,6 +82,7 @@ def test_build_from_pubmed_deprecated():
 
 
 def test_build_from_cellmarker(monkeypatch):
+    """透传 xlsx 路径给 cellmarker_texts 并写入 CellMarker 文档。"""
     from pathlib import Path
 
     import src.knowledge.curated_sources as cs
@@ -102,6 +103,7 @@ def test_build_from_cellmarker(monkeypatch):
 
 
 def test_build_from_cell_ontology_default_path_is_none(monkeypatch):
+    """默认不传路径（None），交给 ensure_file 下载/缓存。"""
     import src.knowledge.curated_sources as cs
 
     seen = {}

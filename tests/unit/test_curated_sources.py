@@ -7,6 +7,7 @@ from src.knowledge.curated_sources import ensure_file
 
 
 def test_ensure_file_skips_when_exists(tmp_path):
+    """已缓存文件直接返回，不发起下载请求。"""
     target = tmp_path / "cached.bin"
     target.write_bytes(b"cached")
     calls = {"n": 0}
@@ -26,6 +27,7 @@ def test_ensure_file_skips_when_exists(tmp_path):
 
 
 def test_ensure_file_downloads_with_retry(tmp_path):
+    """首次失败后重试成功，且不留 .part 临时文件。"""
     calls = {"n": 0}
 
     def handler(request):
@@ -46,6 +48,7 @@ def test_ensure_file_downloads_with_retry(tmp_path):
 
 
 def test_ensure_file_exhausts_retries(tmp_path):
+    """重试耗尽抛 RuntimeError，且不留下半截文件。"""
     def handler(request):
         return httpx.Response(500)
 
@@ -63,6 +66,7 @@ from src.knowledge.curated_sources import _pack_entries
 
 
 def test_pack_entries_greedy_packing():
+    """贪心装箱按预算累积条目，超预算时封箱。"""
     entries = ["A" * 10, "B" * 10, "C" * 10]
     # header 4 字符，budget = 30 - 4 - 1 = 25；A+B=21 ≤ 25，再加 C=32 > 25 → 分两箱
     docs = _pack_entries(entries, "# H:", max_chars=30)
@@ -73,12 +77,14 @@ def test_pack_entries_greedy_packing():
 
 
 def test_pack_entries_oversized_entry_own_box():
+    """超预算单条独占一箱，不与后续条目混合。"""
     # 单条 30 > budget 15 → 独占一箱，不与后续混合
     docs = _pack_entries(["x" * 30, "y" * 5], "# H:", max_chars=20)
     assert docs == ["# H:\n" + "x" * 30, "# H:\n" + "y" * 5]
 
 
 def test_pack_entries_empty():
+    """空条目列表返回空文档列表。"""
     assert _pack_entries([], "# H:") == []
 
 
@@ -97,6 +103,7 @@ def _write_cellmarker_xlsx(path) -> None:
 
 
 def test_cellmarker_texts_aggregates_entries(tmp_path):
+    """按细胞名聚合多行条目，归一 CL 写法并跳过空名行。"""
     from src.knowledge.curated_sources import cellmarker_texts
 
     xlsx = tmp_path / "Cell_marker_Human.xlsx"
@@ -116,6 +123,7 @@ def test_cellmarker_texts_aggregates_entries(tmp_path):
 
 
 def test_cellmarker_texts_uses_ensure_file_when_no_path(monkeypatch, tmp_path):
+    """不传路径时经 ensure_file 按 CELLMARKER_URL 取缓存。"""
     import src.knowledge.curated_sources as cs
 
     xlsx = tmp_path / "cached.xlsx"
@@ -159,6 +167,7 @@ name: develops from
 
 
 def test_cell_ontology_texts_filters_and_formats(tmp_path):
+    """过滤废弃/非 CL 术语并按管道格式拼接条目。"""
     from src.knowledge.curated_sources import cell_ontology_texts
 
     obo = tmp_path / "cl.obo"
@@ -178,6 +187,7 @@ def test_cell_ontology_texts_filters_and_formats(tmp_path):
 
 
 def test_cell_ontology_texts_uses_ensure_file_when_no_path(monkeypatch, tmp_path):
+    """不传路径时经 ensure_file 按 CL_OBO_URL 取缓存。"""
     import src.knowledge.curated_sources as cs
 
     obo = tmp_path / "cached.obo"
