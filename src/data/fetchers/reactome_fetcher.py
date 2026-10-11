@@ -86,6 +86,8 @@ class ReactomeFetcher(BaseFetcher):
             events = self._get_json(f"/data/pathway/{asset_id}/containedEvents")
         except RuntimeError:
             events = []
+        # 实测部分通路返回 dict 与 int（裸 dbId）混合列表（R-HSA-109582: 6/407），int 跳过
+        events = [e for e in (events or []) if isinstance(e, dict)]
         shown = events[:50]
         names = [f"{e.get('stId', '')} {e.get('displayName', '')}" for e in shown]
         cap = "（50）" if len(events) > 50 else f"（{len(events)}）"

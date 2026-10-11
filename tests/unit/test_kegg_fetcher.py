@@ -107,6 +107,8 @@ def test_ingest_kgml_text_renders_structure():
     fetcher = _fetcher_with(handler)
     text = fetcher.ingest_kgml_text("hsa04110")
     assert text.startswith("# KEGG 通路结构: hsa04110")
+    # KGML 的来源 URL 必须与普通 KEGG 文本不同，否则 LightRAG 判重丢失文档
+    assert "来源：https://www.kegg.jp/kegg-bin/show_pathway?hsa04110" in text
     assert "名称：Cell cycle" in text
     assert "基因（3）: CDKN2A, MCM2, MCM3" in text
     assert "化合物（1）: ATP" in text

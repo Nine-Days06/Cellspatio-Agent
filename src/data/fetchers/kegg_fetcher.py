@@ -84,7 +84,8 @@ class KEGGFetcher(BaseFetcher):
         relation/reaction 的 entry1/entry2 是 entry id 引用，需先建 id→显示名映射。
         """
         xml_text = self._get(f"get/{asset_id}/kgml")
-        url = f"https://www.kegg.jp/pathway/{asset_id}"
+        # 来源 URL 必须与普通 KEGG 文本（/pathway/{id}）不同，否则 LightRAG 判重丢失文档
+        url = f"https://www.kegg.jp/kegg-bin/show_pathway?{asset_id}"
         return f"# KEGG 通路结构: {asset_id}\n来源：{url}\n\n{self._kgml_text(xml_text)}\n"
 
     @staticmethod

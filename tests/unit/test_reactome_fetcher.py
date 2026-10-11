@@ -73,13 +73,16 @@ def test_ingest_text_renders_pathway():
 
 
 def test_ingest_text_caps_contained_events():
-    """containedEvents 超过 50 条必须封顶（实测 R-HSA-1640170 有 597 条）"""
+    """containedEvents 超过 50 条必须封顶（实测 R-HSA-1640170 有 597 条），
+    且实测部分通路返回 dict 与 int（裸 dbId）混合列表（R-HSA-109582: 6/407），
+    int 元素必须被跳过。"""
     def handler(request):
         if "/containedEvents" in str(request.url):
-            return httpx.Response(200, json=[
+            events = [418346] + [
                 {"stId": f"R-HSA-{i:06d}", "displayName": f"Event {i}", "className": "Pathway"}
                 for i in range(600)
-            ])
+            ] + [75892]
+            return httpx.Response(200, json=events)
         return httpx.Response(200, json={
             "stId": "R-HSA-1640170", "displayName": "Cell Cycle", "speciesName": "Homo sapiens",
             "summation": [], "goBiologicalProcess": None, "isInDisease": False,
@@ -87,6 +90,8 @@ def test_ingest_text_caps_contained_events():
 
     fetcher = _fetcher_with(handler)
     text = fetcher.ingest_text("R-HSA-1640170")
-    assert "子事件（50）" in text
-    assert "…等 600 条" in text
+    assert "子事件（50）" in text   # 封顶标签为 50
+    assert "…等 600 条" in text     # 总数为 600（2 个 int 已过滤）
+    assert "418346" not in text   # 裸 dbId 不渲染
+    assert "75892" not in text
     assert "摘要：无" in text  # summation 为空 → 兼容
