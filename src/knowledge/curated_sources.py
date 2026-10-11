@@ -55,3 +55,35 @@ def ensure_file(
     finally:
         if own_client:
             client.close()
+
+
+def _pack_entries(entries: list[str], header: str, max_chars: int = 3000) -> list[str]:
+    """条目贪心装箱为文档：按序累积，超预算封箱；单条超预算独占一箱
+
+    max_chars 含 header；正文预算 = max_chars - len(header) - 1（换行符）。
+    """
+    budget = max(1, max_chars - len(header) - 1)
+    docs: list[str] = []
+    buf: list[str] = []
+    size = 0
+
+    def flush() -> None:
+        nonlocal buf, size
+        if buf:
+            docs.append(header + "\n" + "\n".join(buf))
+            buf = []
+            size = 0
+
+    for entry in entries:
+        entry_len = len(entry)
+        cost = entry_len + (1 if buf else 0)  # 箱内换行符
+        if buf and size + cost > budget:
+            flush()
+            cost = entry_len
+        if not buf and entry_len > budget:
+            docs.append(header + "\n" + entry)  # 超长条目独占，保条目完整
+            continue
+        buf.append(entry)
+        size += cost
+    flush()
+    return docs

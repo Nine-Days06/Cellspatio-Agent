@@ -57,3 +57,26 @@ def test_ensure_file_exhausts_retries(tmp_path):
             client=httpx.Client(transport=httpx.MockTransport(handler)),
         )
     assert not (tmp_path / "f.bin").exists()  # 失败不留下半截文件
+
+
+from src.knowledge.curated_sources import _pack_entries
+
+
+def test_pack_entries_greedy_packing():
+    entries = ["A" * 10, "B" * 10, "C" * 10]
+    # header 4 字符，budget = 30 - 4 - 1 = 25；A+B=21 ≤ 25，再加 C=32 > 25 → 分两箱
+    docs = _pack_entries(entries, "# H:", max_chars=30)
+    assert docs == [
+        "# H:\n" + "A" * 10 + "\n" + "B" * 10,
+        "# H:\n" + "C" * 10,
+    ]
+
+
+def test_pack_entries_oversized_entry_own_box():
+    # 单条 30 > budget 15 → 独占一箱，不与后续混合
+    docs = _pack_entries(["x" * 30, "y" * 5], "# H:", max_chars=20)
+    assert docs == ["# H:\n" + "x" * 30, "# H:\n" + "y" * 5]
+
+
+def test_pack_entries_empty():
+    assert _pack_entries([], "# H:") == []
