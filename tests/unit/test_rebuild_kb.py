@@ -93,3 +93,39 @@ def test_corrupted_docs_reject_fail_closed(monkeypatch, tmp_path):
         rebuild_kb.clear_kb()
     assert exc.value.code == 2
     assert corrupted.exists()  # 损坏文件原样保留，未被误删
+
+
+def test_curated_headers_cover_new_sources():
+    """新 curated 文档头必须登记，否则 find_foreign_docs 会把它们误判为文献"""
+    assert "# CellMarker 细胞类型:" in rebuild_kb.CURATED_HEADERS
+    assert "# Cell Ontology 术语:" in rebuild_kb.CURATED_HEADERS
+
+
+def test_new_curated_docs_pass_guard(monkeypatch, tmp_path):
+    """CellMarker / Cell Ontology 文档能通过清库守卫"""
+    kb = tmp_path / "knowledge_base"
+    kb.mkdir()
+    monkeypatch.setattr(rebuild_kb, "KB_DIR", kb)
+    _write_docs(kb, {
+        "cm1": {"content": "# CellMarker 细胞类型:\n## B cell"},
+        "cl1": {"content": "# Cell Ontology 术语:\nCL:0000084 T cell"},
+    })
+    assert rebuild_kb.find_foreign_docs() == []
+    rebuild_kb.clear_kb()
+    assert not (kb / rebuild_kb.DOCS_FILE).exists()
+
+
+def test_all_ok_requires_every_source():
+    assert rebuild_kb._all_ok([
+        ("kegg", {"requested": 8, "inserted": 8}),
+        ("cellmarker", {"requested": 170, "inserted": 170}),
+    ])
+    # 某一源 inserted < requested → 失败
+    assert not rebuild_kb._all_ok([
+        ("kegg", {"requested": 8, "inserted": 8}),
+        ("geo", {"requested": 2, "inserted": 1}),
+    ])
+    # 某一源 requested == 0 → 失败
+    assert not rebuild_kb._all_ok([
+        ("cell_ontology", {"requested": 0, "inserted": 0}),
+    ])

@@ -1,9 +1,10 @@
-"""删库重进：清空 knowledge_base 后按原 20 条 ID 重新入库（带来源 URL）
+"""删库重进：清空 knowledge_base 后按基线 20 条 + CellMarker/Cell Ontology 全量重新入库
 
 ⚠️ 安全约束：clear_kb() 会清空整个 knowledge_base/ 目录，其中也包含
 pubmed-etl 文献导入的 chunk、实体与关系。若文献已入库，跑本脚本会**静默删除**它们。
-因此清库前会检查 kv_store_full_docs.json：只要发现非「公共数据库 20 条」来源的
-文档（例如带 PMID / pubmed 链接的文献），就拒绝执行并提示。确需清空时显式传 --force。
+因此清库前会检查 kv_store_full_docs.json：只要发现正文不含任一 CURATED_HEADERS
+（公共数据库来源标记）的文档（例如带 PMID / pubmed 链接的文献），就拒绝执行并提示。
+确需清空时显式传 --force。
 """
 from __future__ import annotations
 
@@ -38,13 +39,16 @@ UNIPROT_IDS = [
 # GEO 2 条：均为真实公开数据集（GSE123456 4 样本 / GSE48351 10 样本，PMID 见 esummary）
 GEO_IDS = ["GSE123456", "GSE48351"]
 
-# 本脚本负责重建的公共数据库来源标记（由各 ingest_text 写入）
-CURATED_HEADERS = ("# KEGG 通路:", "# UniProt 蛋白:", "# GEO 数据集:")
+# 本脚本负责重建的公共数据库来源标记（由各 ingest_text / curated_sources 写入）
+CURATED_HEADERS = (
+    "# KEGG 通路:", "# UniProt 蛋白:", "# GEO 数据集:",
+    "# CellMarker 细胞类型:", "# Cell Ontology 术语:",
+)
 DOCS_FILE = "kv_store_full_docs.json"
 
 
 def find_foreign_docs() -> list[str]:
-    """返回不属于公共数据库 20 条来源的文档 ID 列表；无库返回空。
+    """返回不属于公共数据库来源（CURATED_HEADERS 判据）的文档 ID 列表；无库返回空。
 
     判据：文档正文不含任一 CURATED_HEADERS，即视为外部导入（目前只有文献）。
     文件存在但读取/解析失败时**拒绝清库**（fail-closed）——无法确认内容就
@@ -114,8 +118,22 @@ def clear_kb(*, force: bool = False) -> None:
                     c.unlink()
 
 
+def _all_ok(results: list[tuple[str, dict]]) -> bool:
+    """逐源校验：每个源 requested > 0 且 inserted == requested
+
+    源间规模差异大（20 vs ~300），只看总数会漏掉单源失败。
+    """
+    return all(
+        int(r.get("requested", 0) or 0) > 0
+        and int(r.get("inserted", 0) or 0) == int(r.get("requested", 0) or 0)
+        for _, r in results
+    )
+
+
 def main() -> int:
-    parser = argparse.ArgumentParser(description="清空并重建公共数据库知识库（20 条）")
+    parser = argparse.ArgumentParser(
+        description="清空并重建公共数据库知识库（KEGG/UniProt/GEO 基线 + CellMarker/Cell Ontology 全量）"
+    )
     parser.add_argument(
         "--force",
         action="store_true",
@@ -126,23 +144,31 @@ def main() -> int:
     clear_kb(force=args.force)
     print("KB cleared (kept EMBEDDING_MODEL.json)")
 
+    from src.data.registry import FetcherRegistry
+    from src.data.storage import FetcherStorage
     from src.knowledge.knowledge_builder import KnowledgeBuilder
     from src.knowledge.lightrag_client import LightRAGClient
 
     client = LightRAGClient(working_dir=str(KB_DIR), config={})
-    builder = KnowledgeBuilder(client)
+    # GEO ingest_text 读本地 series_matrix 样本特征 → registry 必须带 storage
+    builder = KnowledgeBuilder(
+        client,
+        fetcher_registry=FetcherRegistry.build_default(storage=FetcherStorage()),
+    )
 
     results = []
     results.append(("kegg", builder.build_from_kegg(KEGG_IDS)))
     results.append(("uniprot", builder.build_from_uniprot(UNIPROT_IDS)))
     results.append(("geo", builder.build_from_geo_metadata(GEO_IDS)))
+    results.append(("cellmarker", builder.build_from_cellmarker()))
+    results.append(("cell_ontology", builder.build_from_cell_ontology()))
 
     total = 0
     for name, r in results:
         print(name, r)
         total += int(r.get("inserted", 0) or 0)
     print("TOTAL_INSERTED", total)
-    return 0 if total == 20 else 1
+    return 0 if _all_ok(results) else 1
 
 
 if __name__ == "__main__":
