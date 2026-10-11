@@ -130,3 +130,32 @@ def test_all_ok_requires_every_source():
     assert not rebuild_kb._all_sources_fully_inserted([
         ("cell_ontology", {"requested": 0, "inserted": 0}),
     ])
+
+
+def test_curated_headers_cover_push3_sources():
+    """推进顺序 3 的新文档头必须登记，否则清库守卫误判为文献"""
+    assert "# KEGG 通路结构:" in rebuild_kb.CURATED_HEADERS
+    assert "# Reactome 通路:" in rebuild_kb.CURATED_HEADERS
+    assert "# HPA 蛋白:" in rebuild_kb.CURATED_HEADERS
+
+
+def test_push3_docs_pass_guard(monkeypatch, tmp_path):
+    """KGML/Reactome/HPA 文档能通过清库守卫"""
+    kb = tmp_path / "knowledge_base"
+    kb.mkdir()
+    monkeypatch.setattr(rebuild_kb, "KB_DIR", kb)
+    _write_docs(kb, {
+        "kg1": {"content": "# KEGG 通路结构: hsa04110\n名称：Cell cycle"},
+        "re1": {"content": "# Reactome 通路: R-HSA-1640170\n名称：Cell Cycle"},
+        "hp1": {"content": "# HPA 蛋白: CD4\nEnsembl：ENSG00000010610"},
+    })
+    assert rebuild_kb.find_foreign_docs() == []
+    rebuild_kb.clear_kb()
+    assert not (kb / rebuild_kb.DOCS_FILE).exists()
+
+
+def test_kegg_plain_header_not_substring_of_kgml():
+    """`# KEGG 通路:` 不是 `# KEGG 通路结构:` 的子串 → 两个头都要登记（逐字断言）"""
+    assert "# KEGG 通路:" in rebuild_kb.CURATED_HEADERS
+    assert "# KEGG 通路结构:" in rebuild_kb.CURATED_HEADERS
+    assert "# KEGG 通路:" not in "# KEGG 通路结构: hsa04110"  # noqa: PLR0133 - 字面量子串关系是本测试的语义

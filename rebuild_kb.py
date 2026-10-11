@@ -1,4 +1,4 @@
-"""删库重进：清空 knowledge_base 后按基线 20 条 + CellMarker/Cell Ontology 全量重新入库
+"""删库重进：清空 knowledge_base 后按基线 20 条 + CellMarker/Cell Ontology + KGML/Reactome/HPA 全量重新入库
 
 ⚠️ 安全约束：clear_kb() 会清空整个 knowledge_base/ 目录，其中也包含
 pubmed-etl 文献导入的 chunk、实体与关系。若文献已入库，跑本脚本会**静默删除**它们。
@@ -38,11 +38,22 @@ UNIPROT_IDS = [
 ]
 # GEO 2 条：均为真实公开数据集（GSE123456 4 样本 / GSE48351 10 样本，PMID 见 esummary）
 GEO_IDS = ["GSE123456", "GSE48351"]
+# Reactome 10 条：官方顶层通路（data/pathways/top/Homo sapiens 实测 29 条中选取）
+REACTOME_IDS = [
+    "R-HSA-1640170", "R-HSA-109582", "R-HSA-168256", "R-HSA-1430728", "R-HSA-162582",
+    "R-HSA-5357801", "R-HSA-73894", "R-HSA-69306", "R-HSA-1266738", "R-HSA-9612973",
+]
+# HPA 12 条：单细胞/空间常用细胞类型标志物（实测精确匹配全部命中）
+HPA_GENES = [
+    "CD4", "CD8A", "CD19", "PTPRC", "CD3E", "FOXP3",
+    "NCAM1", "EPCAM", "VIM", "KRT18", "IL7R", "CD68",
+]
 
 # 本脚本负责重建的公共数据库来源标记（由各 ingest_text / curated_sources 写入）
 CURATED_HEADERS = (
-    "# KEGG 通路:", "# UniProt 蛋白:", "# GEO 数据集:",
+    "# KEGG 通路:", "# KEGG 通路结构:", "# UniProt 蛋白:", "# GEO 数据集:",
     "# CellMarker 细胞类型:", "# Cell Ontology 术语:",
+    "# Reactome 通路:", "# HPA 蛋白:",
 )
 DOCS_FILE = "kv_store_full_docs.json"
 
@@ -132,7 +143,7 @@ def _all_sources_fully_inserted(results: list[tuple[str, dict]]) -> bool:
 
 def main() -> int:
     parser = argparse.ArgumentParser(
-        description="清空并重建公共数据库知识库（KEGG/UniProt/GEO 基线 + CellMarker/Cell Ontology 全量）"
+        description="清空并重建公共数据库知识库（KEGG/UniProt/GEO 基线 + CellMarker/Cell Ontology + KGML/Reactome/HPA）"
     )
     parser.add_argument(
         "--force",
@@ -162,6 +173,9 @@ def main() -> int:
     results.append(("geo", builder.build_from_geo_metadata(GEO_IDS)))
     results.append(("cellmarker", builder.build_from_cellmarker()))
     results.append(("cell_ontology", builder.build_from_cell_ontology()))
+    results.append(("kegg_kgml", builder.build_from_kegg_kgml(KEGG_IDS)))
+    results.append(("reactome", builder.build_from_reactome(REACTOME_IDS)))
+    results.append(("hpa", builder.build_from_hpa(HPA_GENES)))
 
     total = 0
     for name, r in results:
