@@ -27,6 +27,8 @@ class IntentParser:
                 "geo": "GEO 数据集、表达谱、GSE、GSM、series matrix",
                 "kegg": "KEGG 通路、代谢通路、KO、pathway map",
                 "uniprot": "UniProt 蛋白、蛋白序列、蛋白结构、UniProt ID",
+                "reactome": "Reactome 通路、通路详情、pathway",
+                "hpa": "HPA 蛋白、Human Protein Atlas、蛋白图谱、亚细胞定位",
             }
         },
         "knowledge_query": {
@@ -62,6 +64,8 @@ class IntentParser:
             'geo': ['geo', 'gse', '数据集', '表达谱'],
             'kegg': ['kegg', 'pathway', '通路'],
             'uniprot': ['uniprot', '蛋白', 'protein'],
+            'reactome': ['reactome', '通路详情', 'pathway'],
+            'hpa': ['hpa', 'human protein atlas', '蛋白图谱', '亚细胞定位'],
         }
 
         self._build_system_prompt()

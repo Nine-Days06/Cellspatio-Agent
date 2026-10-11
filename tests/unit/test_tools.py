@@ -50,3 +50,11 @@ def test_terminal_statuses_cover_hitl_and_outcomes():
         "needs_input",
         "no_results",
     }
+
+
+def test_search_datasets_enum_includes_new_sources():
+    from src.control.tools import TOOL_SCHEMAS
+
+    sd = next(t for t in TOOL_SCHEMAS if t["function"]["name"] == "search_datasets")
+    enum = sd["function"]["parameters"]["properties"]["sources"]["items"]["enum"]
+    assert {"geo", "kegg", "uniprot", "reactome", "hpa"} <= set(enum)

@@ -32,10 +32,14 @@ class FetcherRegistry:
         registry = FetcherRegistry()
         from src.config import NCBI_API_KEY, NCBI_EMAIL
         from src.data.fetchers.geo_fetcher import GEOFetcher
+        from src.data.fetchers.hpa_fetcher import HPAFetcher
         from src.data.fetchers.kegg_fetcher import KEGGFetcher
+        from src.data.fetchers.reactome_fetcher import ReactomeFetcher
         from src.data.fetchers.uniprot_fetcher import UniProtFetcher
 
         registry.register(KEGGFetcher(storage=storage))
         registry.register(UniProtFetcher(storage=storage))
         registry.register(GEOFetcher(storage=storage, api_key=NCBI_API_KEY, email=NCBI_EMAIL))
+        registry.register(ReactomeFetcher(storage=storage))
+        registry.register(HPAFetcher(storage=storage))
         return registry

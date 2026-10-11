@@ -5,7 +5,9 @@ from src.data.fetchers import (
     AssetMeta,
     BaseFetcher,
     GEOFetcher,
+    HPAFetcher,
     KEGGFetcher,
+    ReactomeFetcher,
     UniProtFetcher,
 )
 from src.data.registry import FetcherRegistry
@@ -18,6 +20,8 @@ __all__ = [
     "FetcherRegistry",
     "FetcherStorage",
     "GEOFetcher",
+    "HPAFetcher",
     "KEGGFetcher",
+    "ReactomeFetcher",
     "UniProtFetcher",
 ]

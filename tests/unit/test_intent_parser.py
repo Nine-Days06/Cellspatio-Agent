@@ -94,3 +94,12 @@ def test_parse_falls_back_when_llm_raises_provider_error():
     intent = parser.parse("我想分析 RNA-seq 数据的差异表达基因")
     assert intent["type"] == "analysis"
     assert intent["analysis_type"] == "differential_expression"
+
+
+def test_source_keywords_include_new_sources():
+    from src.control.intent_parser import IntentParser
+
+    parser = IntentParser(llm_client=None)
+    assert "reactome" in parser.source_keywords
+    assert "hpa" in parser.source_keywords
+    assert "human protein atlas" in parser.source_keywords["hpa"]

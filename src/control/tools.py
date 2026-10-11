@@ -59,7 +59,7 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
         "function": {
             "name": "search_datasets",
             "description": (
-                "Search public databases (GEO/KEGG/UniProt) for candidate datasets, "
+                "Search public databases (GEO/KEGG/UniProt/Reactome/HPA) for candidate datasets, "
                 "return candidates for user confirmation; do not claim downloaded before confirmation."
             ),
             "parameters": {
@@ -73,7 +73,7 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
                         "type": "array",
                         "items": {
                             "type": "string",
-                            "enum": ["geo", "kegg", "uniprot"],
+                            "enum": ["geo", "kegg", "uniprot", "reactome", "hpa"],
                         },
                         "description": "Limit data sources; omit to search all registered sources",
                     },

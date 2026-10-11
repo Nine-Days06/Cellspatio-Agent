@@ -32,3 +32,8 @@ def test_sources_list():
 def test_build_default_registers_three():
     registry = FetcherRegistry.build_default()
     assert {"geo", "kegg", "uniprot"} <= set(registry.sources())
+
+
+def test_build_default_registers_new_sources():
+    registry = FetcherRegistry.build_default()
+    assert {"reactome", "hpa"} <= set(registry.sources())
