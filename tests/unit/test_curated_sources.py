@@ -130,3 +130,65 @@ def test_cellmarker_texts_uses_ensure_file_when_no_path(monkeypatch, tmp_path):
     docs = cs.cellmarker_texts()  # 不传路径 → 走 ensure_file(CELLMARKER_URL)
     assert called["url"] == cs.CELLMARKER_URL
     assert docs
+
+
+OBO_FIXTURE = """format-version: 1.2
+data-version: releases/2026-09-01
+
+[Term]
+id: CL:0000084
+name: T cell
+def: "A type of lymphocyte." [GOC:bt]
+is_a: CL:0000051 ! lymphocyte
+relationship: part_of CL:0000089 ! immune system
+comment: Includes CD4 and CD8 subsets.
+
+[Term]
+id: CL:0000002
+name: obsolete thing
+is_obsolete: true
+
+[Term]
+id: GO:0008150
+name: biological process
+
+[Typedef]
+id: develops_from
+name: develops from
+"""
+
+
+def test_cell_ontology_texts_filters_and_formats(tmp_path):
+    from src.knowledge.curated_sources import cell_ontology_texts
+
+    obo = tmp_path / "cl.obo"
+    obo.write_text(OBO_FIXTURE, encoding="utf-8")
+    docs = cell_ontology_texts(obo)
+    assert len(docs) == 1
+    doc = docs[0]
+    assert doc.startswith("# Cell Ontology 术语:")
+    assert (
+        "CL:0000084 T cell | is_a: CL:0000051 lymphocyte | "
+        "relationship: part_of CL:0000089 ! immune system | "
+        "comment: Includes CD4 and CD8 subsets." in doc
+    )
+    assert "GO:0008150" not in doc   # 非 CL id 过滤
+    assert "CL:0000002" not in doc   # 废弃术语过滤
+    assert "develops_from" not in doc  # Typedef（id 非 CL:）过滤
+
+
+def test_cell_ontology_texts_uses_ensure_file_when_no_path(monkeypatch, tmp_path):
+    import src.knowledge.curated_sources as cs
+
+    obo = tmp_path / "cached.obo"
+    obo.write_text(OBO_FIXTURE, encoding="utf-8")
+    called = {}
+
+    def fake_ensure(url, path, **kwargs):
+        called["url"] = url
+        return obo
+
+    monkeypatch.setattr(cs, "ensure_file", fake_ensure)
+    docs = cs.cell_ontology_texts()  # 不传路径 → 走 ensure_file(CL_OBO_URL)
+    assert called["url"] == cs.CL_OBO_URL
+    assert docs

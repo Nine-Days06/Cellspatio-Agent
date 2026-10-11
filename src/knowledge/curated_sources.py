@@ -4,6 +4,7 @@
 - _pack_entries：条目贪心装箱为定长文档
 - cellmarker_texts / cell_ontology_texts：源文件 → 入库文档列表
 """
+import re
 from pathlib import Path
 
 import httpx
@@ -20,6 +21,9 @@ CELLMARKER_PATH = ROOT / "data" / "raw" / "cellmarker" / "Cell_marker_Human.xlsx
 
 # 文档头：必须与 rebuild_kb.CURATED_HEADERS 一致，否则清库守卫会误判为文献
 CELLMARKER_HEADER = "# CellMarker 细胞类型:"
+CL_OBO_URL = "http://purl.obolibrary.org/obo/cl.obo"
+CL_OBO_PATH = ROOT / "data" / "raw" / "cellontology" / "cl.obo"
+CL_HEADER = "# Cell Ontology 术语:"
 
 
 def ensure_file(
@@ -162,3 +166,47 @@ def cellmarker_texts(xlsx_path: Path | None = None) -> list[str]:
             lines.append(f"文献：PMID {', '.join(shown)}（共 {len(slot['pmids'])} 篇）")
         entries.append("\n".join(lines))
     return _pack_entries(entries, CELLMARKER_HEADER)
+
+
+def cell_ontology_texts(obo_path: Path | None = None) -> list[str]:
+    """cl.obo → 入库文档列表（仅未废弃的 CL: 术语）
+
+    实测 18,914 stanza → 3,532 个 CL id → 3,335 个未废弃。
+    条目格式（" | " 连接）：CL:xxx 名称 | is_a: ... | relationship: ... | comment: ...
+    is_a 去掉 " ! 注释"；relationship 仅对象 token 以 CL: 开头才保留（原文不剥离注释）。
+    """
+    path = obo_path if obo_path is not None else ensure_file(CL_OBO_URL, CL_OBO_PATH)
+    text = path.read_text(encoding="utf-8")
+    entries: list[str] = []
+    for stanza in re.split(r"^\[(?:Term|Typedef)\]$", text, flags=re.MULTILINE)[1:]:
+        kv: dict[str, list[str]] = {}
+        current = ""
+        for line in stanza.splitlines():
+            if line.startswith("\t"):
+                # OBO 续行（tab 缩进）并入上一个 key 的末值
+                if current and kv.get(current):
+                    kv[current][-1] += " " + line.strip()
+                continue
+            if not line.strip() or line.startswith("!"):
+                continue
+            key, sep, value = line.partition(": ")
+            if not sep:
+                continue
+            current = key
+            kv.setdefault(key, []).append(value)
+        ids = kv.get("id", [])
+        if not ids or not ids[0].startswith("CL:"):
+            continue
+        if kv.get("is_obsolete"):
+            continue
+        name = kv.get("name", [""])[0]
+        parts = [f"{ids[0]} {name}"]
+        for is_a in kv.get("is_a", []):
+            parts.append(f"is_a: {is_a.replace(' ! ', ' ')}")
+        for rel in kv.get("relationship", []):
+            if any(tok.startswith("CL:") for tok in rel.split()):
+                parts.append(f"relationship: {rel}")
+        for comment in kv.get("comment", []):
+            parts.append(f"comment: {comment}")
+        entries.append(" | ".join(parts))
+    return _pack_entries(entries, CL_HEADER)
