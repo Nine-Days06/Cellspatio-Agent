@@ -109,3 +109,33 @@ def test_download_raises_not_implemented():
         assert True
     else:
         raise AssertionError("download 应抛 NotImplementedError")
+
+
+def test_ingest_text_includes_go_annotations():
+    def handler(request):
+        return httpx.Response(200, json={
+            "primaryAccession": "P04637",
+            "proteinDescription": {"recommendedName": {"fullName": {"value": "p53"}}},
+            "genes": [{"geneName": {"value": "TP53"}}],
+            "uniProtKBCrossReferences": [
+                {"database": "GeneID", "id": "7157"},
+                {"database": "GO", "id": "GO:0005634", "properties": [
+                    {"key": "GoTerm", "value": "C:nucleus"},
+                    {"key": "GoEvidenceType", "value": "IDA:UniProtKB"},
+                ]},
+                {"database": "GO", "id": "GO:0006915", "properties": [
+                    {"key": "GoTerm", "value": "P:apoptotic process"},
+                ]},
+                {"database": "GO", "id": "GO:0003674", "properties": [
+                    {"key": "GoTerm", "value": "F:molecular_function"},
+                ]},
+            ],
+        })
+
+    fetcher = _fetcher_with(handler)
+    text = fetcher.ingest_text("P04637")
+    assert "GO（细胞组分）: GO:0005634 nucleus [IDA:UniProtKB]" in text
+    assert "GO（生物过程）: GO:0006915 apoptotic process" in text
+    assert "GO（分子功能）: GO:0003674 molecular_function" in text
+    # GO 行必须在 GeneID 行之后
+    assert text.index("NCBI GeneID：7157") < text.index("GO（细胞组分）")

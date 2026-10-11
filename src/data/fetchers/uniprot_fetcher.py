@@ -3,6 +3,9 @@ from pathlib import Path
 
 from src.data.fetchers.base import AssetInfo, AssetMeta, BaseFetcher
 
+# GO aspect 前缀（GoTerm 值形如 "C:nucleus"）→ 中文标签
+_GO_ASPECTS = {"C": "细胞组分", "P": "生物过程", "F": "分子功能"}
+
 
 class UniProtFetcher(BaseFetcher):
     """UniProt REST API（rest.uniprot.org）蛋白数据获取"""
@@ -66,6 +69,7 @@ class UniProtFetcher(BaseFetcher):
         gene_id = self._gene_id(item)
         if gene_id:
             lines.append(f"NCBI GeneID：{gene_id}")
+        lines.extend(self._go_text(item))
         for comment in item.get("comments", []):
             # API 字段为 texts（复数）：2026-04 实测 P04637 49 个 comment 均无 "text" 键
             for text in comment.get("texts", []):
@@ -101,6 +105,39 @@ class UniProtFetcher(BaseFetcher):
             if xref.get("database") == "GeneID":
                 return str(xref.get("id") or "")
         return ""
+
+    @staticmethod
+    def _go_text(item: dict) -> list[str]:
+        """GO 注释按细胞组分/生物过程/分子功能分三行
+
+        xref database=GO；properties: GoTerm（"C:nucleus" 前缀为 aspect）、
+        GoEvidenceType（"IDA:UniProtKB"，缺失不写方括号）。
+        行序固定 C→P→F；同 aspect 多条用 "; " 连接；无 GO 返回 []。
+        """
+        groups: dict[str, list[str]] = {"C": [], "P": [], "F": []}
+        for xref in item.get("uniProtKBCrossReferences", []):
+            if xref.get("database") != "GO":
+                continue
+            go_id = str(xref.get("id") or "")
+            term = ""
+            evidence = ""
+            for prop in xref.get("properties", []):
+                if prop.get("key") == "GoTerm":
+                    term = str(prop.get("value") or "")
+                elif prop.get("key") == "GoEvidenceType":
+                    evidence = str(prop.get("value") or "")
+            aspect, sep, label = term.partition(":")
+            if not sep or aspect not in groups or not label:
+                continue
+            entry = f"{go_id} {label}"
+            if evidence:
+                entry += f" [{evidence}]"
+            groups[aspect].append(entry)
+        return [
+            f"GO（{_GO_ASPECTS[aspect]}）: {'; '.join(groups[aspect])}"
+            for aspect in ("C", "P", "F")
+            if groups[aspect]
+        ]
 
     @staticmethod
     def _comments_text(item: dict, limit: int = 3) -> str:
