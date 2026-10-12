@@ -23,6 +23,36 @@ def test_run_etl_export_no_csv_returns_none(tmp_path):
     assert latest is None
 
 
+def test_run_etl_export_ignores_raw_csv(tmp_path):
+    """output 目录同时存在 articles_raw_*.csv（ETL 导出侧未筛选版，非导入对象）
+
+    'r' > 数字使 raw 文件在 sorted() 里恒定排最后，松散 glob "articles_*.csv"
+    会连它一起匹配并误取；只应按 articles_YYYYMMDD_HHMMSS.csv 契约模式取数。
+    """
+    output_dir = tmp_path / "data" / "output"
+    output_dir.mkdir(parents=True)
+    (output_dir / "articles_20260921_110000.csv").write_text("filtered", encoding="utf-8")
+    (output_dir / "articles_raw_20260921_120000.csv").write_text("raw", encoding="utf-8")
+
+    with mock.patch("sync_pubmed.subprocess.run"):
+        latest = sync_pubmed.run_etl_export(tmp_path)
+
+    assert latest is not None
+    assert latest.name == "articles_20260921_110000.csv"
+
+
+def test_run_etl_export_only_raw_csv_returns_none(tmp_path):
+    """只有 raw 文件（无筛选导出）时视为无可导入文件，返回 None"""
+    output_dir = tmp_path / "data" / "output"
+    output_dir.mkdir(parents=True)
+    (output_dir / "articles_raw_20260921_120000.csv").write_text("raw", encoding="utf-8")
+
+    with mock.patch("sync_pubmed.subprocess.run"):
+        latest = sync_pubmed.run_etl_export(tmp_path)
+
+    assert latest is None
+
+
 def test_copy_to_import(tmp_path):
     src = tmp_path / "articles_20260921_120000.csv"
     src.write_text("data", encoding="utf-8")

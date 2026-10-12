@@ -9,6 +9,7 @@
 记录已导入批次，重复运行为空操作；删除该台账文件即触发一次有意的全量重导。
 """
 import argparse
+import re
 import shutil
 import subprocess
 import sys
@@ -16,9 +17,20 @@ from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent
 
+#: 主项目兼容 CSV 的文件名契约：articles_YYYYMMDD_HHMMSS.csv。
+#: output 目录里同时存在 articles_raw_<ts>.csv（ETL 导出侧的未筛选版，不得导入），
+#: 松散 glob "articles_*.csv" 会连它一起匹配，且 'r' > 数字使其在 sorted()
+#: 里恒定排最后——必须按契约模式精确过滤，只认筛选后的导出文件。
+_ARTICLES_CSV_RE = re.compile(r"articles_\d{8}_\d{6}\.csv")
+
 
 def run_etl_export(etl_dir: Path, python: str | None = None) -> Path | None:
-    """调用 pubmed-etl --step export，返回最新导出的主项目兼容 CSV（无新数据则 None）"""
+    """调用 pubmed-etl --step export，返回最新导出的主项目兼容 CSV（无新数据则 None）
+
+    只认 articles_YYYYMMDD_HHMMSS.csv 契约文件名：目录下的 articles_raw_*.csv
+    是 ETL 导出侧未筛选版（含未复核/非 RELEVANT 文献），不属于导入范围，
+    且按字典序恒定排在筛选版之后，必须显式排除。
+    """
     python = python or sys.executable
     subprocess.run(
         [python, str(etl_dir / "main.py"), "--step", "export"],
@@ -28,7 +40,10 @@ def run_etl_export(etl_dir: Path, python: str | None = None) -> Path | None:
     output_dir = etl_dir / "data" / "output"
     if not output_dir.exists():
         return None
-    csvs = sorted(output_dir.glob("articles_*.csv"))
+    csvs = sorted(
+        p for p in output_dir.glob("articles_*.csv")
+        if _ARTICLES_CSV_RE.fullmatch(p.name)
+    )
     if not csvs:
         return None
     return csvs[-1]
