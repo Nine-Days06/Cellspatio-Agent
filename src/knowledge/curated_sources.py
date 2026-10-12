@@ -4,14 +4,12 @@
 - _pack_entries：条目贪心装箱为定长文档
 - cellmarker_texts / cell_ontology_texts：源文件 → 入库文档列表
 """
-import logging
 import re
 from pathlib import Path
 
-import httpx
 import openpyxl
 
-logger = logging.getLogger(__name__)
+from src.data.download import ensure_file
 
 CELLMARKER_URL = (
     "http://117.50.127.228/CellMarker/CellMarker_download_files/file/"
@@ -27,43 +25,6 @@ CELLMARKER_HEADER = "# CellMarker 细胞类型:"
 CL_OBO_URL = "http://purl.obolibrary.org/obo/cl.obo"
 CL_OBO_PATH = ROOT / "data" / "raw" / "cellontology" / "cl.obo"
 CL_HEADER = "# Cell Ontology 术语:"
-
-
-def ensure_file(
-    url: str,
-    path: Path,
-    *,
-    retries: int = 3,
-    timeout: int = 300,
-    client: httpx.Client | None = None,
-) -> Path:
-    """下载 url 到 path；已存在直接返回（跳过下载）
-
-    先写 .part 再原子替换，避免半截文件被当成缓存命中；
-    连续失败 retries 次后抛 RuntimeError。
-    """
-    if path.exists():
-        return path
-    path.parent.mkdir(parents=True, exist_ok=True)
-    own_client = client is None
-    client = client or httpx.Client(timeout=timeout, follow_redirects=True)
-    try:
-        last: Exception | None = None
-        for _attempt, _ in enumerate(range(retries), start=1):
-            try:
-                resp = client.get(url)
-                resp.raise_for_status()
-                tmp = path.with_name(path.name + ".part")
-                tmp.write_bytes(resp.content)
-                tmp.replace(path)
-                return path
-            except (httpx.HTTPError, OSError) as exc:
-                last = exc
-                logger.warning("下载失败（第 %d/%d 次，将重试）: %s: %s", _attempt, retries, url, last)
-        raise RuntimeError(f"下载失败（已重试 {retries} 次）: {url}: {last}") from last
-    finally:
-        if own_client:
-            client.close()
 
 
 def _pack_entries(entries: list[str], header: str, max_chars: int = 3000) -> list[str]:
