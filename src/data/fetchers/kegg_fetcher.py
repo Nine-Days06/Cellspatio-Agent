@@ -72,10 +72,12 @@ class KEGGFetcher(BaseFetcher):
         raise NotImplementedError(f"{self.source} 是知识流数据源，无文件下载")
 
     def ingest_text(self, asset_id: str) -> str:
-        """通路条目原文转为可入库文本（首行 header + 来源 URL）"""
+        """通路条目原文转为可入库文本（首行 header + 来源 URL + 通路基因 ID）"""
         raw = self._get(f"get/{asset_id}")
         url = f"https://www.kegg.jp/pathway/{asset_id}"
-        return f"# KEGG 通路: {asset_id}\n来源：{url}\n\n{raw}\n"
+        ids = self._pathway_gene_ids(raw)
+        id_line = f"通路基因ID：{', '.join('NCBIGene:' + i for i in ids)}\n" if ids else ""
+        return f"# KEGG 通路: {asset_id}\n来源：{url}\n{id_line}\n{raw}\n"
 
     def ingest_kgml_text(self, asset_id: str) -> str:
         """KGML 通路结构 → 可入库文本（首行 header + 来源 URL）
@@ -105,6 +107,7 @@ class KEGGFetcher(BaseFetcher):
         id_to_name: dict[str, str] = {}
         gene_count = 0
         genes: list[str] = []
+        gene_ids: list[str] = []
         compounds: list[str] = []
         for e in entries:
             eid = e.get("id", "")
@@ -116,6 +119,12 @@ class KEGGFetcher(BaseFetcher):
             if etype == "gene":
                 # name 形如 "hsa:1029" 或 "hsa:4171 hsa:4172"（多基因空格分隔）
                 gene_count += len(name.split())
+                # KEGG 的 hsa:NNNN 即 NCBI GeneID，渲染为规范 token
+                for token in name.split():
+                    if token.startswith("hsa:"):
+                        curie = f"NCBIGene:{token[4:]}"
+                        if curie not in gene_ids:
+                            gene_ids.append(curie)
                 if disp and disp not in genes:
                     genes.append(disp)
                 id_to_name[eid] = disp
@@ -128,6 +137,8 @@ class KEGGFetcher(BaseFetcher):
 
         lines = [f"名称：{title}"]
         lines.append(f"基因（{gene_count}）: {', '.join(genes)}")
+        if gene_ids:
+            lines.append(f"基因ID：{', '.join(gene_ids)}")
         lines.append(f"化合物（{len(compounds)}）: {', '.join(compounds)}")
 
         rel_symbols = {
@@ -167,3 +178,26 @@ class KEGGFetcher(BaseFetcher):
             if line.startswith(prefix):
                 return line[len(prefix):].strip()
         return ""
+
+    @staticmethod
+    def _pathway_gene_ids(raw: str) -> list[str]:
+        """KEGG 原文 GENE 段首列即 Entrez GeneID（实测 '            2475  MTOR; ...'）
+
+        段内续行以空白开头；遇到非空白开头的下一段（如 DISEASE）结束。
+        """
+        ids: list[str] = []
+        in_gene = False
+        for line in raw.splitlines():
+            if line.startswith("GENE"):
+                in_gene = True
+                body = line[len("GENE"):]
+            elif in_gene and line[:1].isspace():
+                body = line
+            elif in_gene:
+                break
+            else:
+                continue
+            token = body.strip().split(maxsplit=1)[0] if body.strip() else ""
+            if token.isdigit() and token not in ids:
+                ids.append(token)
+        return ids

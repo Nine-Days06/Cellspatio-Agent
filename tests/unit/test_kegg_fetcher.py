@@ -155,3 +155,41 @@ def test_kgml_falls_back_to_name_when_graphics_missing():
     text = fetcher.ingest_kgml_text("hsaXXXXX")
     assert "基因（2）: hsa:7157, hsa:1956" in text
     assert "- hsa:7157 -| hsa:1956" in text
+
+
+def test_ingest_kgml_text_includes_canonical_gene_ids():
+    """KGML 的 gene entry@name（hsa:NNNN）即 Entrez，渲染为规范 token。"""
+    def handler(request):
+        return httpx.Response(200, text=KGML_FIXTURE)
+
+    fetcher = _fetcher_with(handler)
+    text = fetcher.ingest_kgml_text("hsa04110")
+    # entry id=4 → hsa:1029；entry id=54 → "hsa:4171 hsa:4172"（多基因空格分隔）
+    assert "基因ID：NCBIGene:1029, NCBIGene:4171, NCBIGene:4172" in text
+
+
+def test_ingest_text_includes_pathway_gene_ids():
+    """通路原文 GENE 段首列即 Entrez（实测 '            2475  MTOR; ...'）。"""
+    def handler(request):
+        return httpx.Response(200, text=(
+            "ENTRY       hsa04930                      Pathway\n"
+            "NAME        Type II diabetes mellitus\n"
+            "GENE        2475  MTOR; serine/threonine-protein kinase mTOR\n"
+            "            3098  HK1; hexokinase-1\n"
+            "DISEASE     H00245  Diabetes mellitus\n"
+            "///\n"
+        ))
+
+    fetcher = _fetcher_with(handler)
+    text = fetcher.ingest_text("hsa04930")
+    assert "通路基因ID：NCBIGene:2475, NCBIGene:3098" in text
+
+
+def test_ingest_text_without_gene_section_omits_id_line():
+    """无 GENE 段（如纯 map 通路）不产生该行。"""
+    def handler(request):
+        return httpx.Response(200, text="ENTRY       hsa00010\r\nNAME        Glycolysis\r\n///\r\n")
+
+    fetcher = _fetcher_with(handler)
+    text = fetcher.ingest_text("hsa00010")
+    assert "通路基因ID：" not in text
