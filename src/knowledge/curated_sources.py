@@ -10,6 +10,7 @@ from pathlib import Path
 import openpyxl
 
 from src.data.download import ensure_file
+from src.data.gene_map import gene_curie, get_gene_index
 
 CELLMARKER_URL = (
     "http://117.50.127.228/CellMarker/CellMarker_download_files/file/"
@@ -73,14 +74,26 @@ def _normalize_cl(value: str) -> str:
     return f"CL:{value[3:]}" if value.upper().startswith("CL_") else value
 
 
-def cellmarker_texts(xlsx_path: Path | None = None) -> list[str]:
+def _markers_with_ids(markers: list[str], index) -> str:
+    """标志物渲染：命中映射表才加 (NCBIGene:NNN)，未命中保持裸符号"""
+    parts = []
+    for marker in markers:
+        gene_id = index.lookup(symbol=marker)
+        parts.append(f"{marker} ({gene_curie(gene_id)})" if gene_id else marker)
+    return ", ".join(parts)
+
+
+def cellmarker_texts(xlsx_path: Path | None = None, gene_index=None) -> list[str]:
     """CellMarker Human xlsx → 入库文档列表
+
+    gene_index: 基因映射索引；None 时用进程单例（首次会联网下载 gene_info）
 
     - 按 cell_name 聚合（实测 60,877 行 → 1,713 个细胞类型）；标志物不设上限
     - 组织去重后取前 20；PMID 去重后渲染前 10，共 N 篇计去重总数
     - 条目格式：## 细胞名 / Cell Ontology ID / 组织 / 标志物 / 文献（缺字段省略行）
     """
     path = xlsx_path if xlsx_path is not None else ensure_file(CELLMARKER_URL, CELLMARKER_PATH)
+    index = gene_index or get_gene_index()
     wb = openpyxl.load_workbook(path, read_only=True, data_only=True)
     try:
         ws = wb.active
@@ -125,7 +138,7 @@ def cellmarker_texts(xlsx_path: Path | None = None) -> list[str]:
         if slot["tissues"]:
             lines.append(f"组织：{', '.join(slot['tissues'][:20])}")
         if slot["markers"]:
-            lines.append(f"标志物：{', '.join(slot['markers'])}")
+            lines.append(f"标志物：{_markers_with_ids(slot['markers'], index)}")
         if slot["pmids"]:
             shown = slot["pmids"][:10]
             lines.append(f"文献：PMID {', '.join(shown)}（共 {len(slot['pmids'])} 篇）")

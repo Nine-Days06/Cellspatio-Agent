@@ -104,11 +104,12 @@ def _write_cellmarker_xlsx(path) -> None:
 
 def test_cellmarker_texts_aggregates_entries(tmp_path):
     """按细胞名聚合多行条目，归一 CL 写法并跳过空名行。"""
+    from src.data.gene_map import GeneIndex
     from src.knowledge.curated_sources import cellmarker_texts
 
     xlsx = tmp_path / "Cell_marker_Human.xlsx"
     _write_cellmarker_xlsx(xlsx)
-    docs = cellmarker_texts(xlsx)
+    docs = cellmarker_texts(xlsx, gene_index=GeneIndex({}, {}, {}))
     assert len(docs) == 1
     doc = docs[0]
     assert doc.startswith("# CellMarker 细胞类型:")
@@ -125,6 +126,7 @@ def test_cellmarker_texts_aggregates_entries(tmp_path):
 def test_cellmarker_texts_uses_ensure_file_when_no_path(monkeypatch, tmp_path):
     """不传路径时经 ensure_file 按 CELLMARKER_URL 取缓存。"""
     import src.knowledge.curated_sources as cs
+    from src.data.gene_map import GeneIndex
 
     xlsx = tmp_path / "cached.xlsx"
     _write_cellmarker_xlsx(xlsx)
@@ -135,9 +137,43 @@ def test_cellmarker_texts_uses_ensure_file_when_no_path(monkeypatch, tmp_path):
         return xlsx
 
     monkeypatch.setattr(cs, "ensure_file", fake_ensure)
-    docs = cs.cellmarker_texts()  # 不传路径 → 走 ensure_file(CELLMARKER_URL)
+    docs = cs.cellmarker_texts(gene_index=GeneIndex({}, {}, {}))  # 不传路径 → 走 ensure_file(CELLMARKER_URL)
     assert called["url"] == cs.CELLMARKER_URL
     assert docs
+
+
+def test_cellmarker_markers_inline_gene_ids(tmp_path):
+    """命中的 marker 行内标注规范 token。"""
+    from src.data.gene_map import GeneIndex
+    from src.knowledge.curated_sources import cellmarker_texts
+
+    xlsx = tmp_path / "Cell_marker_Human.xlsx"
+    _write_cellmarker_xlsx(xlsx)
+    docs = cellmarker_texts(xlsx, gene_index=GeneIndex({"CD19": "930", "MS4A1": "931"}, {}, {}))
+    assert "标志物：CD19 (NCBIGene:930), MS4A1 (NCBIGene:931)" in docs[0]
+
+
+def test_cellmarker_markers_unmapped_stay_bare(tmp_path):
+    """未命中（小鼠符号/退役符号）保持裸符号，不塞占位。"""
+    from src.data.gene_map import GeneIndex
+    from src.knowledge.curated_sources import cellmarker_texts
+
+    xlsx = tmp_path / "Cell_marker_Human.xlsx"
+    _write_cellmarker_xlsx(xlsx)
+    docs = cellmarker_texts(xlsx, gene_index=GeneIndex({}, {}, {}))
+    assert "标志物：CD19, MS4A1" in docs[0]
+
+
+def test_cellmarker_uses_singleton_index_when_not_injected(monkeypatch, tmp_path):
+    """不传索引时回落到进程单例（此处 monkeypatch，避免联网下载）。"""
+    import src.knowledge.curated_sources as cs
+    from src.data.gene_map import GeneIndex
+
+    xlsx = tmp_path / "Cell_marker_Human.xlsx"
+    _write_cellmarker_xlsx(xlsx)
+    monkeypatch.setattr(cs, "get_gene_index", lambda: GeneIndex({"CD19": "930"}, {}, {}))
+    docs = cs.cellmarker_texts(xlsx)
+    assert "CD19 (NCBIGene:930)" in docs[0]
 
 
 OBO_FIXTURE = """format-version: 1.2
