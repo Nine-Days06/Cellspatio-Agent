@@ -64,10 +64,15 @@ def test_confirm_no_exact_match_raises():
 
 
 def test_ingest_text_renders_protein():
+    from src.data.gene_map import GeneIndex
+
     def handler(request):
         return httpx.Response(200, json=_search_payload())
 
-    fetcher = _fetcher_with(handler)
+    fetcher = HPAFetcher(
+        client=httpx.Client(transport=httpx.MockTransport(handler)),
+        gene_index=GeneIndex({}, {}, {}),
+    )
     text = fetcher.ingest_text("CD4")
     assert text.startswith("# HPA 蛋白: CD4")
     assert "来源：https://www.proteinatlas.org/ENSG00000010610" in text
@@ -80,6 +85,8 @@ def test_ingest_text_renders_protein():
 
 def test_ingest_text_skips_missing_fields():
     """缺失的列（如 CD19 的 Subcellular main location 为 null）对应行省略"""
+    from src.data.gene_map import GeneIndex
+
     def handler(request):
         return httpx.Response(200, json=[{
             "Gene": "CD19", "Gene synonym": [], "Ensembl": "ENSG00000177455",
@@ -87,7 +94,10 @@ def test_ingest_text_skips_missing_fields():
             "Evidence": "Evidence at protein level", "Subcellular main location": None,
         }])
 
-    fetcher = _fetcher_with(handler)
+    fetcher = HPAFetcher(
+        client=httpx.Client(transport=httpx.MockTransport(handler)),
+        gene_index=GeneIndex({}, {}, {}),
+    )
     text = fetcher.ingest_text("CD19")
     assert "Ensembl：ENSG00000177455" in text
     assert "蛋白类别：无" in text
@@ -102,3 +112,34 @@ def test_download_raises_not_implemented():
         assert True
     else:
         raise AssertionError("download 应抛 NotImplementedError")
+
+
+def test_ingest_text_includes_canonical_gene_id():
+    """符号命中映射表时输出规范 token。"""
+    from src.data.gene_map import GeneIndex
+
+    def handler(request):
+        return httpx.Response(200, json=_search_payload())
+
+    fetcher = HPAFetcher(
+        client=httpx.Client(transport=httpx.MockTransport(handler)),
+        gene_index=GeneIndex({"CD4": "920"}, {}, {}),
+    )
+    text = fetcher.ingest_text("CD4")
+    assert "基因ID：NCBIGene:920" in text
+
+
+def test_ingest_text_omits_gene_id_when_unmapped():
+    """未命中映射表（如查不到）时整行省略，不影响其余字段。"""
+    from src.data.gene_map import GeneIndex
+
+    def handler(request):
+        return httpx.Response(200, json=_search_payload())
+
+    fetcher = HPAFetcher(
+        client=httpx.Client(transport=httpx.MockTransport(handler)),
+        gene_index=GeneIndex({}, {}, {}),
+    )
+    text = fetcher.ingest_text("CD4")
+    assert "基因ID：" not in text
+    assert "Ensembl：ENSG00000010610" in text  # 其余字段不受影响

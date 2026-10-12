@@ -12,6 +12,7 @@ from pathlib import Path
 import httpx
 
 from src.data.fetchers.base import AssetInfo, AssetMeta, BaseFetcher
+from src.data.gene_map import GeneIndex, gene_curie, get_gene_index
 
 logger = logging.getLogger(__name__)
 
@@ -25,9 +26,10 @@ class HPAFetcher(BaseFetcher):
     source = "hpa"
     asset_type = "knowledge"
 
-    def __init__(self, storage=None, client: httpx.Client | None = None):
+    def __init__(self, storage=None, client: httpx.Client | None = None, gene_index: GeneIndex | None = None):
         super().__init__(storage=storage, client=client)
         self._last_request_time = 0.0
+        self._gene_index = gene_index
 
     def _search_rows(self, gene: str) -> list[dict]:
         """请求 search_download 并返回 JSON 数组；精确匹配 Gene 列的条目"""
@@ -88,6 +90,9 @@ class HPAFetcher(BaseFetcher):
         ensembl = row.get("Ensembl", "")
         url = f"https://www.proteinatlas.org/{ensembl}" if ensembl else "https://www.proteinatlas.org/"
         lines = [f"# HPA 蛋白: {asset_id}", f"来源：{url}"]
+        gene_id = self._gene_id(asset_id, ensembl)
+        if gene_id:
+            lines.append(f"基因ID：{gene_curie(gene_id)}")
         synonyms = row.get("Gene synonym") or []
         if synonyms:
             lines.append(f"别名：{', '.join(synonyms)}")
@@ -105,3 +110,8 @@ class HPAFetcher(BaseFetcher):
         if locations:
             lines.append(f"亚细胞定位：{', '.join(locations)}")
         return "\n".join(lines) + "\n"
+
+    def _gene_id(self, symbol: str, ensembl: str) -> str:
+        """符号优先、Ensembl 回退；未命中返回空串（注入索引优先，便于测试离线）"""
+        index = self._gene_index or get_gene_index()
+        return index.lookup(symbol=symbol, ensembl=ensembl)
