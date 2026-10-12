@@ -86,7 +86,8 @@ def test_ingest_text_builds_markdown():
     assert "来源：https://www.uniprot.org/uniprotkb/P04637" in text
     assert "基因：TP53" in text
     assert "Tumor suppressor." in text
-    assert "NCBI GeneID：7157" in text  # 取 crossRef，非空 GeneID 才写入
+    assert "基因ID：NCBIGene:7157" in text  # 取 crossRef，非空 GeneID 才写入
+    assert "NCBI GeneID：" not in text  # 统一为规范 token
 
 
 def test_search_respects_max_results():
@@ -139,4 +140,4 @@ def test_ingest_text_includes_go_annotations():
     assert "GO（生物过程）: GO:0006915 apoptotic process" in text
     assert "GO（分子功能）: GO:0003674 molecular_function" in text
     # GO 行必须在 GeneID 行之后
-    assert text.index("NCBI GeneID：7157") < text.index("GO（细胞组分）")
+    assert text.index("基因ID：NCBIGene:7157") < text.index("GO（细胞组分）")

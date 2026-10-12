@@ -2,6 +2,7 @@
 from pathlib import Path
 
 from src.data.fetchers.base import AssetInfo, AssetMeta, BaseFetcher
+from src.data.gene_map import gene_curie
 
 # GO aspect 前缀（GoTerm 值形如 "C:nucleus"）→ 中文标签
 _GO_ASPECTS = {"C": "细胞组分", "P": "生物过程", "F": "分子功能"}
@@ -68,7 +69,7 @@ class UniProtFetcher(BaseFetcher):
         ]
         gene_id = self._gene_id(item)
         if gene_id:
-            lines.append(f"NCBI GeneID：{gene_id}")
+            lines.append(f"基因ID：{gene_curie(gene_id)}")
         lines.extend(self._go_text(item))
         for comment in item.get("comments", []):
             # API 字段为 texts（复数）：2026-04 实测 P04637 49 个 comment 均无 "text" 键
