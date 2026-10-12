@@ -10,6 +10,7 @@ MIM:191170|HGNC:HGNC:11998|Ensembl:ENSG00000141510）；Synonyms 以 | 分隔；
 空值以 - 表示；文件为人类专用（tax_id 恒 9606）。
 """
 import gzip
+from functools import lru_cache
 from pathlib import Path
 
 from src.data.download import ensure_file
@@ -19,8 +20,6 @@ GENE_INFO_URL = (
 )
 ROOT = Path(__file__).resolve().parents[2]
 GENE_INFO_PATH = ROOT / "data" / "raw" / "genemap" / "Homo_sapiens.gene_info.gz"
-
-_INDEX: "GeneIndex | None" = None
 
 
 def gene_curie(gene_id: str) -> str:
@@ -90,9 +89,7 @@ def load_gene_index(path: Path | None = None) -> GeneIndex:
     return GeneIndex(by_symbol, by_ensembl, by_synonym)
 
 
+@lru_cache(maxsize=1)
 def get_gene_index() -> GeneIndex:
     """进程内单例：首次调用解析 gene_info，之后复用（rebuild 每篇文档都要查）"""
-    global _INDEX
-    if _INDEX is None:
-        _INDEX = load_gene_index()
-    return _INDEX
+    return load_gene_index()

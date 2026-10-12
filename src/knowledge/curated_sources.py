@@ -10,7 +10,7 @@ from pathlib import Path
 import openpyxl
 
 from src.data.download import ensure_file
-from src.data.gene_map import gene_curie, get_gene_index
+from src.data.gene_map import GeneIndex, gene_curie, get_gene_index
 
 CELLMARKER_URL = (
     "http://117.50.127.228/CellMarker/CellMarker_download_files/file/"
@@ -74,7 +74,7 @@ def _normalize_cl(value: str) -> str:
     return f"CL:{value[3:]}" if value.upper().startswith("CL_") else value
 
 
-def _markers_with_ids(markers: list[str], index) -> str:
+def _markers_with_ids(markers: list[str], index: GeneIndex) -> str:
     """标志物渲染：命中映射表才加 (NCBIGene:NNN)，未命中保持裸符号"""
     parts = []
     for marker in markers:
@@ -83,7 +83,7 @@ def _markers_with_ids(markers: list[str], index) -> str:
     return ", ".join(parts)
 
 
-def cellmarker_texts(xlsx_path: Path | None = None, gene_index=None) -> list[str]:
+def cellmarker_texts(xlsx_path: Path | None = None, gene_index: GeneIndex | None = None) -> list[str]:
     """CellMarker Human xlsx → 入库文档列表
 
     gene_index: 基因映射索引；None 时用进程单例（首次会联网下载 gene_info）

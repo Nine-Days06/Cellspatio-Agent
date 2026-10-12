@@ -6,6 +6,7 @@ from urllib.parse import quote
 import httpx
 
 from src.data.fetchers.base import AssetInfo, AssetMeta, BaseFetcher
+from src.data.gene_map import gene_curie
 
 
 class KEGGFetcher(BaseFetcher):
@@ -76,7 +77,7 @@ class KEGGFetcher(BaseFetcher):
         raw = self._get(f"get/{asset_id}")
         url = f"https://www.kegg.jp/pathway/{asset_id}"
         ids = self._pathway_gene_ids(raw)
-        id_line = f"通路基因ID：{', '.join('NCBIGene:' + i for i in ids)}\n" if ids else ""
+        id_line = f"通路基因ID：{', '.join(gene_curie(i) for i in ids)}\n" if ids else ""
         return f"# KEGG 通路: {asset_id}\n来源：{url}\n{id_line}\n{raw}\n"
 
     def ingest_kgml_text(self, asset_id: str) -> str:
@@ -122,7 +123,7 @@ class KEGGFetcher(BaseFetcher):
                 # KEGG 的 hsa:NNNN 即 NCBI GeneID，渲染为规范 token
                 for token in name.split():
                     if token.startswith("hsa:"):
-                        curie = f"NCBIGene:{token[4:]}"
+                        curie = gene_curie(token[4:])
                         if curie not in gene_ids:
                             gene_ids.append(curie)
                 if disp and disp not in genes:

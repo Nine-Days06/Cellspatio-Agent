@@ -30,6 +30,7 @@ _MCM2 = (
 
 
 def _write_gene_info(tmp_path):
+    """把迷你 gene_info（真实 16 列形态）写成 gzip 文件，返回路径。"""
     path = tmp_path / "Homo_sapiens.gene_info.gz"
     with gzip.open(path, "wt", encoding="utf-8") as fh:
         fh.write(f"{_HEADER}\n{_A1BG}\n{_TP53}\n{_MCM2}\n")
