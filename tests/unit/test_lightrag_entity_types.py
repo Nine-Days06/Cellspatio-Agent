@@ -14,3 +14,5 @@ def test_entity_guidance_includes_spatial_and_cell_types():
     assert "Dataset" in text
     assert "single-cell" in text.lower() or "单细胞" in text
     assert "spatial" in text.lower() or "空间" in text
+    # 基因实体优先用规范 token，便于跨源图合并
+    assert "NCBIGene" in text
