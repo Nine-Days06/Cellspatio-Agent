@@ -270,3 +270,55 @@ def test_ingest_text_includes_local_characteristics(tmp_path):
     assert "样本特征：" in text
     assert "- cell line: SAS cell" in text
     assert "- disease: glioma" in text
+
+
+def test_local_characteristics_strips_geo_quotes(tmp_path):
+    """真实 series_matrix 的值带引号（GEO 对含特殊字符的值加引号），必须剥离后再聚合。
+
+    fixture 照实测 GSE123456 原文形态：值为带引号字符串、四样本同值。
+    """
+    import gzip
+
+    from src.data.storage import FetcherStorage
+
+    storage = FetcherStorage(base_dir=str(tmp_path / "raw"), meta_dir=str(tmp_path / "meta"))
+    asset_dir = tmp_path / "raw" / "geo" / "GSE123456"
+    asset_dir.mkdir(parents=True)
+    with gzip.open(asset_dir / "GSE123456_series_matrix.txt.gz", "wt", encoding="utf-8") as fh:
+        fh.write('!Sample_characteristics_ch1\t"cell line: SAS cell"\t"cell line: SAS cell"\n')
+        fh.write(
+            '!Sample_characteristics_ch1\t"cell type: tongue squamous carcinoma"'
+            '\t"cell type: tongue squamous carcinoma"\n'
+        )
+
+    fetcher = GEOFetcher(storage=storage)
+    assert fetcher._local_characteristics("GSE123456") == [
+        "- cell line: SAS cell",
+        "- cell type: tongue squamous carcinoma",
+    ]
+
+
+def test_local_characteristics_aggregates_quoted_distinct_values(tmp_path):
+    """多样本各自独立引号值按 key 聚合去重、保持首现序（实测 GSE48351 形态）。"""
+    import gzip
+
+    from src.data.storage import FetcherStorage
+
+    storage = FetcherStorage(base_dir=str(tmp_path / "raw"), meta_dir=str(tmp_path / "meta"))
+    asset_dir = tmp_path / "raw" / "geo" / "GSE48351"
+    asset_dir.mkdir(parents=True)
+    with gzip.open(asset_dir / "GSE48351_series_matrix.txt.gz", "wt", encoding="utf-8") as fh:
+        fh.write(
+            '!Sample_characteristics_ch1\t"cell line: ES-2"\t"cell line: JHOC-5"'
+            '\t"cell line: ES-2"\t"cell line: TOV21G"\n'
+        )
+        fh.write(
+            '!Sample_characteristics_ch1\t"originating repository: ATCC"'
+            '\t"originating repository: RIKEN"\n'
+        )
+
+    fetcher = GEOFetcher(storage=storage)
+    assert fetcher._local_characteristics("GSE48351") == [
+        "- cell line: ES-2, JHOC-5, TOV21G",
+        "- originating repository: ATCC, RIKEN",
+    ]

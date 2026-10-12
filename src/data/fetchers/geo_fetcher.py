@@ -129,6 +129,9 @@ class GEOFetcher(BaseFetcher):
                 if not line.startswith("!Sample_characteristics_ch1"):
                     continue
                 for value in line.rstrip("\n").split("\t")[1:]:
+                    # 真实 GEO 值常被引号包裹（如 "cell line: SAS cell"，含逗号等特殊字符时必加），
+                    # 不剥离会污染 key/value（实测 GSE123456/GSE48351 均带引号）
+                    value = value.strip().strip('"').strip()
                     key, sep, val = value.partition(": ")
                     if not sep:
                         continue
