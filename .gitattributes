@@ -1,0 +1,4 @@
+# 行尾归一策略：仓库内文本一律存 LF，检出时按平台（Windows + core.autocrlf=true → CRLF）
+# 目的：避免「工作区 CRLF vs 索引 LF」在 core.autocrlf 下被 git status 误报为已修改
+# （git diff 无差异、git status 显示 M 的幻影条目），并让不同机器的行尾行为一致。
+* text=auto
