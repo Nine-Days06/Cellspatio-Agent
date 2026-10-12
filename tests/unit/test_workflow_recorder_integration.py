@@ -29,6 +29,11 @@ def test_workflow_manager_with_recorder(monkeypatch):
     """WorkflowManager 注入 Recorder 后自动记录执行轨迹。"""
     monkeypatch.setattr("src.main.get_current_llm", lambda: (None, "test-model"))
     monkeypatch.setattr("src.main.LightRAGClient.__init__", lambda self, *a, **k: None)
+    # 单测不得触发真实 LightRAG 写入：CellSpatioAgent 会注入真实 LLM/embedding 的
+    # KGMemory，finish_run 时真跑 ainsert（真嵌入 + 真 LLM 抽取）——在 KB 无该文档时
+    # 会长时间阻塞，且会污染真实 knowledge_base。本测试只验证 recorder 的记录/导出，
+    # 故把 KG 写入打桩为空操作。
+    monkeypatch.setattr("src.control.kg_memory.KGMemory.ingest", lambda self, execution: None)
 
     with tempfile.TemporaryDirectory() as tmp:
         # 初始化 git 仓库以支持 snapshot 创建
@@ -63,6 +68,11 @@ def test_workflow_manager_recorder_captures_intent_and_steps(monkeypatch):
     """验证 recorder 捕获 intent 解析、参数提取、步骤执行。"""
     monkeypatch.setattr("src.main.get_current_llm", lambda: (None, "test-model"))
     monkeypatch.setattr("src.main.LightRAGClient.__init__", lambda self, *a, **k: None)
+    # 单测不得触发真实 LightRAG 写入：CellSpatioAgent 会注入真实 LLM/embedding 的
+    # KGMemory，finish_run 时真跑 ainsert（真嵌入 + 真 LLM 抽取）——在 KB 无该文档时
+    # 会长时间阻塞，且会污染真实 knowledge_base。本测试只验证 recorder 的记录/导出，
+    # 故把 KG 写入打桩为空操作。
+    monkeypatch.setattr("src.control.kg_memory.KGMemory.ingest", lambda self, execution: None)
 
     with tempfile.TemporaryDirectory() as tmp:
         # 初始化 git 仓库以支持 snapshot 创建
@@ -107,6 +117,11 @@ def test_workflow_manager_without_recorder_still_works(monkeypatch):
 
     monkeypatch.setattr("src.main.get_current_llm", lambda: (None, "test-model"))
     monkeypatch.setattr("src.main.LightRAGClient.__init__", lambda self, *a, **k: None)
+    # 单测不得触发真实 LightRAG 写入：CellSpatioAgent 会注入真实 LLM/embedding 的
+    # KGMemory，finish_run 时真跑 ainsert（真嵌入 + 真 LLM 抽取）——在 KB 无该文档时
+    # 会长时间阻塞，且会污染真实 knowledge_base。本测试只验证 recorder 的记录/导出，
+    # 故把 KG 写入打桩为空操作。
+    monkeypatch.setattr("src.control.kg_memory.KGMemory.ingest", lambda self, execution: None)
 
     manager = WorkflowManager(
         intent_parser=IntentParser(),
