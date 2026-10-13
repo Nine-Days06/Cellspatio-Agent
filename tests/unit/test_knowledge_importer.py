@@ -226,7 +226,7 @@ def test_ledger_corrupt_file_returns_empty(tmp_path):
 
 
 def test_import_from_csv_injects_gene_ids():
-    """传入 gene_lookup 时，命中 PMID 的文档含规范基因行。"""
+    """传入 gene_lookup 时，命中 PMID 的文档含 mention→CURIE 映射块。"""
     client = MockLightRAGClient()
     importer = KnowledgeImporter(client)
     csv_content = "pmid,title,abstract\n12345,Test Article,Test abstract\n"
@@ -234,10 +234,11 @@ def test_import_from_csv_injects_gene_ids():
         f.write(csv_content)
         csv_path = f.name
     try:
-        importer.import_from_csv(csv_path, gene_lookup={"12345": ["NCBIGene:7157"]})
+        importer.import_from_csv(csv_path, gene_lookup={"12345": {"TP53": "NCBIGene:7157"}})
     finally:
         os.unlink(csv_path)
-    assert "基因ID：NCBIGene:7157" in client.inserted_documents[0]
+    assert "基因ID：" in client.inserted_documents[0]
+    assert "TP53 => NCBIGene:7157" in client.inserted_documents[0]
 
 
 def test_import_from_csv_without_gene_lookup_has_no_gene_line():
@@ -265,7 +266,7 @@ def test_import_from_csv_injects_despite_blank_pmid_row():
         f.write(csv_content)
         csv_path = f.name
     try:
-        importer.import_from_csv(csv_path, gene_lookup={"9704485": ["NCBIGene:947"]})
+        importer.import_from_csv(csv_path, gene_lookup={"9704485": {"CD34": "NCBIGene:947"}})
     finally:
         os.unlink(csv_path)
-    assert "基因ID：NCBIGene:947" in client.inserted_documents[0]
+    assert "CD34 => NCBIGene:947" in client.inserted_documents[0]

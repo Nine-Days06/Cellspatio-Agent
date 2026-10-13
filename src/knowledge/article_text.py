@@ -2,11 +2,11 @@
 from typing import Any
 
 
-def convert_article_to_text(article: dict[str, Any], *, genes: list[str] | None = None) -> str:
+def convert_article_to_text(article: dict[str, Any], *, genes: dict[str, str] | None = None) -> str:
     """将文章/文献转换为 LightRAG 可接受的文本格式
 
-    genes: 规范基因 token 列表（如 ["NCBIGene:947"]），非空时在文末追加
-    `基因ID：…` 行，供 LightRAG 抽取 Gene 实体并跨源合并。
+    genes: mention→CURIE 映射（如 {"CD34": "NCBIGene:947"}），非空时在文末追加
+    `基因ID：` 块，逐行 `mention => CURIE`，供 LLM 建立规范基因实体。
     """
     text_parts = []
 
@@ -35,20 +35,8 @@ def convert_article_to_text(article: dict[str, Any], *, genes: list[str] | None 
     if mesh_terms:
         text_parts.append(f"MeSH词：{', '.join(mesh_terms)}")
 
-    authors = article.get("authors", "")
-    if isinstance(authors, str):
-        authors = [a.strip() for a in authors.split(",") if a.strip()]
-    elif isinstance(authors, list):
-        pass
-    else:
-        authors = []
-    if authors:
-        text_parts.append(f"作者：{', '.join(authors)}")
-
     if article.get("year"):
         text_parts.append(f"年份：{article['year']}")
-    if article.get("journal"):
-        text_parts.append(f"期刊：{article['journal']}")
     if article.get("omics_type"):
         text_parts.append(f"组学类型：{article['omics_type']}")
     if article.get("pmid"):
@@ -61,6 +49,7 @@ def convert_article_to_text(article: dict[str, Any], *, genes: list[str] | None 
         text_parts.append(f"DOI：{doi}")
 
     if genes:
-        text_parts.append(f"基因ID：{', '.join(genes)}")
+        text_parts.append("基因ID：")
+        text_parts.extend(f"{mention} => {curie}" for mention, curie in genes.items())
 
     return "\n".join(text_parts)

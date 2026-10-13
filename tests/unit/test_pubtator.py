@@ -28,7 +28,17 @@ def test_fetch_parses_gene_lines_only():
         return httpx.Response(200, text=_FIXTURE)
 
     result = pubtator.fetch_pmid_genes(["9704485"], client=_client(handler), min_interval=0)
-    assert result == {"9704485": ["NCBIGene:947", "NCBIGene:952", "NCBIGene:3690"]}
+    assert result == {"9704485": {"CD34": "NCBIGene:947", "CD38": "NCBIGene:952", "CD61": "NCBIGene:3690"}}
+
+
+def test_fetch_keeps_mention_to_id_mapping():
+    """保留 mention→CURIE 对应关系（LLM 需要知道哪个 ID 对应哪个基因）。"""
+    def handler(request):
+        return httpx.Response(200, text=_FIXTURE)
+
+    result = pubtator.fetch_pmid_genes(["9704485"], client=_client(handler), min_interval=0)
+    assert result["9704485"]["CD34"] == "NCBIGene:947"
+    assert result["9704485"]["CD38"] == "NCBIGene:952"
 
 
 def test_fetch_splits_into_batches_of_100():
@@ -71,8 +81,8 @@ def test_fetch_recovers_valid_pmids_from_mixed_batch():
 def test_cache_roundtrip(tmp_path):
     """写缓存 → 读回一致（JSON）。"""
     path = tmp_path / "gene_ids.json"
-    pubtator.save_pmid_genes({"9704485": ["NCBIGene:947"]}, path)
-    assert pubtator.load_pmid_genes(path) == {"9704485": ["NCBIGene:947"]}
+    pubtator.save_pmid_genes({"9704485": {"CD34": "NCBIGene:947"}}, path)
+    assert pubtator.load_pmid_genes(path) == {"9704485": {"CD34": "NCBIGene:947"}}
 
 
 def test_load_cache_missing_or_corrupt_returns_empty(tmp_path):
@@ -84,7 +94,10 @@ def test_load_cache_missing_or_corrupt_returns_empty(tmp_path):
 
 
 def test_load_cache_drops_non_string_entries(tmp_path):
-    """缓存可解析但含非字符串项 → 丢弃该项（不注入、不崩溃）。"""
+    """缓存可解析但含非 dict 值或非字符串键值 → 丢弃该项（不注入、不崩溃）。"""
     path = tmp_path / "gene_ids.json"
-    path.write_text('{"9704485": ["NCBIGene:947", 123]}', encoding="utf-8")
-    assert pubtator.load_pmid_genes(path) == {"9704485": ["NCBIGene:947"]}
+    path.write_text(
+        '{"9704485": {"CD34": "NCBIGene:947", "CD38": 123}, "11111": ["NCBIGene:1"]}',
+        encoding="utf-8",
+    )
+    assert pubtator.load_pmid_genes(path) == {"9704485": {"CD34": "NCBIGene:947"}}

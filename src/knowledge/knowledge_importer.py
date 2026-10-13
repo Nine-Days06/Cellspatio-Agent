@@ -158,10 +158,10 @@ class KnowledgeImporter:
             logger.error(f"Failed to import from SQLite: {e}")
             return {"success": False, "error": str(e)}
     
-    def import_from_csv(self, csv_path: str, *, gene_lookup: dict[str, list[str]] | None = None) -> dict[str, Any]:
+    def import_from_csv(self, csv_path: str, *, gene_lookup: dict[str, dict[str, str]] | None = None) -> dict[str, Any]:
         """从 CSV 文件导入知识库
 
-        gene_lookup: PMID → 规范基因 token 映射；None 时读本地缓存
+        gene_lookup: PMID → {mention: CURIE} 映射；None 时读本地缓存
         （data/raw/pubtator/gene_ids.json，缺失即不注入）。
         """
         try:
