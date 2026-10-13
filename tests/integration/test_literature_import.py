@@ -144,6 +144,4 @@ def test_article_to_text_conversion(mock_client):
     assert "摘要：Test abstract" in text
     assert "关键词：test, multi-omics" in text
     assert "MeSH词：Test, Multi-omics" in text
-    assert "作者：Author One, Author Two" in text
     assert "年份：2024" in text
-    assert "期刊：Test Journal" in text

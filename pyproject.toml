@@ -32,3 +32,6 @@ dev = [
     "black>=23.0.0",
     "ruff>=0.1.0",
 ]
+
+[tool.setuptools.package-data]
+"src.knowledge" = ["prompts/*.txt"]
