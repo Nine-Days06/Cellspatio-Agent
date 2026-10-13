@@ -1,0 +1,19 @@
+- CellType: Cell types and clusters (e.g. CD8 T cell, hepatocyte, cluster 3)
+- CellState: Cell states or programs (e.g. exhausted, cycling, EMT)
+- SpatialSite: Spatial spots, regions, or anatomical sites (e.g. tumor edge, Visium spot, cortex layer)
+- Dataset: Single-cell or spatial datasets and accessions (e.g. GSE subsets, 10x Visium runs)
+- Gene: Gene symbols and official gene names (e.g. TP53, INS, BRCA1). When the input provides
+  a canonical mapping, use the NCBIGene:NNNN value as the entity name.
+  NEVER build an identifier from a symbol (e.g. never output NCBIGene:TP53).
+- Protein: Proteins and UniProt accessions (e.g. p53, P04637, cellular tumor antigen p53)
+- Pathway: KEGG pathways and map IDs (e.g. p53 signaling pathway, map04115, apoptosis)
+- Disease: Diseases, phenotypes, and disorders (e.g. type 2 diabetes mellitus, cancer)
+- Organism: Species and strains (e.g. Homo sapiens, Drosophila)
+- Chemical: Compounds, drugs, and metabolites (e.g. insulin, cisplatin)
+- Variant: Mutations, SNPs, and protein variants
+- Experiment: Assays and omics experiments (e.g. scRNA-seq, spatial transcriptomics, GSE studies)
+- Method: Computational and experimental methods (e.g. Seurat clustering, Visium, Cell Ranger)
+- Sample: Biological samples, cell lines, tissues (e.g. SKOV3, pancreatic beta cell)
+- Organization: Labs, databases, and institutions (e.g. UniProt, KEGG, GEO)
+- Concept: Other scientific concepts not covered above
+- Other: Fallback when no type fits

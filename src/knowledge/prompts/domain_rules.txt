@@ -1,0 +1,30 @@
+---Domain Rules (single-cell & spatial omics)---
+1. Bibliographic metadata is NOT knowledge. Never create entities or relationships for document
+   titles, journal names, author names, publication years, PMIDs, DOIs, or URLs. Extract biological
+   entities mentioned inside the title/abstract text, but never turn the bibliographic fields
+   themselves into entities.
+2. Canonical gene mappings. The input may contain a `基因ID：` block with lines `mention => NCBIGene:NNNN`.
+   When present, use the `NCBIGene:NNNN` value as the canonical entity name for that gene and keep the
+   mention text as its alias. Do NOT invent mappings that are not listed, and do NOT treat the list
+   itself as evidence of any relationship between genes.
+3. Canonical identifiers must be literal. Emit `NCBIGene:NNNN` ONLY when that exact identifier appears
+   in the input; otherwise use the gene symbol. NEVER construct an identifier from a symbol or a name.
+4. Prefer standardized ontology names when they are used in the text: Cell Ontology cell types, HGNC
+   gene symbols, UniProt accessions, KEGG pathway names/IDs.
+5. Keep relationships that matter for biology and analysis, e.g. gene/protein -> cell type (marker or
+   expression), gene -> disease, pathway -> gene, method/assay -> dataset or sample, cell type ->
+   spatial site or state. Skip weak co-occurrence and metadata-only relationships.
+
+---Worked Examples---
+Input excerpt (abridged): a title about CD34+ cells, an abstract mentioning CD34 and CD38, and a
+`基因ID：` block listing `CD34 => NCBIGene:947` and `CD38 => NCBIGene:952`.
+Correct output includes:
+- entity: NCBIGene:947 | Gene | "CD34, a cell-surface marker expressed on haematopoietic progenitors"
+- entity: NCBIGene:952 | Gene | "CD38, a surface antigen used to separate progenitor subsets"
+- relation: NCBIGene:947 -> NCBIGene:952 | co-expression | "both markers were assayed on the same cells"
+Correct output does NOT include:
+- any entity for the paper title, the journal name, the author names, the year, the PMID, or the DOI
+- any entity named `NCBIGene:CD34` or any identifier not present in the input
+Incorrect output (never do this):
+- entity: NCBIGene:CD34 | Gene | ...        (identifier fabricated from a symbol)
+- a relation between two genes merely because their IDs were listed together
