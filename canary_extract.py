@@ -28,7 +28,7 @@ def judge_entities(names: list[str], banned: list[str] | None = None) -> dict[st
 
     Args:
         names: 抽取出的实体名列表。
-        banned: 禁词表（期刊名、作者名、标题等），命中即算书目噪声。
+        banned: 禁词表（文献标题等书目字符串），精确命中即算书目噪声。
     """
     banned_lower = {b.strip().lower() for b in (banned or [])}
     fake_id = [n for n in names if FAKE_ID_RE.match(n)]
@@ -85,13 +85,9 @@ def run_canary(n: int = 15, working_dir: str = ".canary_kb") -> dict[str, Any]:
         )
         for row in articles
     ]
-    # 禁词：抽样文献的标题、期刊、作者（作者为逗号分隔）→ 书目噪声判定
-    banned: list[str] = []
-    for row in articles:
-        for field in ("title", "journal"):
-            if row.get(field):
-                banned.append(row[field])
-        banned.extend(a.strip() for a in (row.get("authors") or "").split(",") if a.strip())
+    # 禁词只收标题：`作者：/期刊：` 已从抽取文本移除，不会再成为实体；且期刊名常与
+    # 生物学术语同名（如期刊 "Cytokine" vs 术语 "Cytokine"），精确匹配会误报。
+    banned = [row["title"] for row in articles if row.get("title")]
     LightRAGClient(working_dir=working_dir).insert_documents(texts)
     names = _read_entity_names(working_dir)
     report = judge_entities(names, banned)
