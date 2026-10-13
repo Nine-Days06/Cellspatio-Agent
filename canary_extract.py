@@ -3,7 +3,7 @@
 用法（需真实 LLM/Embedding，由用户手动执行；禁止在单测/CI 中跑）：
     python canary_extract.py --n 15 --working-dir .canary_kb
 
-exit 0 = ok（三类噪声皆空，可进入全量导入），1 = 有噪声。
+exit 0 = ok（四类噪声皆空，可进入全量导入），1 = 有噪声。
 """
 import argparse
 import csv
@@ -11,6 +11,7 @@ import json
 import re
 import sys
 from pathlib import Path
+from typing import Any
 
 ROOT = Path(__file__).resolve().parent
 sys.path.insert(0, str(ROOT))
@@ -22,29 +23,39 @@ CJK_RE = re.compile(r"[\u3040-\u30ff\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff\uac0
 BIBLIO_PATTERNS = (re.compile(r"^\d{7,9}$"), re.compile(r"^10\.\d{3,9}/"))
 
 
-def judge_entities(names: list[str]) -> dict:
-    """按三类噪声判定抽取实体名；三类皆空则 ok=True（可进全量导入）"""
+def judge_entities(names: list[str], banned: list[str] | None = None) -> dict[str, Any]:
+    """按四类噪声判定抽取实体名（fake_id / cjk / 书目 / 标题句）；四类皆空则 ok=True（可进全量导入）
+
+    Args:
+        names: 抽取出的实体名列表。
+        banned: 禁词表（期刊名、作者名、标题等），命中即算书目噪声。
+    """
+    banned_lower = {b.strip().lower() for b in (banned or [])}
     fake_id = [n for n in names if FAKE_ID_RE.match(n)]
     cjk = [n for n in names if CJK_RE.search(n)]
-    bibliographic = [n for n in names if any(p.match(n) for p in BIBLIO_PATTERNS)]
+    bibliographic = [
+        n for n in names
+        if any(p.match(n) for p in BIBLIO_PATTERNS) or n.strip().lower() in banned_lower
+    ]
+    title_like = [n for n in names if len(n.split()) >= 12]
     return {
         "fake_id": fake_id,
         "cjk": cjk,
         "bibliographic": bibliographic,
-        "ok": not fake_id and not cjk and not bibliographic,
+        "title_like": title_like,
+        "ok": not fake_id and not cjk and not bibliographic and not title_like,
     }
 
 
-def _load_articles(n: int, mapping: dict) -> list[dict]:
-    """读 data/import/*.csv 中前 n 篇有基因映射的文献（按 CSV 行序）"""
+def _load_articles(n: int) -> list[dict]:
+    """读 data/import/*.csv 前 n 篇文献（按 CSV 行序，不看有无基因映射）"""
     articles: list[dict] = []
     for csv_path in sorted((ROOT / "data" / "import").glob("*.csv")):
         with open(csv_path, encoding="utf-8-sig", newline="") as fh:
             for row in csv.DictReader(fh):
-                if (row.get("pmid") or "").strip() in mapping:
-                    articles.append(row)
-                    if len(articles) >= n:
-                        return articles
+                articles.append(row)
+                if len(articles) >= n:
+                    return articles
     return articles
 
 
@@ -60,27 +71,37 @@ def _read_entity_names(working_dir: str) -> list[str]:
     ]
 
 
-def run_canary(n: int = 15, working_dir: str = ".canary_kb") -> dict:
-    """取前 n 篇有基因映射的文献 → 注入基因映射文本 → 抽取入库 → 判定并打印报告"""
+def run_canary(n: int = 15, working_dir: str = ".canary_kb") -> dict[str, Any]:
+    """取 data/import/*.csv 前 n 篇文献 → 注入基因映射文本 → 抽取入库 → 收集禁词并判定"""
     from src.data.pubtator import load_pmid_genes
     from src.knowledge.article_text import convert_article_to_text
     from src.knowledge.lightrag_client import LightRAGClient
 
     mapping = load_pmid_genes()
-    articles = _load_articles(n, mapping)
+    articles = _load_articles(n)
     texts = [
-        convert_article_to_text(row, genes=mapping[(row.get("pmid") or "").strip()])
+        convert_article_to_text(
+            row, genes=mapping.get((row.get("pmid") or "").strip())
+        )
         for row in articles
     ]
+    # 禁词：抽样文献的标题、期刊、作者（作者为逗号分隔）→ 书目噪声判定
+    banned: list[str] = []
+    for row in articles:
+        for field in ("title", "journal"):
+            if row.get(field):
+                banned.append(row[field])
+        banned.extend(a.strip() for a in (row.get("authors") or "").split(",") if a.strip())
     LightRAGClient(working_dir=working_dir).insert_documents(texts)
     names = _read_entity_names(working_dir)
-    report = judge_entities(names)
+    report = judge_entities(names, banned)
     print(f"金丝雀：{len(texts)} 篇入库，抽取实体 {len(names)} 个")
     print(json.dumps(report, ensure_ascii=False, indent=2))
     return report
 
 
 def main(argv: list[str] | None = None) -> int:
+    """解析命令行参数并运行金丝雀，返回退出码（0=ok，1=有噪声）"""
     parser = argparse.ArgumentParser(description="真实抽取金丝雀质量门（需 LLM/Embedding）")
     parser.add_argument("--n", type=int, default=15, help="抽样篇数")
     parser.add_argument("--working-dir", default=".canary_kb", help="金丝雀知识库目录")

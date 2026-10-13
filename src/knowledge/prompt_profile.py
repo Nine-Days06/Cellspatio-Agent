@@ -5,6 +5,7 @@
 """
 
 from pathlib import Path
+from typing import Any
 
 PROMPTS_DIR = Path(__file__).resolve().parent / "prompts"
 
@@ -22,7 +23,7 @@ def load_domain_rules() -> str:
     return (PROMPTS_DIR / "domain_rules.txt").read_text(encoding="utf-8").strip()
 
 
-def apply_domain_rules(prompts: dict) -> None:
+def apply_domain_rules(prompts: dict[str, Any]) -> None:
     """把领域规则幂等注入抽取系统提示词（按 ---Domain Rules 标记判重）"""
     rules = load_domain_rules()
     for key in _INJECT_KEYS:

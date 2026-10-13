@@ -110,7 +110,7 @@ def label_from_url(url: str) -> str:
     return ""
 
 
-def build_addon_params() -> dict:
+def build_addon_params() -> dict[str, Any]:
     """LightRAG addon_params：英文抽取 + 领域实体类型（供 _initialize_rag 与测试共用）"""
     return {
         "language": "English",
