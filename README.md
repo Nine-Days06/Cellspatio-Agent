@@ -15,11 +15,12 @@
 
 - **引导式分析**：自然语言驱动的人类单细胞与空间/时序组学数据分析
 - **知识增强**：基于 RAG + 知识图谱的专业问答
+- **跨源基因统一**：各源入库文本统一为 NCBIGene CURIE token（`src/data/gene_map.py`），GEO/KEGG/UniProt/Reactome/HPA/PubMed 的基因实体在 LightRAG 图中跨源合并
 - **分析覆盖**：bulk 差异表达、单细胞聚类/注释、空间转录组；知识问答跨组学
 - **脚本确认**：LLM 生成 R 脚本人工确认后执行，失败自动修复（≤2 次）
 - **单细胞/时空**：Seurat / Visium 流程
 - **混合架构**：Python 控制 + R 分析，发挥各自优势
-- **数据获取**：GEO/KEGG/UniProt 公共数据库检索、确认、下载与入库
+- **数据获取**：GEO/KEGG/UniProt/Reactome/HPA 公共数据库检索、确认、下载与入库
 - **工具路由**：LLM tool-calling 选择分析/检索/知识工具（schema 强制参数），失败自动回退关键词意图路径
 - **工作流记录**：自动生成 `workflow.json`（intent/params/steps/outputs），落盘 `.wrroc/<run_id>/`
 - **溯源体系**：WRROC + Lineage 图谱，输入→代码→结果全链路可追踪
@@ -160,6 +161,8 @@ cellspatio-agent/
 │   │   └── lineage.py           # Lineage 图谱模型
 │   ├── knowledge/       # 知识检索层
 │   │   ├── lightrag_client.py    # LightRAG 封装
+│   │   ├── prompt_profile.py     # 领域提示词加载与注入（entity_types/domain_rules）
+│   │   ├── prompts/              # 领域提示词文件（英文实体类型 + 抽取规则）
 │   │   ├── knowledge_builder.py  # 批量构建
 │   │   ├── knowledge_importer.py # 文献导入
 │   │   ├── llm_factory.py        # LLM/embedding 工厂
@@ -169,7 +172,9 @@ cellspatio-agent/
 │   │   ├── visualization.py      # 可视化
 │   │   └── result_explainer.py   # 结果解释
 │   └── data/            # 数据层
-│       ├── fetchers/             # 公共数据库 Fetcher（GEO/KEGG/UniProt）
+│       ├── fetchers/             # 公共数据库 Fetcher（GEO/KEGG/UniProt/Reactome/HPA）
+│       ├── gene_map.py           # 基因 ID 统一（NCBI gene_info → NCBIGene CURIE）
+│       ├── pubtator.py           # PubTator3 PMID→基因 CURIE 取数与缓存
 │       ├── registry.py           # Fetcher 注册表
 │       └── storage.py            # 本地存储
 ├── web/                # React 18 前端（Vite + TS + Tailwind 4）
@@ -184,6 +189,10 @@ cellspatio-agent/
 ├── evals/               # 评测体系
 │   ├── cases.jsonl           # 金标用例
 │   └── run_eval.py           # 评测运行器 (--scripted/--live/--p3d)
+├── build_pubtator_cache.py # 预计算 PubTator3 PMID→基因 CURIE 缓存（导入前执行一次）
+├── canary_extract.py       # 真实抽取金丝雀：小样本入库读实体、判定抽取质量
+├── rebuild_kb.py           # 知识库重建（KGML/Reactome/HPA）
+├── sync_pubmed.py          # 文献一键同步（pubmed-etl 导出 → 主项目导入）
 ├── setup.bat            # Windows 一键安装脚本
 └── .env.example         # 环境变量示例
 ```
