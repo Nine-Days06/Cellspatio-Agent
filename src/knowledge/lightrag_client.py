@@ -6,6 +6,8 @@ import re
 from pathlib import Path
 from typing import Any
 
+from src.knowledge import prompt_profile
+
 logger = logging.getLogger(__name__)
 
 # LLM 自造的参考文献段（LightRAG prompt 要求输出，中文模型可能译成参考文献）
@@ -108,6 +110,21 @@ def label_from_url(url: str) -> str:
     return ""
 
 
+def build_addon_params() -> dict:
+    """LightRAG addon_params：英文抽取 + 领域实体类型（供 _initialize_rag 与测试共用）"""
+    return {
+        "language": "English",
+        "entity_types_guidance": prompt_profile.load_entity_types(),
+    }
+
+
+def install_domain_prompts() -> None:
+    """把领域规则幂等注入 LightRAG 全局抽取提示词（构造 LightRAG 前调用）"""
+    from lightrag.prompt import PROMPTS
+
+    prompt_profile.apply_domain_rules(PROMPTS)
+
+
 class LightRAGClient:
     """LightRAG 客户端封装"""
 
@@ -155,6 +172,7 @@ class LightRAGClient:
                 embedding_func = build_embedding_func(self.config.get("embedding_func"))
                 self._validate_embedding_model(embedding_func)
 
+                install_domain_prompts()
                 self._rag = LightRAG(
                     working_dir=str(self.working_dir),
                     llm_model_func=llm_func,
@@ -162,44 +180,7 @@ class LightRAGClient:
                     embedding_func=embedding_func,
                     enable_llm_cache=True,
                     llm_model_max_async=2,  # 并发限制，受 API 限流影响
-                    addon_params={
-                        "language": "Chinese",
-                        "entity_types_guidance": (
-                            "- CellType: Cell types and clusters "
-                            "(e.g. CD8 T cell, hepatocyte, cluster 3)\n"
-                            "- CellState: Cell states or programs "
-                            "(e.g. exhausted, cycling, EMT)\n"
-                            "- SpatialSite: Spatial spots, regions, or anatomical sites "
-                            "(e.g. tumor edge, Visium spot, cortex layer)\n"
-                            "- Dataset: Single-cell or spatial datasets and accessions "
-                            "(e.g. GSE subsets, 10x Visium runs)\n"
-                            "- Gene: Gene symbols and official gene names; when a "
-                            "canonical id is present prefer the NCBIGene:NNNN form "
-                            "(e.g. NCBIGene:7157 for TP53)\n"
-                            "- Protein: Proteins and UniProt accessions "
-                            "(e.g. p53, P04637, cellular tumor antigen p53)\n"
-                            "- Pathway: KEGG pathways and map IDs "
-                            "(e.g. p53 signaling pathway, map04115, apoptosis)\n"
-                            "- Disease: Diseases, phenotypes, and disorders "
-                            "(e.g. type 2 diabetes mellitus, cancer)\n"
-                            "- Organism: Species and strains "
-                            "(e.g. Homo sapiens, Drosophila)\n"
-                            "- Chemical: Compounds, drugs, and metabolites "
-                            "(e.g. insulin, cisplatin)\n"
-                            "- Variant: Mutations, SNPs, and protein variants\n"
-                            "- Experiment: Assays and omics experiments "
-                            "(e.g. scRNA-seq, spatial transcriptomics, GSE studies)\n"
-                            "- Sample: Biological samples, cell lines, tissues "
-                            "(e.g. SKOV3, pancreatic beta cell)\n"
-                            "- Organization: Labs, databases, and institutions "
-                            "(e.g. UniProt, KEGG, GEO)\n"
-                            "- Person: Authors and researchers named in the text\n"
-                            "- Publication: Papers and journals "
-                            "(e.g. Cell Res, FEBS Lett)\n"
-                            "- Concept: Other scientific concepts not covered above\n"
-                            "- Other: Fallback when no type fits"
-                        ).rstrip(),
-                    },
+                    addon_params=build_addon_params(),
                 )
                 # LightRAG 1.5.7+ 需要显式初始化存储
                 asyncio.run(self._rag.initialize_storages())
