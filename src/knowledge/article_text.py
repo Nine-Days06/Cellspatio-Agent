@@ -2,8 +2,12 @@
 from typing import Any
 
 
-def convert_article_to_text(article: dict[str, Any]) -> str:
-    """将文章/文献转换为 LightRAG 可接受的文本格式"""
+def convert_article_to_text(article: dict[str, Any], *, genes: list[str] | None = None) -> str:
+    """将文章/文献转换为 LightRAG 可接受的文本格式
+
+    genes: 规范基因 token 列表（如 ["NCBIGene:947"]），非空时在文末追加
+    `基因ID：…` 行，供 LightRAG 抽取 Gene 实体并跨源合并。
+    """
     text_parts = []
 
     if article.get("title"):
@@ -55,5 +59,8 @@ def convert_article_to_text(article: dict[str, Any]) -> str:
     if article.get("doi"):
         doi = str(article["doi"]).removeprefix("https://doi.org/")
         text_parts.append(f"DOI：{doi}")
+
+    if genes:
+        text_parts.append(f"基因ID：{', '.join(genes)}")
 
     return "\n".join(text_parts)
