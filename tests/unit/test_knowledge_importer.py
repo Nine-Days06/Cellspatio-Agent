@@ -223,3 +223,34 @@ def test_ledger_corrupt_file_returns_empty(tmp_path):
     ledger = ImportLedger(ledger_path)
 
     assert ledger.is_imported("anything.csv") is False
+
+
+def test_import_from_csv_injects_gene_ids():
+    """传入 gene_lookup 时，命中 PMID 的文档含规范基因行。"""
+    client = MockLightRAGClient()
+    importer = KnowledgeImporter(client)
+    csv_content = "pmid,title,abstract\n12345,Test Article,Test abstract\n"
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".csv", delete=False) as f:
+        f.write(csv_content)
+        csv_path = f.name
+    try:
+        importer.import_from_csv(csv_path, gene_lookup={"12345": ["NCBIGene:7157"]})
+    finally:
+        os.unlink(csv_path)
+    assert "基因ID：NCBIGene:7157" in client.inserted_documents[0]
+
+
+def test_import_from_csv_without_gene_lookup_has_no_gene_line():
+    """空 lookup（或未命中）不注入基因行，其余字段照旧。"""
+    client = MockLightRAGClient()
+    importer = KnowledgeImporter(client)
+    csv_content = "pmid,title,abstract\n12345,Test Article,Test abstract\n"
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".csv", delete=False) as f:
+        f.write(csv_content)
+        csv_path = f.name
+    try:
+        importer.import_from_csv(csv_path, gene_lookup={})
+    finally:
+        os.unlink(csv_path)
+    assert "基因ID：" not in client.inserted_documents[0]
+    assert "PMID：12345" in client.inserted_documents[0]

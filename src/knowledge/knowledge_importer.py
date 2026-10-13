@@ -9,6 +9,7 @@ from typing import Any
 
 import pandas as pd
 
+from src.data.pubtator import load_pmid_genes
 from src.knowledge.article_text import convert_article_to_text
 
 logger = logging.getLogger(__name__)
@@ -157,17 +158,27 @@ class KnowledgeImporter:
             logger.error(f"Failed to import from SQLite: {e}")
             return {"success": False, "error": str(e)}
     
-    def import_from_csv(self, csv_path: str) -> dict[str, Any]:
-        """从 CSV 文件导入知识库"""
+    def import_from_csv(self, csv_path: str, *, gene_lookup: dict[str, list[str]] | None = None) -> dict[str, Any]:
+        """从 CSV 文件导入知识库
+
+        gene_lookup: PMID → 规范基因 token 映射；None 时读本地缓存
+        （data/raw/pubtator/gene_ids.json，缺失即不注入）。
+        """
         try:
             df = pd.read_csv(csv_path)
-            
-            texts = [convert_article_to_text(row.to_dict()) for _, row in df.iterrows()]
+            lookup = load_pmid_genes() if gene_lookup is None else gene_lookup
+            texts = [
+                convert_article_to_text(
+                    row.to_dict(),
+                    genes=lookup.get(str(row.get("pmid", ""))),
+                )
+                for _, row in df.iterrows()
+            ]
             count = self.client.insert_documents(texts)
-            
+
             logger.info(f"Imported {count} articles from CSV: {csv_path}")
             return {"success": True, "count": count, "source": csv_path}
-            
+
         except (FileNotFoundError, pd.errors.EmptyDataError, pd.errors.ParserError) as e:
             logger.error(f"Failed to import from CSV: {e}")
             return {"success": False, "error": str(e)}
