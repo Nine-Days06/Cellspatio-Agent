@@ -81,3 +81,10 @@ def test_load_cache_missing_or_corrupt_returns_empty(tmp_path):
     bad = tmp_path / "bad.json"
     bad.write_text("{not json", encoding="utf-8")
     assert pubtator.load_pmid_genes(bad) == {}
+
+
+def test_load_cache_drops_non_string_entries(tmp_path):
+    """缓存可解析但含非字符串项 → 丢弃该项（不注入、不崩溃）。"""
+    path = tmp_path / "gene_ids.json"
+    path.write_text('{"9704485": ["NCBIGene:947", 123]}', encoding="utf-8")
+    assert pubtator.load_pmid_genes(path) == {"9704485": ["NCBIGene:947"]}

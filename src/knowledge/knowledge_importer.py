@@ -165,7 +165,7 @@ class KnowledgeImporter:
         （data/raw/pubtator/gene_ids.json，缺失即不注入）。
         """
         try:
-            df = pd.read_csv(csv_path)
+            df = pd.read_csv(csv_path, dtype={"pmid": str})
             lookup = load_pmid_genes() if gene_lookup is None else gene_lookup
             texts = [
                 convert_article_to_text(

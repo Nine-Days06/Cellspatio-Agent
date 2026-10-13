@@ -9,6 +9,7 @@
 import argparse
 import csv
 import sys
+from collections.abc import Callable
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent
@@ -28,7 +29,12 @@ def read_pmids(csv_path: Path) -> list[str]:
     return list(seen)
 
 
-def build_cache(csv_path, *, fetch=None, cache_path=None) -> dict:
+def build_cache(
+    csv_path: Path | str,
+    *,
+    fetch: Callable[[list[str]], dict[str, list[str]]] | None = None,
+    cache_path: Path | str | None = None,
+) -> dict:
     """读 CSV PMID → 查 PubTator3 → 写缓存；返回统计（fetch 可注入以便离线测试）"""
     fetch = fetch or fetch_pmid_genes
     pmids = read_pmids(Path(csv_path))
@@ -44,7 +50,7 @@ def build_cache(csv_path, *, fetch=None, cache_path=None) -> dict:
     }
 
 
-def main(argv=None) -> int:
+def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="预计算 PubTator3 PMID→基因 缓存")
     parser.add_argument("--csv", required=True, help="ETL 导出 CSV（含 pmid 列）")
     args = parser.parse_args(argv)

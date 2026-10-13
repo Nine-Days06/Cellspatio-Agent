@@ -254,3 +254,18 @@ def test_import_from_csv_without_gene_lookup_has_no_gene_line():
         os.unlink(csv_path)
     assert "基因ID：" not in client.inserted_documents[0]
     assert "PMID：12345" in client.inserted_documents[0]
+
+
+def test_import_from_csv_injects_despite_blank_pmid_row():
+    """pmid 列含空值（整列本会 float 化）时，非空行仍能命中注入。"""
+    client = MockLightRAGClient()
+    importer = KnowledgeImporter(client)
+    csv_content = "pmid,title,abstract\n9704485,T,A\n,T2,A2\n"
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".csv", delete=False) as f:
+        f.write(csv_content)
+        csv_path = f.name
+    try:
+        importer.import_from_csv(csv_path, gene_lookup={"9704485": ["NCBIGene:947"]})
+    finally:
+        os.unlink(csv_path)
+    assert "基因ID：NCBIGene:947" in client.inserted_documents[0]

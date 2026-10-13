@@ -8,6 +8,7 @@
 import json
 import logging
 import time
+from collections.abc import Callable, Iterable
 from pathlib import Path
 
 import httpx
@@ -48,22 +49,24 @@ def _request_batch(client: httpx.Client, batch: list[str]) -> dict[str, list[str
     return _parse_genes(resp.text)
 
 
-def _resolve_batch(client: httpx.Client, batch: list[str]) -> dict[str, list[str]]:
+def _resolve_batch(
+    get: Callable[[list[str]], dict[str, list[str]] | None], batch: list[str]
+) -> dict[str, list[str]]:
     """单批：命中直接返回；400 且 >1 条则拆半递归；单条仍 400 则跳过"""
-    parsed = _request_batch(client, batch)
+    parsed = get(batch)
     if parsed is not None:
         return parsed
     if len(batch) <= 1:
         logger.warning("PubTator3 无该 PMID，跳过: %s", batch[0] if batch else "")
         return {}
     mid = len(batch) // 2
-    left = _resolve_batch(client, batch[:mid])
-    left.update(_resolve_batch(client, batch[mid:]))
+    left = _resolve_batch(get, batch[:mid])
+    left.update(_resolve_batch(get, batch[mid:]))
     return left
 
 
 def fetch_pmid_genes(
-    pmids,
+    pmids: Iterable[str],
     *,
     client: httpx.Client | None = None,
     batch_size: int = BATCH_SIZE,
@@ -71,26 +74,40 @@ def fetch_pmid_genes(
 ) -> dict[str, list[str]]:
     """批量查 PubTator3，返回 PMID → [NCBIGene CURIE]
 
-    分批串行请求；全不存在批（400）拆半重试，单条仍 400 则跳过。
+    分批串行请求；所有请求（含 400 拆半递归的每一次）都经由节流闭包
+    按 min_interval 限速；单条仍 400 则跳过。
     """
     pmids = [str(p) for p in pmids]
     own = client is None
     client = client or httpx.Client(timeout=120, follow_redirects=True)
     out: dict[str, list[str]] = {}
+    last = [0.0]
+
+    def get(batch: list[str]) -> dict[str, list[str]] | None:
+        if min_interval:
+            wait = min_interval - (time.monotonic() - last[0])
+            if wait > 0:
+                time.sleep(wait)
+        last[0] = time.monotonic()
+        return _request_batch(client, batch)
+
     try:
-        for idx, start in enumerate(range(0, len(pmids), batch_size)):
-            if idx and min_interval:
-                time.sleep(min_interval)
-            out.update(_resolve_batch(client, pmids[start:start + batch_size]))
+        for start in range(0, len(pmids), batch_size):
+            out.update(_resolve_batch(get, pmids[start:start + batch_size]))
     finally:
         if own:
             client.close()
     return out
 
 
+def _resolve_path(path: Path | None) -> Path:
+    """路径缺省时用默认缓存位置"""
+    return Path(path) if path else CACHE_PATH
+
+
 def load_pmid_genes(path: Path | None = None) -> dict[str, list[str]]:
     """读本地缓存；不存在或损坏返回 {}（导入侧据此不注入，不中断）"""
-    path = Path(path) if path else CACHE_PATH
+    path = _resolve_path(path)
     if not path.exists():
         return {}
     try:
@@ -98,11 +115,15 @@ def load_pmid_genes(path: Path | None = None) -> dict[str, list[str]]:
     except (OSError, UnicodeDecodeError, json.JSONDecodeError):
         logger.warning("PubTator 缓存损坏，按空处理: %s", path)
         return {}
-    return {str(k): list(v) for k, v in data.items() if isinstance(v, list)}
+    return {
+        str(k): [x for x in v if isinstance(x, str)]
+        for k, v in data.items()
+        if isinstance(v, list)
+    }
 
 
 def save_pmid_genes(mapping: dict[str, list[str]], path: Path | None = None) -> None:
     """写缓存（JSON，覆盖）"""
-    path = Path(path) if path else CACHE_PATH
+    path = _resolve_path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(mapping, ensure_ascii=False), encoding="utf-8")

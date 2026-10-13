@@ -1,5 +1,7 @@
 """build_pubtator_cache：读 CSV PMID → 建缓存（假 fetch，不联网）。"""
 
+import json
+
 import build_pubtator_cache as bpc
 
 _CSV = (
@@ -31,7 +33,6 @@ def test_build_cache_writes_and_reports(tmp_path):
     assert stats["hit"] == 1
     assert stats["genes"] == 2
     assert stats["max_genes"] == 2
-    import json
     assert json.loads(cache_path.read_text(encoding="utf-8")) == {
         "9704485": ["NCBIGene:947", "NCBIGene:952"]
     }
