@@ -128,10 +128,17 @@ def install_domain_prompts() -> None:
 class LightRAGClient:
     """LightRAG 客户端封装"""
 
-    def __init__(self, working_dir: str, config: dict[str, Any] | None = None):
+    def __init__(
+        self,
+        working_dir: str,
+        config: dict[str, Any] | None = None,
+        max_async: int | None = None,
+    ):
         self.working_dir = Path(working_dir)
         self.working_dir.mkdir(exist_ok=True)
         self.config = config or {}
+        # LLM 抽取并发上限；None 时回落到历史默认 2（保守值，防上游限流）
+        self._max_async = max_async
 
         # 延迟导入 LightRAG，避免立即依赖
         self._rag = None
@@ -179,7 +186,7 @@ class LightRAGClient:
                     llm_model_name=llm_model,
                     embedding_func=embedding_func,
                     enable_llm_cache=True,
-                    llm_model_max_async=2,  # 并发限制，受 API 限流影响
+                    llm_model_max_async=self._max_async or 2,
                     addon_params=build_addon_params(),
                 )
                 # LightRAG 1.5.7+ 需要显式初始化存储
