@@ -12,3 +12,5 @@ plotly>=5.18.0
 openai>=1.0.0
 zhipuai>=2.1.0
 openpyxl>=3.1.0
+asyncpg>=0.31.0
+pgvector>=0.4.2
