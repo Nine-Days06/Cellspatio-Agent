@@ -166,3 +166,39 @@ def test_query_with_references_strips_and_returns_refs(tmp_path):
     # include_references 打开
     _q, param = client._rag.query_llm_calls[0]
     assert param.include_references is True
+
+def test_resolve_max_async_prefers_env(monkeypatch):
+    """MAX_ASYNC 环境变量应成为并发值（.env 可调，无需改代码）"""
+    from src.knowledge.lightrag_client import resolve_max_async
+
+    monkeypatch.setenv("MAX_ASYNC", "12")
+    assert resolve_max_async() == 12
+
+
+def test_resolve_max_async_falls_back_to_none(monkeypatch):
+    """未设环境变量时返回 None（由实例化处回落默认 2）"""
+    from src.knowledge.lightrag_client import resolve_max_async
+
+    monkeypatch.delenv("MAX_ASYNC", raising=False)
+    assert resolve_max_async() is None
+
+
+def test_resolve_max_async_ignores_invalid_env(monkeypatch):
+    """非法值（非数字/<=0）视为未设置，返回 None"""
+    from src.knowledge.lightrag_client import resolve_max_async
+
+    for bad in ("abc", "0", "-3", ""):
+        monkeypatch.setenv("MAX_ASYNC", bad)
+        assert resolve_max_async() is None, bad
+
+
+def test_client_uses_resolved_max_async(monkeypatch, tmp_path):
+    """客户端显式传参优先；未传时用 MAX_ASYNC 解析值"""
+    from src.knowledge import lightrag_client as m
+
+    wd = str(tmp_path / "kb")
+    monkeypatch.setenv("MAX_ASYNC", "9")
+    assert m.LightRAGClient(working_dir=wd)._max_async == 9
+    assert m.LightRAGClient(working_dir=wd, max_async=3)._max_async == 3
+    monkeypatch.delenv("MAX_ASYNC", raising=False)
+    assert m.LightRAGClient(working_dir=wd)._max_async is None

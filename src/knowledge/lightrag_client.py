@@ -110,6 +110,20 @@ def label_from_url(url: str) -> str:
     return ""
 
 
+def resolve_max_async() -> int | None:
+    """解析 LLM 抽取并发：MAX_ASYNC 环境变量 → int；未设或非法则 None
+
+    None 交给 LightRAG 实例化处回落默认 2。环境变量由 src.config 的
+    load_dotenv() 载入，调用方无需重复加载。
+    """
+    raw = os.getenv("MAX_ASYNC", "")
+    try:
+        value = int(raw.strip())
+    except ValueError:
+        return None
+    return value if value > 0 else None
+
+
 def build_addon_params() -> dict[str, Any]:
     """LightRAG addon_params：英文抽取 + 领域实体类型（供 _initialize_rag 与测试共用）"""
     return {
@@ -137,8 +151,8 @@ class LightRAGClient:
         self.working_dir = Path(working_dir)
         self.working_dir.mkdir(exist_ok=True)
         self.config = config or {}
-        # LLM 抽取并发上限；None 时回落到历史默认 2（保守值，防上游限流）
-        self._max_async = max_async
+        # LLM 抽取并发：显式传参 > MAX_ASYNC 环境变量 > None（回落默认 2）
+        self._max_async = max_async if max_async is not None else resolve_max_async()
 
         # 延迟导入 LightRAG，避免立即依赖
         self._rag = None
