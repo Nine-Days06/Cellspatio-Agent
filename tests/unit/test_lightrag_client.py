@@ -202,3 +202,68 @@ def test_client_uses_resolved_max_async(monkeypatch, tmp_path):
     assert m.LightRAGClient(working_dir=wd, max_async=3)._max_async == 3
     monkeypatch.delenv("MAX_ASYNC", raising=False)
     assert m.LightRAGClient(working_dir=wd)._max_async is None
+
+
+def test_resolve_max_parallel_insert_prefers_env(monkeypatch):
+    """MAX_PARALLEL_INSERT 环境变量驱动文档级并发"""
+    from src.knowledge.lightrag_client import resolve_max_parallel_insert
+
+    monkeypatch.setenv("MAX_PARALLEL_INSERT", "50")
+    assert resolve_max_parallel_insert() == 50
+
+
+def test_resolve_max_parallel_insert_ignores_invalid_env(monkeypatch):
+    """非法值（非数字/<=0）视为未设置，返回 None"""
+    from src.knowledge.lightrag_client import resolve_max_parallel_insert
+
+    for bad in ("abc", "0", "-3", ""):
+        monkeypatch.setenv("MAX_PARALLEL_INSERT", bad)
+        assert resolve_max_parallel_insert() is None, bad
+    monkeypatch.delenv("MAX_PARALLEL_INSERT", raising=False)
+    assert resolve_max_parallel_insert() is None
+
+
+def test_client_uses_resolved_max_parallel_insert(monkeypatch, tmp_path):
+    """客户端显式传参优先；未传时用 MAX_PARALLEL_INSERT 解析值"""
+    from src.knowledge import lightrag_client as m
+
+    wd = str(tmp_path / "kb")
+    monkeypatch.setenv("MAX_PARALLEL_INSERT", "50")
+    assert m.LightRAGClient(working_dir=wd)._max_parallel_insert == 50
+    assert m.LightRAGClient(working_dir=wd, max_parallel_insert=7)._max_parallel_insert == 7
+    monkeypatch.delenv("MAX_PARALLEL_INSERT", raising=False)
+    assert m.LightRAGClient(working_dir=wd)._max_parallel_insert is None
+
+
+def test_build_storage_kwargs_pg_four_storages(monkeypatch):
+    """四类 PostgreSQL storage + 补齐连接环境变量"""
+    from src.knowledge import lightrag_client as m
+
+    for k in ("POSTGRES_HOST", "POSTGRES_PORT", "POSTGRES_USER",
+              "POSTGRES_PASSWORD", "POSTGRES_DATABASE"):
+        monkeypatch.delenv(k, raising=False)
+    kw = m.build_storage_kwargs()
+    assert kw == {
+        "kv_storage": "PGKVStorage",
+        "vector_storage": "PGVectorStorage",
+        "graph_storage": "PGTableGraphStorage",
+        "doc_status_storage": "PGDocStatusStorage",
+    }
+    import os
+    # check_storage_env_vars 要求这三个必须存在于 os.environ
+    assert os.environ["POSTGRES_USER"] == "postgres"
+    assert os.environ["POSTGRES_DATABASE"] == "rag"
+    assert "POSTGRES_PASSWORD" in os.environ
+    assert os.environ["POSTGRES_PORT"] == "5433"
+
+
+def test_build_storage_kwargs_respects_existing_env(monkeypatch):
+    """已有 POSTGRES_* 环境变量不被覆盖（setdefault 语义）"""
+    from src.knowledge import lightrag_client as m
+
+    monkeypatch.setenv("POSTGRES_PORT", "6543")
+    monkeypatch.setenv("POSTGRES_DATABASE", "mydb")
+    m.build_storage_kwargs()
+    import os
+    assert os.environ["POSTGRES_PORT"] == "6543"
+    assert os.environ["POSTGRES_DATABASE"] == "mydb"

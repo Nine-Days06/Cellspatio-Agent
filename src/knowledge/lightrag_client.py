@@ -110,18 +110,55 @@ def label_from_url(url: str) -> str:
     return ""
 
 
+def _resolve_positive_int(env_key: str) -> int | None:
+    """读环境变量转正整数；未设/非法/<=0 一律返回 None（由调用方回落默认）"""
+    raw = os.getenv(env_key, "")
+    try:
+        value = int(raw.strip())
+    except ValueError:
+        return None
+    return value if value > 0 else None
+
+
 def resolve_max_async() -> int | None:
     """解析 LLM 抽取并发：MAX_ASYNC 环境变量 → int；未设或非法则 None
 
     None 交给 LightRAG 实例化处回落默认 2。环境变量由 src.config 的
     load_dotenv() 载入，调用方无需重复加载。
     """
-    raw = os.getenv("MAX_ASYNC", "")
-    try:
-        value = int(raw.strip())
-    except ValueError:
-        return None
-    return value if value > 0 else None
+    return _resolve_positive_int("MAX_ASYNC")
+
+
+def resolve_max_parallel_insert() -> int | None:
+    """解析文档级并发：MAX_PARALLEL_INSERT 环境变量 → int；未设或非法则 None
+
+    None 时由 LightRAG 的字段默认值兜底（DEFAULT_MAX_PARALLEL_INSERT=3）。
+    显式解析并传参，避免依赖「load_dotenv 先于 import lightrag」的隐式时序。
+    """
+    return _resolve_positive_int("MAX_PARALLEL_INSERT")
+
+
+def build_storage_kwargs() -> dict[str, Any]:
+    """LightRAG 的四个 storage 参数：四类存储全走 PostgreSQL
+
+    向量需 pgvector 扩展；图用 PGTableGraphStorage（纯 SQL 表，不需要 AGE 扩展）。
+    LightRAG 的 check_storage_env_vars 要求 POSTGRES_USER/PASSWORD/DATABASE
+    必须存在于 os.environ，故此处补齐默认值（连接本地内嵌 PG，端口 5433）。
+    """
+    for key, val in {
+        "POSTGRES_HOST": "127.0.0.1",
+        "POSTGRES_PORT": "5433",
+        "POSTGRES_USER": "postgres",
+        "POSTGRES_PASSWORD": "",
+        "POSTGRES_DATABASE": "rag",
+    }.items():
+        os.environ.setdefault(key, val)
+    return {
+        "kv_storage": "PGKVStorage",
+        "vector_storage": "PGVectorStorage",
+        "graph_storage": "PGTableGraphStorage",
+        "doc_status_storage": "PGDocStatusStorage",
+    }
 
 
 def build_addon_params() -> dict[str, Any]:
@@ -147,12 +184,19 @@ class LightRAGClient:
         working_dir: str,
         config: dict[str, Any] | None = None,
         max_async: int | None = None,
+        max_parallel_insert: int | None = None,
     ):
         self.working_dir = Path(working_dir)
         self.working_dir.mkdir(exist_ok=True)
         self.config = config or {}
         # LLM 抽取并发：显式传参 > MAX_ASYNC 环境变量 > None（回落默认 2）
         self._max_async = max_async if max_async is not None else resolve_max_async()
+        # 文档级并发：显式传参 > MAX_PARALLEL_INSERT 环境变量 > None（回落默认 3）
+        self._max_parallel_insert = (
+            max_parallel_insert
+            if max_parallel_insert is not None
+            else resolve_max_parallel_insert()
+        )
 
         # 延迟导入 LightRAG，避免立即依赖
         self._rag = None
@@ -201,7 +245,9 @@ class LightRAGClient:
                     embedding_func=embedding_func,
                     enable_llm_cache=True,
                     llm_model_max_async=self._max_async or 2,
+                    max_parallel_insert=self._max_parallel_insert or 3,
                     addon_params=build_addon_params(),
+                    **build_storage_kwargs(),
                 )
                 # LightRAG 1.5.7+ 需要显式初始化存储
                 asyncio.run(self._rag.initialize_storages())
