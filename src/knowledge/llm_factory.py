@@ -6,10 +6,8 @@ import httpx
 
 logger = logging.getLogger(__name__)
 
-# LightRAG 每次 LLM 调用结束都会 close client（lightrag/llm/openai.py 的 finally），
-# 不拦截则每次调用重建 TCP+TLS（ssl.create_default_context 要加载证书链），
-# 实测占导入期活跃 CPU 采样约 26%。传一个 aclose 为 no-op 的共享 client，
-# 让底层连接池跨调用复用；只复用 socket，不涉及 messages/上下文。
+# LightRAG 每次 LLM 调用结束都会 close client，不拦截则每次调用重建连接池。
+# 传一个 aclose 为 no-op 的共享 client，让底层连接池跨调用复用。
 _shared_http_client: httpx.AsyncClient | None = None
 
 
@@ -17,10 +15,11 @@ class _KeepAliveClient(httpx.AsyncClient):
     """aclose 置空：阻止 LightRAG 的 per-call close 销毁共享连接池"""
 
     async def aclose(self) -> None:
-        pass
+        """置空以阻止 LightRAG 的 per-call close 销毁共享连接池"""
 
 
 def _shared_http() -> httpx.AsyncClient:
+    """惰性创建并复用进程级共享 HTTP 连接池（跨 LLM 调用复用 TCP+TLS）"""
     global _shared_http_client
     if _shared_http_client is None:
         _shared_http_client = _KeepAliveClient(
@@ -48,12 +47,8 @@ def build_llm_func(provider: str | None = None) -> tuple:
     if config["client_type"] == "zhipuai":
         from lightrag.llm.zhipu import zhipu_complete_if_cache
 
-        base_url = base_url or "https://open.bigmodel.cn/api/paas/v4"
-
         async def llm_func(prompt: str, system_prompt: str | None = None,
                            history_messages: list[dict] | None = None, **kwargs) -> str:
-            # zhipu_complete_if_cache(prompt, model=..., api_key=..., system_prompt=..., history_messages=[])
-            # base_url 用于创建 client，不传给 completion
             return await zhipu_complete_if_cache(
                 prompt=prompt, model=model, api_key=api_key,
                 system_prompt=system_prompt, history_messages=history_messages or [],
@@ -64,7 +59,6 @@ def build_llm_func(provider: str | None = None) -> tuple:
 
         async def llm_func(prompt: str, system_prompt: str | None = None,
                            history_messages: list[dict] | None = None, **kwargs) -> str:
-            # openai_complete_if_cache(model, prompt, system_prompt=..., history_messages=..., base_url=..., api_key=...)
             # openai_client_configs 注入共享连接池，跨调用复用 TCP+TLS
             return await openai_complete_if_cache(
                 model=model, prompt=prompt, api_key=api_key,
