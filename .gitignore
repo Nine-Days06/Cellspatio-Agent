@@ -54,7 +54,7 @@ pubmed-etl/data/
 # 分析输出
 output/
 
-# 内嵌 PostgreSQL 运行时（便携版二进制 + 数据目录，不进 git；随发布 zip 打包）
+# 内嵌 PostgreSQL 运行时（便携版二进制 + 数据目录，不进 git）
 runtime/pgsql/
 runtime/pgdata/
 
