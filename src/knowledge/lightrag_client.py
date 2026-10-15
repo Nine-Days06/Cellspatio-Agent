@@ -1,4 +1,3 @@
-import asyncio
 import json
 import logging
 import os
@@ -6,7 +5,10 @@ import re
 from pathlib import Path
 from typing import Any
 
+import src.config  # noqa: F401 - 触发 load_dotenv，使 MAX_ASYNC/POSTGRES_* 等在构造前可见
 from src.knowledge import prompt_profile
+from src.knowledge.async_runtime import register_atexit
+from src.knowledge.async_runtime import runtime as async_runtime
 
 logger = logging.getLogger(__name__)
 
@@ -123,8 +125,7 @@ def _resolve_positive_int(env_key: str) -> int | None:
 def resolve_max_async() -> int | None:
     """解析 LLM 抽取并发：MAX_ASYNC 环境变量 → int；未设或非法则 None
 
-    None 交给 LightRAG 实例化处回落默认 2。环境变量由 src.config 的
-    load_dotenv() 载入，调用方无需重复加载。
+    None 由调用方（LightRAGClient）显式回落默认 2。
     """
     return _resolve_positive_int("MAX_ASYNC")
 
@@ -132,10 +133,19 @@ def resolve_max_async() -> int | None:
 def resolve_max_parallel_insert() -> int | None:
     """解析文档级并发：MAX_PARALLEL_INSERT 环境变量 → int；未设或非法则 None
 
-    None 时由 LightRAG 的字段默认值兜底（DEFAULT_MAX_PARALLEL_INSERT=3）。
-    显式解析并传参，避免依赖「load_dotenv 先于 import lightrag」的隐式时序。
+    None 由调用方（LightRAGClient）显式回落 3。
     """
     return _resolve_positive_int("MAX_PARALLEL_INSERT")
+
+
+def default_workspace_for(working_dir: str | Path) -> str:
+    """从工作目录名推导稳定 workspace：PG 存储按此隔离各知识库。
+
+    目录名跨进程重启不变（满足「稳定」），且三个知识库目录互异（满足「唯一」）。
+    同一目录的任意入口（main / import_cli / rebuild_kb）自动落到同一 workspace，
+    避免各入口各写一处导致库分裂。
+    """
+    return Path(working_dir).resolve().name
 
 
 def build_storage_kwargs() -> dict[str, Any]:
@@ -162,7 +172,7 @@ def build_storage_kwargs() -> dict[str, Any]:
 
 
 def build_addon_params() -> dict[str, Any]:
-    """LightRAG addon_params：英文抽取 + 领域实体类型（供 _initialize_rag 与测试共用）"""
+    """LightRAG addon_params：英文抽取 + 领域实体类型"""
     return {
         "language": "English",
         "entity_types_guidance": prompt_profile.load_entity_types(),
@@ -185,6 +195,7 @@ class LightRAGClient:
         config: dict[str, Any] | None = None,
         max_async: int | None = None,
         max_parallel_insert: int | None = None,
+        workspace: str | None = None,
     ):
         self.working_dir = Path(working_dir)
         self.working_dir.mkdir(exist_ok=True)
@@ -197,9 +208,12 @@ class LightRAGClient:
             if max_parallel_insert is not None
             else resolve_max_parallel_insert()
         )
+        # PG 存储按 workspace 隔离；不显式指定则各库全落 "default" 而互相污染
+        self._workspace = workspace if workspace is not None else default_workspace_for(self.working_dir)
 
         # 延迟导入 LightRAG，避免立即依赖
         self._rag = None
+        register_atexit(self.close)
 
     @staticmethod
     def _normalize_ollama_host(host: str) -> str:
@@ -246,11 +260,13 @@ class LightRAGClient:
                     enable_llm_cache=True,
                     llm_model_max_async=self._max_async or 2,
                     max_parallel_insert=self._max_parallel_insert or 3,
+                    workspace=self._workspace,
                     addon_params=build_addon_params(),
                     **build_storage_kwargs(),
                 )
-                # LightRAG 1.5.7+ 需要显式初始化存储
-                asyncio.run(self._rag.initialize_storages())
+                # LightRAG 1.5.7+ 需要显式初始化存储；必须跑在共享 loop 上，
+                # 该 loop 即存储（asyncpg 池）绑定的 owning_loop，后续同步调用同源
+                async_runtime.run(self._rag.initialize_storages())
                 logger.info(
                     "LightRAG initialized: llm=%s embedding=%s",
                     llm_model,
@@ -268,9 +284,9 @@ class LightRAGClient:
         if self._rag:
             fp = derive_file_path(document)
             if fp:
-                self._rag.insert(document, file_paths=fp)
+                async_runtime.run(self._rag.ainsert(document, file_paths=fp))
             else:
-                self._rag.insert(document)
+                async_runtime.run(self._rag.ainsert(document))
             logger.info(f"Document inserted, length: {len(document)}")
 
     def insert_documents(self, documents: list[str], file_paths: list[str] | None = None) -> int:
@@ -282,9 +298,9 @@ class LightRAGClient:
             file_paths = [derive_file_path(d) for d in documents]
         # 全空则不传，兼容不支持 file_paths 的 mock
         if any(file_paths):
-            self._rag.insert(documents, file_paths=file_paths)
+            async_runtime.run(self._rag.ainsert(documents, file_paths=file_paths))
         else:
-            self._rag.insert(documents)
+            async_runtime.run(self._rag.ainsert(documents))
         logger.info(f"Batch inserted {len(documents)} documents")
         return len(documents)
 
@@ -294,7 +310,9 @@ class LightRAGClient:
         if self._rag:
             from lightrag import QueryParam
 
-            return self._rag.query(question, param=QueryParam(mode=mode))
+            return async_runtime.run(
+                self._rag.aquery(question, param=QueryParam(mode=mode))
+            )
         return "LightRAG 未初始化"
 
     def query_with_references(
@@ -310,9 +328,11 @@ class LightRAGClient:
             return {"response": "LightRAG 未初始化", "references": []}
         from lightrag import QueryParam
 
-        raw = self._rag.query_llm(
-            question,
-            param=QueryParam(mode=mode, include_references=True),
+        raw = async_runtime.run(
+            self._rag.aquery_llm(
+                question,
+                param=QueryParam(mode=mode, include_references=True),
+            )
         )
         llm = raw.get("llm_response") or {}
         content = llm.get("content")
@@ -339,9 +359,11 @@ class LightRAGClient:
             return ""
         from lightrag import QueryParam
 
-        return self._rag.query(
-            question,
-            param=QueryParam(mode=mode, only_need_context=True),
+        return async_runtime.run(
+            self._rag.aquery(
+                question,
+                param=QueryParam(mode=mode, only_need_context=True),
+            )
         )
 
     def insert_knowledge_graph(self, kg_data: dict[str, Any]):
@@ -349,7 +371,16 @@ class LightRAGClient:
         self._initialize_rag()
         if self._rag:
             # LightRAG 支持自定义知识图谱插入
-            self._rag.insert_custom_kg(kg_data)
+            async_runtime.run(self._rag.ainsert_custom_kg(kg_data))
+
+    def close(self) -> None:
+        """finalize 存储（释放 PG 池引用）；幂等，未初始化时为空操作。"""
+        if self._rag is None or not hasattr(self._rag, "finalize_storages"):
+            return
+        try:
+            async_runtime.run(self._rag.finalize_storages())
+        except Exception as exc:  # noqa: BLE001 - 退出清理失败不该阻断进程退出
+            logger.warning("LightRAG finalize failed: %s", exc)
 
     def get_statistics(self) -> dict[str, Any]:
         """获取知识库统计信息"""

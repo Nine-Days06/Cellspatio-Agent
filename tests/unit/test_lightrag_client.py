@@ -21,9 +21,15 @@ class FakeRAG:
         else:
             self.inserted.append(input_data)
 
+    async def ainsert(self, input_data, file_paths=None, **kwargs):
+        self.insert(input_data, file_paths=file_paths, **kwargs)
+
     def query_llm(self, question, param=None, **kwargs):
         self.query_llm_calls.append((question, param))
         return self.query_llm_payload
+
+    async def aquery_llm(self, question, param=None, **kwargs):
+        return self.query_llm(question, param=param, **kwargs)
 
 
 def _client_with_fake_rag(working_dir, config=None):
@@ -79,6 +85,52 @@ def test_initialize_rag_uses_configured_models(tmp_path, monkeypatch):
     client._initialize_rag()
     assert captured["llm_model_name"] == "deepseek-v4-flash"
     assert captured["embedding_func"] is not None
+
+
+def test_workspace_defaults_to_working_dir_name(tmp_path):
+    """未显式指定时 workspace 取工作目录名：稳定且各库互异"""
+    from src.knowledge.lightrag_client import default_workspace_for
+
+    assert default_workspace_for(tmp_path / "knowledge_base") == "knowledge_base"
+    assert default_workspace_for(tmp_path / "knowledge_base_methods") == "knowledge_base_methods"
+    assert default_workspace_for(tmp_path / "kg_memory") == "kg_memory"
+
+
+def test_workspace_explicit_overrides_default(tmp_path):
+    """显式传入的 workspace 优先于目录名推导"""
+    from src.knowledge import lightrag_client as m
+
+    client = m.LightRAGClient(working_dir=tmp_path / "kb", workspace="custom_ws")
+    assert client._workspace == "custom_ws"
+    assert m.LightRAGClient(working_dir=tmp_path / "kb")._workspace == "kb"
+
+
+def test_initialize_rag_passes_workspace_to_lightrag(tmp_path, monkeypatch):
+    """workspace 必须透传给 LightRAG，否则 PG 存储全落 default 互相污染"""
+    from src.knowledge.lightrag_client import LightRAGClient
+
+    captured = {}
+
+    class FakeRagForInit:
+        def __init__(self, **kwargs):
+            captured.update(kwargs)
+        async def initialize_storages(self):
+            pass
+
+    monkeypatch.setattr("lightrag.LightRAG", FakeRagForInit)
+    monkeypatch.setattr(
+        "src.knowledge.llm_factory.build_llm_func",
+        lambda provider: (object(), "m"),
+    )
+    monkeypatch.setattr(
+        "src.knowledge.llm_factory.build_embedding_func",
+        lambda custom=None: object(),
+    )
+
+    client = LightRAGClient(working_dir=tmp_path / "knowledge_base_methods")
+    client._initialize_rag()
+    assert captured["workspace"] == "knowledge_base_methods"
+
 
 
 def test_insert_documents_batch(tmp_path):
