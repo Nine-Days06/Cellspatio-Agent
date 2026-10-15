@@ -4,25 +4,35 @@ LLM 文献验证模块
 使用 OpenAI 兼容 API（DeepSeek 等）对文献进行二次相关性验证。
 """
 
+import csv
 import json
+import os
 import re
 import time
-import csv
-import os
-from pathlib import Path
-from datetime import datetime
 from concurrent.futures import ThreadPoolExecutor, as_completed
-
-from openai import OpenAI
+from datetime import datetime
+from pathlib import Path
 
 from config.settings import (
-    DB_PATH, OUTPUT_DIR, LOG_DIR,
-    LLM_BATCH_SIZE, LLM_CONCURRENCY, LLM_MAX_TOKENS, LLM_MAX_RETRIES, LLM_MAX_ROUNDS,
-    LLM_PROVIDER, LLM_PROVIDER_CONFIGS,
-    LLM_BATCH_POLL_INTERVAL, LLM_BATCH_TIMEOUT, LLM_BATCH_AUTO_DELETE,
-    LLM_BATCH_MAX_BYTES, LLM_BATCH_MAX_REQUESTS,
-    ZHIPU_API_KEY, ZHIPU_BATCH_MODEL,
+    DB_PATH,
+    LLM_BATCH_AUTO_DELETE,
+    LLM_BATCH_MAX_BYTES,
+    LLM_BATCH_MAX_REQUESTS,
+    LLM_BATCH_POLL_INTERVAL,
+    LLM_BATCH_SIZE,
+    LLM_BATCH_TIMEOUT,
+    LLM_CONCURRENCY,
+    LLM_MAX_RETRIES,
+    LLM_MAX_ROUNDS,
+    LLM_MAX_TOKENS,
+    LLM_PROVIDER,
+    LLM_PROVIDER_CONFIGS,
+    LOG_DIR,
+    OUTPUT_DIR,
+    ZHIPU_API_KEY,
+    ZHIPU_BATCH_MODEL,
 )
+from openai import OpenAI
 from utils import now_iso
 from utils.db import get_conn
 from utils.logger import get_logger
@@ -56,7 +66,7 @@ def _load_checkpoint() -> tuple[int | None, list]:
     if not path.exists():
         return None, []
     try:
-        with open(path, "r", encoding="utf-8") as f:
+        with open(path, encoding="utf-8") as f:
             data = json.load(f)
         return data["round"], data["failed"]
     except Exception as e:
@@ -101,8 +111,8 @@ def _extract_json(text: str, fix_glm_multi_array: bool = False) -> list | None:
         logger.debug(f"json_str前300字符: {json_str[:300]!r}")
         logger.debug(f"json_str末100字符: {json_str[-100:]!r}")
         # 4) 修复多数组 + 尾逗号（先跑，保留所有记录）
-        normalized = json_str.replace('\r\n', '\n').replace('\n', '')
-        fixed = re.sub(r',\s*\]', ']', re.sub(r'\],\s*\[', ',', normalized))
+        normalized = json_str.replace("\r\n", "\n").replace("\n", "")
+        fixed = re.sub(r",\s*\]", "]", re.sub(r"\],\s*\[", ",", normalized))
         if fixed != normalized:
             try:
                 data = json.loads(fixed)
@@ -111,8 +121,8 @@ def _extract_json(text: str, fix_glm_multi_array: bool = False) -> list | None:
             except json.JSONDecodeError:
                 pass
         # 5) 尝试补全被截断的 JSON
-        if json_str.startswith('[') and not json_str.rstrip().endswith(']'):
-            fixed2 = json_str.rstrip().rstrip(',') + '\n]'
+        if json_str.startswith("[") and not json_str.rstrip().endswith("]"):
+            fixed2 = json_str.rstrip().rstrip(",") + "\n]"
             if fixed2 != json_str:
                 try:
                     data = json.loads(fixed2)
@@ -133,8 +143,7 @@ def _extract_json(text: str, fix_glm_multi_array: bool = False) -> list | None:
     return None
 
 
-SYSTEM_PROMPT_COMMON = (
-    """你是一个人类单细胞与空间/时序组学文献筛选专家。
+SYSTEM_PROMPT_COMMON = """你是一个人类单细胞与空间/时序组学文献筛选专家。
 
 【唯一判据】这篇文献**自己产出的数据**，是否来自单细胞分辨率或空间位置分辨率的**组学测量**。
 标题/摘要里出现 "single-cell"、"spatial" 等字样，本身**不构成**收录理由。
@@ -195,7 +204,6 @@ SYSTEM_PROMPT_COMMON = (
 - 判断以实质内容为准：用了什么技术、什么物种、什么分辨率。
 
 """
-)
 
 # 同步批量模式：一次请求判断多篇，返回结果数组
 SYSTEM_PROMPT_SYNC = SYSTEM_PROMPT_COMMON + (
@@ -240,10 +248,7 @@ def _build_batch_prompt(rows: list) -> str:
     for i, row in enumerate(rows, 1):
         title = (row["title"] or "").strip()
         abstract = (row["abstract"] or "").strip()
-        parts.append(
-            f"## 文献 {i}\nPMID: {row['pmid']}\nTitle: {title}\n"
-            f"Abstract: {abstract}\n"
-        )
+        parts.append(f"## 文献 {i}\nPMID: {row['pmid']}\nTitle: {title}\nAbstract: {abstract}\n")
     return "\n".join(parts)
 
 
@@ -264,6 +269,7 @@ def _build_client() -> tuple:
 
     if cfg["client_type"] == "zhipuai":
         from zhipuai import ZhipuAI
+
         client = ZhipuAI(api_key=api_key)
     else:
         client = OpenAI(api_key=api_key, base_url=cfg["base_url"])
@@ -306,7 +312,11 @@ def _call_llm(rows: list) -> tuple[list[dict], list[str]]:
                 data = json.loads(content)
                 if isinstance(data, list):
                     result = data
-                elif isinstance(data, dict) and "results" in data and isinstance(data["results"], list):
+                elif (
+                    isinstance(data, dict)
+                    and "results" in data
+                    and isinstance(data["results"], list)
+                ):
                     result = data["results"]
             except (json.JSONDecodeError, ValueError):
                 pass
@@ -320,7 +330,7 @@ def _call_llm(rows: list) -> tuple[list[dict], list[str]]:
             last_exception = e
             logger.warning(f"LLM API 调用失败（attempt {attempt}/{LLM_MAX_RETRIES}）: {e}")
             if attempt < LLM_MAX_RETRIES:
-                time.sleep(2 ** attempt)
+                time.sleep(2**attempt)
 
     logger.error(f"LLM API 调用全部失败，跳过该批次: {last_exception}")
     return [], failed_pmids
@@ -341,8 +351,7 @@ def run_validation(batch_mode: bool = False):
     if batch_mode:
         if LLM_PROVIDER != "zhipu":
             logger.warning(
-                "Batch API 仅支持智谱提供者（当前 provider=%s），"
-                "已自动降级为同步模式", LLM_PROVIDER
+                "Batch API 仅支持智谱提供者（当前 provider=%s），已自动降级为同步模式", LLM_PROVIDER
             )
             _run_sync_validation()
             return
@@ -409,11 +418,11 @@ def _run_sync_validation():
     start_round, remaining_rows = _load_checkpoint()
     if remaining_rows:
         with get_conn(DB_PATH) as conn:
-            done = set(row["pmid"] for row in
-                        conn.execute("SELECT pmid FROM llm_validation").fetchall())
+            done = set(
+                row["pmid"] for row in conn.execute("SELECT pmid FROM llm_validation").fetchall()
+            )
         remaining_rows = [r for r in remaining_rows if r["pmid"] not in done]
-        logger.info(f"从检查点恢复: 第 {start_round} 轮, "
-                    f"待验证 {len(remaining_rows)} 篇")
+        logger.info(f"从检查点恢复: 第 {start_round} 轮, 待验证 {len(remaining_rows)} 篇")
         if not remaining_rows:
             _clear_checkpoint()
             logger.info("检查点中的文献均已验证，无需继续")
@@ -439,8 +448,7 @@ def _run_sync_validation():
 
         start_round = 1
         remaining_rows = rows
-        logger.info(f"待验证文献: {len(rows)} 篇, "
-                    f"{LLM_MAX_ROUNDS + 1} 轮重试机制")
+        logger.info(f"待验证文献: {len(rows)} 篇, {LLM_MAX_ROUNDS + 1} 轮重试机制")
 
     # ── 多轮重试循环 ──
     all_validated = []
@@ -449,20 +457,16 @@ def _run_sync_validation():
             break
 
         round_batches = (len(remaining_rows) + LLM_BATCH_SIZE - 1) // LLM_BATCH_SIZE
-        logger.info(f"--- 第 {round_num} 轮: {len(remaining_rows)} 篇, "
-                    f"{round_batches} 批 ---")
+        logger.info(f"--- 第 {round_num} 轮: {len(remaining_rows)} 篇, {round_batches} 批 ---")
 
         round_failed = []
         batches = []
         for start in range(0, len(remaining_rows), LLM_BATCH_SIZE):
-            batches.append(remaining_rows[start:start + LLM_BATCH_SIZE])
+            batches.append(remaining_rows[start : start + LLM_BATCH_SIZE])
         logger.info(f"  共 {round_batches} 批, 并发 {LLM_CONCURRENCY} 路")
 
         with ThreadPoolExecutor(max_workers=LLM_CONCURRENCY) as executor:
-            future_to_batch = {
-                executor.submit(_call_llm, batch): batch
-                for batch in batches
-            }
+            future_to_batch = {executor.submit(_call_llm, batch): batch for batch in batches}
             completed = 0
             for future in as_completed(future_to_batch):
                 batch = future_to_batch[future]
@@ -479,9 +483,7 @@ def _run_sync_validation():
                 if results:
                     now = now_iso()
                     pmid_to_result = {r["pmid"]: r for r in results}
-                    log_rows, batch_failed = _build_log_rows(
-                        batch, pmid_to_result, failed_set, now
-                    )
+                    log_rows, batch_failed = _build_log_rows(batch, pmid_to_result, failed_set, now)
                     round_failed.extend(batch_failed)
 
                     if log_rows:
@@ -492,13 +494,17 @@ def _run_sync_validation():
                     round_failed.extend(batch)
 
                 completed += 1
-                logger.info(f"  [{completed}/{round_batches}] "
-                            f"批次 {batch_num} 完成"
-                            f"({'成功' if results else '全部失败'})")
+                logger.info(
+                    f"  [{completed}/{round_batches}] "
+                    f"批次 {batch_num} 完成"
+                    f"({'成功' if results else '全部失败'})"
+                )
 
         remaining_rows = round_failed
-        logger.info(f"  第 {round_num} 轮完成: 累计成功 {len(all_validated)} 篇, "
-                    f"失败 {len(remaining_rows)} 篇")
+        logger.info(
+            f"  第 {round_num} 轮完成: 累计成功 {len(all_validated)} 篇, "
+            f"失败 {len(remaining_rows)} 篇"
+        )
 
         # 每轮结束保存检查点
         _save_checkpoint(round_num + 1, remaining_rows)
@@ -532,7 +538,8 @@ def _run_sync_validation_for_pmids(pmid_list: list):
         return
     with get_conn(DB_PATH) as conn:
         placeholders = ",".join("?" for _ in pmid_list)
-        rows = conn.execute(f"""
+        rows = conn.execute(
+            f"""
             SELECT pmid, title, abstract
             FROM articles
             WHERE pmid IN ({placeholders})
@@ -540,7 +547,9 @@ def _run_sync_validation_for_pmids(pmid_list: list):
               AND pmid NOT IN (
                   SELECT pmid FROM filter_log WHERE stage = 'hard_filter'
               )
-        """, pmid_list).fetchall()
+        """,
+            pmid_list,
+        ).fetchall()
     if not rows:
         logger.info("降级的 PMID 列表中无限有效摘要的文献，跳过")
         return
@@ -549,18 +558,15 @@ def _run_sync_validation_for_pmids(pmid_list: list):
     rows_list = [dict(r) for r in rows]
     remaining_rows = rows_list
     all_validated = []
-    for round_num in range(1, LLM_MAX_ROUNDS + 2):
+    for _round_num in range(1, LLM_MAX_ROUNDS + 2):
         if not remaining_rows:
             break
         round_failed = []
         batches = []
         for start in range(0, len(remaining_rows), LLM_BATCH_SIZE):
-            batches.append(remaining_rows[start:start + LLM_BATCH_SIZE])
+            batches.append(remaining_rows[start : start + LLM_BATCH_SIZE])
         with ThreadPoolExecutor(max_workers=LLM_CONCURRENCY) as executor:
-            future_to_batch = {
-                executor.submit(_call_llm, batch): batch
-                for batch in batches
-            }
+            future_to_batch = {executor.submit(_call_llm, batch): batch for batch in batches}
             for future in as_completed(future_to_batch):
                 batch = future_to_batch[future]
                 try:
@@ -572,9 +578,7 @@ def _run_sync_validation_for_pmids(pmid_list: list):
                 if results:
                     now = now_iso()
                     pmid_to_result = {r["pmid"]: r for r in results}
-                    log_rows, batch_failed = _build_log_rows(
-                        batch, pmid_to_result, failed_set, now
-                    )
+                    log_rows, batch_failed = _build_log_rows(batch, pmid_to_result, failed_set, now)
                     round_failed.extend(batch_failed)
                     if log_rows:
                         with get_conn(DB_PATH) as conn:
@@ -629,19 +633,27 @@ def _export_review_csv() -> Path | None:
 
     with open(csv_path, "w", newline="", encoding="utf-8-sig") as f:
         writer = csv.writer(f)
-        writer.writerow([
-            "pmid", "title", "abstract",
-            "llm_verdict", "reason", "human_review",
-        ])
+        writer.writerow(
+            [
+                "pmid",
+                "title",
+                "abstract",
+                "llm_verdict",
+                "reason",
+                "human_review",
+            ]
+        )
         for row in rows:
-            writer.writerow([
-                row["pmid"],
-                row["title"],
-                row["abstract"] or "",
-                row["llm_verdict"],
-                row["reason"],
-                "",
-            ])
+            writer.writerow(
+                [
+                    row["pmid"],
+                    row["title"],
+                    row["abstract"] or "",
+                    row["llm_verdict"],
+                    row["reason"],
+                    "",
+                ]
+            )
 
     logger.info(f"待复核清单已导出: {csv_path}")
     logger.info("请人工标注 human_review 列为 Y 或 N（通过/驳回），然后运行 --step import-review")
@@ -657,12 +669,10 @@ BATCH_CHECKPOINT_FILE = "llm_batch_progress.json"
 # 裸 PMID 作 custom_id 会被智谱的长度校验拒绝（详见 _batch_custom_id）。
 BATCH_CUSTOM_ID_PREFIX = "request-"
 
-PROMPT_PREFIX = (
-    "请根据上述标准判断以下文献是否与人类单细胞与空间/时序组学相关：\n\n"
-)
+PROMPT_PREFIX = "请根据上述标准判断以下文献是否与人类单细胞与空间/时序组学相关：\n\n"
 
 PROMPT_OUTPUT_FORMAT = (
-    '# 输出格式（仅输出如下 JSON，不要其他文字）：\n'
+    "# 输出格式（仅输出如下 JSON，不要其他文字）：\n"
     '{"pmid": "%s", "verdict": "RELEVANT 或 NOT_RELEVANT", '
     '"reason": "用中文简要说明判断依据"}'
 )
@@ -690,7 +700,7 @@ def _load_batch_checkpoint() -> dict | None:
     if not path.exists():
         return None
     try:
-        with open(path, "r", encoding="utf-8") as f:
+        with open(path, encoding="utf-8") as f:
             return json.load(f)
     except Exception as e:
         logger.warning(f"Batch 检查点读取失败，将重新提交: {e}")
@@ -757,7 +767,7 @@ def _batch_custom_id(pmid: str) -> str:
 def _pmid_from_custom_id(custom_id: str) -> str:
     """从 custom_id 还原 PMID；无此前缀时原样返回（兼容历史结果文件）。"""
     if custom_id.startswith(BATCH_CUSTOM_ID_PREFIX):
-        return custom_id[len(BATCH_CUSTOM_ID_PREFIX):]
+        return custom_id[len(BATCH_CUSTOM_ID_PREFIX) :]
     return custom_id
 
 
@@ -767,9 +777,7 @@ def _batch_request_line(row: dict) -> tuple[str, str]:
     返回 (json 行字符串, pmid)。custom_id 见 _batch_custom_id。
     """
     pmid = row["pmid"]
-    article_prompt = _build_per_article_prompt(
-        pmid, row["title"] or "", row["abstract"] or ""
-    )
+    article_prompt = _build_per_article_prompt(pmid, row["title"] or "", row["abstract"] or "")
     req = {
         "custom_id": _batch_custom_id(pmid),
         "method": "POST",
@@ -804,9 +812,7 @@ def _dedupe_rows(rows: list) -> list:
         seen.add(pmid)
         out.append(row)
     if dropped:
-        logger.warning(
-            f"batch 输入含 {dropped} 条重复 custom_id（重复 PMID），已保留首次出现者"
-        )
+        logger.warning(f"batch 输入含 {dropped} 条重复 custom_id（重复 PMID），已保留首次出现者")
     return out
 
 
@@ -872,9 +878,7 @@ def _build_jsonl_files(rows: list) -> list[tuple[Path, list[str]]]:
         size_mb = path.stat().st_size / (1024 * 1024)
         logger.info(f"  {path.name}: {len(pmids)} 篇, {size_mb:.2f} MB")
     if len(groups) > 1:
-        logger.warning(
-            f"文献量超过单文件上限，已拆分为 {len(groups)} 个 Batch 任务并行提交"
-        )
+        logger.warning(f"文献量超过单文件上限，已拆分为 {len(groups)} 个 Batch 任务并行提交")
     return groups
 
 
@@ -907,7 +911,7 @@ def _parse_batch_results(jsonl_path: str, db_path: Path = DB_PATH) -> tuple[int,
     success_count = 0
     failed_pmids = []
 
-    with open(jsonl_path, "r", encoding="utf-8") as f:
+    with open(jsonl_path, encoding="utf-8") as f:
         for line_num, line in enumerate(f, 1):
             line = line.strip()
             if not line:
@@ -992,6 +996,7 @@ def _run_zhipu_batch():
         return
 
     from zhipuai import ZhipuAI
+
     client = ZhipuAI(api_key=api_key)
 
     # ── 步骤 1：检查 checkpoint 恢复（v1 单批次 / v2 多批次）──
@@ -1019,9 +1024,7 @@ def _run_zhipu_batch():
                         logger.info(f"恢复轮询 batch_id={batch_id}")
                         _poll_until_done(client, batch_id, entry)
                     else:
-                        logger.warning(
-                            f"批次 {batch_id} 已结束（status={st}），该批降级为同步模式"
-                        )
+                        logger.warning(f"批次 {batch_id} 已结束（status={st}），该批降级为同步模式")
                         _run_sync_validation_for_pmids(pmids)
                 except Exception as e:
                     logger.warning(f"查询 batch {batch_id} 状态失败: {e}，该批降级同步")
@@ -1062,9 +1065,7 @@ def _run_zhipu_batch():
     # ── 步骤 4+5：逐个上传并创建 Batch（服务端并行执行，墙钟耗时约等于单批）──
     submitted: list[dict] = []
     for seq, (jsonl_path, pmids) in enumerate(file_groups, start=1):
-        logger.info(
-            f"上传第 {seq}/{len(file_groups)} 个 Batch 文件（{len(pmids)} 篇）..."
-        )
+        logger.info(f"上传第 {seq}/{len(file_groups)} 个 Batch 文件（{len(pmids)} 篇）...")
         try:
             with open(jsonl_path, "rb") as fh:
                 file_obj = client.files.create(file=fh, purpose="batch")
@@ -1083,21 +1084,25 @@ def _run_zhipu_batch():
             continue
 
         logger.info(f"第 {seq} 个 Batch 已提交: {batch.id}")
-        submitted.append({
-            "batch_id": batch.id,
-            "input_file_id": file_obj.id,
-            "pmid_list": pmids,
-            "seq": seq,
-            "status": "active",
-        })
+        submitted.append(
+            {
+                "batch_id": batch.id,
+                "input_file_id": file_obj.id,
+                "pmid_list": pmids,
+                "seq": seq,
+                "status": "active",
+            }
+        )
         # 每提交一个即落盘：中途崩溃不会丢失已提交批次的续跑依据
-        _save_batch_checkpoint({
-            "version": 2,
-            "batches": list(submitted),
-            "status": "active",
-            "created_at": now_iso(),
-            "updated_at": now_iso(),
-        })
+        _save_batch_checkpoint(
+            {
+                "version": 2,
+                "batches": list(submitted),
+                "status": "active",
+                "created_at": now_iso(),
+                "updated_at": now_iso(),
+            }
+        )
 
     if not submitted:
         logger.error("没有任何批次提交成功")
@@ -1114,19 +1119,23 @@ def _run_zhipu_batch():
             if entry in remaining:
                 remaining.remove(entry)
             if remaining:
-                _save_batch_checkpoint({
-                    "version": 2,
-                    "batches": list(remaining),
-                    "status": "active",
-                    "created_at": now_iso(),
-                    "updated_at": now_iso(),
-                })
+                _save_batch_checkpoint(
+                    {
+                        "version": 2,
+                        "batches": list(remaining),
+                        "status": "active",
+                        "created_at": now_iso(),
+                        "updated_at": now_iso(),
+                    }
+                )
 
     # ── 步骤 7：收尾（只做一次；_finalize_batch 内会清除检查点）──
-    _finalize_batch({
-        "batch_id": ",".join(e["batch_id"] for e in submitted),
-        "pmid_list": all_pmids,
-    })
+    _finalize_batch(
+        {
+            "batch_id": ",".join(e["batch_id"] for e in submitted),
+            "pmid_list": all_pmids,
+        }
+    )
 
 
 def _poll_until_done(client, batch_id: str, chk: dict):
@@ -1161,8 +1170,7 @@ def _poll_until_done(client, batch_id: str, chk: dict):
 
         progress = f"完成 {completed}/{total}" if total else "排队中"
         sys.stdout.write(
-            f"\r  ⏳ 任务状态: {st} | {progress} | 失败: {failed} "
-            f"| 用时: {elapsed}s  "
+            f"\r  ⏳ 任务状态: {st} | {progress} | 失败: {failed} | 用时: {elapsed}s  "
         )
         sys.stdout.flush()
 
@@ -1222,7 +1230,7 @@ def _download_and_parse_batch(client, batch_status, chk: dict):
             error_path.parent.mkdir(parents=True, exist_ok=True)
             error_content.write_to_file(str(error_path))
 
-            with open(error_path, "r", encoding="utf-8") as f:
+            with open(error_path, encoding="utf-8") as f:
                 for line in f:
                     line = line.strip()
                     if not line:
@@ -1283,7 +1291,7 @@ def import_human_review(csv_path: str | None = None):
 
     logger.info(f"导入复核文件: {review_file}")
 
-    with open(review_file, "r", encoding="utf-8-sig", newline="") as f_check:
+    with open(review_file, encoding="utf-8-sig", newline="") as f_check:
         reader_check = csv.DictReader(f_check)
         required_cols = {"pmid", "human_review"}
         if not required_cols.issubset(reader_check.fieldnames or []):
@@ -1296,7 +1304,7 @@ def import_human_review(csv_path: str | None = None):
     skipped = 0
     updates = []
 
-    with open(review_file, "r", encoding="utf-8-sig", newline="") as f:
+    with open(review_file, encoding="utf-8-sig", newline="") as f:
         reader = csv.DictReader(f)
         for row in reader:
             pmid = row.get("pmid", "").strip()
@@ -1350,10 +1358,22 @@ def _export_filtered_csv() -> Path | None:
     csv_path = out_dir / f"llm_filtered_{ts}.csv"
 
     fieldnames = [
-        "pmid", "title", "abstract", "keywords", "mesh_terms",
-        "pub_year", "journal", "doi", "pmc_id",
-        "article_types", "authors", "affiliation", "language",
-        "llm_verdict", "llm_reason", "human_review",
+        "pmid",
+        "title",
+        "abstract",
+        "keywords",
+        "mesh_terms",
+        "pub_year",
+        "journal",
+        "doi",
+        "pmc_id",
+        "article_types",
+        "authors",
+        "affiliation",
+        "language",
+        "llm_verdict",
+        "llm_reason",
+        "human_review",
     ]
 
     with open(csv_path, "w", newline="", encoding="utf-8-sig") as f:
@@ -1369,9 +1389,20 @@ def _export_filtered_csv() -> Path | None:
 
 
 RAW_EXPORT_FIELDS = [
-    "pmid", "title", "abstract", "keywords", "mesh_terms",
-    "pub_year", "pub_month", "journal", "journal_abbr", "doi",
-    "pmc_id", "article_types", "authors", "affiliation",
+    "pmid",
+    "title",
+    "abstract",
+    "keywords",
+    "mesh_terms",
+    "pub_year",
+    "pub_month",
+    "journal",
+    "journal_abbr",
+    "doi",
+    "pmc_id",
+    "article_types",
+    "authors",
+    "affiliation",
     "language",
 ]
 
@@ -1414,8 +1445,15 @@ def _export_raw_csv(db_path: Path = DB_PATH) -> Path | None:
 
 
 ARTICLES_EXPORT_FIELDS = [
-    "pmid", "title", "abstract", "keywords", "mesh_terms",
-    "authors", "year", "journal", "doi",
+    "pmid",
+    "title",
+    "abstract",
+    "keywords",
+    "mesh_terms",
+    "authors",
+    "year",
+    "journal",
+    "doi",
 ]
 
 EXPORTED_PMIDS_FILENAME = "exported_pmids.txt"
@@ -1447,7 +1485,8 @@ def _export_articles_csv(db_path: Path = DB_PATH) -> Path | None:
     """
     exported = _load_exported_pmids()
     with get_conn(db_path) as conn:
-        rows = conn.execute("""
+        rows = conn.execute(
+            """
             SELECT a.pmid, a.title, a.abstract, a.keywords, a.mesh_terms,
                    a.pub_year, a.journal, a.doi, a.authors
             FROM articles a
@@ -1455,7 +1494,9 @@ def _export_articles_csv(db_path: Path = DB_PATH) -> Path | None:
             WHERE (v.human_review = 'Y'
                OR (v.human_review IS NULL AND v.llm_verdict = 'RELEVANT'))
               AND a.pmid NOT IN ({})
-        """.format(",".join("?" * len(exported))), tuple(sorted(exported))).fetchall()
+        """.format(",".join("?" * len(exported))),
+            tuple(sorted(exported)),
+        ).fetchall()
 
     rows = [dict(r) for r in rows]
     if not rows:

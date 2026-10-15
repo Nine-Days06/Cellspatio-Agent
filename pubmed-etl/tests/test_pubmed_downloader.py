@@ -11,7 +11,9 @@ class TestPubmedDownloaderDateRange(unittest.TestCase):
     @patch("downloader.pubmed_downloader._safe_json")
     @patch("downloader.pubmed_downloader._post")
     @patch("downloader.pubmed_downloader._get")
-    def test_esearch_should_include_2020_to_now_date_range(self, mock_get, mock_post, mock_safe_json, _mock_sleep):
+    def test_esearch_should_include_2020_to_now_date_range(
+        self, mock_get, mock_post, mock_safe_json, _mock_sleep
+    ):
         mock_safe_json.return_value = {
             "esearchresult": {
                 "count": "2",
@@ -42,15 +44,16 @@ class TestEsearchPostLongTerm(unittest.TestCase):
 
     # ~6.5k 字符长查询（上游修复 commit 实测 ~6000 字符触发 414）
     LONG_QUERY = (
-        '("single-cell"[Title/Abstract] OR "spatial transcriptomics"[Title/Abstract]) AND '
-        * 80
+        '("single-cell"[Title/Abstract] OR "spatial transcriptomics"[Title/Abstract]) AND ' * 80
     )
 
     @patch("downloader.pubmed_downloader.time.sleep")
     @patch("downloader.pubmed_downloader._safe_json")
     @patch("downloader.pubmed_downloader._get")
     @patch("downloader.pubmed_downloader._post")
-    def test_count_esearch_sends_long_term_via_post(self, mock_post, mock_get, mock_safe_json, _mock_sleep):
+    def test_count_esearch_sends_long_term_via_post(
+        self, mock_post, mock_get, mock_safe_json, _mock_sleep
+    ):
         """计数调用（retmax=0）：term 走 POST 请求体，绝不出现在 URL query"""
         # 前提断言：长词 URL 编码后已超 2000 字符，GET 方式必然 414
         self.assertGreater(len(urlencode({"term": self.LONG_QUERY})), 2000)
@@ -72,7 +75,9 @@ class TestEsearchPostLongTerm(unittest.TestCase):
     @patch("downloader.pubmed_downloader._safe_json")
     @patch("downloader.pubmed_downloader._get")
     @patch("downloader.pubmed_downloader._post")
-    def test_history_esearch_uses_post_and_efetch_stays_get(self, mock_post, mock_get, mock_safe_json, _mock_sleep):
+    def test_history_esearch_uses_post_and_efetch_stays_get(
+        self, mock_post, mock_get, mock_safe_json, _mock_sleep
+    ):
         """usehistory=y 主调用走 POST；efetch 分页保持 GET"""
         mock_safe_json.return_value = {
             "esearchresult": {"count": "2", "webenv": "test_webenv", "querykey": "1"}
@@ -101,11 +106,10 @@ class TestEsearchPostLongTerm(unittest.TestCase):
 class TestSplitRange(unittest.TestCase):
     def test_halves_are_disjoint_and_adjacent(self):
         from datetime import datetime, timedelta
+
         left, right = _split_range("2020/01/01", "2020/12/31")
         # 互斥且相邻：左段结束的下一天就是右段开始
-        nxt = (
-            datetime.strptime(left[1], "%Y/%m/%d") + timedelta(days=1)
-        ).strftime("%Y/%m/%d")
+        nxt = (datetime.strptime(left[1], "%Y/%m/%d") + timedelta(days=1)).strftime("%Y/%m/%d")
         self.assertEqual(right[0], nxt)
         self.assertEqual(left[0], "2020/01/01")
         self.assertEqual(right[1], "2020/12/31")
@@ -121,6 +125,7 @@ class TestCollectPmidsAdaptiveSplit(unittest.TestCase):
     @patch("downloader.pubmed_downloader._fetch_count")
     def test_overflow_range_is_split_and_concatenated(self, mock_count, mock_fetch):
         from datetime import datetime, timedelta
+
         # 顶层 10000+ 超限 → 两个叶子各 6000 达标
         mock_count.side_effect = [12000, 6000, 6000]
         mock_fetch.side_effect = [["1", "2"], ["3"]]
@@ -130,13 +135,13 @@ class TestCollectPmidsAdaptiveSplit(unittest.TestCase):
         self.assertEqual(pmids, ["1", "2", "3"])
         self.assertEqual(mock_fetch.call_count, 2)
         # 叶子日期范围：覆盖原区间、互斥、相邻
-        l = mock_fetch.call_args_list[0].kwargs
+        left = mock_fetch.call_args_list[0].kwargs
         r = mock_fetch.call_args_list[1].kwargs
-        self.assertEqual(l["mindate"], "2025/01/01")
+        self.assertEqual(left["mindate"], "2025/01/01")
         self.assertEqual(r["maxdate"], "2025/12/31")
-        nxt = (
-            datetime.strptime(l["maxdate"], "%Y/%m/%d") + timedelta(days=1)
-        ).strftime("%Y/%m/%d")
+        nxt = (datetime.strptime(left["maxdate"], "%Y/%m/%d") + timedelta(days=1)).strftime(
+            "%Y/%m/%d"
+        )
         self.assertEqual(r["mindate"], nxt)
 
     @patch("downloader.pubmed_downloader.fetch_pmid_list")

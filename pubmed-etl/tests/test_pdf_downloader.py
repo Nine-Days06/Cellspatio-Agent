@@ -1,18 +1,18 @@
-import unittest
-from unittest.mock import patch, Mock
+import csv
 import json
 import tempfile
-import csv
+import unittest
 from pathlib import Path
+from unittest.mock import Mock, patch
 
 from downloader.pdf_downloader import (
-    normalize_pmc_asset_url,
-    normalize_pmc_id,
+    download_oa_pdf,
+    download_pdf_file,
+    export_oa_links_csv,
     fetch_oa_links,
     load_cached_oa_links,
-    download_pdf_file,
-    download_oa_pdf,
-    export_oa_links_csv,
+    normalize_pmc_asset_url,
+    normalize_pmc_id,
 )
 from utils.db import CREATE_ARTICLES_SQL, CREATE_LLM_VALIDATION_SQL
 
@@ -25,12 +25,8 @@ S3_XML_NS = "http://s3.amazonaws.com/doc/2006-03-01/"
 
 def s3_list_resp(prefixes=(), next_token="", status=200):
     """构造 S3 ListObjectsV2 响应；prefixes 为 CommonPrefixes 原始字符串列表。"""
-    items = "".join(
-        f"<CommonPrefixes><Prefix>{p}</Prefix></CommonPrefixes>" for p in prefixes
-    )
-    token = (
-        f"<NextContinuationToken>{next_token}</NextContinuationToken>" if next_token else ""
-    )
+    items = "".join(f"<CommonPrefixes><Prefix>{p}</Prefix></CommonPrefixes>" for p in prefixes)
+    token = f"<NextContinuationToken>{next_token}</NextContinuationToken>" if next_token else ""
     xml = (
         '<?xml version="1.0" encoding="UTF-8"?>'
         f'<ListBucketResult xmlns="{S3_XML_NS}">'
@@ -69,7 +65,9 @@ def s3_meta(pdf=None, txt=None, is_manuscript=False, pmc_id="PMC1", ver=1):
 class TestPdfDownloaderUrlNormalize(unittest.TestCase):
     def test_convert_ftp_to_https_and_deprecated_prefix(self):
         old_url = "ftp://ftp.ncbi.nlm.nih.gov/pub/pmc/oa_pdf/bb/cc/jmdh-8-091.PMC4334330.pdf"
-        expected = "https://ftp.ncbi.nlm.nih.gov/pub/pmc/deprecated/oa_pdf/bb/cc/jmdh-8-091.PMC4334330.pdf"
+        expected = (
+            "https://ftp.ncbi.nlm.nih.gov/pub/pmc/deprecated/oa_pdf/bb/cc/jmdh-8-091.PMC4334330.pdf"
+        )
         self.assertEqual(normalize_pmc_asset_url(old_url), expected)
 
     def test_keep_already_migrated_url(self):
@@ -114,13 +112,11 @@ class TestFetchOaLinks(unittest.TestCase):
         self.assertIn("PMC4334330", result)
         self.assertEqual(
             result["PMC4334330"]["pdf"],
-            "https://pmc-oa-opendata.s3.amazonaws.com/"
-            "PMC4334330.1/PMC4334330.1.pdf?md5=deadbeef",
+            "https://pmc-oa-opendata.s3.amazonaws.com/PMC4334330.1/PMC4334330.1.pdf?md5=deadbeef",
         )
         self.assertEqual(
             result["PMC4334330"]["txt"],
-            "https://pmc-oa-opendata.s3.amazonaws.com/"
-            "PMC4334330.1/PMC4334330.1.txt?md5=deadbeef",
+            "https://pmc-oa-opendata.s3.amazonaws.com/PMC4334330.1/PMC4334330.1.txt?md5=deadbeef",
         )
         # 桶中无目录 → 静默跳过，不算网络失败
         self.assertNotIn("PMC9999999", result)
@@ -170,8 +166,7 @@ class TestLoadCachedOaLinks(unittest.TestCase):
             new_file = out_dir / "oa_download_links_20260102_010101.csv"
 
             old_file.write_text(
-                "pmid,pmc_id,label,pdf_url,tgz_url\n"
-                "111,PMC1,高相关,https://old.example/1.pdf,\n",
+                "pmid,pmc_id,label,pdf_url,tgz_url\n111,PMC1,高相关,https://old.example/1.pdf,\n",
                 encoding="utf-8",
             )
             new_file.write_text(
@@ -200,9 +195,7 @@ class TestLoadCachedOaLinks(unittest.TestCase):
                 encoding="utf-8",
             )
 
-            cached = load_cached_oa_links(
-                ["PMC1", "PMC2", "PMC3", "PMC4"], out_dir=out_dir
-            )
+            cached = load_cached_oa_links(["PMC1", "PMC2", "PMC3", "PMC4"], out_dir=out_dir)
 
         # 整条记录只有死链 → 不入缓存，交由 S3 重新解析
         self.assertNotIn("PMC1", cached)
@@ -448,9 +441,7 @@ class TestFetchOaLinksProxy(unittest.TestCase):
             captured.update(kwargs)
             resp = Mock()
             resp.status_code = 200
-            resp.content = (
-                "<record><link format='pdf' href='https://example.org/2.pdf'/></record>"
-            ).encode()
+            resp.content = b"<record><link format='pdf' href='https://example.org/2.pdf'/></record>"
             resp.raise_for_status = Mock()
             return resp
 
@@ -490,12 +481,12 @@ class TestListS3Versions(unittest.TestCase):
 
         mock_req.return_value = s3_list_resp(
             [
-                "PMC8.txt",          # 版本段非数字
-                "PMC8.1",            # 缺尾部斜杠
-                "PMC8.1/extra/",     # 斜杠后多一层
-                "other/PMC8.1/",     # 前缀顺序不对
-                "PMC81/",            # 缺小数点
-                " PMC8.1 /",         # 带空白
+                "PMC8.txt",  # 版本段非数字
+                "PMC8.1",  # 缺尾部斜杠
+                "PMC8.1/extra/",  # 斜杠后多一层
+                "other/PMC8.1/",  # 前缀顺序不对
+                "PMC81/",  # 缺小数点
+                " PMC8.1 /",  # 带空白
             ]
         )
         self.assertEqual(_list_s3_versions("PMC8"), [])
@@ -546,9 +537,7 @@ class TestS3UriToHttps(unittest.TestCase):
     def test_should_pass_through_non_s3_input(self):
         from downloader.pdf_downloader import _s3_uri_to_https
 
-        self.assertEqual(
-            _s3_uri_to_https("https://example.org/1.pdf"), "https://example.org/1.pdf"
-        )
+        self.assertEqual(_s3_uri_to_https("https://example.org/1.pdf"), "https://example.org/1.pdf")
         self.assertEqual(_s3_uri_to_https(""), "")
 
 
@@ -568,8 +557,12 @@ class TestFetchSingleOaLinkClassification(unittest.TestCase):
 
         self.assertEqual(pid, "PMC1")
         self.assertEqual(status, "ok")
-        self.assertEqual(links["pdf"], f"https://pmc-oa-opendata.s3.amazonaws.com/PMC1.1/PMC1.1.pdf?md5=deadbeef")
-        self.assertEqual(links["txt"], f"https://pmc-oa-opendata.s3.amazonaws.com/PMC1.1/PMC1.1.txt?md5=deadbeef")
+        self.assertEqual(
+            links["pdf"], "https://pmc-oa-opendata.s3.amazonaws.com/PMC1.1/PMC1.1.pdf?md5=deadbeef"
+        )
+        self.assertEqual(
+            links["txt"], "https://pmc-oa-opendata.s3.amazonaws.com/PMC1.1/PMC1.1.txt?md5=deadbeef"
+        )
 
     @patch("downloader.pdf_downloader._request_oa_with_retry")
     def test_should_prefer_non_manuscript_pdf_over_manuscript(self, mock_req):
@@ -580,9 +573,7 @@ class TestFetchSingleOaLinkClassification(unittest.TestCase):
             if (params or {}).get("prefix") is not None:
                 return s3_list_resp(["PMC2.1/", "PMC2.2/"])
             ver = 1 if url.endswith("PMC2.1.json") else 2
-            return s3_meta_resp(
-                s3_meta(pdf=True, is_manuscript=True, pmc_id="PMC2", ver=ver)
-            )
+            return s3_meta_resp(s3_meta(pdf=True, is_manuscript=True, pmc_id="PMC2", ver=ver))
 
         mock_req.side_effect = fake_req
 
@@ -668,7 +659,7 @@ class TestFetchOaLinksClassification(unittest.TestCase):
             if prefix == "PMC200.":
                 return s3_list_resp([])  # 非 OA
             if prefix == "PMC300.":
-                return None            # 传输失败（重试耗尽）
+                return None  # 传输失败（重试耗尽）
             return s3_meta_resp(s3_meta(pdf=True, pmc_id="PMC100"))
 
         mock_req.side_effect = fake_req
@@ -696,7 +687,7 @@ class TestExportOaLinksCsv(unittest.TestCase):
             out_path = export_oa_links_csv(oa_links, pmc_to_info, Path(td))
             self.assertTrue(out_path.exists())
 
-            with open(out_path, "r", encoding="utf-8-sig", newline="") as f:
+            with open(out_path, encoding="utf-8-sig", newline="") as f:
                 reader = csv.DictReader(f)
                 fieldnames = reader.fieldnames
                 rows = list(reader)
@@ -714,7 +705,9 @@ class TestExportOaLinksCsv(unittest.TestCase):
 class TestPdfCheckpoint(unittest.TestCase):
     def test_should_save_and_load_pending(self):
         from downloader.pdf_downloader import (
-            _save_pdf_checkpoint, _load_pdf_checkpoint, _clear_pdf_checkpoint,
+            _clear_pdf_checkpoint,
+            _load_pdf_checkpoint,
+            _save_pdf_checkpoint,
         )
 
         pending = [
@@ -738,7 +731,8 @@ class TestPdfCheckpoint(unittest.TestCase):
 
     def test_should_return_empty_when_checkpoint_corrupted(self):
         from downloader.pdf_downloader import (
-            _pdf_checkpoint_path, _load_pdf_checkpoint,
+            _load_pdf_checkpoint,
+            _pdf_checkpoint_path,
         )
 
         with tempfile.TemporaryDirectory() as td:
@@ -758,13 +752,13 @@ class TestLoadFailedItemsFromCsv(unittest.TestCase):
             old = out_dir / "failed_downloads_20260101_010101.csv"
             new = out_dir / "failed_downloads_20260102_010101.csv"
             old.write_text(
-                'pmid,pmc_id,pdf_url,tgz_url\n111,PMC1,https://old/1.pdf,\n',
+                "pmid,pmc_id,pdf_url,tgz_url\n111,PMC1,https://old/1.pdf,\n",
                 encoding="utf-8-sig",
             )
             new.write_text(
-                'pmid,pmc_id,pdf_url,tgz_url\n'
-                '222,PMC2,,\n'
-                '333,pmc3,ftp://ftp.ncbi.nlm.nih.gov/pub/pmc/oa_pdf/a/b/3.PMC3.pdf,\n',
+                "pmid,pmc_id,pdf_url,tgz_url\n"
+                "222,PMC2,,\n"
+                "333,pmc3,ftp://ftp.ncbi.nlm.nih.gov/pub/pmc/oa_pdf/a/b/3.PMC3.pdf,\n",
                 encoding="utf-8-sig",
             )
 
@@ -842,8 +836,13 @@ class TestRunPdfRetry(unittest.TestCase):
     @patch("downloader.pdf_downloader.export_failed_links_csv")
     @patch("downloader.pdf_downloader._clear_pdf_checkpoint")
     def test_should_resume_from_checkpoint_and_clear_on_success(
-        self, mock_clear, mock_export_csv, mock_dl, mock_fetch,
-        mock_csv, mock_checkpoint,
+        self,
+        mock_clear,
+        mock_export_csv,
+        mock_dl,
+        mock_fetch,
+        mock_csv,
+        mock_checkpoint,
     ):
         mock_dl.return_value = True
         mock_fetch.return_value = ({}, [])
@@ -856,12 +855,13 @@ class TestRunPdfRetry(unittest.TestCase):
             ]
             with patch("downloader.pdf_downloader.PDF_DIR", pdf_dir):
                 from downloader.pdf_downloader import run_pdf_retry
+
                 run_pdf_retry()
 
-        mock_csv.assert_not_called()          # 有 checkpoint 不读 CSV
-        mock_fetch.assert_called_once()       # 仅 PMC1 无链接需重查
-        mock_dl.assert_called_once()          # 222.pdf 已存在被过滤，仅 111 需下载
-        mock_clear.assert_called_once()       # 全部处理后清除
+        mock_csv.assert_not_called()  # 有 checkpoint 不读 CSV
+        mock_fetch.assert_called_once()  # 仅 PMC1 无链接需重查
+        mock_dl.assert_called_once()  # 222.pdf 已存在被过滤，仅 111 需下载
+        mock_clear.assert_called_once()  # 全部处理后清除
 
     @patch("downloader.pdf_downloader._load_pdf_checkpoint")
     @patch("downloader.pdf_downloader.load_failed_items_from_csv")
@@ -871,7 +871,14 @@ class TestRunPdfRetry(unittest.TestCase):
     @patch("downloader.pdf_downloader._save_pdf_checkpoint")
     @patch("downloader.pdf_downloader._clear_pdf_checkpoint")
     def test_should_keep_checkpoint_when_partial_failure(
-        self, mock_clear, mock_save, mock_export, mock_dl, mock_fetch, mock_csv, mock_checkpoint,
+        self,
+        mock_clear,
+        mock_save,
+        mock_export,
+        mock_dl,
+        mock_fetch,
+        mock_csv,
+        mock_checkpoint,
     ):
         mock_checkpoint.return_value = []
         mock_csv.return_value = [
@@ -884,6 +891,7 @@ class TestRunPdfRetry(unittest.TestCase):
         with tempfile.TemporaryDirectory() as td:
             with patch("downloader.pdf_downloader.PDF_DIR", Path(td)):
                 from downloader.pdf_downloader import run_pdf_retry
+
                 run_pdf_retry()
 
         mock_save.assert_called()
@@ -898,7 +906,14 @@ class TestRunPdfRetry(unittest.TestCase):
     @patch("downloader.pdf_downloader._save_pdf_checkpoint")
     @patch("downloader.pdf_downloader._clear_pdf_checkpoint")
     def test_should_snapshot_only_unfinished_items(
-        self, mock_clear, mock_save, mock_export, mock_dl, mock_fetch, mock_csv, mock_checkpoint,
+        self,
+        mock_clear,
+        mock_save,
+        mock_export,
+        mock_dl,
+        mock_fetch,
+        mock_csv,
+        mock_checkpoint,
     ):
         mock_checkpoint.return_value = []
         mock_csv.return_value = [
@@ -906,13 +921,14 @@ class TestRunPdfRetry(unittest.TestCase):
             for i in range(1, 16)
         ]
         mock_fetch.return_value = ({}, [])
-        mock_dl.side_effect = lambda links, pdf_path: Path(pdf_path).name in {
-            f"{i}.pdf" for i in range(1, 11)
-        }
+        mock_dl.side_effect = lambda links, pdf_path: (
+            Path(pdf_path).name in {f"{i}.pdf" for i in range(1, 11)}
+        )
         mock_export.return_value = Path("failed_downloads_x.csv")
         with tempfile.TemporaryDirectory() as td:
             with patch("downloader.pdf_downloader.PDF_DIR", Path(td)):
                 from downloader.pdf_downloader import run_pdf_retry
+
                 run_pdf_retry()
 
         saved_snapshots = [call.args[0] for call in mock_save.call_args_list]
@@ -930,13 +946,12 @@ class TestRunPdfRetry(unittest.TestCase):
 class TestRunPdfWriteCheckpoint(unittest.TestCase):
     def _make_db_with_pmc(self, td: Path, pmid: str = "1111", pmc_id: str = "PMC1") -> Path:
         import sqlite3
+
         db = td / "test.db"
         conn = sqlite3.connect(db)
         conn.execute(CREATE_ARTICLES_SQL)
         conn.execute(CREATE_LLM_VALIDATION_SQL)
-        conn.execute(
-            "INSERT INTO articles (pmid, pmc_id) VALUES (?, ?)", (pmid, pmc_id)
-        )
+        conn.execute("INSERT INTO articles (pmid, pmc_id) VALUES (?, ?)", (pmid, pmc_id))
         conn.execute(
             "INSERT INTO llm_validation (pmid, llm_verdict) VALUES (?, 'RELEVANT')",
             (pmid,),
@@ -950,7 +965,11 @@ class TestRunPdfWriteCheckpoint(unittest.TestCase):
     @patch("downloader.pdf_downloader.load_cached_oa_links")
     @patch("downloader.pdf_downloader.export_oa_links_csv")
     def test_should_write_checkpoint_on_failure(
-        self, mock_export_csv, mock_cached, mock_dl, mock_fetch,
+        self,
+        mock_export_csv,
+        mock_cached,
+        mock_dl,
+        mock_fetch,
     ):
         mock_fetch.return_value = ({"PMC1": {"pdf": "https://a/1.pdf"}}, [])
         mock_dl.return_value = False
@@ -961,8 +980,11 @@ class TestRunPdfWriteCheckpoint(unittest.TestCase):
             with patch("downloader.pdf_downloader.PDF_DIR", td_path):
                 with patch("downloader.pdf_downloader.OUTPUT_DIR", td_path):
                     from downloader.pdf_downloader import (
-                        run_pdf_download, _load_pdf_checkpoint, _pdf_checkpoint_path,
+                        _load_pdf_checkpoint,
+                        _pdf_checkpoint_path,
+                        run_pdf_download,
                     )
+
                     run_pdf_download(db_path=db)
 
                     checkpoint_items = _load_pdf_checkpoint()
@@ -980,7 +1002,11 @@ class TestRunPdfWriteCheckpoint(unittest.TestCase):
     @patch("downloader.pdf_downloader.load_cached_oa_links")
     @patch("downloader.pdf_downloader.export_oa_links_csv")
     def test_should_clear_checkpoint_on_success(
-        self, mock_export_csv, mock_cached, mock_dl, mock_fetch,
+        self,
+        mock_export_csv,
+        mock_cached,
+        mock_dl,
+        mock_fetch,
     ):
         mock_fetch.return_value = ({"PMC1": {"pdf": "https://a/1.pdf"}}, [])
         mock_dl.return_value = True
@@ -991,8 +1017,11 @@ class TestRunPdfWriteCheckpoint(unittest.TestCase):
             with patch("downloader.pdf_downloader.PDF_DIR", td_path):
                 with patch("downloader.pdf_downloader.OUTPUT_DIR", td_path):
                     from downloader.pdf_downloader import (
-                        run_pdf_download, _save_pdf_checkpoint, _pdf_checkpoint_path,
+                        _pdf_checkpoint_path,
+                        _save_pdf_checkpoint,
+                        run_pdf_download,
                     )
+
                     _save_pdf_checkpoint([{"pmid": "9999", "pmc_id": "PMC9", "links": {}}])
                     run_pdf_download(db_path=db)
 
@@ -1004,7 +1033,10 @@ class TestRunPdfWriteCheckpoint(unittest.TestCase):
     @patch("downloader.pdf_downloader.load_cached_oa_links")
     @patch("downloader.pdf_downloader.export_oa_links_csv")
     def test_should_keep_checkpoint_when_no_task(
-        self, mock_export_csv, mock_cached, mock_fetch,
+        self,
+        mock_export_csv,
+        mock_cached,
+        mock_fetch,
     ):
         mock_fetch.return_value = ({}, [])
         mock_export_csv.return_value = Path("links.csv")
@@ -1014,8 +1046,11 @@ class TestRunPdfWriteCheckpoint(unittest.TestCase):
             with patch("downloader.pdf_downloader.PDF_DIR", td_path):
                 with patch("downloader.pdf_downloader.OUTPUT_DIR", td_path):
                     from downloader.pdf_downloader import (
-                        run_pdf_download, _save_pdf_checkpoint, _pdf_checkpoint_path,
+                        _pdf_checkpoint_path,
+                        _save_pdf_checkpoint,
+                        run_pdf_download,
                     )
+
                     _save_pdf_checkpoint([{"pmid": "9999", "pmc_id": "PMC9", "links": {}}])
                     run_pdf_download(db_path=db)
 
@@ -1039,9 +1074,7 @@ class TestRunPdfDownloadSkipsExistingFulltext(unittest.TestCase):
         conn = sqlite3.connect(db)
         conn.execute(CREATE_ARTICLES_SQL)
         conn.execute(CREATE_LLM_VALIDATION_SQL)
-        conn.execute(
-            "INSERT INTO articles (pmid, pmc_id) VALUES (?, ?)", (pmid, pmc_id)
-        )
+        conn.execute("INSERT INTO articles (pmid, pmc_id) VALUES (?, ?)", (pmid, pmc_id))
         conn.execute(
             "INSERT INTO llm_validation (pmid, llm_verdict) VALUES (?, 'RELEVANT')",
             (pmid,),
@@ -1053,11 +1086,14 @@ class TestRunPdfDownloadSkipsExistingFulltext(unittest.TestCase):
     def _run_with_network_failure(self, db: Path, td_path: Path):
         """模拟取链整体失败：oa_links 为空，network_failed 含该 PMCID。"""
         from downloader.pdf_downloader import (
-            run_pdf_download, _load_pdf_checkpoint, _pdf_checkpoint_path,
+            _load_pdf_checkpoint,
+            _pdf_checkpoint_path,
+            run_pdf_download,
         )
 
-        with patch("downloader.pdf_downloader.PDF_DIR", td_path), patch(
-            "downloader.pdf_downloader.OUTPUT_DIR", td_path
+        with (
+            patch("downloader.pdf_downloader.PDF_DIR", td_path),
+            patch("downloader.pdf_downloader.OUTPUT_DIR", td_path),
         ):
             run_pdf_download(db_path=db)
             return _load_pdf_checkpoint(), _pdf_checkpoint_path().exists()
@@ -1076,7 +1112,7 @@ class TestRunPdfDownloadSkipsExistingFulltext(unittest.TestCase):
         )
 
     def _stop(self, mocks):
-        for m in mocks:
+        for _ in mocks:
             patch.stopall()
         self.assertTrue(all(hasattr(m, "assert_not_called") for m in mocks))
 
@@ -1091,10 +1127,10 @@ class TestRunPdfDownloadSkipsExistingFulltext(unittest.TestCase):
         finally:
             self._stop((m_cached, m_export, m_fetch, m_dl, m_failcsv))
 
-        self.assertEqual(checkpoint, [])          # 不进检查点
-        self.assertFalse(exists)                  # 不写检查点文件
-        m_failcsv.assert_not_called()             # 不出失败清单
-        m_dl.assert_not_called()                  # 已存在，无需再下
+        self.assertEqual(checkpoint, [])  # 不进检查点
+        self.assertFalse(exists)  # 不写检查点文件
+        m_failcsv.assert_not_called()  # 不出失败清单
+        m_dl.assert_not_called()  # 已存在，无需再下
 
     def test_should_not_mark_existing_txt_as_failed(self):
         m_cached, m_export, m_fetch, m_dl, m_failcsv = self._patches()
@@ -1128,7 +1164,6 @@ class TestRunPdfDownloadSkipsExistingFulltext(unittest.TestCase):
         self.assertTrue(exists)
         self.assertEqual([i["pmid"] for i in checkpoint], ["1111"])
         m_failcsv.assert_called_once()
-
 
 
 if __name__ == "__main__":

@@ -1,4 +1,5 @@
 """Workflow JSON Schema 合法性与序列化往返测试。"""
+
 import json
 
 from src.schemas.workflow import (
@@ -250,7 +251,7 @@ def test_invalid_terminal_status_rejected():
     except ValidationError as e:
         assert "status" in str(e)
     else:
-        assert False, "应抛出 ValidationError"
+        raise AssertionError("应抛出 ValidationError")
 
 
 def test_invalid_analysis_type_rejected():
@@ -267,4 +268,4 @@ def test_invalid_analysis_type_rejected():
     except ValidationError as e:
         assert "step_type" in str(e)
     else:
-        assert False, "应抛出 ValidationError"
+        raise AssertionError("应抛出 ValidationError")

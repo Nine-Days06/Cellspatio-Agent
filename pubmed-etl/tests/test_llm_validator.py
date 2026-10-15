@@ -1,28 +1,23 @@
-import unittest
-import json
 import csv
+import json
+import os
 import sqlite3
 import tempfile
-import os
+import unittest
 from pathlib import Path
 from unittest.mock import patch
 
 from cleaner.llm_validator import (
-    _extract_json,
-    _build_per_article_prompt,
-    _build_jsonl,
-    _parse_batch_results,
     _build_log_rows,
+    _build_per_article_prompt,
     _count_verdicts,
+    _extract_json,
     _normalize_verdict,
-    _export_raw_csv,
-    _export_articles_csv,
 )
-from utils.db import init_db, get_conn
+from utils.db import get_conn, init_db
 
 
 class TestExtractJsonMultiArray(unittest.TestCase):
-
     def test_normal_single_array(self):
         text = '[{"pmid":"1","verdict":"RELEVANT"}]'
         result = _extract_json(text)
@@ -39,26 +34,17 @@ class TestExtractJsonMultiArray(unittest.TestCase):
         self.assertEqual(result[1]["pmid"], "2")
 
     def test_glm_multi_array_with_crlf(self):
-        text = (
-            '[{"pmid":"1","verdict":"RELEVANT"}],\r\n'
-            '[{"pmid":"2","verdict":"RELEVANT"}]'
-        )
+        text = '[{"pmid":"1","verdict":"RELEVANT"}],\r\n[{"pmid":"2","verdict":"RELEVANT"}]'
         result = _extract_json(text, fix_glm_multi_array=True)
         self.assertEqual(len(result), 2)
 
     def test_glm_multi_array_with_spaces(self):
-        text = (
-            '[{"pmid":"1","verdict":"RELEVANT"}],   \n'
-            '[{"pmid":"2","verdict":"RELEVANT"}]'
-        )
+        text = '[{"pmid":"1","verdict":"RELEVANT"}],   \n[{"pmid":"2","verdict":"RELEVANT"}]'
         result = _extract_json(text, fix_glm_multi_array=True)
         self.assertEqual(len(result), 2)
 
     def test_fix_disabled_for_deepseek(self):
-        text = (
-            '[{"pmid":"1","verdict":"RELEVANT"}],\n'
-            '[{"pmid":"2","verdict":"RELEVANT"}]'
-        )
+        text = '[{"pmid":"1","verdict":"RELEVANT"}],\n[{"pmid":"2","verdict":"RELEVANT"}]'
         result = _extract_json(text, fix_glm_multi_array=False)
         self.assertEqual(len(result), 1)
         self.assertEqual(result[0]["pmid"], "1")
@@ -70,10 +56,10 @@ class TestExtractJsonMultiArray(unittest.TestCase):
 
     def test_glm_trailing_comma_before_close_bracket(self):
         text = (
-            '[\n'
+            "[\n"
             '{"pmid":"1","verdict":"RELEVANT","reason":"a"},\n'
             '{"pmid":"2","verdict":"NOT_RELEVANT","reason":"b"},\n'
-            ']'
+            "]"
         )
         result = _extract_json(text, fix_glm_multi_array=True)
         self.assertEqual(len(result), 2)
@@ -82,7 +68,6 @@ class TestExtractJsonMultiArray(unittest.TestCase):
 
 
 class TestBuildPerArticlePrompt(unittest.TestCase):
-
     def test_prompt_includes_pmid(self):
         prompt = _build_per_article_prompt("12345", "Test Title", "Test Abstract")
         self.assertIn("12345", prompt)
@@ -102,15 +87,16 @@ class TestBuildPerArticlePrompt(unittest.TestCase):
 
 
 class TestBuildJsonl(unittest.TestCase):
-
     def setUp(self):
-        from config.settings import OUTPUT_DIR, LLM_MAX_TOKENS
+        from config.settings import LLM_MAX_TOKENS, OUTPUT_DIR
+
         self.original_output_dir = OUTPUT_DIR
         self.original_max_tokens = LLM_MAX_TOKENS
         self.temp_dir = tempfile.mkdtemp()
 
     def tearDown(self):
         import shutil
+
         shutil.rmtree(self.temp_dir, ignore_errors=True)
 
     def _mock_rows(self, count=2):
@@ -121,12 +107,13 @@ class TestBuildJsonl(unittest.TestCase):
 
     def test_jsonl_line_count(self):
         import cleaner.llm_validator as mod
+
         prev_out = mod.Path(mod.OUTPUT_DIR)
         mod.OUTPUT_DIR = self.temp_dir
         try:
             rows = self._mock_rows(3)
             path = mod._build_jsonl(rows)
-            with open(path, "r", encoding="utf-8") as f:
+            with open(path, encoding="utf-8") as f:
                 lines = f.read().strip().split("\n")
             self.assertEqual(len(lines), 3)
         finally:
@@ -137,18 +124,17 @@ class TestBuildJsonl(unittest.TestCase):
             {"pmid": "TEST1", "title": "T", "abstract": "A"},
         ]
         # Use config to control output path
-        from cleaner.llm_validator import OUTPUT_DIR as mod_out_dir
         from cleaner.llm_validator import _build_jsonl as do_build
 
-        test_dir = Path(self.temp_dir)
         with tempfile.TemporaryDirectory() as td:
             # monkey-patch OUTPUT_DIR
             import cleaner.llm_validator as mod
+
             orig = mod.OUTPUT_DIR
             mod.OUTPUT_DIR = td
             try:
                 path = do_build(rows)
-                with open(path, "r", encoding="utf-8") as f:
+                with open(path, encoding="utf-8") as f:
                     line_data = json.loads(f.read().split("\n")[0])
                 self.assertEqual(line_data["custom_id"], "request-TEST1")
                 self.assertEqual(line_data["method"], "POST")
@@ -161,11 +147,12 @@ class TestBuildJsonl(unittest.TestCase):
     def test_jsonl_body_messages(self):
         rows = self._mock_rows(1)
         import cleaner.llm_validator as lm
+
         orig = lm.OUTPUT_DIR
         lm.OUTPUT_DIR = self.temp_dir
         try:
             path = lm._build_jsonl(rows)
-            with open(path, "r", encoding="utf-8") as f:
+            with open(path, encoding="utf-8") as f:
                 line_data = json.loads(f.read().split("\n")[0])
             msgs = line_data["body"]["messages"]
             self.assertEqual(msgs[0]["role"], "system")
@@ -179,6 +166,7 @@ class TestBuildJsonlFilesSplitting(unittest.TestCase):
 
     def setUp(self):
         import cleaner.llm_validator as mod
+
         self.mod = mod
         self.temp_dir = tempfile.mkdtemp()
         self.orig_out = mod.OUTPUT_DIR
@@ -186,17 +174,15 @@ class TestBuildJsonlFilesSplitting(unittest.TestCase):
 
     def tearDown(self):
         import shutil
+
         self.mod.OUTPUT_DIR = self.orig_out
         shutil.rmtree(self.temp_dir, ignore_errors=True)
 
     def _rows(self, n, abstract="A" * 200):
-        return [
-            {"pmid": f"P{i:06d}", "title": f"T{i}", "abstract": abstract}
-            for i in range(n)
-        ]
+        return [{"pmid": f"P{i:06d}", "title": f"T{i}", "abstract": abstract} for i in range(n)]
 
     def _read_lines(self, path):
-        with open(path, "r", encoding="utf-8") as f:
+        with open(path, encoding="utf-8") as f:
             return [ln for ln in f.read().split("\n") if ln]
 
     def test_should_keep_small_batch_in_single_file(self):
@@ -224,8 +210,10 @@ class TestBuildJsonlFilesSplitting(unittest.TestCase):
     def test_should_not_exceed_either_limit_in_any_file(self):
         rows = self._rows(40, abstract="A" * 300)
         cap_bytes, cap_req = 8 * 1024, 7
-        with patch.object(self.mod, "LLM_BATCH_MAX_BYTES", cap_bytes), \
-             patch.object(self.mod, "LLM_BATCH_MAX_REQUESTS", cap_req):
+        with (
+            patch.object(self.mod, "LLM_BATCH_MAX_BYTES", cap_bytes),
+            patch.object(self.mod, "LLM_BATCH_MAX_REQUESTS", cap_req),
+        ):
             groups = self.mod._build_jsonl_files(rows)
 
         self.assertGreater(len(groups), 1)
@@ -290,12 +278,14 @@ class TestCheckpointBatchesCompat(unittest.TestCase):
     def test_should_read_v1_single_batch_checkpoint(self):
         from cleaner.llm_validator import _checkpoint_batches
 
-        got = _checkpoint_batches({
-            "batch_id": "b1",
-            "input_file_id": "f1",
-            "pmid_list": ["1", "2"],
-            "status": "active",
-        })
+        got = _checkpoint_batches(
+            {
+                "batch_id": "b1",
+                "input_file_id": "f1",
+                "pmid_list": ["1", "2"],
+                "status": "active",
+            }
+        )
         self.assertEqual(len(got), 1)
         self.assertEqual(got[0]["batch_id"], "b1")
         self.assertEqual(got[0]["pmid_list"], ["1", "2"])
@@ -303,13 +293,15 @@ class TestCheckpointBatchesCompat(unittest.TestCase):
     def test_should_read_v2_multi_batch_checkpoint(self):
         from cleaner.llm_validator import _checkpoint_batches
 
-        got = _checkpoint_batches({
-            "version": 2,
-            "batches": [
-                {"batch_id": "b1", "pmid_list": ["1"]},
-                {"batch_id": "b2", "pmid_list": ["2", "3"]},
-            ],
-        })
+        got = _checkpoint_batches(
+            {
+                "version": 2,
+                "batches": [
+                    {"batch_id": "b1", "pmid_list": ["1"]},
+                    {"batch_id": "b2", "pmid_list": ["2", "3"]},
+                ],
+            }
+        )
         self.assertEqual([b["batch_id"] for b in got], ["b1", "b2"])
         self.assertEqual(got[1]["pmid_list"], ["2", "3"])
 
@@ -364,11 +356,8 @@ class TestBatchCustomId(unittest.TestCase):
                 groups = mod._build_jsonl_files(rows)
                 self.assertEqual(len(groups), 1)
                 path = groups[0][0]
-                with open(path, "r", encoding="utf-8") as f:
-                    ids = [
-                        json.loads(ln)["custom_id"]
-                        for ln in f.read().split("\n") if ln
-                    ]
+                with open(path, encoding="utf-8") as f:
+                    ids = [json.loads(ln)["custom_id"] for ln in f.read().split("\n") if ln]
             finally:
                 mod.OUTPUT_DIR = orig
 
@@ -389,7 +378,11 @@ class TestBatchCustomId(unittest.TestCase):
                 "status_code": 200,
                 "body": {
                     "choices": [
-                        {"message": {"content": '{"pmid":"94600","verdict":"RELEVANT","reason":"r"}'}}
+                        {
+                            "message": {
+                                "content": '{"pmid":"94600","verdict":"RELEVANT","reason":"r"}'
+                            }
+                        }
                     ]
                 },
             },
@@ -408,6 +401,7 @@ class TestBatchCustomId(unittest.TestCase):
             self.assertEqual(ok, 1)
             self.assertEqual(failed, [])
             import sqlite3
+
             conn = sqlite3.connect(db_path)
             got = conn.execute("SELECT pmid FROM llm_validation").fetchall()
             conn.close()
@@ -415,7 +409,6 @@ class TestBatchCustomId(unittest.TestCase):
 
 
 class TestParseBatchResults(unittest.TestCase):
-
     def setUp(self):
         self.temp_dir = tempfile.mkdtemp()
         self.db_path = Path(self.temp_dir) / "test_lit.db"
@@ -423,6 +416,7 @@ class TestParseBatchResults(unittest.TestCase):
 
     def tearDown(self):
         import shutil
+
         shutil.rmtree(self.temp_dir, ignore_errors=True)
 
     def _make_result_jsonl(self, lines: list[dict]) -> str:
@@ -433,54 +427,43 @@ class TestParseBatchResults(unittest.TestCase):
         return path
 
     def test_parse_success_result(self):
-        content = (
-            '{"pmid": "TEST001", "verdict": "RELEVANT", '
-            '"reason": "contains potato gene"}'
-        )
+        content = '{"pmid": "TEST001", "verdict": "RELEVANT", "reason": "contains potato gene"}'
         result_line = {
             "custom_id": "TEST001",
             "response": {
                 "status_code": 200,
-                "body": {
-                    "choices": [{
-                        "message": {"content": content}
-                    }]
-                }
-            }
+                "body": {"choices": [{"message": {"content": content}}]},
+            },
         }
         path = self._make_result_jsonl([result_line])
         from cleaner.llm_validator import _parse_batch_results as parser
+
         success, failed = parser(path, db_path=self.db_path)
         self.assertEqual(success, 1)
         self.assertEqual(len(failed), 0)
 
     def test_parse_markdown_wrapped_result(self):
         """模拟 glm-4-flash 返回 ```json ... ``` 包裹的真实场景"""
-        raw_content = "```json\n{\"pmid\": \"18944394\", \"verdict\": \"RELEVANT\", \"reason\": \"涉及马铃薯与病虫害相互作用\"}\n```"
+        raw_content = '```json\n{"pmid": "18944394", "verdict": "RELEVANT", "reason": "涉及马铃薯与病虫害相互作用"}\n```'
         result_line = {
             "custom_id": "18944394",
             "response": {
                 "status_code": 200,
-                "body": {
-                    "choices": [{
-                        "message": {"content": raw_content}
-                    }]
-                }
-            }
+                "body": {"choices": [{"message": {"content": raw_content}}]},
+            },
         }
         path = self._make_result_jsonl([result_line])
         from cleaner.llm_validator import _parse_batch_results as parser
+
         success, failed = parser(path, db_path=self.db_path)
         self.assertEqual(success, 1, "markdown 包裹的单 JSON 对象应能成功解析")
         self.assertEqual(len(failed), 0)
 
     def test_parse_failed_status_code(self):
-        result_line = {
-            "custom_id": "FAIL01",
-            "response": {"status_code": 500, "body": {}}
-        }
+        result_line = {"custom_id": "FAIL01", "response": {"status_code": 500, "body": {}}}
         path = self._make_result_jsonl([result_line])
         from cleaner.llm_validator import _parse_batch_results as parser
+
         success, failed = parser(path, db_path=self.db_path)
         self.assertEqual(success, 0)
         self.assertEqual(len(failed), 1)
@@ -490,6 +473,7 @@ class TestParseBatchResults(unittest.TestCase):
         with open(path, "w", encoding="utf-8") as f:
             f.write("this is not json\n")
         from cleaner.llm_validator import _parse_batch_results as parser
+
         success, failed = parser(path, db_path=self.db_path)
         self.assertEqual(success, 0)
 
@@ -499,15 +483,13 @@ class TestParseBatchResults(unittest.TestCase):
             "custom_id": "OK1",
             "response": {
                 "status_code": 200,
-                "body": {"choices": [{"message": {"content": ok_content}}]}
-            }
+                "body": {"choices": [{"message": {"content": ok_content}}]},
+            },
         }
-        err = {
-            "custom_id": "ERR1",
-            "response": {"status_code": 500, "body": {}}
-        }
+        err = {"custom_id": "ERR1", "response": {"status_code": 500, "body": {}}}
         path = self._make_result_jsonl([ok, err])
         from cleaner.llm_validator import _parse_batch_results as parser
+
         success, failed = parser(path, db_path=self.db_path)
         self.assertEqual(success, 1)
         self.assertEqual(len(failed), 1)
@@ -523,11 +505,12 @@ class TestParseBatchResults(unittest.TestCase):
                 "custom_id": content.split('"pmid":"')[1].split('"')[0],
                 "response": {
                     "status_code": 200,
-                    "body": {"choices": [{"message": {"content": content}}]}
-                }
+                    "body": {"choices": [{"message": {"content": content}}]},
+                },
             }
             path = self._make_result_jsonl([item])
             from cleaner.llm_validator import _parse_batch_results as parser
+
             success, failed = parser(path, db_path=self.db_path)
             self.assertEqual(success, 0, content)
             self.assertEqual(len(failed), 1, content)
@@ -563,9 +546,7 @@ class TestBuildLogRows(unittest.TestCase):
     def test_failed_pmids_are_collected(self):
         batch = self._make_sql_rows(["1", "2", "3"])
         pmid_to_result = {"1": {"pmid": "1", "verdict": "RELEVANT"}}
-        log_rows, failed = _build_log_rows(
-            batch, pmid_to_result, {"2"}, "now"
-        )
+        log_rows, failed = _build_log_rows(batch, pmid_to_result, {"2"}, "now")
         self.assertEqual(len(log_rows), 1)
         self.assertEqual([r["pmid"] for r in failed], ["2", "3"])
 
@@ -592,7 +573,6 @@ class TestBuildLogRows(unittest.TestCase):
 
 
 class TestNormalizeVerdict(unittest.TestCase):
-
     def test_standard_values(self):
         self.assertEqual(_normalize_verdict("RELEVANT"), "RELEVANT")
         self.assertEqual(_normalize_verdict("NOT_RELEVANT"), "NOT_RELEVANT")
@@ -633,9 +613,20 @@ class TestExportRawCsv(unittest.TestCase):
     """_export_raw_csv：导出与 llm_filtered 相同筛选条件、仅含原始信息的 CSV"""
 
     RAW_FIELDS = [
-        "pmid", "title", "abstract", "keywords", "mesh_terms",
-        "pub_year", "pub_month", "journal", "journal_abbr", "doi",
-        "pmc_id", "article_types", "authors", "affiliation",
+        "pmid",
+        "title",
+        "abstract",
+        "keywords",
+        "mesh_terms",
+        "pub_year",
+        "pub_month",
+        "journal",
+        "journal_abbr",
+        "doi",
+        "pmc_id",
+        "article_types",
+        "authors",
+        "affiliation",
         "language",
     ]
 
@@ -647,20 +638,16 @@ class TestExportRawCsv(unittest.TestCase):
 
     def tearDown(self):
         import shutil
+
         shutil.rmtree(self.temp_dir, ignore_errors=True)
 
     def _seed(self):
         articles = [
-            ("A", "Title A", "Abstract A", "2021", "Mar", "Plant J",
-             "PMC1", "batch1.xml"),
-            ("B", "Title B", "Abstract B", "2021", "Apr", "Potato Res",
-             "PMC2", "batch1.xml"),
-            ("C", "Title C", "Abstract C", "2021", "May", "Plant J",
-             "PMC3", "batch1.xml"),
-            ("D", "Title D", "Abstract D", "2021", "Jun", "Plant J",
-             "PMC4", "batch1.xml"),
-            ("E", "Title E", "Abstract E", "2021", "Jul", "Plant J",
-             "PMC5", "batch1.xml"),
+            ("A", "Title A", "Abstract A", "2021", "Mar", "Plant J", "PMC1", "batch1.xml"),
+            ("B", "Title B", "Abstract B", "2021", "Apr", "Potato Res", "PMC2", "batch1.xml"),
+            ("C", "Title C", "Abstract C", "2021", "May", "Plant J", "PMC3", "batch1.xml"),
+            ("D", "Title D", "Abstract D", "2021", "Jun", "Plant J", "PMC4", "batch1.xml"),
+            ("E", "Title E", "Abstract E", "2021", "Jul", "Plant J", "PMC5", "batch1.xml"),
         ]
         with get_conn(self.db_path) as conn:
             conn.executemany(
@@ -670,19 +657,19 @@ class TestExportRawCsv(unittest.TestCase):
                 articles,
             )
             conn.executemany(
-                "INSERT INTO llm_validation (pmid, llm_verdict, human_review) "
-                "VALUES (?, ?, ?)",
+                "INSERT INTO llm_validation (pmid, llm_verdict, human_review) VALUES (?, ?, ?)",
                 [
-                    ("A", "RELEVANT", "Y"),        # 人工通过 → 应导出
-                    ("B", "RELEVANT", None),       # LLM 判相关未复核 → 应导出
-                    ("C", "RELEVANT", "N"),        # 人工驳回 → 不导出
-                    ("D", "NOT_RELEVANT", None),   # LLM 判不相关 → 不导出
+                    ("A", "RELEVANT", "Y"),  # 人工通过 → 应导出
+                    ("B", "RELEVANT", None),  # LLM 判相关未复核 → 应导出
+                    ("C", "RELEVANT", "N"),  # 人工驳回 → 不导出
+                    ("D", "NOT_RELEVANT", None),  # LLM 判不相关 → 不导出
                 ],
             )
             # E 无 llm_validation 记录 → 不导出
 
     def _export(self):
         import cleaner.llm_validator as mod
+
         orig = mod.OUTPUT_DIR
         mod.OUTPUT_DIR = self.temp_dir
         try:
@@ -693,13 +680,13 @@ class TestExportRawCsv(unittest.TestCase):
     def test_export_includes_only_filtered_articles(self):
         path = self._export()
         self.assertIsNotNone(path)
-        with open(path, "r", encoding="utf-8-sig") as f:
+        with open(path, encoding="utf-8-sig") as f:
             rows = list(csv.DictReader(f))
         self.assertEqual(sorted(r["pmid"] for r in rows), ["A", "B"])
 
     def test_export_columns_are_raw_only(self):
         path = self._export()
-        with open(path, "r", encoding="utf-8-sig") as f:
+        with open(path, encoding="utf-8-sig") as f:
             reader = csv.DictReader(f)
             fieldnames = reader.fieldnames
             rows = list(reader)
@@ -710,7 +697,7 @@ class TestExportRawCsv(unittest.TestCase):
 
     def test_export_preserves_raw_values(self):
         path = self._export()
-        with open(path, "r", encoding="utf-8-sig") as f:
+        with open(path, encoding="utf-8-sig") as f:
             rows = {r["pmid"]: r for r in csv.DictReader(f)}
         a = rows["A"]
         self.assertEqual(a["title"], "Title A")
@@ -735,8 +722,15 @@ class TestExportArticlesCsv(unittest.TestCase):
     """_export_articles_csv：主项目兼容格式 + 增量导出"""
 
     EXPORT_FIELDS = [
-        "pmid", "title", "abstract", "keywords", "mesh_terms",
-        "authors", "year", "journal", "doi",
+        "pmid",
+        "title",
+        "abstract",
+        "keywords",
+        "mesh_terms",
+        "authors",
+        "year",
+        "journal",
+        "doi",
     ]
 
     def setUp(self):
@@ -747,18 +741,25 @@ class TestExportArticlesCsv(unittest.TestCase):
 
     def tearDown(self):
         import shutil
+
         shutil.rmtree(self.temp_dir, ignore_errors=True)
 
     def _seed(self):
         articles = [
-            ("A", "Title A", "Abstract A", "kw1|kw2", "mesh1|mesh2",
-             2021, "Plant J", "10.1/aaa", "AuthorA|AuthorB"),
-            ("B", "Title B", "Abstract B", "kwB", "meshB",
-             2022, "Plant J", "10.1/bbb", "AuthorC"),
-            ("C", "Title C", "Abstract C", "kwC", "meshC",
-             2021, "Plant J", "10.1/ccc", "AuthorD"),
-            ("D", "Title D", "Abstract D", "kwD", "meshD",
-             2021, "Plant J", "10.1/ddd", "AuthorE"),
+            (
+                "A",
+                "Title A",
+                "Abstract A",
+                "kw1|kw2",
+                "mesh1|mesh2",
+                2021,
+                "Plant J",
+                "10.1/aaa",
+                "AuthorA|AuthorB",
+            ),
+            ("B", "Title B", "Abstract B", "kwB", "meshB", 2022, "Plant J", "10.1/bbb", "AuthorC"),
+            ("C", "Title C", "Abstract C", "kwC", "meshC", 2021, "Plant J", "10.1/ccc", "AuthorD"),
+            ("D", "Title D", "Abstract D", "kwD", "meshD", 2021, "Plant J", "10.1/ddd", "AuthorE"),
         ]
         with get_conn(self.db_path) as conn:
             conn.executemany(
@@ -769,18 +770,18 @@ class TestExportArticlesCsv(unittest.TestCase):
                 articles,
             )
             conn.executemany(
-                "INSERT INTO llm_validation (pmid, llm_verdict, human_review) "
-                "VALUES (?, ?, ?)",
+                "INSERT INTO llm_validation (pmid, llm_verdict, human_review) VALUES (?, ?, ?)",
                 [
-                    ("A", "RELEVANT", "Y"),        # 人工通过 → 应导出
-                    ("B", "RELEVANT", None),       # LLM 相关未复核 → 应导出
-                    ("C", "RELEVANT", "N"),        # 人工驳回 → 不导出
-                    ("D", "NOT_RELEVANT", None),   # LLM 不相关 → 不导出
+                    ("A", "RELEVANT", "Y"),  # 人工通过 → 应导出
+                    ("B", "RELEVANT", None),  # LLM 相关未复核 → 应导出
+                    ("C", "RELEVANT", "N"),  # 人工驳回 → 不导出
+                    ("D", "NOT_RELEVANT", None),  # LLM 不相关 → 不导出
                 ],
             )
 
     def _export(self):
         import cleaner.llm_validator as mod
+
         orig = mod.OUTPUT_DIR
         mod.OUTPUT_DIR = self.temp_dir
         try:
@@ -791,7 +792,7 @@ class TestExportArticlesCsv(unittest.TestCase):
     def test_export_fields_match_main_project(self):
         path = self._export()
         self.assertIsNotNone(path)
-        with open(path, "r", encoding="utf-8-sig") as f:
+        with open(path, encoding="utf-8-sig") as f:
             reader = csv.DictReader(f)
             fieldnames = reader.fieldnames
             rows = list(reader)
@@ -800,7 +801,7 @@ class TestExportArticlesCsv(unittest.TestCase):
 
     def test_export_pipe_separators_converted_to_comma(self):
         path = self._export()
-        with open(path, "r", encoding="utf-8-sig") as f:
+        with open(path, encoding="utf-8-sig") as f:
             rows = {r["pmid"]: r for r in csv.DictReader(f)}
         self.assertEqual(rows["A"]["keywords"], "kw1,kw2")
         self.assertEqual(rows["A"]["mesh_terms"], "mesh1,mesh2")
@@ -842,7 +843,7 @@ class TestExportArticlesCsv(unittest.TestCase):
             )
         second = self._export()
         self.assertIsNotNone(second)
-        with open(second, "r", encoding="utf-8-sig") as f:
+        with open(second, encoding="utf-8-sig") as f:
             rows = list(csv.DictReader(f))
         self.assertEqual([r["pmid"] for r in rows], ["E"])
 
