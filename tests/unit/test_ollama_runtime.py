@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import itertools
+import os
 import subprocess
 import time
 
@@ -10,6 +11,9 @@ import pytest
 
 from src import config
 from src.knowledge import ollama_runtime as rt
+
+# 以下两测试断言 Windows 专有行为（WindowsPath 回退、CREATE_NO_WINDOW），非 Windows 平台跳过。
+windows_only = pytest.mark.skipif(os.name != "nt", reason="仅 Windows 行为")
 
 # clean_runtime 夹具会把 `_autostart`/`_idle_seconds` 冻结成桩（True / 0.0）。
 # 需要验证「真实配置 → 真实阈值」这条链路的用例必须能拿回真函数，因此在导入期
@@ -115,6 +119,7 @@ def test_find_exe_prefers_path_lookup(monkeypatch):
     assert rt._find_exe() == "C:/tools/ollama.exe"
 
 
+@windows_only
 def test_find_exe_falls_back_to_windows_install_dir(monkeypatch, tmp_path):
     monkeypatch.setattr(rt, "_which", lambda name: None)
     monkeypatch.setattr(rt.os, "name", "nt")
@@ -135,6 +140,7 @@ def test_model_name_gets_latest_tag(monkeypatch):
     assert rt._model() == "qwen3-embed:4b"
 
 
+@windows_only
 def test_spawn_default_uses_devnull_and_no_window_flag(monkeypatch):
     """默认 _spawn 必须吞掉子进程输出且不弹窗（Windows），不真起进程。
 
