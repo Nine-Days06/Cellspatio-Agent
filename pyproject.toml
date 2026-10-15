@@ -31,9 +31,44 @@ dependencies = [
 dev = [
     "pytest>=7.0.0",
     "pytest-cov>=4.0.0",
-    "black>=23.0.0",
     "ruff>=0.1.0",
 ]
 
 [tool.setuptools.package-data]
 "src.knowledge" = ["prompts/*.txt"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+extend-exclude = [
+    "snapshots",
+    "venv",
+    ".worktrees",
+    ".wrroc",
+    "knowledge_base",
+    "knowledge_base_methods",
+    "data",
+    "pubmed-etl/data",
+]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "UP", "B"]
+# 行长由 ruff format 统一控制，避免手写换行与超长 URL 误伤
+ignore = ["E501"]
+
+[tool.ruff.lint.per-file-ignores]
+# 技能加载器依赖 exec 动态编译源码，属设计所需
+"src/skills/loader.py" = ["S102"]
+# 延迟导入 json 以避免与 WRROC 模型的循环依赖
+"src/schemas/workflow.py" = ["E402"]
+# 根脚本需先注入 sys.path 才能导入 src.*
+"build_pubtator_cache.py" = ["E402"]
+"trial_import.py" = ["E402"]
+"run_full_import.py" = ["E402"]
+# 测试按需在用例内导入被测模块
+"tests/**" = ["E402"]
+# 一次性脚本先重配置 stdout 编码再导入
+"pubmed-etl/revalidate_relevant.py" = ["E402"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
