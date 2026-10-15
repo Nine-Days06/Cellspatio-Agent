@@ -6,6 +6,7 @@ from pathlib import Path
 from lightrag.lightrag import QueryParam
 
 from src.control.kg_memory import KGMemory
+from src.knowledge.async_runtime import runtime as async_runtime
 
 
 class KGQuery:
@@ -14,7 +15,7 @@ class KGQuery:
     def __init__(self, working_dir: Path | str, kg_memory: KGMemory | None = None):
         """
         初始化 KGQuery。
-        
+
         Args:
             working_dir: 工作目录
             kg_memory: 可选的 KGMemory 实例。如果不提供，将创建新实例。
@@ -25,9 +26,8 @@ class KGQuery:
     def query(self, question: str, mode: str = "hybrid") -> str:
         """自然语言提问，返回生成式回答。"""
         self._kg_memory._ensure_initialized()
-        loop = self._kg_memory._get_loop()
         param = QueryParam(mode=mode)
-        result = loop.run_until_complete(self._kg_memory._rag.aquery(question, param=param))
+        result = async_runtime.run(self._kg_memory._rag.aquery(question, param=param))
         return str(result) if result else "未找到相关信息。"
 
     def query_entities(self, query: str) -> list[str]:

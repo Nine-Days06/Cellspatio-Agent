@@ -1,11 +1,29 @@
 """KGMemory：工作流记录增量写入 LightRAG 测试。"""
 import tempfile
+import uuid
 from pathlib import Path
-import pytest
+
 import numpy as np
-from src.control.kg_memory import KGMemory
-from src.schemas.workflow import WorkflowRun, WorkflowIntent, WorkflowInput, WorkflowStep, WorkflowOutput, TerminalStatus, StepType, AnalysisType, IntentType, StepOutput
 from lightrag.utils import EmbeddingFunc
+
+from src.control.kg_memory import KGMemory
+from src.schemas.workflow import (
+    AnalysisType,
+    IntentType,
+    StepOutput,
+    StepType,
+    TerminalStatus,
+    WorkflowInput,
+    WorkflowIntent,
+    WorkflowOutput,
+    WorkflowRun,
+    WorkflowStep,
+)
+
+
+def _unique_ws(prefix: str) -> str:
+    """PG 持久化下，测试须用唯一 workspace 隔离，否则固定 run_id 被跨运行去重跳过。"""
+    return f"{prefix}_{uuid.uuid4().hex[:8]}"
 
 
 def _make_run() -> "WorkflowRun":
@@ -30,21 +48,18 @@ def _make_run() -> "WorkflowRun":
 
 
 def test_kg_memory_ingest_and_query():
-    """测试 ingest 和 query 在同一个 KGMemory 实例上工作。"""
+    """测试 ingest 和 query 在同一个 KGMemory 实例上工作（PG 后端）。"""
     with tempfile.TemporaryDirectory() as tmp:
-        kg_mem = KGMemory(working_dir=Path(tmp) / "kg")
-        run = _make_run()
-        kg_mem.ingest(run)
-        # 验证 LightRAG 写入（文件已创建在 workspace 子目录中）
         kg_dir = Path(tmp) / "kg"
-        # 找到 workspace 子目录
-        workspace_dirs = list(kg_dir.glob("kg_*"))
-        assert len(workspace_dirs) == 1
-        workspace_dir = workspace_dirs[0]
-        assert (workspace_dir / "vdb_entities.json").exists()
-        # 查询实体 - mock LLM 可能不返回实体，但不应报错
-        entities = kg_mem.query_entities("test-run-kgmem-001")
-        assert isinstance(entities, list)
+        kg_mem = KGMemory(working_dir=kg_dir, workspace=_unique_ws("test_ingest"))
+        try:
+            run = _make_run()
+            kg_mem.ingest(run)
+            # 查询实体 - mock LLM 可能不返回实体，但不应报错
+            entities = kg_mem.query_entities("test-run-kgmem-001")
+            assert isinstance(entities, list)
+        finally:
+            kg_mem.close()
 
 
 def test_kg_memory_accepts_custom_funcs(tmp_path):
@@ -61,24 +76,32 @@ def test_kg_memory_accepts_custom_funcs(tmp_path):
 
     mem = KGMemory(
         working_dir=tmp_path / "kg_custom",
+        workspace=_unique_ws("test_custom"),
         llm_model_func=fake_llm,
         embedding_func=EmbeddingFunc(embedding_dim=768, max_token_size=8192, func=fake_embed),
     )
-    mem.ingest(_make_run())  # 沿用该文件已有的 fake execution 构造方式
-    assert calls["llm"] >= 1  # ainsert 触发实体提取 → 走注入的 llm
-    assert calls["embed"] >= 1  # embedding 也被调用
-    mem.close()
+    try:
+        mem.ingest(_make_run())  # 沿用该文件已有的 fake execution 构造方式
+        assert calls["llm"] >= 1  # ainsert 触发实体提取 → 走注入的 llm
+        assert calls["embed"] >= 1  # embedding 也被调用
+    finally:
+        mem.close()
 
 
 def test_kg_memory_registers_atexit_close(monkeypatch, tmp_path):
-    """构造时必须向 atexit 注册 close（进程退出时优雅关闭事件循环）。"""
+    """构造时必须向 atexit 注册 close（进程退出时优雅关闭事件循环）。
+
+    close 经 register_atexit 包装以抑制退出期 logging 噪声，故按包装器的
+    atexit_target 属性回溯到原回调。
+    """
     import atexit
     registered = []
     monkeypatch.setattr(atexit, "register", lambda cb: registered.append(cb))
     mem = KGMemory(working_dir=tmp_path / "kg_atexit")
+    targets = [getattr(cb, "atexit_target", cb) for cb in registered]
     assert any(
         getattr(cb, "__func__", None) is KGMemory.close
         and getattr(cb, "__self__", None) is mem
-        for cb in registered
+        for cb in targets
     )
     mem.close()

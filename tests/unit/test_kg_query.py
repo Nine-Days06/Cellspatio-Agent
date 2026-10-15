@@ -1,10 +1,21 @@
 """KGQuery：自然语言查询接口测试。"""
 import tempfile
 from pathlib import Path
-import pytest
-from src.control.kg_query import KGQuery
+
 from src.control.kg_memory import KGMemory
-from src.schemas.workflow import WorkflowRun, WorkflowIntent, WorkflowInput, WorkflowStep, WorkflowOutput, TerminalStatus, StepType, AnalysisType, IntentType, StepOutput
+from src.control.kg_query import KGQuery
+from src.schemas.workflow import (
+    AnalysisType,
+    IntentType,
+    StepOutput,
+    StepType,
+    TerminalStatus,
+    WorkflowInput,
+    WorkflowIntent,
+    WorkflowOutput,
+    WorkflowRun,
+    WorkflowStep,
+)
 
 
 def _make_run() -> "WorkflowRun":
@@ -29,20 +40,19 @@ def _make_run() -> "WorkflowRun":
 
 
 def test_kg_query_ingest_and_query():
-    """测试 ingest 和 query 在同一个 KGQuery 实例上工作。"""
+    """测试 ingest 和 query 在同一个 KGQuery 实例上工作（PG 后端）。"""
     with tempfile.TemporaryDirectory() as tmp:
-        # 创建 KGMemory，传入 KGQuery 以复用共享存储
-        kg_memory = KGMemory(working_dir=Path(tmp) / "kg")
-        kg_query = KGQuery(working_dir=Path(tmp) / "kg", kg_memory=kg_memory)
-        run = _make_run()
-        kg_query.ingest_workflow(run)
-        # 验证 LightRAG 写入（文件已创建在 workspace 子目录中）
-        kg_dir = Path(tmp) / "kg"
-        workspace_dirs = list(kg_dir.glob("kg_*"))
-        assert len(workspace_dirs) == 1
-        workspace_dir = workspace_dirs[0]
-        assert (workspace_dir / "vdb_entities.json").exists()
-        # 自然语言查询
-        answer = kg_query.query("What is test-run-kgquery-001?")
-        assert isinstance(answer, str)
-        assert len(answer) > 0
+        # 创建 KGMemory，传入 KGQuery 以复用共享存储；workspace 唯一避免跨测试污染
+        kg_memory = KGMemory(
+            working_dir=Path(tmp) / "kg", workspace=f"test_kgquery_{Path(tmp).name}"
+        )
+        try:
+            kg_query = KGQuery(working_dir=Path(tmp) / "kg", kg_memory=kg_memory)
+            run = _make_run()
+            kg_query.ingest_workflow(run)
+            # 自然语言查询
+            answer = kg_query.query("What is test-run-kgquery-001?")
+            assert isinstance(answer, str)
+            assert len(answer) > 0
+        finally:
+            kg_memory.close()
