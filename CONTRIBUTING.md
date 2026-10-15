@@ -74,6 +74,7 @@ git checkout dev && git merge --no-ff release/0.2.0
 
 - 拉取用 `git fetch` + `git merge`，**不用 `git pull`**（`pull` = `fetch` + 自动整合，见 [git-pull 文档](https://git-scm.com/docs/git-pull)）。
 - `main` / `dev` **永不 `git push -f`**；强制推送会覆盖他人提交（见 [分支保护](https://docs.github.com/en/repositories/configuring-branches-and-merges-in-your-repository/managing-protected-branches/about-protected-branches)）。
+- **推送需经同意**：任何 `git push`（含新建/推送远程分支）前必须先获得维护者明确同意；AI agent 尤须遵守，默认只做本地提交。
 
 ## 提交信息：Conventional Commits
 
