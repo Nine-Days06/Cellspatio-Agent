@@ -1,4 +1,5 @@
 """配置读取用例：不受 test_ollama_runtime 的 clean_runtime 夹具替换影响。"""
+
 from __future__ import annotations
 
 import importlib

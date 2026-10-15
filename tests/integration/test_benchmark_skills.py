@@ -3,6 +3,7 @@
 不打真实网络（GEOFetcher.search 由集成测试 monkeypatch）、不依赖真实 LLM
 （KGMemory 缺省 mock 态）。route() 的 HITL 门对所有技能生效，须传 script_approved=True。
 """
+
 import asyncio
 from pathlib import Path
 
@@ -59,11 +60,14 @@ def test_loader_loads_benchmark_skills(skill_name):
     assert cls.metadata.name == skill_name
 
 
-@pytest.mark.parametrize("user_input,skill_name,analysis_type", [
-    ("对这份数据做差异表达分析", "differential_expression", "differential_expression"),
-    ("对这份 scRNA-seq 数据做单细胞聚类", "single_cell", "single_cell"),
-    ("分析这个 Visium 空间转录组数据", "spatial", "spatial"),
-])
+@pytest.mark.parametrize(
+    "user_input,skill_name,analysis_type",
+    [
+        ("对这份数据做差异表达分析", "differential_expression", "differential_expression"),
+        ("对这份 scRNA-seq 数据做单细胞聚类", "single_cell", "single_cell"),
+        ("分析这个 Visium 空间转录组数据", "spatial", "spatial"),
+    ],
+)
 def test_route_analysis_skills(user_input, skill_name, analysis_type):
     router = _make_router()
     result = router.route(user_input, context={"script_approved": True})
@@ -107,8 +111,9 @@ def test_route_search_datasets_end_to_end(monkeypatch):
     from src.data.fetchers.geo_fetcher import GEOFetcher
 
     def fake_search(self, query, max_results=20):
-        return [AssetMeta(asset_id="GSE123456", title="测试数据集",
-                          source="geo", asset_type="analysis")]
+        return [
+            AssetMeta(asset_id="GSE123456", title="测试数据集", source="geo", asset_type="analysis")
+        ]
 
     monkeypatch.setattr(GEOFetcher, "search", fake_search)
     router = _make_router()
@@ -194,7 +199,10 @@ def test_production_route_records_skill_memory(tmp_path):
         router = _make_router(kg_memory=kg)
         wm = _StubWM()
         runtime = AgentRuntime(
-            llm_client=_ScriptedLLM(), model="fake", workflow_manager=wm, router=router,
+            llm_client=_ScriptedLLM(),
+            model="fake",
+            workflow_manager=wm,
+            router=router,
         )
 
         result = runtime.execute("对这份数据做差异表达分析", context={"downloaded_assets": []})

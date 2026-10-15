@@ -1,4 +1,5 @@
 """GET /api/sidebar 形状与降级路径；python -m src.api 启动参数。"""
+
 from __future__ import annotations
 
 import importlib
@@ -211,9 +212,7 @@ def test_open_browser_later_never_raises(monkeypatch):
 
     monkeypatch.setattr(module.webbrowser, "open", boom)
     unhandled: list[BaseException] = []
-    monkeypatch.setattr(
-        threading, "excepthook", lambda args: unhandled.append(args.exc_value)
-    )
+    monkeypatch.setattr(threading, "excepthook", lambda args: unhandled.append(args.exc_value))
 
     module._open_browser_later("http://127.0.0.1:8600", delay=0)
 
@@ -276,7 +275,7 @@ def test_sidebar_env_exposes_ollama_start_mode(monkeypatch):
     env = _client(agent).get("/api/sidebar").json()["env"]
 
     assert env["ollama_start_mode"] == "eager"
-    assert set(env["ollama"]) == {"state", "managed", "detail"}   # 仍是三键
+    assert set(env["ollama"]) == {"state", "managed", "detail"}  # 仍是三键
 
 
 def test_sidebar_env_start_mode_lazy_by_default(monkeypatch):

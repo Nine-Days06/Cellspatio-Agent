@@ -4,6 +4,7 @@
 - _pack_entries：条目贪心装箱为定长文档
 - cellmarker_texts / cell_ontology_texts：源文件 → 入库文档列表
 """
+
 import re
 from pathlib import Path
 
@@ -13,8 +14,7 @@ from src.data.download import ensure_file
 from src.data.gene_map import GeneIndex, gene_curie, get_gene_index
 
 CELLMARKER_URL = (
-    "http://117.50.127.228/CellMarker/CellMarker_download_files/file/"
-    "Cell_marker_Human.xlsx"
+    "http://117.50.127.228/CellMarker/CellMarker_download_files/file/Cell_marker_Human.xlsx"
 )
 
 # 本地缓存位置（data/raw 已 gitignore；源文件已预下载，ensure_file 命中即跳过）
@@ -83,7 +83,9 @@ def _markers_with_ids(markers: list[str], index: GeneIndex) -> str:
     return ", ".join(parts)
 
 
-def cellmarker_texts(xlsx_path: Path | None = None, gene_index: GeneIndex | None = None) -> list[str]:
+def cellmarker_texts(
+    xlsx_path: Path | None = None, gene_index: GeneIndex | None = None
+) -> list[str]:
     """CellMarker Human xlsx → 入库文档列表
 
     gene_index: 基因映射索引；None 时用进程单例（首次会联网下载 gene_info）

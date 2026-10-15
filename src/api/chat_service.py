@@ -1,4 +1,5 @@
 """对话服务：把 Streamlit run_prompt 的编排平移到 API 层，负责落库时机与事件发射。"""
+
 from __future__ import annotations
 
 import logging
@@ -47,17 +48,23 @@ def soft_warn_for(store: SessionStore, session_id: str) -> bool:
     return bool(compact.should_soft_warn(session.get("summary"), prepared[offset:]))
 
 
-def _persist(store: SessionStore, session_id: str, content: str,
-             results: dict[str, Any] | None = None,
-             pending_script: dict[str, Any] | None = None) -> dict[str, Any]:
+def _persist(
+    store: SessionStore,
+    session_id: str,
+    content: str,
+    results: dict[str, Any] | None = None,
+    pending_script: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     """追加助手消息并读回末条（拿 id 与解码后的 results）。"""
-    store.append_message(session_id, "assistant", content,
-                         results=results, pending_script=pending_script)
+    store.append_message(
+        session_id, "assistant", content, results=results, pending_script=pending_script
+    )
     return store.get_messages(session_id)[-1]
 
 
-def run_turn(agent: Any, store: SessionStore, session_id: str, prompt: str,
-             emit: Emit) -> dict[str, Any]:
+def run_turn(
+    agent: Any, store: SessionStore, session_id: str, prompt: str, emit: Emit
+) -> dict[str, Any]:
     """执行一轮对话并返回运行时结果。
 
     步骤（平移 src/ui/app.py:36 run_prompt，用 SessionStore 替代 st.session_state）：
@@ -93,8 +100,7 @@ def run_turn(agent: Any, store: SessionStore, session_id: str, prompt: str,
 
     if result.get("status") == "aborted":
         last = _persist(store, session_id, "（已中断）")
-        emit(make_event("done", message_id=last["id"],
-                        message=wire_message(last)))
+        emit(make_event("done", message_id=last["id"], message=wire_message(last)))
         return result
 
     if result.get("status") == "needs_script_confirmation":
@@ -106,31 +112,36 @@ def run_turn(agent: Any, store: SessionStore, session_id: str, prompt: str,
             "user_request": prompt,
             "status": "pending",
         }
-        last = _persist(store, session_id, format_script_confirmation(result),
-                        pending_script=pending)
-        emit(make_event("confirm_card", kind="script",
-                        payload={"message_id": last["id"], **pending}))
-        emit(make_event("done", message_id=last["id"],
-                        message=wire_message(last)))
+        last = _persist(
+            store, session_id, format_script_confirmation(result), pending_script=pending
+        )
+        emit(
+            make_event("confirm_card", kind="script", payload={"message_id": last["id"], **pending})
+        )
+        emit(make_event("done", message_id=last["id"], message=wire_message(last)))
         return result
 
     if result.get("type") == "fetch_data" and result.get("status") == "needs_confirmation":
         text = result.get("message", "找到候选数据集，请选择要下载的项：")
         # 候选只放事件 payload 不落库（与 Streamlit session_state 语义一致）
         last = _persist(store, session_id, text)
-        emit(make_event("confirm_card", kind="data", payload={
-            "message_id": last["id"],
-            "candidates": result.get("candidates") or [],
-            "query": result.get("query", ""),
-            "message": text,
-        }))
-        emit(make_event("done", message_id=last["id"],
-                        message=wire_message(last)))
+        emit(
+            make_event(
+                "confirm_card",
+                kind="data",
+                payload={
+                    "message_id": last["id"],
+                    "candidates": result.get("candidates") or [],
+                    "query": result.get("query", ""),
+                    "message": text,
+                },
+            )
+        )
+        emit(make_event("done", message_id=last["id"], message=wire_message(last)))
         return result
 
     message = build_assistant_message(result)
-    last = _persist(store, session_id, message["content"],
-                    results=result.get("results"))
+    last = _persist(store, session_id, message["content"], results=result.get("results"))
     for chart in chart_events(result.get("results")):
         emit(chart)
     emit(make_event("done", message_id=last["id"], message=wire_message(last)))

@@ -2,6 +2,7 @@
 
 所有探测都 try/except 降级：自检失败只在响应里标红，绝不阻断聊天。
 """
+
 from __future__ import annotations
 
 import logging

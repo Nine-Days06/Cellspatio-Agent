@@ -1,4 +1,5 @@
 """chat_messages 纯函数：与搬迁前 app.py 私有函数行为逐项等价。"""
+
 from __future__ import annotations
 
 from src.control import chat_messages
@@ -35,8 +36,10 @@ def test_summarize_result_analysis_with_capsule_and_explanation():
 
 
 def test_summarize_result_fetch_result_lists_access_path():
-    result = {"type": "fetch_result",
-              "asset": {"asset_id": "GSE1", "access_path": "data/raw/geo/GSE1/x.gz"}}
+    result = {
+        "type": "fetch_result",
+        "asset": {"asset_id": "GSE1", "access_path": "data/raw/geo/GSE1/x.gz"},
+    }
 
     content, _refs = chat_messages.summarize_result(result)
 
@@ -48,9 +51,7 @@ def test_summarize_result_plain_message_default():
 
 
 def test_build_assistant_message_attaches_results():
-    message = chat_messages.build_assistant_message(
-        {"results": {"data": [1]}, "message": "ok"}
-    )
+    message = chat_messages.build_assistant_message({"results": {"data": [1]}, "message": "ok"})
 
     assert message["role"] == "assistant"
     assert message["results"] == {"data": [1]}
@@ -95,5 +96,8 @@ def test_make_llm_summarize_delegates_to_compact_summarize(monkeypatch):
     summarize = chat_messages.make_llm_summarize(agent)
     assert summarize is not None
     assert summarize("旧摘要", [{"role": "user", "content": "问"}]) == "## 目标\n做差异"
-    assert seen == {"model": "m1", "prior": "旧摘要",
-                    "messages": [{"role": "user", "content": "问"}]}
+    assert seen == {
+        "model": "m1",
+        "prior": "旧摘要",
+        "messages": [{"role": "user", "content": "问"}],
+    }

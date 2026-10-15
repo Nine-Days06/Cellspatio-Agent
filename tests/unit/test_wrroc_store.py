@@ -1,4 +1,5 @@
 """WRROCStore 落盘、索引、查询、Lineage 测试。"""
+
 import tempfile
 from pathlib import Path
 
@@ -17,9 +18,12 @@ from src.schemas.workflow import (
 
 def _make_run(run_id: str) -> WorkflowRun:
     from src.schemas.workflow import WorkflowRun
+
     return WorkflowRun(
         run_id=run_id,
-        intent=WorkflowIntent(type="analysis", analysis_type="differential_expression", original_input="test"),
+        intent=WorkflowIntent(
+            type="analysis", analysis_type="differential_expression", original_input="test"
+        ),
         params={"input_file": "data.csv"},
         input=WorkflowInput(user_input="test"),
         steps=[
@@ -28,11 +32,15 @@ def _make_run(run_id: str) -> WorkflowRun:
                 step_type=StepType.ANALYSIS,
                 tool="run_analysis",
                 params={"analysis_type": "differential_expression"},
-                output=StepOutput(status=TerminalStatus.SUCCESS, result={"result_file": "out.de_results.csv"}),
+                output=StepOutput(
+                    status=TerminalStatus.SUCCESS, result={"result_file": "out.de_results.csv"}
+                ),
             ),
         ],
         outputs=[
-            WorkflowOutput(name="de_results", path="out.de_results.csv", type="csv", meta={"genes": 100}),
+            WorkflowOutput(
+                name="de_results", path="out.de_results.csv", type="csv", meta={"genes": 100}
+            ),
         ],
     )
 
@@ -76,23 +84,63 @@ def test_wrroc_lineage_graph():
             WorkflowRun,
             WorkflowStep,
         )
+
         run1 = WorkflowRun(
             run_id="run-download",
             intent=WorkflowIntent(type="fetch_data", original_input="下载 GSE123"),
             params={"query": "GSE123"},
-            input=WorkflowInput(user_input="下载 GSE123", context={"downloaded_assets": [{"asset_id": "GSE123", "access_path": "data/GSE123.csv"}]}),
-            steps=[WorkflowStep(step_id="s1", step_type=StepType.FETCH_DATA, tool="search_datasets", params={}, status="success",
-                                output=StepOutput(status=TerminalStatus.SUCCESS, result={"candidates": [{"asset_id": "GSE123"}]}) )],
-            outputs=[WorkflowOutput(name="GSE123", path="data/GSE123.csv", type="csv", meta={"source": "geo"})],
+            input=WorkflowInput(
+                user_input="下载 GSE123",
+                context={
+                    "downloaded_assets": [{"asset_id": "GSE123", "access_path": "data/GSE123.csv"}]
+                },
+            ),
+            steps=[
+                WorkflowStep(
+                    step_id="s1",
+                    step_type=StepType.FETCH_DATA,
+                    tool="search_datasets",
+                    params={},
+                    status="success",
+                    output=StepOutput(
+                        status=TerminalStatus.SUCCESS,
+                        result={"candidates": [{"asset_id": "GSE123"}]},
+                    ),
+                )
+            ],
+            outputs=[
+                WorkflowOutput(
+                    name="GSE123", path="data/GSE123.csv", type="csv", meta={"source": "geo"}
+                )
+            ],
         )
         # Run 2: 分析（依赖 run1 的输出）
         run2 = WorkflowRun(
             run_id="run-analyze",
-            intent=WorkflowIntent(type="analysis", analysis_type="differential_expression", original_input="分析差异表达"),
+            intent=WorkflowIntent(
+                type="analysis",
+                analysis_type="differential_expression",
+                original_input="分析差异表达",
+            ),
             params={"input_file": "data/GSE123.csv"},
-            input=WorkflowInput(user_input="分析差异表达", context={"downloaded_assets": [{"asset_id": "GSE123", "access_path": "data/GSE123.csv"}]}),
-            steps=[WorkflowStep(step_id="s1", step_type=StepType.ANALYSIS, tool="run_analysis", params={"analysis_type": "differential_expression"},
-                                status="success", output=StepOutput(status=TerminalStatus.SUCCESS, result={"result_file": "out.de_results.csv"}))],
+            input=WorkflowInput(
+                user_input="分析差异表达",
+                context={
+                    "downloaded_assets": [{"asset_id": "GSE123", "access_path": "data/GSE123.csv"}]
+                },
+            ),
+            steps=[
+                WorkflowStep(
+                    step_id="s1",
+                    step_type=StepType.ANALYSIS,
+                    tool="run_analysis",
+                    params={"analysis_type": "differential_expression"},
+                    status="success",
+                    output=StepOutput(
+                        status=TerminalStatus.SUCCESS, result={"result_file": "out.de_results.csv"}
+                    ),
+                )
+            ],
             outputs=[WorkflowOutput(name="de_results", path="out.de_results.csv", type="csv")],
         )
         store = WRROCStore(base_dir=Path(tmp) / ".wrroc")

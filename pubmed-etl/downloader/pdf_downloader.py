@@ -8,22 +8,27 @@ PMC Open Access PDF 下载器
   4. 支持断点续传（跳过已存在文件）。
 """
 
-import time
-import re
 import csv
 import json
+import re
 import subprocess
-import requests
-from pathlib import Path
-from datetime import datetime
-from lxml import etree
 import threading
+import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from datetime import datetime
+from pathlib import Path
 
+import requests
 from config.settings import (
-    DB_PATH, PMC_S3_URL, PDF_DIR,
-    REQUEST_INTERVAL, OUTPUT_DIR, PROXY, LOG_DIR
+    DB_PATH,
+    LOG_DIR,
+    OUTPUT_DIR,
+    PDF_DIR,
+    PMC_S3_URL,
+    PROXY,
+    REQUEST_INTERVAL,
 )
+from lxml import etree
 from utils.db import get_conn
 from utils.logger import get_logger
 
@@ -49,7 +54,9 @@ RETRY_CHECKPOINT_INTERVAL = 10
 class OATransportError(Exception):
     """OA 数据源传输失败（超时/连接错误/429、5xx 重试耗尽），应记为 network_fail 稍后重试。"""
 
+
 # ── API 调用与解析 ───────────────────────────────────────────
+
 
 def normalize_pmc_asset_url(url: str) -> str:
     """
@@ -65,7 +72,7 @@ def normalize_pmc_asset_url(url: str) -> str:
 
     normalized = url.strip()
     if normalized.startswith("ftp://"):
-        normalized = "https://" + normalized[len("ftp://"):]
+        normalized = "https://" + normalized[len("ftp://") :]
 
     old_prefix = "https://ftp.ncbi.nlm.nih.gov/pub/pmc/"
     new_prefix = "https://ftp.ncbi.nlm.nih.gov/pub/pmc/deprecated/"
@@ -97,6 +104,7 @@ def normalize_pmc_id(value: str) -> str | None:
 
     return normalized
 
+
 def _request_oa_with_retry(
     url: str, params: dict | list | None, max_retries: int = 3, timeout: int = 45
 ) -> requests.Response | None:
@@ -108,13 +116,17 @@ def _request_oa_with_retry(
         try:
             r = requests.get(url, **kwargs)
             if r.status_code == 429:
-                wait = 2 ** attempt
-                logger.warning(f"OA API rate limited (429), waiting {wait}s (attempt {attempt}/{max_retries})")
+                wait = 2**attempt
+                logger.warning(
+                    f"OA API rate limited (429), waiting {wait}s (attempt {attempt}/{max_retries})"
+                )
                 time.sleep(wait)
                 continue
             if 500 <= r.status_code < 600:
-                wait = 2 ** attempt
-                logger.warning(f"OA API server error ({r.status_code}), waiting {wait}s (attempt {attempt}/{max_retries})")
+                wait = 2**attempt
+                logger.warning(
+                    f"OA API server error ({r.status_code}), waiting {wait}s (attempt {attempt}/{max_retries})"
+                )
                 time.sleep(wait)
                 continue
             if r.status_code == 404:
@@ -126,15 +138,17 @@ def _request_oa_with_retry(
             if attempt == max_retries:
                 logger.warning(f"OA API timeout after {max_retries} retries: {url[:60]}...")
                 return None
-            wait = 2 ** attempt
+            wait = 2**attempt
             logger.warning(f"OA API timeout, waiting {wait}s (attempt {attempt}/{max_retries})")
             time.sleep(wait)
         except requests.ConnectionError as e:
             if attempt == max_retries:
                 logger.warning(f"OA API connection error after {max_retries} retries: {e}")
                 return None
-            wait = 2 ** attempt
-            logger.warning(f"OA API connection error, waiting {wait}s (attempt {attempt}/{max_retries}): {e}")
+            wait = 2**attempt
+            logger.warning(
+                f"OA API connection error, waiting {wait}s (attempt {attempt}/{max_retries}): {e}"
+            )
             time.sleep(wait)
         except requests.RequestException as e:
             logger.warning(f"OA API request failed: {e}")
@@ -159,7 +173,7 @@ def _s3_uri_to_https(url: str) -> str:
         return ""
     uri = url.strip()
     if uri.startswith(S3_URI_PREFIX):
-        return f"{PMC_S3_URL}/{uri[len(S3_URI_PREFIX):]}"
+        return f"{PMC_S3_URL}/{uri[len(S3_URI_PREFIX) :]}"
     return uri
 
 
@@ -190,9 +204,7 @@ def _list_s3_versions(pmc_id: str) -> list[int]:
             logger.warning(f"  S3 版本列表 XML 解析失败: {pmc_id} -> {e}")
             raise OATransportError(f"S3 版本列表 XML 解析失败: {pmc_id}") from e
 
-        for node in root.xpath(
-            "//s3:CommonPrefixes/s3:Prefix", namespaces={"s3": S3_XML_NS}
-        ):
+        for node in root.xpath("//s3:CommonPrefixes/s3:Prefix", namespaces={"s3": S3_XML_NS}):
             match = prefix_pattern.match((node.text or "").strip())
             if match:
                 versions.append(int(match.group(1)))
@@ -311,7 +323,7 @@ def load_cached_oa_links(
             break
 
         try:
-            with open(csv_file, "r", encoding="utf-8-sig", newline="") as f:
+            with open(csv_file, encoding="utf-8-sig", newline="") as f:
                 reader = csv.DictReader(f)
                 for row in reader:
                     pmc_id = normalize_pmc_id(row.get("pmc_id", ""))
@@ -346,16 +358,16 @@ def fetch_oa_links(
     uniq_pmc_ids = list(dict.fromkeys(pmc_ids))
     cached_links = cached_links or {}
     oa_map: dict[str, dict[str, str]] = {
-        pmc_id: cached_links[pmc_id]
-        for pmc_id in uniq_pmc_ids
-        if pmc_id in cached_links
+        pmc_id: cached_links[pmc_id] for pmc_id in uniq_pmc_ids if pmc_id in cached_links
     }
 
     missing = [pmc_id for pmc_id in uniq_pmc_ids if pmc_id not in oa_map]
     if not missing:
         return oa_map, []
 
-    logger.info(f"需要远程查询 {len(missing)} 个 PMCID（并发 {OA_FETCH_MAX_WORKERS} 线程，请求间隔 {REQUEST_INTERVAL}s）...")
+    logger.info(
+        f"需要远程查询 {len(missing)} 个 PMCID（并发 {OA_FETCH_MAX_WORKERS} 线程，请求间隔 {REQUEST_INTERVAL}s）..."
+    )
 
     rate_lock = threading.Lock()
     last_ts = [0.0]
@@ -373,10 +385,7 @@ def fetch_oa_links(
     not_oa_count = 0
 
     with ThreadPoolExecutor(max_workers=OA_FETCH_MAX_WORKERS) as executor:
-        future_to_pmc = {
-            executor.submit(_rate_limited_fetch, pid): pid
-            for pid in missing
-        }
+        future_to_pmc = {executor.submit(_rate_limited_fetch, pid): pid for pid in missing}
 
         for i, future in enumerate(as_completed(future_to_pmc), 1):
             pid, links, status = future.result()
@@ -392,7 +401,9 @@ def fetch_oa_links(
     if not_oa_count:
         logger.info(f"  其中 {not_oa_count} 篇为非 OA 文献（无 OA 全文，正常跳过）。")
     if network_failed:
-        logger.warning(f"  网络失败 {len(network_failed)} 篇，将进入待重试清单（可 --step pdf-retry 续跑）。")
+        logger.warning(
+            f"  网络失败 {len(network_failed)} 篇，将进入待重试清单（可 --step pdf-retry 续跑）。"
+        )
 
     return oa_map, network_failed
 
@@ -416,13 +427,16 @@ def export_oa_links_csv(
         for pmc_id in sorted(oa_links.keys()):
             info = pmc_to_info.get(pmc_id, {})
             links = oa_links[pmc_id]
-            writer.writerow([
-                info.get("pmid", ""),
-                pmc_id,
-                links.get("pdf", ""),
-            ])
+            writer.writerow(
+                [
+                    info.get("pmid", ""),
+                    pmc_id,
+                    links.get("pdf", ""),
+                ]
+            )
 
     return csv_path
+
 
 def export_failed_links_csv(
     failed_items: list[dict],
@@ -441,16 +455,19 @@ def export_failed_links_csv(
         writer.writerow(["pmid", "pmc_id", "pdf_url"])
         for item in failed_items:
             links = item["links"]
-            writer.writerow([
-                item.get("pmid", ""),
-                item.get("pmc_id", ""),
-                links.get("pdf", "") if links else "",
-            ])
+            writer.writerow(
+                [
+                    item.get("pmid", ""),
+                    item.get("pmc_id", ""),
+                    links.get("pdf", "") if links else "",
+                ]
+            )
 
     return csv_path
 
 
 # ── PDF 下载 checkpoint ──────────────────────────────────────
+
 
 def _pdf_checkpoint_path() -> Path:
     return Path(OUTPUT_DIR) / PDF_CHECKPOINT_FILENAME
@@ -472,7 +489,7 @@ def _load_pdf_checkpoint() -> list[dict]:
     if not path.exists():
         return []
     try:
-        with open(path, "r", encoding="utf-8") as f:
+        with open(path, encoding="utf-8") as f:
             data = json.load(f)
         return data.get("pending", [])
     except Exception as e:
@@ -499,17 +516,19 @@ def load_failed_items_from_csv(out_dir: Path = OUTPUT_DIR) -> list[dict]:
     logger.info(f"从失败清单加载重试项: {csv_file}")
     items: list[dict] = []
     try:
-        with open(csv_file, "r", encoding="utf-8-sig", newline="") as f:
+        with open(csv_file, encoding="utf-8-sig", newline="") as f:
             for row in csv.DictReader(f):
                 links: dict[str, str] = {}
                 pdf_url = normalize_pmc_asset_url(row.get("pdf_url", ""))
                 if pdf_url:
                     links["pdf"] = pdf_url
-                items.append({
-                    "pmid": row.get("pmid", ""),
-                    "pmc_id": normalize_pmc_id(row.get("pmc_id", "")) or "",
-                    "links": links,
-                })
+                items.append(
+                    {
+                        "pmid": row.get("pmid", ""),
+                        "pmc_id": normalize_pmc_id(row.get("pmc_id", "")) or "",
+                        "links": links,
+                    }
+                )
     except Exception as e:
         logger.warning(f"读取失败清单 CSV 失败: {csv_file} -> {e}")
         return []
@@ -517,6 +536,7 @@ def load_failed_items_from_csv(out_dir: Path = OUTPUT_DIR) -> list[dict]:
 
 
 # ── 下载核心 ──────────────────────────────────────────────────
+
 
 def _run_aria2c_download(url: str, output_path: Path, timeout_sec: int = 300) -> bool:
     output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -532,11 +552,16 @@ def _run_aria2c_download(url: str, output_path: Path, timeout_sec: int = 300) ->
         "--retry-wait=2",
         "--connect-timeout=30",
         "--timeout=60",
-        "-x", ARIA2C_CONNECT_PER_SERVER,
-        "-s", ARIA2C_SPLIT,
-        "-k", ARIA2C_MIN_SPLIT_SIZE,
-        "-d", str(output_path.parent),
-        "-o", output_path.name,
+        "-x",
+        ARIA2C_CONNECT_PER_SERVER,
+        "-s",
+        ARIA2C_SPLIT,
+        "-k",
+        ARIA2C_MIN_SPLIT_SIZE,
+        "-d",
+        str(output_path.parent),
+        "-o",
+        output_path.name,
     ]
     if PROXY:
         cmd.append(f"--all-proxy={PROXY}")
@@ -569,6 +594,7 @@ def _run_aria2c_download(url: str, output_path: Path, timeout_sec: int = 300) ->
 
     return output_path.exists()
 
+
 def _cleanup_aria2_temp_files(temp_path: Path) -> None:
     """删除 aria2 下载中断残留的临时文件（含 .part.aria2 控制文件）。"""
     if temp_path.exists():
@@ -583,7 +609,7 @@ def download_pdf_file(url: str, dest_path: Path) -> bool:
     下载单个文件（PDF 或 TXT），支持断点续传（检查是否存在）。
     成功返回 True，失败返回 False。
     """
-    if dest_path.exists() and dest_path.stat().st_size > MIN_VALID_FILE_BYTES: 
+    if dest_path.exists() and dest_path.stat().st_size > MIN_VALID_FILE_BYTES:
         return True
 
     dest_path.parent.mkdir(parents=True, exist_ok=True)
@@ -633,10 +659,11 @@ def download_oa_pdf(links: dict[str, str], pdf_path: Path) -> bool:
     if txt_url and download_txt_file(txt_url, pdf_path.with_suffix(".txt")):
         return True
 
-
     return False
 
+
 # ── 业务流程 ──────────────────────────────────────────────────
+
 
 def _local_fulltext_exists(pmid: str) -> bool:
     """本地是否已有该文献全文（.pdf 或 .txt）。pdf 下载与 pdf-retry 共用此判据，保证两阶段口径一致。"""
@@ -661,10 +688,10 @@ def run_pdf_download(db_path: Path = DB_PATH):
     WHERE (v.human_review = 'Y' OR (v.human_review IS NULL AND v.llm_verdict = 'RELEVANT'))
       AND a.pmc_id IS NOT NULL AND a.pmc_id != ''
     """
-    
+
     with get_conn(db_path) as conn:
         records = conn.execute(query).fetchall()
-        
+
     if not records:
         logger.info("未发现符合下载条件（有 PMC ID 且 LLM 判定相关）的文献。")
         return
@@ -683,7 +710,7 @@ def run_pdf_download(db_path: Path = DB_PATH):
 
     if invalid_pmc_count:
         logger.warning(f"已跳过 {invalid_pmc_count} 条格式无效的 PMC ID。")
-    
+
     pmc_ids = list(pmc_to_info.keys())
     cached_oa_links = load_cached_oa_links(pmc_ids)
     if cached_oa_links:
@@ -694,8 +721,7 @@ def run_pdf_download(db_path: Path = DB_PATH):
     txt_link_count = sum(1 for links in oa_links.values() if "txt" in links)
 
     logger.info(
-        f"成功获取 {len(oa_links)} 条 OA 资源"
-        f"（PDF: {pdf_link_count}, TXT: {txt_link_count}）。"
+        f"成功获取 {len(oa_links)} 条 OA 资源（PDF: {pdf_link_count}, TXT: {txt_link_count}）。"
     )
 
     links_csv = export_oa_links_csv(oa_links=oa_links, pmc_to_info=pmc_to_info)
@@ -717,12 +743,14 @@ def run_pdf_download(db_path: Path = DB_PATH):
         if _local_fulltext_exists(pmid):
             skip_count += 1
             continue
-        network_failed_items.append({
-            "pmc_id": pid,
-            "links": {},
-            "pdf_path": PDF_DIR / f"{pmid}.pdf",
-            "pmid": pmid,
-        })
+        network_failed_items.append(
+            {
+                "pmc_id": pid,
+                "links": {},
+                "pdf_path": PDF_DIR / f"{pmid}.pdf",
+                "pmid": pmid,
+            }
+        )
 
     # 使用线程池并发下载，提高效率
     with ThreadPoolExecutor(max_workers=DOWNLOAD_MAX_WORKERS) as executor:
@@ -741,7 +769,7 @@ def run_pdf_download(db_path: Path = DB_PATH):
                 "links": links,
                 "pdf_path": pdf_path,
                 "pmid": info["pmid"],
-                }
+            }
             future = executor.submit(
                 download_oa_pdf,
                 links,
@@ -766,8 +794,7 @@ def run_pdf_download(db_path: Path = DB_PATH):
     failed_count += len(network_failed_items)
 
     logger.info(
-        f"首次下载完成：PDF {pdf_success_count} 篇，"
-        f"失败 {failed_count} 篇，跳过 {skip_count} 篇。"
+        f"首次下载完成：PDF {pdf_success_count} 篇，失败 {failed_count} 篇，跳过 {skip_count} 篇。"
     )
 
     # 4. 重试下载失败的链接（最多 2 次）
@@ -817,7 +844,9 @@ def run_pdf_download(db_path: Path = DB_PATH):
             for item in failed_items
         ]
         _save_pdf_checkpoint(checkpoint_items)
-        logger.info(f"仍有 {len(failed_items)} 篇下载失败，失败链接清单: {failed_csv}，运行 --step pdf-retry 可续跑。")
+        logger.info(
+            f"仍有 {len(failed_items)} 篇下载失败，失败链接清单: {failed_csv}，运行 --step pdf-retry 可续跑。"
+        )
     elif pdf_success_count + failed_count + skip_count > 0:
         _clear_pdf_checkpoint()
         logger.info("所有下载任务均已成功完成。")
@@ -828,6 +857,7 @@ def run_pdf_download(db_path: Path = DB_PATH):
 
 
 # ── 失败重试（断点续传） ─────────────────────────────────────
+
 
 def run_pdf_retry(db_path: Path = DB_PATH):
     """
@@ -848,10 +878,7 @@ def run_pdf_retry(db_path: Path = DB_PATH):
             return
 
     # 与 run_pdf_download 使用同一判据过滤本地已有全文，避免两阶段口径不一致
-    pending = [
-        item for item in pending
-        if not _local_fulltext_exists(item.get("pmid") or "")
-    ]
+    pending = [item for item in pending if not _local_fulltext_exists(item.get("pmid") or "")]
     logger.info(f"过滤已下载后待重试 {len(pending)} 篇。")
 
     if not pending:

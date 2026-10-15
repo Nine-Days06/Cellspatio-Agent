@@ -8,25 +8,32 @@ NCBI E-utilities 批量下载器
   4. 断点续传 — 已下载的批次自动跳过
 """
 
-import re
-import time
 import json
+import re
 import threading
-import requests
-from pathlib import Path
-from datetime import date, datetime
+import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from datetime import date, datetime
+from pathlib import Path
 
+import requests
 from config.settings import (
-    NCBI_API_KEY, NCBI_EMAIL, PROXY,
-    REQUEST_INTERVAL, EFETCH_BATCH_SIZE,
-    PUBMED_QUERY, RAW_XML_DIR,
-    SEARCH_YEAR_MIN, SEARCH_YEAR_MAX, SEARCH_SLICE_YEARS,
+    EFETCH_BATCH_SIZE,
     LOG_DIR,
+    NCBI_API_KEY,
+    NCBI_EMAIL,
+    PROXY,
+    PUBMED_QUERY,
+    RAW_XML_DIR,
+    REQUEST_INTERVAL,
+    SEARCH_SLICE_YEARS,
+    SEARCH_YEAR_MAX,
+    SEARCH_YEAR_MIN,
 )
 from utils.logger import get_logger
 
 logger = get_logger("downloader", log_dir=LOG_DIR)
+
 
 # 全局速率限制器，保证并发请求不超出 NCBI API 频率限制
 class _RateLimiter:
@@ -43,12 +50,14 @@ class _RateLimiter:
                 time.sleep(self.interval - elapsed)
             self._last = time.time()
 
+
 _rate_limiter = _RateLimiter(REQUEST_INTERVAL)
 
 EUTILS_BASE = "https://eutils.ncbi.nlm.nih.gov/entrez/eutils"
 
 
 # ── 内部工具函数 ──────────────────────────────────────────────
+
 
 def _base_params() -> dict:
     p = {"email": NCBI_EMAIL, "tool": "cellspatio_lit_pipeline"}
@@ -66,7 +75,7 @@ def _get(url: str, params: dict, retries: int = 5) -> requests.Response:
         try:
             r = requests.get(url, params=params, **kwargs)
             if r.status_code == 429:
-                wait = 2 ** attempt
+                wait = 2**attempt
                 logger.warning(f"Rate limited, waiting {wait}s (attempt {attempt})")
                 time.sleep(wait)
                 continue
@@ -76,7 +85,7 @@ def _get(url: str, params: dict, retries: int = 5) -> requests.Response:
             if attempt == retries:
                 raise
             logger.warning(f"Request failed ({e}), retrying {attempt}/{retries}")
-            time.sleep(2 ** attempt)
+            time.sleep(2**attempt)
 
 
 def _post(url: str, data: dict, retries: int = 5) -> requests.Response:
@@ -88,7 +97,7 @@ def _post(url: str, data: dict, retries: int = 5) -> requests.Response:
         try:
             r = requests.post(url, data=data, **kwargs)
             if r.status_code == 429:
-                wait = 2 ** attempt
+                wait = 2**attempt
                 logger.warning(f"Rate limited, waiting {wait}s (attempt {attempt})")
                 time.sleep(wait)
                 continue
@@ -98,7 +107,7 @@ def _post(url: str, data: dict, retries: int = 5) -> requests.Response:
             if attempt == retries:
                 raise
             logger.warning(f"Request failed ({e}), retrying {attempt}/{retries}")
-            time.sleep(2 ** attempt)
+            time.sleep(2**attempt)
 
 
 def _safe_json(r: requests.Response) -> dict:
@@ -110,9 +119,9 @@ def _safe_json(r: requests.Response) -> dict:
         # 常见问题：JSON 字符串中包含未转义的换行符
         # 将原始控制字符替换为转义后的（特别是换行符）
         # 这里简单起见，先把 \n \r 替换掉，因为它们最常导致解析失败
-        text = r.text.replace('\n', '\\n').replace('\r', '\\r')
+        text = r.text.replace("\n", "\\n").replace("\r", "\\r")
         # 同时也移除其他不可见控制字符
-        text = re.sub(r'[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]', '', text)
+        text = re.sub(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]", "", text)
         try:
             return json.loads(text)
         except Exception as e2:
@@ -121,6 +130,7 @@ def _safe_json(r: requests.Response) -> dict:
 
 
 # ── Step 1 & 2：esearch 获取 PMID 列表 ───────────────────────
+
 
 def _generate_year_slices(slice_size: int = 5) -> list[tuple[int, int]]:
     """将全局年份范围按 slice_size 切分为多个子区间"""
@@ -138,7 +148,7 @@ def _generate_year_slices(slice_size: int = 5) -> list[tuple[int, int]]:
 # 单次查询命中超过 10k 时只能拆小查询。策略：先按年份初分段，
 # 超限的段按日期对半递归细分（年→月→日），直到每段 ≤ SAFE_LEAF_COUNT。
 
-SAFE_LEAF_COUNT = 9500   # 叶子切片目标命中上限（留余量给切分期间的新入库）
+SAFE_LEAF_COUNT = 9500  # 叶子切片目标命中上限（留余量给切分期间的新入库）
 _FETCH_HARD_LIMIT = 10000  # NCBI retstart 硬限制，翻页兜底断点
 
 
@@ -197,9 +207,9 @@ def _collect_pmids(query: str, lo: str, hi: str) -> list[str]:
     return _collect_pmids(query, *left) + _collect_pmids(query, *right)
 
 
-def fetch_pmid_list(query: str = PUBMED_QUERY,
-                    mindate: int | str | None = None,
-                    maxdate: int | str | None = None) -> list[str]:
+def fetch_pmid_list(
+    query: str = PUBMED_QUERY, mindate: int | str | None = None, maxdate: int | str | None = None
+) -> list[str]:
     """
     通过 esearch + efetch 获取单个日期切片内的全部 PMID。
     mindate/maxdate 支持 "2000" 或 "2025/06/01" 两种格式。
@@ -225,13 +235,13 @@ def fetch_pmid_list(query: str = PUBMED_QUERY,
     # 长查询词 URL 编码后易超请求行上限（414），term 走 POST 请求体
     r = _post(f"{EUTILS_BASE}/esearch.fcgi", params)
     result = _safe_json(r)["esearchresult"]
-    
+
     if "ERROR" in result:
         logger.error(f"NCBI Search Error: {result['ERROR']}")
         raise RuntimeError(result["ERROR"])
 
-    total    = int(result["count"])
-    webenv   = result["webenv"]
+    total = int(result["count"])
+    webenv = result["webenv"]
     querykey = result["querykey"]
     logger.info(f"共找到 {total} 篇文献（WebEnv={webenv[:20]}...）")
 
@@ -239,13 +249,15 @@ def fetch_pmid_list(query: str = PUBMED_QUERY,
     pmids = []
     # 使用 efetch (uilist) 拉取，绕过 esearch 的 10k 限制
     # 注意：即便使用 efetch，PubMed 对于 retstart + retmax 也有 10,000 的硬限制
-    page_size = 5000 
+    page_size = 5000
     for start in range(0, total, page_size):
         if start >= 10000:
-            logger.error(f"触发 NCBI 10k 硬限制（切片 {lo}-{hi} 命中超限未被切分），本切片结果被截断。")
+            logger.error(
+                f"触发 NCBI 10k 硬限制（切片 {lo}-{hi} 命中超限未被切分），本切片结果被截断。"
+            )
             logger.error("这是自适应切分的兜底分支，正常不应出现，请报告。")
             break
-            
+
         p = {
             **_base_params(),
             "db": "pubmed",
@@ -264,7 +276,9 @@ def fetch_pmid_list(query: str = PUBMED_QUERY,
             logger.info(f"  PMID 列表进度: {len(pmids)}/{total}")
         except requests.exceptions.HTTPError as e:
             if e.response.status_code == 400:
-                logger.warning(f"分页请求失败 (retstart={start})，可能触发了 NCBI 的 10k 限制。停止获取 PMID。")
+                logger.warning(
+                    f"分页请求失败 (retstart={start})，可能触发了 NCBI 的 10k 限制。停止获取 PMID。"
+                )
                 break
             raise
         time.sleep(REQUEST_INTERVAL)
@@ -274,6 +288,7 @@ def fetch_pmid_list(query: str = PUBMED_QUERY,
 
 
 # ── Step 3：efetch 批量下载 XML ───────────────────────────────
+
 
 def _download_single_batch(
     batch_idx: int,
@@ -286,7 +301,7 @@ def _download_single_batch(
     batch_file = out_dir / f"batch_{batch_idx:05d}.xml"
 
     if batch_file.exists() and batch_file.stat().st_size > 0:
-        logger.info(f"  [批次 {batch_idx+1}/{total_batches}] 已存在，跳过")
+        logger.info(f"  [批次 {batch_idx + 1}/{total_batches}] 已存在，跳过")
         return batch_file
 
     params = {
@@ -303,13 +318,13 @@ def _download_single_batch(
         with open(batch_file, "wb") as f:
             f.write(r.content)
         logger.info(
-            f"  [批次 {batch_idx+1}/{total_batches}] "
+            f"  [批次 {batch_idx + 1}/{total_batches}] "
             f"下载 {len(chunk)} 篇 → {batch_file.name} "
             f"({batch_file.stat().st_size / 1024:.1f} KB)"
         )
         return batch_file
     except Exception as e:
-        logger.error(f"  [批次 {batch_idx+1}] 下载失败: {e}")
+        logger.error(f"  [批次 {batch_idx + 1}] 下载失败: {e}")
         return None
 
 
@@ -335,18 +350,14 @@ def download_xml_batches(
     total_batches = (len(pmids) + batch_size - 1) // batch_size
     max_workers = 3 if not NCBI_API_KEY else 8
 
-    chunks = [
-        pmids[i * batch_size : (i + 1) * batch_size]
-        for i in range(total_batches)
-    ]
+    chunks = [pmids[i * batch_size : (i + 1) * batch_size] for i in range(total_batches)]
 
     xml_files = []
     futures = {}
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
         for batch_idx, chunk in enumerate(chunks):
             future = executor.submit(
-                _download_single_batch, batch_idx, chunk,
-                out_dir, batch_size, total_batches
+                _download_single_batch, batch_idx, chunk, out_dir, batch_size, total_batches
             )
             futures[future] = batch_idx
 
@@ -361,6 +372,7 @@ def download_xml_batches(
 
 
 # ── 公开入口 ──────────────────────────────────────────────────
+
 
 def run_download(query: str = PUBMED_QUERY) -> list[Path]:
     """完整下载流程入口，返回所有 XML 文件路径"""

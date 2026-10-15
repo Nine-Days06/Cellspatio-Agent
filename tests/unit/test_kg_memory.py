@@ -1,4 +1,5 @@
 """KGMemory：工作流记录增量写入 LightRAG 测试。"""
+
 import tempfile
 import uuid
 from pathlib import Path
@@ -29,7 +30,11 @@ def _unique_ws(prefix: str) -> str:
 def _make_run() -> "WorkflowRun":
     return WorkflowRun(
         run_id="test-run-kgmem-001",
-        intent=WorkflowIntent(type=IntentType.ANALYSIS, analysis_type=AnalysisType.DIFFERENTIAL_EXPRESSION, original_input="test"),
+        intent=WorkflowIntent(
+            type=IntentType.ANALYSIS,
+            analysis_type=AnalysisType.DIFFERENTIAL_EXPRESSION,
+            original_input="test",
+        ),
         params={"input_file": "data.csv"},
         input=WorkflowInput(user_input="test"),
         steps=[
@@ -38,11 +43,15 @@ def _make_run() -> "WorkflowRun":
                 step_type=StepType.ANALYSIS,
                 tool="run_analysis",
                 params={"analysis_type": "differential_expression"},
-                output=StepOutput(status=TerminalStatus.SUCCESS, result={"result_file": "out.de_results.csv"}),
+                output=StepOutput(
+                    status=TerminalStatus.SUCCESS, result={"result_file": "out.de_results.csv"}
+                ),
             ),
         ],
         outputs=[
-            WorkflowOutput(name="de_results", path="out.de_results.csv", type="csv", meta={"genes": 100}),
+            WorkflowOutput(
+                name="de_results", path="out.de_results.csv", type="csv", meta={"genes": 100}
+            ),
         ],
     )
 
@@ -95,13 +104,13 @@ def test_kg_memory_registers_atexit_close(monkeypatch, tmp_path):
     atexit_target 属性回溯到原回调。
     """
     import atexit
+
     registered = []
     monkeypatch.setattr(atexit, "register", lambda cb: registered.append(cb))
     mem = KGMemory(working_dir=tmp_path / "kg_atexit")
     targets = [getattr(cb, "atexit_target", cb) for cb in registered]
     assert any(
-        getattr(cb, "__func__", None) is KGMemory.close
-        and getattr(cb, "__self__", None) is mem
+        getattr(cb, "__func__", None) is KGMemory.close and getattr(cb, "__self__", None) is mem
         for cb in targets
     )
     mem.close()

@@ -1,4 +1,5 @@
 """SkillRegistry 功能测试。"""
+
 import tempfile
 from pathlib import Path
 
@@ -8,9 +9,17 @@ from src.skills.registry import SkillRegistry
 
 def _make_skill(name="test_skill", version="1.0.0"):
     return SkillManifest(
-        metadata=SkillMetadata(name=name, version=version, description="d", author="t", tags=[], entry_point="main", schema={}),
+        metadata=SkillMetadata(
+            name=name,
+            version=version,
+            description="d",
+            author="t",
+            tags=[],
+            entry_point="main",
+            schema={},
+        ),
         dependencies=[],
-        config_schema={}
+        config_schema={},
     )
 
 

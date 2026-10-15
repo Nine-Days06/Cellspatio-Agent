@@ -2,9 +2,8 @@
 """SQLite 数据库工具函数"""
 
 import sqlite3
-from pathlib import Path
 from contextlib import contextmanager
-
+from pathlib import Path
 
 # 建表 DDL
 CREATE_ARTICLES_SQL = """

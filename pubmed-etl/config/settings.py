@@ -5,24 +5,27 @@
 """
 
 import os
-from pathlib import Path
 from datetime import datetime
+from pathlib import Path
+
 from dotenv import load_dotenv
 
 load_dotenv()
 
 # ── 项目路径 ──────────────────────────────────────────────────
-BASE_DIR    = Path(__file__).parent.parent
-DATA_DIR    = BASE_DIR / "data"
+BASE_DIR = Path(__file__).parent.parent
+DATA_DIR = BASE_DIR / "data"
 RAW_XML_DIR = DATA_DIR / "raw_xml"
-PROC_DIR    = DATA_DIR / "processed"
-OUTPUT_DIR  = DATA_DIR / "output"
-LOG_DIR     = BASE_DIR / "logs"
+PROC_DIR = DATA_DIR / "processed"
+OUTPUT_DIR = DATA_DIR / "output"
+LOG_DIR = BASE_DIR / "logs"
 
 # PDF 存储路径
 PDF_DIR = DATA_DIR / "pdfs"
 
-DB_PATH     = PROC_DIR / "multiomics_lit.db"  # 文件名保留 multiomics_lit.db 以兼容存量数据；展示名已改为 CellSpatio
+DB_PATH = (
+    PROC_DIR / "multiomics_lit.db"
+)  # 文件名保留 multiomics_lit.db 以兼容存量数据；展示名已改为 CellSpatio
 
 # ── 网络代理配置 ────────────────────────────────────────────
 # 可选：HTTP/HTTPS 代理，如 http://127.0.0.1:7890（走代理访问 NCBI 等外网）
@@ -33,7 +36,7 @@ PROXY = os.environ.get("PROXY", "") or None
 # 填入你的 API Key，可将速率从 3 次/秒 提升到 10 次/秒
 # 留空也可运行，但会更慢
 NCBI_API_KEY = os.environ.get("NCBI_API_KEY", "")
-NCBI_EMAIL   = os.environ.get("NCBI_EMAIL", "")   # NCBI 要求提供联系邮箱，建议设置到 .env
+NCBI_EMAIL = os.environ.get("NCBI_EMAIL", "")  # NCBI 要求提供联系邮箱，建议设置到 .env
 
 # PMC OA 资源桶（PMC Cloud Service on AWS S3，公共匿名读，无需签名）
 # 注：NCBI 已于 2026-08 永久退役 PMC OA Web Service（oa.fcgi 返回 404），
@@ -53,19 +56,19 @@ EFETCH_BATCH_SIZE = 300
 PUBMED_QUERY = (
     # 单细胞：含拼写变体（连字符/无连字符）与染色质方向
     '("single-cell"[Title/Abstract] OR "single cell"[Title/Abstract] OR '
-    'scRNA-seq[Title/Abstract] OR scRNAseq[Title/Abstract] OR '
+    "scRNA-seq[Title/Abstract] OR scRNAseq[Title/Abstract] OR "
     'snRNA-seq[Title/Abstract] OR "single-cell RNA sequencing"[Title/Abstract] OR '
     '"single nucleus"[Title/Abstract] OR '
-    'CITE-seq[Title/Abstract] OR '
-    'scATAC-seq[Title/Abstract] OR snATAC-seq[Title/Abstract] OR '
+    "CITE-seq[Title/Abstract] OR "
+    "scATAC-seq[Title/Abstract] OR snATAC-seq[Title/Abstract] OR "
     # 空间/时序：覆盖主流平台（成像式 + 测序式）；裸 spatiotemporal 会引入
     # 大量非组学论文，限定为 transcriptomics/omics 组合
     '"spatial transcriptomics"[Title/Abstract] OR spatialomics[Title/Abstract] OR '
-    'Visium[Title/Abstract] OR MERFISH[Title/Abstract] OR '
+    "Visium[Title/Abstract] OR MERFISH[Title/Abstract] OR "
     '"Slide-seq"[Title/Abstract] OR Slide-seqV2[Title/Abstract] OR '
     '"Stereo-seq"[Title/Abstract] OR seqFISH[Title/Abstract] OR '
-    'STARmap[Title/Abstract] OR Xenium[Title/Abstract] OR '
-    'GeoMx[Title/Abstract] OR CosMx[Title/Abstract] OR '
+    "STARmap[Title/Abstract] OR Xenium[Title/Abstract] OR "
+    "GeoMx[Title/Abstract] OR CosMx[Title/Abstract] OR "
     '"spatial ATAC-seq"[Title/Abstract] OR '
     '"spatiotemporal transcriptomics"[Title/Abstract] OR '
     '"spatiotemporal omics"[Title/Abstract] OR '
@@ -74,7 +77,7 @@ PUBMED_QUERY = (
     '("Homo sapiens"[Organism] OR human[Title/Abstract] OR patients[Title/Abstract])'
     # NOT 前置排除（检索端省下载，与后端口径对齐）：
     # 前 7 项对应硬过滤 EXCLUDED_ARTICLE_TYPES；review 对应 LLM 排除规则5（综述默认排除）
-    ' NOT (letter[pt] OR comment[pt] OR correction[pt] OR retraction[pt] OR '
+    " NOT (letter[pt] OR comment[pt] OR correction[pt] OR retraction[pt] OR "
     '"published erratum"[pt] OR editorial[pt] OR news[pt] OR review[pt])'
 )
 
@@ -96,8 +99,13 @@ ABSTRACT_MIN_LEN = 80
 
 # 需要排除的文章类型（PubMed PublicationType 字段）
 EXCLUDED_ARTICLE_TYPES = [
-    "Letter", "Comment", "Correction", "Retraction",
-    "Published Erratum", "Editorial", "News"
+    "Letter",
+    "Comment",
+    "Correction",
+    "Retraction",
+    "Published Erratum",
+    "Editorial",
+    "News",
 ]
 
 # ── LLM 验证配置 ──────────────────────────────────────────────
@@ -105,37 +113,37 @@ EXCLUDED_ARTICLE_TYPES = [
 # 向后兼容：若未设置 ETL_LLM_PROVIDER，仍读取 LLM_PROVIDER
 # 支持：deepseek / openai / zhipu
 # 注：空字符串视同未设置，将回退
-LLM_PROVIDER = (
-    os.environ.get("ETL_LLM_PROVIDER")
-    or os.environ.get("LLM_PROVIDER")
-    or "zhipu"
-)
+LLM_PROVIDER = os.environ.get("ETL_LLM_PROVIDER") or os.environ.get("LLM_PROVIDER") or "zhipu"
 
 # DeepSeek（OpenAI 兼容格式）
-DEEPSEEK_API_KEY  = os.environ.get("DEEPSEEK_API_KEY", "")
+DEEPSEEK_API_KEY = os.environ.get("DEEPSEEK_API_KEY", "")
 DEEPSEEK_BASE_URL = "https://api.deepseek.com"
-DEEPSEEK_MODEL    = os.environ.get("DEEPSEEK_MODEL", "deepseek-v4-flash")
+DEEPSEEK_MODEL = os.environ.get("DEEPSEEK_MODEL", "deepseek-v4-flash")
 
 # 智谱AI（原生 zhipuai SDK）
-ZHIPU_API_KEY   = os.environ.get("ZHIPU_API_KEY", "")
-ZHIPU_MODEL     = "glm-4-Flash-250414"
-ZHIPU_BATCH_MODEL = "glm-4-flash"      # Batch API 使用的模型（价格 50% off）
+ZHIPU_API_KEY = os.environ.get("ZHIPU_API_KEY", "")
+ZHIPU_MODEL = "glm-4-Flash-250414"
+ZHIPU_BATCH_MODEL = "glm-4-flash"  # Batch API 使用的模型（价格 50% off）
 
 # 其他 OpenAI 兼容 API（如 OpenAI、SiliconFlow、vLLM 等）
-OPENAI_API_KEY  = os.environ.get("OPENAI_API_KEY", "")
-OPENAI_BASE_URL = os.environ.get("OPENAI_BASE_URL", "https://dashscope.aliyuncs.com/compatible-mode/v1")
-OPENAI_MODEL    = os.environ.get("OPENAI_MODEL", "qwen3.7-plus")
+OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY", "")
+OPENAI_BASE_URL = os.environ.get(
+    "OPENAI_BASE_URL", "https://dashscope.aliyuncs.com/compatible-mode/v1"
+)
+OPENAI_MODEL = os.environ.get("OPENAI_MODEL", "qwen3.7-plus")
 
-LLM_BATCH_SIZE  = 5                     # 每次调用验证的文献数量
-LLM_CONCURRENCY = 2                     # 并行发送的批次数（同时进行的 API 调用数）
-LLM_MAX_TOKENS  = int(os.environ.get("LLM_MAX_TOKENS", "8192"))   # 每次 API 调用的最大 token 数
-LLM_MAX_RETRIES = int(os.environ.get("LLM_MAX_RETRIES", "3"))     # 单次 API 调用重试次数（指数退避 2s/4s/8s）
-LLM_MAX_ROUNDS  = 2                     # 轮次重试次数（初始 1 轮 + 额外重试轮数）
+LLM_BATCH_SIZE = 5  # 每次调用验证的文献数量
+LLM_CONCURRENCY = 2  # 并行发送的批次数（同时进行的 API 调用数）
+LLM_MAX_TOKENS = int(os.environ.get("LLM_MAX_TOKENS", "8192"))  # 每次 API 调用的最大 token 数
+LLM_MAX_RETRIES = int(
+    os.environ.get("LLM_MAX_RETRIES", "3")
+)  # 单次 API 调用重试次数（指数退避 2s/4s/8s）
+LLM_MAX_ROUNDS = 2  # 轮次重试次数（初始 1 轮 + 额外重试轮数）
 
 # ── LLM Batch API 配置（仅 zhipu） ──
-LLM_BATCH_POLL_INTERVAL  = 30           # Batch 轮询间隔（秒）
-LLM_BATCH_TIMEOUT        = 86400        # Batch 超时时间（24h）
-LLM_BATCH_AUTO_DELETE    = True         # 完成后自动删除输入文件
+LLM_BATCH_POLL_INTERVAL = 30  # Batch 轮询间隔（秒）
+LLM_BATCH_TIMEOUT = 86400  # Batch 超时时间（24h）
+LLM_BATCH_AUTO_DELETE = True  # 完成后自动删除输入文件
 
 # 智谱 Batch 官方限制：单个 batch 文件 ≤ 100MB、每文件 ≤ 50000 个请求、
 # 每个 batch 文件只能包含对单个模型的请求、每个请求必须带唯一 custom_id。
@@ -147,8 +155,8 @@ LLM_BATCH_AUTO_DELETE    = True         # 完成后自动删除输入文件
 # "100MB" 的计量口径未明说，若按十进制 100_000_000 计算，则
 # 95*1024*1024=99,614,720 只剩 0.39% 余量，遇到行体积估算偏差就会踩线。
 # 95,000,000 对两种口径（十进制 100MB / 二进制 100MiB）都留有 5% 以上余量。
-LLM_BATCH_MAX_BYTES      = int(os.environ.get("LLM_BATCH_MAX_BYTES", "95000000"))
-LLM_BATCH_MAX_REQUESTS   = int(os.environ.get("LLM_BATCH_MAX_REQUESTS", "50000"))
+LLM_BATCH_MAX_BYTES = int(os.environ.get("LLM_BATCH_MAX_BYTES", "95000000"))
+LLM_BATCH_MAX_REQUESTS = int(os.environ.get("LLM_BATCH_MAX_REQUESTS", "50000"))
 
 # Provider 配置字典 — 新增 provider 只需在此添加一项
 LLM_PROVIDER_CONFIGS = {
@@ -168,8 +176,10 @@ LLM_PROVIDER_CONFIGS = {
         "model": DEEPSEEK_MODEL,
         "base_url": DEEPSEEK_BASE_URL,
         "extra_kwargs": {
-            "temperature": 0, "max_tokens": LLM_MAX_TOKENS,
-            "timeout": 120, "response_format": {"type": "json_object"},
+            "temperature": 0,
+            "max_tokens": LLM_MAX_TOKENS,
+            "timeout": 120,
+            "response_format": {"type": "json_object"},
         },
         # V4 模型思考模式默认开启：temperature 不生效、思考 token 占用输出预算
         # 可能导致 JSON 截断，显式关闭

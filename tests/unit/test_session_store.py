@@ -31,7 +31,9 @@ def test_append_and_get_messages_roundtrip_with_results():
     store = SessionStore()
     sid = store.create_session()
     store.append_message(
-        sid, "assistant", "分析完成",
+        sid,
+        "assistant",
+        "分析完成",
         results={"statistics": {"n": 3}, "data": [{"gene": "TP53"}]},
         pending_script={"script": "print(1)", "status": "pending"},
     )
@@ -54,8 +56,9 @@ def test_delete_session_cascades_messages():
 def test_update_session_meta_roundtrip():
     store = SessionStore()
     sid = store.create_session()
-    store.update_session_meta(sid, summary="## 目标\nX", summary_upto=7,
-                              downloaded_assets=[{"asset_id": "GSE1"}])
+    store.update_session_meta(
+        sid, summary="## 目标\nX", summary_upto=7, downloaded_assets=[{"asset_id": "GSE1"}]
+    )
     session = store.get_session(sid)
     assert session["summary"] == "## 目标\nX"
     assert session["summary_upto"] == 7
@@ -75,21 +78,24 @@ def test_update_session_meta_none_means_untouched():
 def test_set_script_status_updates_latest_pending():
     store = SessionStore()
     sid = store.create_session()
-    store.append_message(sid, "assistant", "s1",
-                         pending_script={"script": "a", "status": "pending"})
-    store.append_message(sid, "assistant", "s2",
-                         pending_script={"script": "b", "status": "pending"})
+    store.append_message(
+        sid, "assistant", "s1", pending_script={"script": "a", "status": "pending"}
+    )
+    store.append_message(
+        sid, "assistant", "s2", pending_script={"script": "b", "status": "pending"}
+    )
     store.set_script_status(sid, "expired")
     messages = store.get_messages(sid)
-    assert messages[0]["pending_script"]["status"] == "pending"   # 旧的不动
-    assert messages[1]["pending_script"]["status"] == "expired"   # 最新被改
+    assert messages[0]["pending_script"]["status"] == "pending"  # 旧的不动
+    assert messages[1]["pending_script"]["status"] == "expired"  # 最新被改
 
 
 def test_set_script_status_ignores_confirmed():
     store = SessionStore()
     sid = store.create_session()
-    store.append_message(sid, "assistant", "s",
-                         pending_script={"script": "a", "status": "confirmed"})
+    store.append_message(
+        sid, "assistant", "s", pending_script={"script": "a", "status": "confirmed"}
+    )
     store.set_script_status(sid, "expired")
     assert store.get_messages(sid)[0]["pending_script"]["status"] == "confirmed"
 

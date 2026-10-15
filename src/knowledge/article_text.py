@@ -1,4 +1,5 @@
 """文章/文献文本转换工具"""
+
 from typing import Any
 
 
@@ -41,9 +42,7 @@ def convert_article_to_text(article: dict[str, Any], *, genes: dict[str, str] | 
         text_parts.append(f"组学类型：{article['omics_type']}")
     if article.get("pmid"):
         text_parts.append(f"PMID：{article['pmid']}")
-        text_parts.append(
-            f"链接：https://pubmed.ncbi.nlm.nih.gov/{article['pmid']}/"
-        )
+        text_parts.append(f"链接：https://pubmed.ncbi.nlm.nih.gov/{article['pmid']}/")
     if article.get("doi"):
         doi = str(article["doi"]).removeprefix("https://doi.org/")
         text_parts.append(f"DOI：{doi}")

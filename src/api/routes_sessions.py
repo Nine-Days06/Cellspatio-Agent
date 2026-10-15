@@ -1,4 +1,5 @@
 """会话 CRUD、消息恢复端点：SessionStore 逐请求短连接。"""
+
 from __future__ import annotations
 
 import logging
@@ -43,7 +44,7 @@ def list_sessions() -> dict[str, Any]:
 @router.post("/sessions")
 def create_session(body: CreateSessionRequest | None = None) -> dict[str, Any]:
     store = _store()
-    title = (body.title if body and body.title else "新会话")
+    title = body.title if body and body.title else "新会话"
     session_id = store.create_session(title)
     return {"session": store.get_session(session_id)}
 
@@ -76,8 +77,9 @@ def list_messages(session_id: str, restore: int = 0) -> dict[str, Any]:
     }
 
 
-def _restore_pending(store: SessionStore, session_id: str,
-                     messages: list[dict[str, Any]]) -> dict[str, Any] | None:
+def _restore_pending(
+    store: SessionStore, session_id: str, messages: list[dict[str, Any]]
+) -> dict[str, Any] | None:
     """复刻 src/ui/app.py:439 _load_session 的过期语义。
 
     只看最新一条带 pending_script 的消息：pending → 落库置 expired 后按
@@ -142,8 +144,7 @@ def confirm(body: ConfirmRequest, request: Request) -> dict[str, Any]:
         lock.release()
 
 
-def _latest_pending_raw(store: SessionStore,
-                        session_id: str) -> dict[str, Any] | None:
+def _latest_pending_raw(store: SessionStore, session_id: str) -> dict[str, Any] | None:
     """从库里反查最新一条带 pending_script 的消息（不做过期改写）。"""
     for msg in reversed(store.get_messages(session_id)):
         if msg.get("pending_script"):
@@ -151,8 +152,7 @@ def _latest_pending_raw(store: SessionStore,
     return None
 
 
-def _confirm_script(agent: Any, store: SessionStore,
-                    body: ConfirmRequest) -> dict[str, Any]:
+def _confirm_script(agent: Any, store: SessionStore, body: ConfirmRequest) -> dict[str, Any]:
     pending = _latest_pending_raw(store, body.session_id)
     if pending is None or pending.get("status") != "pending":
         raise HTTPException(status_code=409, detail="没有待确认的脚本")
@@ -181,17 +181,14 @@ def _asset_key(asset: dict[str, Any], source: str) -> tuple[str, Any]:
     return (asset.get("source") or source, asset.get("asset_id"))
 
 
-def _confirm_data(agent: Any, store: SessionStore,
-                  body: ConfirmRequest) -> dict[str, Any]:
+def _confirm_data(agent: Any, store: SessionStore, body: ConfirmRequest) -> dict[str, Any]:
     if not body.source or not body.asset_id:
         raise HTTPException(status_code=400, detail="缺少 source 或 asset_id")
 
     try:
-        result = agent.confirm_and_download(body.source, body.asset_id,
-                                            query=body.query or "")
+        result = agent.confirm_and_download(body.source, body.asset_id, query=body.query or "")
     except KeyError as exc:  # fetcher_registry.get 未注册 source
-        raise HTTPException(status_code=400,
-                            detail=f"未知数据源: {body.source}") from exc
+        raise HTTPException(status_code=400, detail=f"未知数据源: {body.source}") from exc
     asset = result.get("asset")
     if asset:
         session = store.get_session(body.session_id) or {}

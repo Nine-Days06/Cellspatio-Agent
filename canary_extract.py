@@ -5,6 +5,7 @@
 
 exit 0 = ok（四类噪声皆空，可进入全量导入），1 = 有噪声。
 """
+
 import argparse
 import csv
 import json
@@ -34,7 +35,8 @@ def judge_entities(names: list[str], banned: list[str] | None = None) -> dict[st
     fake_id = [n for n in names if FAKE_ID_RE.match(n)]
     cjk = [n for n in names if CJK_RE.search(n)]
     bibliographic = [
-        n for n in names
+        n
+        for n in names
         if any(p.match(n) for p in BIBLIO_PATTERNS) or n.strip().lower() in banned_lower
     ]
     title_like = [n for n in names if len(n.split()) >= 12]
@@ -65,10 +67,7 @@ def _read_entity_names(working_dir: str) -> list[str]:
     if not vdb_path.exists():
         return []
     payload = json.loads(vdb_path.read_text(encoding="utf-8"))
-    return [
-        str(r.get("entity_name") or r.get("__id__") or "")
-        for r in (payload.get("data") or [])
-    ]
+    return [str(r.get("entity_name") or r.get("__id__") or "") for r in (payload.get("data") or [])]
 
 
 def run_canary(n: int = 15, working_dir: str = ".canary_kb") -> dict[str, Any]:
@@ -80,9 +79,7 @@ def run_canary(n: int = 15, working_dir: str = ".canary_kb") -> dict[str, Any]:
     mapping = load_pmid_genes()
     articles = _load_articles(n)
     texts = [
-        convert_article_to_text(
-            row, genes=mapping.get((row.get("pmid") or "").strip())
-        )
+        convert_article_to_text(row, genes=mapping.get((row.get("pmid") or "").strip()))
         for row in articles
     ]
     # 禁词只收标题：`作者：/期刊：` 已从抽取文本移除，不会再成为实体；且期刊名常与

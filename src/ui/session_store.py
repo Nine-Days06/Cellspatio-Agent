@@ -57,17 +57,19 @@ def _encode_results(results: dict[str, Any] | None) -> str | None:
     if isinstance(charts, list):
         encoded = []
         for chart in charts:
-            if hasattr(chart, "savefig"):            # matplotlib Figure
+            if hasattr(chart, "savefig"):  # matplotlib Figure
                 buf = io.BytesIO()
                 chart.savefig(buf, format="png", dpi=120, bbox_inches="tight")
-                encoded.append({
-                    "type": "image",
-                    "image_b64": base64.b64encode(buf.getvalue()).decode(),
-                })
-            elif hasattr(chart, "to_json"):          # plotly Figure
+                encoded.append(
+                    {
+                        "type": "image",
+                        "image_b64": base64.b64encode(buf.getvalue()).decode(),
+                    }
+                )
+            elif hasattr(chart, "to_json"):  # plotly Figure
                 encoded.append({"type": "plotly", "figure_json": chart.to_json()})
             else:
-                encoded.append(chart)                # 普通 dict 原样
+                encoded.append(chart)  # 普通 dict 原样
         payload["charts"] = encoded
     return json.dumps(payload, ensure_ascii=False, default=str)
 
@@ -117,8 +119,7 @@ class SessionStore:
         now = _now()
         with self._conn() as conn:
             conn.execute(
-                "INSERT INTO sessions (id, title, created_at, updated_at) "
-                "VALUES (?, ?, ?, ?)",
+                "INSERT INTO sessions (id, title, created_at, updated_at) VALUES (?, ?, ?, ?)",
                 (sid, title, now, now),
             )
         return sid
@@ -134,9 +135,7 @@ class SessionStore:
 
     def get_session(self, session_id: str) -> dict[str, Any] | None:
         with self._conn() as conn:
-            row = conn.execute(
-                "SELECT * FROM sessions WHERE id = ?", (session_id,)
-            ).fetchone()
+            row = conn.execute("SELECT * FROM sessions WHERE id = ?", (session_id,)).fetchone()
         if row is None:
             return None
         session = dict(row)
@@ -148,23 +147,33 @@ class SessionStore:
             conn.execute("DELETE FROM messages WHERE session_id = ?", (session_id,))
             conn.execute("DELETE FROM sessions WHERE id = ?", (session_id,))
 
-    def append_message(self, session_id: str, role: str, content: str,
-                       results: dict[str, Any] | None = None,
-                       pending_script: dict[str, Any] | None = None) -> None:
+    def append_message(
+        self,
+        session_id: str,
+        role: str,
+        content: str,
+        results: dict[str, Any] | None = None,
+        pending_script: dict[str, Any] | None = None,
+    ) -> None:
         now = _now()
         with self._conn() as conn:
             row = conn.execute(
-                "SELECT COALESCE(MAX(seq), 0) + 1 AS next_seq "
-                "FROM messages WHERE session_id = ?",
+                "SELECT COALESCE(MAX(seq), 0) + 1 AS next_seq FROM messages WHERE session_id = ?",
                 (session_id,),
             ).fetchone()
             seq = row["next_seq"]
             conn.execute(
                 "INSERT INTO messages (session_id, seq, role, content, timestamp, "
                 "results, pending_script) VALUES (?, ?, ?, ?, ?, ?, ?)",
-                (session_id, seq, role, content, now,
-                 _encode_results(results),
-                 json.dumps(pending_script, ensure_ascii=False) if pending_script else None),
+                (
+                    session_id,
+                    seq,
+                    role,
+                    content,
+                    now,
+                    _encode_results(results),
+                    json.dumps(pending_script, ensure_ascii=False) if pending_script else None,
+                ),
             )
             # 首条用户消息自动作为会话标题（截断 20 字）
             if seq == 1 and role == "user":
@@ -189,9 +198,13 @@ class SessionStore:
             messages.append(msg)
         return messages
 
-    def update_session_meta(self, session_id: str, summary: str | None = None,
-                            summary_upto: int | None = None,
-                            downloaded_assets: list | None = None) -> None:
+    def update_session_meta(
+        self,
+        session_id: str,
+        summary: str | None = None,
+        summary_upto: int | None = None,
+        downloaded_assets: list | None = None,
+    ) -> None:
         """None = 不更新该字段；恒刷新 updated_at。"""
         sets, vals = [], []
         if summary is not None:
@@ -207,9 +220,7 @@ class SessionStore:
         vals.append(_now())
         vals.append(session_id)
         with self._conn() as conn:
-            conn.execute(
-                f"UPDATE sessions SET {', '.join(sets)} WHERE id=?", vals
-            )
+            conn.execute(f"UPDATE sessions SET {', '.join(sets)} WHERE id=?", vals)
 
     def set_script_status(self, session_id: str, status: str) -> None:
         """仅更新该会话最新一条状态为 pending/expired 的脚本消息。"""

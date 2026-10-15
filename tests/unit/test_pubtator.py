@@ -12,9 +12,9 @@ _FIXTURE = (
     "9704485\t17\t22\ttumor\tDisease\tMESH:D009369\n"
     "9704485\t594\t598\tCD38\tGene\t952\n"
     "9704485\t629\t633\tCD61\tGene\t3690\n"
-    "9704485\t257\t261\tCD34\tGene\t947\n"          # 重复 GeneID → 去重
+    "9704485\t257\t261\tCD34\tGene\t947\n"  # 重复 GeneID → 去重
     "9704485\t429\t437\tpatients\tSpecies\t9606\n"
-    "9704485\tAssociation\tMESH:D016393\t947\n"      # 关系行不得误取
+    "9704485\tAssociation\tMESH:D016393\t947\n"  # 关系行不得误取
 )
 
 
@@ -24,15 +24,19 @@ def _client(handler):
 
 def test_fetch_parses_gene_lines_only():
     """只取 Type==Gene 的 6 列标注行，非基因实体与关系行忽略。"""
+
     def handler(request):
         return httpx.Response(200, text=_FIXTURE)
 
     result = pubtator.fetch_pmid_genes(["9704485"], client=_client(handler), min_interval=0)
-    assert result == {"9704485": {"CD34": "NCBIGene:947", "CD38": "NCBIGene:952", "CD61": "NCBIGene:3690"}}
+    assert result == {
+        "9704485": {"CD34": "NCBIGene:947", "CD38": "NCBIGene:952", "CD61": "NCBIGene:3690"}
+    }
 
 
 def test_fetch_keeps_mention_to_id_mapping():
     """保留 mention→CURIE 对应关系（LLM 需要知道哪个 ID 对应哪个基因）。"""
+
     def handler(request):
         return httpx.Response(200, text=_FIXTURE)
 
@@ -52,12 +56,13 @@ def test_fetch_splits_into_batches_of_100():
     pmids = [str(i) for i in range(250)]
     pubtator.fetch_pmid_genes(pmids, client=_client(handler), batch_size=100, min_interval=0)
     assert len(calls) == 3
-    assert calls[0].count(",") == 99      # 第一批 100 个
-    assert calls[2].count(",") == 49      # 末批 50 个
+    assert calls[0].count(",") == 99  # 第一批 100 个
+    assert calls[2].count(",") == 49  # 末批 50 个
 
 
 def test_fetch_400_splits_then_skips_singleton():
     """整批不存在 → 400：拆半重试；单条仍 400 → 跳过不抛异常。"""
+
     def handler(request):
         return httpx.Response(400, json={"detail": "Could not retrieve publications"})
 
@@ -69,6 +74,7 @@ def test_fetch_400_splits_then_skips_singleton():
 
 def test_fetch_recovers_valid_pmids_from_mixed_batch():
     """一批里只有部分命中（200）时只返回命中项。"""
+
     def handler(request):
         return httpx.Response(200, text=_FIXTURE)
 

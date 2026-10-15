@@ -8,6 +8,7 @@
 导入侧为增量：每次只导入本次复制的那一个 CSV，data/import/import_ledger.json
 记录已导入批次，重复运行为空操作；删除该台账文件即触发一次有意的全量重导。
 """
+
 import argparse
 import re
 import shutil
@@ -41,8 +42,7 @@ def run_etl_export(etl_dir: Path, python: str | None = None) -> Path | None:
     if not output_dir.exists():
         return None
     csvs = sorted(
-        p for p in output_dir.glob("articles_*.csv")
-        if _ARTICLES_CSV_RE.fullmatch(p.name)
+        p for p in output_dir.glob("articles_*.csv") if _ARTICLES_CSV_RE.fullmatch(p.name)
     )
     if not csvs:
         return None
@@ -57,7 +57,9 @@ def copy_to_import(csv_path: Path, import_dir: Path) -> Path:
     return dest
 
 
-def import_via_cli(import_dir: Path, csv_name: str | None = None, reimport_all: bool = False) -> dict:
+def import_via_cli(
+    import_dir: Path, csv_name: str | None = None, reimport_all: bool = False
+) -> dict:
     """通过 import_cli 模块增量导入 data/import 目录
 
     Args:

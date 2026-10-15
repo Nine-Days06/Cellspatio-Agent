@@ -1,4 +1,5 @@
 """SkillLoader 动态加载测试。"""
+
 import asyncio
 import tempfile
 from pathlib import Path
@@ -11,7 +12,9 @@ def test_loader_loads_skill_class():
     with tempfile.TemporaryDirectory() as tmp:
         skill_dir = Path(tmp) / "test_skill"
         skill_dir.mkdir()
-        (skill_dir / "manifest.json").write_text('{"metadata": {"name": "test_skill", "version": "1.0.0", "description": "d", "author": "t", "tags": [], "entry_point": "main", "schema": {}}, "dependencies": [], "config_schema": {}, "inputs": [], "outputs": []}')
+        (skill_dir / "manifest.json").write_text(
+            '{"metadata": {"name": "test_skill", "version": "1.0.0", "description": "d", "author": "t", "tags": [], "entry_point": "main", "schema": {}}, "dependencies": [], "config_schema": {}, "inputs": [], "outputs": []}'
+        )
         (skill_dir / "main.py").write_text("""
 from src.skills.base import SkillBase, SkillContext
 class TestSkill(SkillBase):
@@ -30,7 +33,9 @@ def test_loader_cache():
     with tempfile.TemporaryDirectory() as tmp:
         skill_dir = Path(tmp) / "test_skill"
         skill_dir.mkdir()
-        (skill_dir / "manifest.json").write_text('{"metadata": {"name": "test_skill", "version": "1.0.0", "description": "d", "author": "t", "tags": [], "entry_point": "main", "schema": {}}, "dependencies": [], "config_schema": {}, "inputs": [], "outputs": []}')
+        (skill_dir / "manifest.json").write_text(
+            '{"metadata": {"name": "test_skill", "version": "1.0.0", "description": "d", "author": "t", "tags": [], "entry_point": "main", "schema": {}}, "dependencies": [], "config_schema": {}, "inputs": [], "outputs": []}'
+        )
         (skill_dir / "main.py").write_text("""
 from src.skills.base import SkillBase, SkillContext
 class TestSkill(SkillBase):
@@ -40,7 +45,7 @@ class TestSkill(SkillBase):
 """)
         registry = SkillRegistry(Path(tmp))
         loader = SkillLoader(registry)
-        
+
         # 第一个加载
         skill_class1 = loader.load("test_skill")
         # 第二次加载应返回缓存
@@ -52,7 +57,9 @@ def test_loader_reload():
     with tempfile.TemporaryDirectory() as tmp:
         skill_dir = Path(tmp) / "test_skill"
         skill_dir.mkdir()
-        (skill_dir / "manifest.json").write_text('{"metadata": {"name": "test_skill", "version": "1.0.0", "description": "d", "author": "t", "tags": [], "entry_point": "main", "schema": {}}, "dependencies": [], "config_schema": {}, "inputs": [], "outputs": []}')
+        (skill_dir / "manifest.json").write_text(
+            '{"metadata": {"name": "test_skill", "version": "1.0.0", "description": "d", "author": "t", "tags": [], "entry_point": "main", "schema": {}}, "dependencies": [], "config_schema": {}, "inputs": [], "outputs": []}'
+        )
         (skill_dir / "main.py").write_text("""
 from src.skills.base import SkillBase, SkillContext
 class TestSkill(SkillBase):
@@ -62,7 +69,7 @@ class TestSkill(SkillBase):
 """)
         registry = SkillRegistry(Path(tmp))
         loader = SkillLoader(registry)
-        
+
         skill_class1 = loader.load("test_skill")
         # 修改源码
         (skill_dir / "main.py").write_text("""

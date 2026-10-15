@@ -1,4 +1,5 @@
 """Replay 复现接口测试。"""
+
 import tempfile
 from pathlib import Path
 
@@ -11,6 +12,7 @@ def test_replay_restores_and_runs():
         repo = Path(tmp) / "repo"
         repo.mkdir()
         import subprocess
+
         subprocess.run(["git", "init"], cwd=repo, check=True, capture_output=True)
         subprocess.run(["git", "config", "user.email", "test@test.com"], cwd=repo, check=True)
         subprocess.run(["git", "config", "user.name", "Test"], cwd=repo, check=True)

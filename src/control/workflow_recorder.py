@@ -7,6 +7,7 @@
 - 完成时自动落盘到 WRROCStore
 - 自动写入 LightRAG 知识图谱 (KGMemory)
 """
+
 from __future__ import annotations
 
 import contextvars
@@ -56,7 +57,12 @@ class WorkflowRecorder:
         recorder.finish_run(run_id)  # 自动落盘到 WRROCStore
     """
 
-    def __init__(self, wrroc_base_dir: str = ".wrroc", repo_root: Path | str | None = None, kg_memory: KGMemory | None = None):
+    def __init__(
+        self,
+        wrroc_base_dir: str = ".wrroc",
+        repo_root: Path | str | None = None,
+        kg_memory: KGMemory | None = None,
+    ):
         self.store = WRROCStore(Path(wrroc_base_dir))
         self.repo_root = Path(repo_root) if repo_root else Path.cwd()
         self.kg_memory = kg_memory
@@ -177,6 +183,7 @@ class WorkflowRecorder:
         wf_path = self.store.persist(run)
         # 自动创建 Git 快照
         from src.control.snapshot_manager import SnapshotManager
+
         mgr = SnapshotManager(self.repo_root)
         mgr.create_snapshot(run.run_id, commit_msg=f"Snapshot for {run.run_id}")
         # 自动写入 LightRAG 知识图谱
@@ -206,13 +213,15 @@ class WorkflowRecorder:
                     result=step.output.result,
                     error=step.output.error,
                 )
-            steps.append(WorkflowStep(
-                step_id=step.step_id,
-                step_type=StepType(step.step_type.value),
-                tool=step.tool,
-                params=step.params,
-                output=step_output,
-            ))
+            steps.append(
+                WorkflowStep(
+                    step_id=step.step_id,
+                    step_type=StepType(step.step_type.value),
+                    tool=step.tool,
+                    params=step.params,
+                    output=step_output,
+                )
+            )
 
         return WorkflowRun(
             run_id=exec_.run_id,

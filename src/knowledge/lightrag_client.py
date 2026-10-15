@@ -209,7 +209,9 @@ class LightRAGClient:
             else resolve_max_parallel_insert()
         )
         # PG 存储按 workspace 隔离；不显式指定则各库全落 "default" 而互相污染
-        self._workspace = workspace if workspace is not None else default_workspace_for(self.working_dir)
+        self._workspace = (
+            workspace if workspace is not None else default_workspace_for(self.working_dir)
+        )
 
         # 延迟导入 LightRAG，避免立即依赖
         self._rag = None
@@ -273,9 +275,7 @@ class LightRAGClient:
                     getattr(embedding_func, "model_name", "custom"),
                 )
             except ImportError:
-                logger.error(
-                    "LightRAG not installed. Install with: pip install lightrag-hku"
-                )
+                logger.error("LightRAG not installed. Install with: pip install lightrag-hku")
                 raise
 
     def insert_document(self, document: str, metadata: dict[str, Any] | None = None):
@@ -310,14 +310,10 @@ class LightRAGClient:
         if self._rag:
             from lightrag import QueryParam
 
-            return async_runtime.run(
-                self._rag.aquery(question, param=QueryParam(mode=mode))
-            )
+            return async_runtime.run(self._rag.aquery(question, param=QueryParam(mode=mode)))
         return "LightRAG 未初始化"
 
-    def query_with_references(
-        self, question: str, mode: str = "mix"
-    ) -> dict[str, Any]:
+    def query_with_references(self, question: str, mode: str = "mix") -> dict[str, Any]:
         """查询并返回结构化引用。
 
         SDK 的 query() 只返回 str；引用在 query_llm 的 data.references。

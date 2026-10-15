@@ -32,8 +32,8 @@ def test_prepare_history_truncates_long_content_with_note():
 def test_prepare_history_returns_equal_copy_for_short_message():
     src = [{"role": "user", "content": "做差异表达"}]
     out = prepare_history(src)
-    assert out == src          # 既有测试断言 history 内容等值
-    assert out[0] is not src[0] # 但是副本，避免污染原对象
+    assert out == src  # 既有测试断言 history 内容等值
+    assert out[0] is not src[0]  # 但是副本，避免污染原对象
 
 
 def test_select_recent_within_budget_keeps_all():
@@ -60,18 +60,18 @@ def test_select_recent_splits_older_and_recent():
     assert len(older) >= 1
     assert len(recent) >= 1
     assert len(older) + len(recent) == 10
-    assert recent == window[len(older):]  # recent 是尾部
+    assert recent == window[len(older) :]  # recent 是尾部
 
 
 def test_context_tokens_includes_system_summary_and_window():
-    summary = "s" * 40          # 10 token
+    summary = "s" * 40  # 10 token
     window = [{"role": "user", "content": "h" * 40}]  # 10 token
     assert context_tokens(summary, window, system="") == 20
 
 
 def test_should_compact_respects_trigger(monkeypatch):
     monkeypatch.setattr(compact, "TRIGGER", 5)
-    assert should_compact("s" * 40, [], system="") is True   # 10 > 5
+    assert should_compact("s" * 40, [], system="") is True  # 10 > 5
     assert should_compact("", [], system="") is False
 
 
@@ -133,8 +133,9 @@ def test_summarize_empty_result_raises():
 def test_maybe_compact_below_trigger_is_noop(monkeypatch):
     monkeypatch.setattr(compact, "TRIGGER", 10_000)
     called = []
-    out = maybe_compact(None, 0, [{"role": "user", "content": "hi"}],
-                        lambda *a: called.append(a), system="")
+    out = maybe_compact(
+        None, 0, [{"role": "user", "content": "hi"}], lambda *a: called.append(a), system=""
+    )
     assert out == (None, 0)
     assert called == []
 
@@ -169,11 +170,12 @@ def test_maybe_compact_exception_falls_back_to_hard_trim(monkeypatch):
         raise RuntimeError("LLM down")
 
     summary, offset = maybe_compact(None, 0, prepared, boom, system="")
-    assert summary is None                      # 摘要未变
-    assert offset > 0                           # 硬截断已推进
+    assert summary is None  # 摘要未变
+    assert offset > 0  # 硬截断已推进
     # 截断后不再超阈值，或已保留最后 1 条
-    assert (not should_compact(summary, prepared[offset:], system="")) \
-        or offset == len(prepared) - 1
+    assert (not should_compact(summary, prepared[offset:], system="")) or offset == len(
+        prepared
+    ) - 1
 
 
 def test_maybe_compact_empty_llm_result_falls_back(monkeypatch):
@@ -189,5 +191,5 @@ def test_should_soft_warn_below_soft_trigger(monkeypatch):
     from src.control.compact import should_soft_warn
 
     monkeypatch.setattr(compact, "SOFT_TRIGGER", 5)
-    assert should_soft_warn("s" * 40, [], system="") is True   # 10 > 5
+    assert should_soft_warn("s" * 40, [], system="") is True  # 10 > 5
     assert should_soft_warn("", [], system="") is False

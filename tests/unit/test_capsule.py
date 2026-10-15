@@ -1,4 +1,5 @@
 """Analysis Capsule 单测"""
+
 from src.analysis.capsule import export_analysis_capsule
 
 

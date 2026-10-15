@@ -12,27 +12,29 @@ def _esearch_response(ids=None):
 
 
 def _esummary_response():
-    return {"result": {
-        "uids": ["200123456"],
-        "200123456": {
-            "accession": "GSE123456",
-            "title": "Expression data from diabetes patients",
-            "summary": "A summary of the dataset.",
-            # 真实 API 键名为小写 gdstype/pdat（2026-04 实测）
-            "gdstype": "Expression profiling by array",
-            "taxon": "Homo sapiens",
-            "n_samples": 12,
-            "pdat": "2024-01-01",
-            # 2026-10 实测补充键
-            "pubmedids": ["34567890", "34567891"],
-            "gpl": "23126",
-            "suppfile": "CEL, CHP",
-            "samples": [
-                {"accession": "GSM3000001", "title": "control"},
-                {"accession": "GSM3000002", "title": "treated"},
-            ],
-        },
-    }}
+    return {
+        "result": {
+            "uids": ["200123456"],
+            "200123456": {
+                "accession": "GSE123456",
+                "title": "Expression data from diabetes patients",
+                "summary": "A summary of the dataset.",
+                # 真实 API 键名为小写 gdstype/pdat（2026-04 实测）
+                "gdstype": "Expression profiling by array",
+                "taxon": "Homo sapiens",
+                "n_samples": 12,
+                "pdat": "2024-01-01",
+                # 2026-10 实测补充键
+                "pubmedids": ["34567890", "34567891"],
+                "gpl": "23126",
+                "suppfile": "CEL, CHP",
+                "samples": [
+                    {"accession": "GSM3000001", "title": "control"},
+                    {"accession": "GSM3000002", "title": "treated"},
+                ],
+            },
+        }
+    }
 
 
 def test_search_esearch_then_esummary():
@@ -101,7 +103,9 @@ def test_download_fetches_and_saves(tmp_path):
     from src.data.storage import FetcherStorage
 
     storage = FetcherStorage(base_dir=str(tmp_path / "raw"), meta_dir=str(tmp_path / "meta"))
-    fetcher = GEOFetcher(storage=storage, client=httpx.Client(transport=httpx.MockTransport(handler)))
+    fetcher = GEOFetcher(
+        storage=storage, client=httpx.Client(transport=httpx.MockTransport(handler))
+    )
     path = fetcher.download("GSE123456")
     assert path.name == "GSE123456_series_matrix.txt.gz"
     assert path.read_bytes() == b"matrix-content"
@@ -133,7 +137,9 @@ def test_download_404_raises(tmp_path):
     from src.data.storage import FetcherStorage
 
     storage = FetcherStorage(base_dir=str(tmp_path / "raw"), meta_dir=str(tmp_path / "meta"))
-    fetcher = GEOFetcher(storage=storage, client=httpx.Client(transport=httpx.MockTransport(handler)))
+    fetcher = GEOFetcher(
+        storage=storage, client=httpx.Client(transport=httpx.MockTransport(handler))
+    )
     try:
         fetcher.download("GSE999999")
     except ValueError:
@@ -160,6 +166,7 @@ def test_ingest_text_from_summary():
 
 def test_confirm_metadata_includes_extra_fields():
     """confirm 元数据包含 gpl/pubmedids/suppfile/samples 扩展字段。"""
+
     def handler(request):
         if "esearch.fcgi" in str(request.url):
             return httpx.Response(200, json=_esearch_response())
@@ -175,6 +182,7 @@ def test_confirm_metadata_includes_extra_fields():
 
 def test_ingest_text_includes_platform_pmids_suppfile():
     """ingest_text 渲染平台/PMID/补充文件，samples 不进正文。"""
+
     def handler(request):
         if "esearch.fcgi" in str(request.url):
             return httpx.Response(200, json=_esearch_response())
@@ -191,6 +199,7 @@ def test_ingest_text_includes_platform_pmids_suppfile():
 
 def test_ingest_text_skips_missing_extra_fields():
     """缺少扩展字段时正文跳过对应行。"""
+
     def handler(request):
         if "esearch.fcgi" in str(request.url):
             return httpx.Response(200, json=_esearch_response())

@@ -26,8 +26,10 @@ def test_prompt_files_have_no_format_braces():
 
 
 def test_apply_domain_rules_is_idempotent():
-    prompts = {"entity_extraction_system_prompt": "BASE",
-               "entity_extraction_json_system_prompt": "BASE"}
+    prompts = {
+        "entity_extraction_system_prompt": "BASE",
+        "entity_extraction_json_system_prompt": "BASE",
+    }
     prompt_profile.apply_domain_rules(prompts)
     first = prompts["entity_extraction_system_prompt"]
     assert first.startswith("BASE") and "---Domain Rules" in first

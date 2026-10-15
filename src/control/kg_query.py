@@ -1,4 +1,5 @@
 """KGQuery：基于 LightRAG 的自然语言查询接口。"""
+
 from __future__ import annotations
 
 from pathlib import Path

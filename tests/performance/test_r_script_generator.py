@@ -1,4 +1,5 @@
 """RScriptGenerator 性能测试：验证 R 脚本生成性能，不依赖 R 环境"""
+
 import time
 
 import pytest
@@ -27,7 +28,11 @@ def test_template_generation_time_comparison():
     templates = {
         "differential_expression": {"input_file": "data.csv", "output_file": "results.csv"},
         "pathway_analysis": {},
-        "visualization": {"input_file": "data.csv", "output_file": "output.png", "plot_type": "volcano"},
+        "visualization": {
+            "input_file": "data.csv",
+            "output_file": "output.png",
+            "plot_type": "volcano",
+        },
     }
 
     for analysis_type, params in templates.items():

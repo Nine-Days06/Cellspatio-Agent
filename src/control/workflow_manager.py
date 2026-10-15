@@ -133,7 +133,9 @@ class WorkflowManager:
     ) -> dict[str, Any]:
         """统一生成代码并决定是否需要确认或直接执行"""
         code = self.r_script_generator.generate_code(
-            analysis_type, run_params, method_context=method_context,
+            analysis_type,
+            run_params,
+            method_context=method_context,
         )
         if self.require_script_confirmation and not context.get("script_approved"):
             return {
@@ -146,11 +148,19 @@ class WorkflowManager:
                 "message": "已生成 R 脚本，请审阅并确认执行",
             }
         return self._finish_analysis(
-            analysis_type, run_params, code, method_context, context,
+            analysis_type,
+            run_params,
+            code,
+            method_context,
+            context,
         )
 
     def _execute_analysis_workflow(
-        self, intent: dict[str, Any], params: dict[str, Any], context: dict[str, Any], run_id: str | None = None
+        self,
+        intent: dict[str, Any],
+        params: dict[str, Any],
+        context: dict[str, Any],
+        run_id: str | None = None,
     ) -> dict[str, Any]:
         """执行分析工作流"""
         analysis_type = intent.get("analysis_type")
@@ -164,20 +174,18 @@ class WorkflowManager:
 
         # 不支持的分析类型：返回 error（schema 已白名单挡住，但以防万一）
         from src.control.tools import SUPPORTED_ANALYSIS_TYPES
+
         return {
             "status": "error",
             "type": "analysis",
             "analysis_type": analysis_type,
             "message": (
-                f"不支持的分析类型: {analysis_type}；"
-                f"当前支持 {', '.join(SUPPORTED_ANALYSIS_TYPES)}"
+                f"不支持的分析类型: {analysis_type}；当前支持 {', '.join(SUPPORTED_ANALYSIS_TYPES)}"
             ),
             "results": {},
         }
 
-    def _method_context_for(
-        self, analysis_type: str, params: dict[str, Any]
-    ) -> str | None:
+    def _method_context_for(self, analysis_type: str, params: dict[str, Any]) -> str | None:
         """生成代码前查方法学知识库；无库/查询失败返回 None"""
         if self.methods_kb is None:
             return None
@@ -238,9 +246,7 @@ class WorkflowManager:
                 "status": "needs_input",
                 "type": "analysis",
                 "analysis_type": "differential_expression",
-                "message": (
-                    "需提供数据文件，请先下载或指定输入文件"
-                ),
+                "message": ("需提供数据文件，请先下载或指定输入文件"),
                 "results": {},
             }
             if self.workflow_recorder and run_id:
@@ -302,7 +308,9 @@ class WorkflowManager:
 
         return result
 
-    def _execute_sc_analysis(self, params: dict[str, Any], context: dict[str, Any], run_id: str | None = None) -> dict[str, Any]:
+    def _execute_sc_analysis(
+        self, params: dict[str, Any], context: dict[str, Any], run_id: str | None = None
+    ) -> dict[str, Any]:
         """单细胞分析：聚类、标记基因"""
         if self.workflow_recorder and run_id:
             self.workflow_recorder.record_step(
@@ -323,7 +331,9 @@ class WorkflowManager:
             }
             method_context = self._method_context_for("single_cell", params)
             code = self.r_script_generator.generate_code(
-                "single_cell", run_params, method_context=method_context,
+                "single_cell",
+                run_params,
+                method_context=method_context,
             )
             result = {
                 "status": "needs_script_confirmation",
@@ -354,7 +364,9 @@ class WorkflowManager:
         method_context = self._method_context_for("single_cell", params)
         return self._generate_or_finish("single_cell", run_params, method_context, context)
 
-    def _execute_spatial_analysis(self, params: dict[str, Any], context: dict[str, Any], run_id: str | None = None) -> dict[str, Any]:
+    def _execute_spatial_analysis(
+        self, params: dict[str, Any], context: dict[str, Any], run_id: str | None = None
+    ) -> dict[str, Any]:
         """空间转录组分析：聚类、空间图"""
         if self.workflow_recorder and run_id:
             self.workflow_recorder.record_step(
@@ -375,7 +387,9 @@ class WorkflowManager:
             }
             method_context = self._method_context_for("spatial", params)
             code = self.r_script_generator.generate_code(
-                "spatial", run_params, method_context=method_context,
+                "spatial",
+                run_params,
+                method_context=method_context,
             )
             result = {
                 "status": "needs_script_confirmation",
@@ -449,13 +463,16 @@ class WorkflowManager:
 
         if result is None or last_err is not None:
             return {
-                'status': 'error',
-                'analysis_type': analysis_type,
-                'message': f'{self._analysis_type_zh(analysis_type)}分析失败: {last_err}',
-                'results': {'repair_count': repair_count},
+                "status": "error",
+                "analysis_type": analysis_type,
+                "message": f"{self._analysis_type_zh(analysis_type)}分析失败: {last_err}",
+                "results": {"repair_count": repair_count},
             }
         logger.info(
-            "%s analysis finished on %s (returncode=%s)", analysis_type, input_file, result.returncode
+            "%s analysis finished on %s (returncode=%s)",
+            analysis_type,
+            input_file,
+            result.returncode,
         )
         if result.returncode == 0:
             self._record_analysis_to_kb(analysis_type, input_file, output_file)
@@ -464,22 +481,31 @@ class WorkflowManager:
             try:
                 stats = self._de_output_stats(output_file)
                 explanation = self.explainer.generate_llm_explanation(
-                    {"input_file": input_file, "output_file": output_file,
-                     "analysis_type": analysis_type, **stats},
-                    question=params.get("question", f"{self._analysis_type_zh(analysis_type)}分析结果说明"),
+                    {
+                        "input_file": input_file,
+                        "output_file": output_file,
+                        "analysis_type": analysis_type,
+                        **stats,
+                    },
+                    question=params.get(
+                        "question", f"{self._analysis_type_zh(analysis_type)}分析结果说明"
+                    ),
                 )
             except Exception as e:  # noqa: BLE001
                 logger.warning("explanation failed: %s", e)
         capsule_dir = None
         try:
             from src.analysis.capsule import export_analysis_capsule
-            capsule_dir = str(export_analysis_capsule(
-                question=params.get("question", ""),
-                intent={"type": "analysis", "analysis_type": analysis_type},
-                params={"input_file": input_file, "output_file": output_file},
-                script_code=current_code,
-                results={"returncode": result.returncode, "output_file": output_file},
-            ))
+
+            capsule_dir = str(
+                export_analysis_capsule(
+                    question=params.get("question", ""),
+                    intent={"type": "analysis", "analysis_type": analysis_type},
+                    params={"input_file": input_file, "output_file": output_file},
+                    script_code=current_code,
+                    results={"returncode": result.returncode, "output_file": output_file},
+                )
+            )
         except Exception as e:  # noqa: BLE001
             logger.warning("capsule export failed: %s", e)
         return {
@@ -487,8 +513,11 @@ class WorkflowManager:
             "analysis_type": analysis_type,
             "message": f"{self._analysis_type_zh(analysis_type)}分析完成",
             "method_context": method_context,
-            "results": {"returncode": result.returncode, "output_file": output_file,
-                        "repair_count": repair_count},
+            "results": {
+                "returncode": result.returncode,
+                "output_file": output_file,
+                "repair_count": repair_count,
+            },
             "repair_count": repair_count,
             "explanation": explanation,
             "capsule_dir": capsule_dir,
@@ -517,11 +546,16 @@ class WorkflowManager:
                 "message": f"暂不支持确认执行的分析类型: {analysis_type}",
             }
         return self._finish_analysis(
-            analysis_type, params, script, method_context, {"script_approved": True},
+            analysis_type,
+            params,
+            script,
+            method_context,
+            {"script_approved": True},
         )
 
-    def _record_analysis_to_kb(self, analysis_type: str, input_file: str,
-                               output_file: str, user_question: str = "") -> None:
+    def _record_analysis_to_kb(
+        self, analysis_type: str, input_file: str, output_file: str, user_question: str = ""
+    ) -> None:
         """分析成功后写回主知识库（闭环记忆）；失败仅告警"""
         if self.knowledge_builder is None:
             return
@@ -544,7 +578,11 @@ class WorkflowManager:
             logger.warning("analysis summary writeback failed: %s", e)
 
     def _execute_knowledge_workflow(
-        self, intent: dict[str, Any], params: dict[str, Any], context: dict[str, Any], run_id: str | None = None
+        self,
+        intent: dict[str, Any],
+        params: dict[str, Any],
+        context: dict[str, Any],
+        run_id: str | None = None,
     ) -> dict[str, Any]:
         """执行知识查询工作流；本地库缺目标 ID 时按需从 KEGG/UniProt 补库再答"""
         if self.workflow_recorder and run_id:
@@ -671,9 +709,7 @@ class WorkflowManager:
             re.IGNORECASE | re.MULTILINE,
         )
         for item in docs.values():
-            content = (
-                item.get("content", "") if isinstance(item, dict) else str(item)
-            )
+            content = item.get("content", "") if isinstance(item, dict) else str(item)
             for mid in header_re.findall(content):
                 asset_ids.add(mid.lower())
         return asset_ids
@@ -744,19 +780,13 @@ class WorkflowManager:
                 logger.warning("lazy ingest %s/%s failed: %s", source, asset_id, e)
                 continue
             if result.get("status") == "success":
-                ingested.append(
-                    {"source": source, "asset_id": asset_id, "title": asset_id}
-                )
+                ingested.append({"source": source, "asset_id": asset_id, "title": asset_id})
                 logger.info("lazy ingested %s/%s", source, asset_id)
             else:
-                logger.warning(
-                    "lazy ingest %s/%s: %s", source, asset_id, result.get("message")
-                )
+                logger.warning("lazy ingest %s/%s: %s", source, asset_id, result.get("message"))
         return ingested
 
-    def _collect_lazy_candidates(
-        self, query: str, params: dict[str, Any]
-    ) -> list[tuple[str, str]]:
+    def _collect_lazy_candidates(self, query: str, params: dict[str, Any]) -> list[tuple[str, str]]:
         """显式 ID 优先，不足再 search 兜底；仅 kegg/uniprot，上限 MAX"""
         candidates: list[tuple[str, str]] = []
         max_n = LAZY_INGEST_MAX_ASSETS
@@ -815,9 +845,7 @@ class WorkflowManager:
         except Exception:  # noqa: BLE001
             return False
 
-    def _search_term_for(
-        self, source: str, query: str, params: dict[str, Any]
-    ) -> str:
+    def _search_term_for(self, source: str, query: str, params: dict[str, Any]) -> str:
         """search 用词：UniProt 优先 gene:，KEGG 用原问题"""
         genes = params.get("genes") or []
         if source == "uniprot" and genes:
@@ -826,7 +854,11 @@ class WorkflowManager:
         return query.strip()
 
     def _execute_fetch_data_workflow(
-        self, intent: dict[str, Any], params: dict[str, Any], context: dict[str, Any], run_id: str | None = None
+        self,
+        intent: dict[str, Any],
+        params: dict[str, Any],
+        context: dict[str, Any],
+        run_id: str | None = None,
     ) -> dict[str, Any]:
         """阶段 1：检索 → 列出候选 → 等待用户确认下载"""
         if self.fetcher_registry is None:
@@ -855,8 +887,7 @@ class WorkflowManager:
 
                 reason_bits = [q.strip() for q in query.split() if q.strip()]
                 reason = (
-                    f"检索词命中：{', '.join(reason_bits[:5]) or '（无分词）'}；"
-                    f"标题含相关关键词"
+                    f"检索词命中：{', '.join(reason_bits[:5]) or '（无分词）'}；标题含相关关键词"
                     if any(b.lower() in meta.title.lower() for b in reason_bits)
                     else f"来自 {meta.source} 的 {meta.asset_type} 资产"
                 )
@@ -889,7 +920,11 @@ class WorkflowManager:
         }
 
     def _execute_general_workflow(
-        self, intent: dict[str, Any], params: dict[str, Any], context: dict[str, Any], run_id: str | None = None
+        self,
+        intent: dict[str, Any],
+        params: dict[str, Any],
+        context: dict[str, Any],
+        run_id: str | None = None,
     ) -> dict[str, Any]:
         """执行通用工作流"""
         if self.workflow_recorder and run_id:
@@ -907,18 +942,14 @@ class WorkflowManager:
             "message": "这是一个通用响应。请询问具体的数据分析或知识问题。",
         }
 
-    def confirm_and_download(
-        self, source: str, asset_id: str, query: str = ""
-    ) -> dict[str, Any]:
+    def confirm_and_download(self, source: str, asset_id: str, query: str = "") -> dict[str, Any]:
         """阶段 2：确认详情 → 下载落盘（分析流入口）"""
         if self.fetcher_registry is None:
             return {"status": "error", "message": "数据获取组件未配置"}
         fetcher = self.fetcher_registry.get(source)
         info = fetcher.confirm(asset_id)
         access_path = fetcher.download(asset_id)
-        logger.info(
-            "Asset confirmed and downloaded: %s/%s -> %s", source, asset_id, access_path
-        )
+        logger.info("Asset confirmed and downloaded: %s/%s -> %s", source, asset_id, access_path)
         from src.data.lineage import append_lineage
 
         try:

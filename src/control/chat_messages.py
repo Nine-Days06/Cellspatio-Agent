@@ -2,6 +2,7 @@
 
 无 Streamlit 依赖、无状态，便于单测与跨前端复用。
 """
+
 from __future__ import annotations
 
 from typing import Any

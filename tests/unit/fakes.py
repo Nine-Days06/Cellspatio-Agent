@@ -134,8 +134,11 @@ class FakeRuntime:
     def __init__(self, results=None, events=None, default=None):
         self.results = list(results or [])
         self.events = list(events or [])
-        self.default = default or {"status": "success", "type": "general_response",
-                                   "message": "回答"}
+        self.default = default or {
+            "status": "success",
+            "type": "general_response",
+            "message": "回答",
+        }
         self.calls: list[dict[str, Any]] = []
 
     def execute(self, user_input, context=None, on_event=None):
@@ -143,16 +146,21 @@ class FakeRuntime:
         if on_event is not None:
             for event in self.events:
                 if not on_event(event):
-                    return {"status": "aborted", "type": "general_response",
-                            "message": "已中断"}
+                    return {"status": "aborted", "type": "general_response", "message": "已中断"}
         return self.results.pop(0) if self.results else self.default
 
 
 class FakeAgent:
     """CellSpatioAgent 桩：只暴露 chat_service 与 confirm 端点用到的面。"""
 
-    def __init__(self, runtime=None, confirm_result=None, download_result=None,
-                 llm_client=None, llm_model="fake-model"):
+    def __init__(
+        self,
+        runtime=None,
+        confirm_result=None,
+        download_result=None,
+        llm_client=None,
+        llm_model="fake-model",
+    ):
         self.agent_runtime = runtime if runtime is not None else FakeRuntime()
         self.confirm_result = confirm_result
         self.download_result = download_result
@@ -163,15 +171,16 @@ class FakeAgent:
         self.download_calls: list[dict[str, Any]] = []
 
     def execute_confirmed_script(self, analysis_type, params, script, method_context=None):
-        self.confirm_calls.append({
-            "analysis_type": analysis_type,
-            "params": params,
-            "script": script,
-            "method_context": method_context,
-        })
+        self.confirm_calls.append(
+            {
+                "analysis_type": analysis_type,
+                "params": params,
+                "script": script,
+                "method_context": method_context,
+            }
+        )
         return self.confirm_result or {"status": "success", "message": "分析完成"}
 
     def confirm_and_download(self, source, asset_id, query=""):
-        self.download_calls.append({"source": source, "asset_id": asset_id,
-                                    "query": query})
+        self.download_calls.append({"source": source, "asset_id": asset_id, "query": query})
         return self.download_result or {}

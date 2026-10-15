@@ -25,16 +25,24 @@ async def test_build_llm_func_calls_openai(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_build_llm_func_zhipu_uses_openai_compat(monkeypatch):
-    monkeypatch.setattr("src.config.LLM_PROVIDER_CONFIGS", {
-        "zhipu": {
-            "api_key": "", "api_key_env": "ZHIPU_API_KEY",
-            "client_type": "zhipuai", "model": "glm-4", "base_url": None,
-            "extra_kwargs": {},
+    monkeypatch.setattr(
+        "src.config.LLM_PROVIDER_CONFIGS",
+        {
+            "zhipu": {
+                "api_key": "",
+                "api_key_env": "ZHIPU_API_KEY",
+                "client_type": "zhipuai",
+                "model": "glm-4",
+                "base_url": None,
+                "extra_kwargs": {},
+            },
         },
-    })
+    )
     calls = {}
 
-    async def fake_cache(prompt, model, api_key, system_prompt=None, history_messages=None, **kwargs):
+    async def fake_cache(
+        prompt, model, api_key, system_prompt=None, history_messages=None, **kwargs
+    ):
         calls["base_url"] = kwargs.get("base_url", "https://open.bigmodel.cn/api/paas/v4")
         return "ok"
 
@@ -71,6 +79,7 @@ def test_build_embedding_func_propagates_config_model(monkeypatch):
     monkeypatch.setattr(ollama_embed, "func", fake_inner)
 
     import asyncio
+
     embedding = build_embedding_func()
     assert getattr(embedding, "model_name", "") == "nomic-embed-text:latest"
     asyncio.run(embedding.func(["test"]))
@@ -109,6 +118,7 @@ def test_wrapper_calls_ensure_ready_and_touch(monkeypatch):
     monkeypatch.setattr(ollama_embed, "func", fake_inner)
 
     import asyncio
+
     asyncio.run(build_embedding_func().func(["hello"], max_token_size=8192))
 
     assert calls == ["ensure", "touch"]
@@ -132,6 +142,7 @@ def test_wrapper_delegates_to_ollama_embed(monkeypatch):
     monkeypatch.setattr(ollama_embed, "func", fake_inner)
 
     import asyncio
+
     result = asyncio.run(build_embedding_func().func(["hello"]))
 
     assert seen["texts"] == ["hello"]
@@ -172,6 +183,7 @@ def test_wrapper_failure_of_ensure_does_not_break_call(monkeypatch):
     monkeypatch.setattr(ollama_embed, "func", fake_inner)
 
     import asyncio
+
     assert asyncio.run(build_embedding_func().func(["x"])) == [[1.0]]
 
 
@@ -205,7 +217,7 @@ def test_wrapper_keeps_event_loop_alive_while_ensure_blocks(monkeypatch):
     async def scenario():
         task = asyncio.ensure_future(build_embedding_func().func(["x"]))
         await asyncio.sleep(0.05)  # 同步直调时这行根本排不上（loop 线程被占）
-        release.set()              # 走到这里才放行阻塞的 ensure
+        release.set()  # 走到这里才放行阻塞的 ensure
         return await task
 
     start = time_mod.monotonic()

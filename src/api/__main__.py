@@ -3,6 +3,7 @@
 端口 8600（避开开发期暂存的 Streamlit 8501）。前端构建产物存在时由
 create_app 挂载在 / ，因此本入口在计划 2 之前同样可用（仅 API）。
 """
+
 from __future__ import annotations
 
 import logging
@@ -20,6 +21,7 @@ PORT = 8600
 
 def _open_browser_later(url: str, delay: float = 1.5) -> None:
     """延迟开浏览器（等服务起好）；任何失败都吞掉，不影响启动。"""
+
     def _open() -> None:
         time.sleep(delay)
         try:

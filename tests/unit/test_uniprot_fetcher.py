@@ -9,11 +9,15 @@ def _fetcher_with(handler):
 
 def _search_payload():
     return {
-        "results": [{
-            "primaryAccession": "P04637",
-            "proteinDescription": {"recommendedName": {"fullName": {"value": "Cellular tumor antigen p53"}}},
-            "genes": [{"geneName": {"value": "TP53"}}],
-        }]
+        "results": [
+            {
+                "primaryAccession": "P04637",
+                "proteinDescription": {
+                    "recommendedName": {"fullName": {"value": "Cellular tumor antigen p53"}}
+                },
+                "genes": [{"geneName": {"value": "TP53"}}],
+            }
+        ]
     }
 
 
@@ -33,16 +37,23 @@ def test_search_parses_results():
 
 def test_confirm_parses_comments_and_gene():
     def handler(request):
-        return httpx.Response(200, json={
-            "primaryAccession": "P04637",
-            "proteinDescription": {"recommendedName": {"fullName": {"value": "Cellular tumor antigen p53"}}},
-            "genes": [{"geneName": {"value": "TP53"}}],
-            # 真实 API 字段为 texts（复数），genes[].geneId 为空
-            "comments": [
-                {"commentType": "FUNCTION",
-                 "texts": [{"value": "Acts as a tumor suppressor."}]},
-            ],
-        })
+        return httpx.Response(
+            200,
+            json={
+                "primaryAccession": "P04637",
+                "proteinDescription": {
+                    "recommendedName": {"fullName": {"value": "Cellular tumor antigen p53"}}
+                },
+                "genes": [{"geneName": {"value": "TP53"}}],
+                # 真实 API 字段为 texts（复数），genes[].geneId 为空
+                "comments": [
+                    {
+                        "commentType": "FUNCTION",
+                        "texts": [{"value": "Acts as a tumor suppressor."}],
+                    },
+                ],
+            },
+        )
 
     fetcher = _fetcher_with(handler)
     info = fetcher.confirm("P04637")
@@ -67,17 +78,22 @@ def test_confirm_not_found_raises():
 def test_ingest_text_builds_markdown():
     def handler(request):
         assert "/uniprotkb/P04637.json" in str(request.url)
-        return httpx.Response(200, json={
-            "primaryAccession": "P04637",
-            "proteinDescription": {"recommendedName": {"fullName": {"value": "p53"}}},
-            "genes": [{"geneName": {"value": "TP53"}, "geneId": None}],
-            # 真实 API：comment 字段为 texts（复数）；GeneID 在 crossRef 而非 genes[]
-            "comments": [{"commentType": "FUNCTION", "texts": [{"value": "Tumor suppressor."}]}],
-            "uniProtKBCrossReferences": [
-                {"database": "GeneID", "id": "7157"},
-                {"database": "HGNC", "id": "HGNC:11998"},
-            ],
-        })
+        return httpx.Response(
+            200,
+            json={
+                "primaryAccession": "P04637",
+                "proteinDescription": {"recommendedName": {"fullName": {"value": "p53"}}},
+                "genes": [{"geneName": {"value": "TP53"}, "geneId": None}],
+                # 真实 API：comment 字段为 texts（复数）；GeneID 在 crossRef 而非 genes[]
+                "comments": [
+                    {"commentType": "FUNCTION", "texts": [{"value": "Tumor suppressor."}]}
+                ],
+                "uniProtKBCrossReferences": [
+                    {"database": "GeneID", "id": "7157"},
+                    {"database": "HGNC", "id": "HGNC:11998"},
+                ],
+            },
+        )
 
     fetcher = _fetcher_with(handler)
     text = fetcher.ingest_text("P04637")
@@ -92,10 +108,18 @@ def test_ingest_text_builds_markdown():
 
 def test_search_respects_max_results():
     def handler(request):
-        return httpx.Response(200, json={"results": [
-            {"primaryAccession": f"P0000{i}", "proteinDescription": {"recommendedName": {"fullName": {"value": f"P{i}"}}}}
-            for i in range(3)
-        ]})
+        return httpx.Response(
+            200,
+            json={
+                "results": [
+                    {
+                        "primaryAccession": f"P0000{i}",
+                        "proteinDescription": {"recommendedName": {"fullName": {"value": f"P{i}"}}},
+                    }
+                    for i in range(3)
+                ]
+            },
+        )
 
     fetcher = _fetcher_with(handler)
     metas = fetcher.search("query", max_results=3)
@@ -114,25 +138,41 @@ def test_download_raises_not_implemented():
 
 def test_ingest_text_includes_go_annotations():
     """ingest_text 输出 GO 三类注释且排在 GeneID 行之后。"""
+
     def handler(request):
-        return httpx.Response(200, json={
-            "primaryAccession": "P04637",
-            "proteinDescription": {"recommendedName": {"fullName": {"value": "p53"}}},
-            "genes": [{"geneName": {"value": "TP53"}}],
-            "uniProtKBCrossReferences": [
-                {"database": "GeneID", "id": "7157"},
-                {"database": "GO", "id": "GO:0005634", "properties": [
-                    {"key": "GoTerm", "value": "C:nucleus"},
-                    {"key": "GoEvidenceType", "value": "IDA:UniProtKB"},
-                ]},
-                {"database": "GO", "id": "GO:0006915", "properties": [
-                    {"key": "GoTerm", "value": "P:apoptotic process"},
-                ]},
-                {"database": "GO", "id": "GO:0003674", "properties": [
-                    {"key": "GoTerm", "value": "F:molecular_function"},
-                ]},
-            ],
-        })
+        return httpx.Response(
+            200,
+            json={
+                "primaryAccession": "P04637",
+                "proteinDescription": {"recommendedName": {"fullName": {"value": "p53"}}},
+                "genes": [{"geneName": {"value": "TP53"}}],
+                "uniProtKBCrossReferences": [
+                    {"database": "GeneID", "id": "7157"},
+                    {
+                        "database": "GO",
+                        "id": "GO:0005634",
+                        "properties": [
+                            {"key": "GoTerm", "value": "C:nucleus"},
+                            {"key": "GoEvidenceType", "value": "IDA:UniProtKB"},
+                        ],
+                    },
+                    {
+                        "database": "GO",
+                        "id": "GO:0006915",
+                        "properties": [
+                            {"key": "GoTerm", "value": "P:apoptotic process"},
+                        ],
+                    },
+                    {
+                        "database": "GO",
+                        "id": "GO:0003674",
+                        "properties": [
+                            {"key": "GoTerm", "value": "F:molecular_function"},
+                        ],
+                    },
+                ],
+            },
+        )
 
     fetcher = _fetcher_with(handler)
     text = fetcher.ingest_text("P04637")

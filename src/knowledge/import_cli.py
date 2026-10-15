@@ -1,4 +1,5 @@
 """知识库导入 CLI 入口 - 提供命令行接口导入文献数据"""
+
 import argparse
 
 from src.config import LLM_PROVIDER
@@ -17,10 +18,7 @@ def build_importer(provider: str | None = None) -> KnowledgeImporter:
     from src.knowledge.lightrag_client import LightRAGClient
 
     working_dir = "./knowledge_base"
-    lightrag_client = LightRAGClient(
-        working_dir=working_dir,
-        config={"provider": provider}
-    )
+    lightrag_client = LightRAGClient(working_dir=working_dir, config={"provider": provider})
 
     importer = KnowledgeImporter(lightrag_client)
     return importer
@@ -46,9 +44,7 @@ def import_from_directory(
         imported_files / skipped_files / failed_files；失败时另含 error
     """
     importer = build_importer(provider)
-    result = importer.import_incremental(
-        dir_path, files=files, reimport_all=reimport_all
-    )
+    result = importer.import_incremental(dir_path, files=files, reimport_all=reimport_all)
     return result
 
 
@@ -61,18 +57,10 @@ def main(argv: list[str] | None = None) -> int:
     Returns:
         退出码：0=成功，1=失败
     """
-    parser = argparse.ArgumentParser(
-        description="导入文献数据到 LightRAG 知识库"
-    )
+    parser = argparse.ArgumentParser(description="导入文献数据到 LightRAG 知识库")
+    parser.add_argument("--dir", required=True, help="要导入的目录路径")
     parser.add_argument(
-        "--dir",
-        required=True,
-        help="要导入的目录路径"
-    )
-    parser.add_argument(
-        "--provider",
-        default=LLM_PROVIDER,
-        help=f"LLM 供应商名称（默认: {LLM_PROVIDER}）"
+        "--provider", default=LLM_PROVIDER, help=f"LLM 供应商名称（默认: {LLM_PROVIDER}）"
     )
     parser.add_argument(
         "--reimport-all",
@@ -85,9 +73,7 @@ def main(argv: list[str] | None = None) -> int:
     print(f"开始导入文献数据到目录: {args.dir}")
     print(f"使用 LLM 供应商: {args.provider}")
 
-    result = import_from_directory(
-        args.dir, args.provider, reimport_all=args.reimport_all
-    )
+    result = import_from_directory(args.dir, args.provider, reimport_all=args.reimport_all)
 
     if result.get("success"):
         print(

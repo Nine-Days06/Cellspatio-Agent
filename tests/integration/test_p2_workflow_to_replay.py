@@ -1,4 +1,5 @@
 """Phase 2 端到端：workflow → WRROC → Snapshot → Replay"""
+
 import tempfile
 from pathlib import Path
 
@@ -14,6 +15,7 @@ def test_full_workflow_with_snapshot(monkeypatch):
         repo = Path(tmp) / "repo"
         repo.mkdir()
         import subprocess
+
         subprocess.run(["git", "init"], cwd=repo, check=True, capture_output=True)
         subprocess.run(["git", "config", "user.email", "test@test.com"], cwd=repo, check=True)
         subprocess.run(["git", "config", "user.name", "Test"], cwd=repo, check=True)
@@ -25,7 +27,11 @@ def test_full_workflow_with_snapshot(monkeypatch):
         agent = CellSpatioAgent(config)
 
         # 执行分析（无 LLM → 回退旧路径）
-        context = {"downloaded_assets": [{"source": "geo", "asset_id": "GSE1", "access_path": str(csv_file)}]}
+        context = {
+            "downloaded_assets": [
+                {"source": "geo", "asset_id": "GSE1", "access_path": str(csv_file)}
+            ]
+        }
         result = agent.execute_workflow("分析差异表达基因", context=context)
 
         # 应进入 HITL 确认门
@@ -34,6 +40,7 @@ def test_full_workflow_with_snapshot(monkeypatch):
 
         # 验证 WRROC 生成
         from src.control.wrroc_store import WRROCStore
+
         store = WRROCStore(base_dir=repo / ".wrroc")
         runs = store.list_runs()
         assert len(runs) >= 1
@@ -44,6 +51,7 @@ def test_full_workflow_with_snapshot(monkeypatch):
 
         # 验证 Snapshot 生成
         from src.control.snapshot_manager import SnapshotManager
+
         mgr = SnapshotManager(repo_root=repo)
         snaps = mgr.list_snapshots()
         assert len(snaps) >= 1
@@ -52,5 +60,6 @@ def test_full_workflow_with_snapshot(monkeypatch):
 
         # Replay 复现
         from src.control.replay import replay_run
+
         replay_result = replay_run(last_snap_id, repo_root=repo)
         assert replay_result["status"] == "success"

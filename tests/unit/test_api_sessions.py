@@ -1,4 +1,5 @@
 """会话 CRUD 与消息恢复端点。"""
+
 from __future__ import annotations
 
 import json
@@ -19,10 +20,14 @@ def client():
 
 def _pending_message(store: SessionStore, session_id: str, status: str = "pending") -> None:
     store.append_message(
-        session_id, "user", "做差异表达",
+        session_id,
+        "user",
+        "做差异表达",
     )
     store.append_message(
-        session_id, "assistant", "脚本如下",
+        session_id,
+        "assistant",
+        "脚本如下",
         pending_script={
             "script": "library(DESeq2)",
             "analysis_type": "differential_expression",
@@ -260,6 +265,7 @@ def test_create_app_mounts_web_dist_only_when_present(monkeypatch, tmp_path):
     app = create_app(FakeAgent())
 
     assert app.state.agent is not None
+
     # 使用公开 API：遍历 app.router.routes，对于 _IncludedRouter 取 original_router.routes
     def _collect_paths(app_):
         paths = set()

@@ -5,13 +5,9 @@ def test_main_wires_llm_components(monkeypatch):
     from src.main import CellSpatioAgent
 
     fake_client = object()
-    monkeypatch.setattr(
-        "src.main.get_current_llm", lambda: (fake_client, "test-model")
-    )
+    monkeypatch.setattr("src.main.get_current_llm", lambda: (fake_client, "test-model"))
     # 若 LightRAG 构造过重：monkeypatch LightRAGClient.__init__ 为 no-op
-    monkeypatch.setattr(
-        "src.main.LightRAGClient.__init__", lambda self, *a, **k: None
-    )
+    monkeypatch.setattr("src.main.LightRAGClient.__init__", lambda self, *a, **k: None)
     agent = CellSpatioAgent(
         config={"knowledge_dir": "tmp_kb_wiring", "data_dir": "tmp_data_wiring"}
     )
@@ -30,12 +26,8 @@ def test_agent_runtime_wiring(monkeypatch):
     from src.main import CellSpatioAgent
 
     fake_client = object()
-    monkeypatch.setattr(
-        "src.main.get_current_llm", lambda: (fake_client, "test-model")
-    )
-    monkeypatch.setattr(
-        "src.main.LightRAGClient.__init__", lambda self, *a, **k: None
-    )
+    monkeypatch.setattr("src.main.get_current_llm", lambda: (fake_client, "test-model"))
+    monkeypatch.setattr("src.main.LightRAGClient.__init__", lambda self, *a, **k: None)
     agent = CellSpatioAgent(
         config={"knowledge_dir": "tmp_kb_wiring", "data_dir": "tmp_data_wiring"}
     )
@@ -56,7 +48,9 @@ def test_agent_runtime_wiring(monkeypatch):
 
     agent.agent_runtime.execute = spy_execute
 
-    result = agent.execute_workflow("测试输入", context={"history": [{"role": "user", "content": "prev"}]})
+    result = agent.execute_workflow(
+        "测试输入", context={"history": [{"role": "user", "content": "prev"}]}
+    )
 
     assert len(call_log) == 1
     assert call_log[0][0] == "测试输入"
@@ -70,12 +64,8 @@ def test_agent_wires_modal_router_into_runtime(monkeypatch):
     from src.main import CellSpatioAgent
 
     fake_client = object()
-    monkeypatch.setattr(
-        "src.main.get_current_llm", lambda: (fake_client, "test-model")
-    )
-    monkeypatch.setattr(
-        "src.main.LightRAGClient.__init__", lambda self, *a, **k: None
-    )
+    monkeypatch.setattr("src.main.get_current_llm", lambda: (fake_client, "test-model"))
+    monkeypatch.setattr("src.main.LightRAGClient.__init__", lambda self, *a, **k: None)
     agent = CellSpatioAgent(
         config={"knowledge_dir": "tmp_kb_wiring", "data_dir": "tmp_data_wiring"}
     )
@@ -88,18 +78,15 @@ def test_agent_wires_kg_memory_into_recorder_and_router(monkeypatch):
     from src.main import CellSpatioAgent
 
     fake_client = object()
-    monkeypatch.setattr(
-        "src.main.get_current_llm", lambda: (fake_client, "test-model")
-    )
-    monkeypatch.setattr(
-        "src.main.LightRAGClient.__init__", lambda self, *a, **k: None
-    )
+    monkeypatch.setattr("src.main.get_current_llm", lambda: (fake_client, "test-model"))
+    monkeypatch.setattr("src.main.LightRAGClient.__init__", lambda self, *a, **k: None)
     agent = CellSpatioAgent(
         config={"knowledge_dir": "tmp_kb_wiring", "data_dir": "tmp_data_wiring"}
     )
     recorder = agent.workflow_recorder
     assert getattr(recorder, "kg_memory", None) is not None
     assert agent.modal_router.kg_memory is recorder.kg_memory  # 同一实例复用
+
 
 def test_agent_wires_kg_query_into_workflow_manager(monkeypatch):
     """CellSpatioAgent 必须构造 KGQuery（共享 kg_memory 实例）并注入 WorkflowManager。"""

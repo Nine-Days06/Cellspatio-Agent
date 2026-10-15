@@ -19,7 +19,7 @@ class IntentParser:
                 "visualization": "可视化、画图、图表、火山图、热图、PCA、箱线图",
                 "single_cell": "单细胞分析、scRNA、Seurat、降维、聚类、UMAP、细胞类型注释、细胞亚群",
                 "spatial": "空间转录组、空间组学、Visium、spatial、时空、空间位置、组织原位",
-            }
+            },
         },
         "fetch_data": {
             "description": "数据获取请求：下载公共数据库数据",
@@ -29,16 +29,13 @@ class IntentParser:
                 "uniprot": "UniProt 蛋白、蛋白序列、蛋白结构、UniProt ID",
                 "reactome": "Reactome 通路、通路详情、pathway",
                 "hpa": "HPA 蛋白、Human Protein Atlas、蛋白图谱、亚细胞定位",
-            }
+            },
         },
         "knowledge_query": {
             "description": "知识查询请求：基因/蛋白/通路/疾病/药物等生物学知识问答",
-            "sub_types": {}
+            "sub_types": {},
         },
-        "general": {
-            "description": "闲聊、问候、感谢、无关话题、无法识别的输入",
-            "sub_types": {}
-        }
+        "general": {"description": "闲聊、问候、感谢、无关话题、无法识别的输入", "sub_types": {}},
     }
 
     def __init__(self, llm_client=None, model: str = "gpt-4o-mini"):
@@ -47,25 +44,55 @@ class IntentParser:
 
         # 关键词匹配回退用
         self.analysis_keywords = {
-            'differential_expression': ['差异表达', '差异基因', 'DEG', 'fold change'],
-            'pathway_analysis': ['通路', 'pathway', '富集', 'GO', 'KEGG'],
-            'visualization': ['可视化', '画图', '图表', '火山图', '热图'],
-            'single_cell': ['单细胞', 'scRNA', 'scrna', 'Seurat', 'seurat', 'UMAP', '细胞聚类', '细胞注释'],
-            'spatial': ['空间转录', '空间组', 'Visium', 'visium', 'spatial', '时空组'],
+            "differential_expression": ["差异表达", "差异基因", "DEG", "fold change"],
+            "pathway_analysis": ["通路", "pathway", "富集", "GO", "KEGG"],
+            "visualization": ["可视化", "画图", "图表", "火山图", "热图"],
+            "single_cell": [
+                "单细胞",
+                "scRNA",
+                "scrna",
+                "Seurat",
+                "seurat",
+                "UMAP",
+                "细胞聚类",
+                "细胞注释",
+            ],
+            "spatial": ["空间转录", "空间组", "Visium", "visium", "spatial", "时空组"],
         }
         self.knowledge_keywords = [
-            '是什么', '有什么', '有哪些', '哪些', '怎么', '如何',
-            '作用', '功能', '关系', '解释', '机制', '途径', '通路',
-            '含义', '意义', '定义', '介绍', '简介', '概述',
-            '特点', '特征', '特性', '分类', '类型', '种类'
+            "是什么",
+            "有什么",
+            "有哪些",
+            "哪些",
+            "怎么",
+            "如何",
+            "作用",
+            "功能",
+            "关系",
+            "解释",
+            "机制",
+            "途径",
+            "通路",
+            "含义",
+            "意义",
+            "定义",
+            "介绍",
+            "简介",
+            "概述",
+            "特点",
+            "特征",
+            "特性",
+            "分类",
+            "类型",
+            "种类",
         ]
-        self.dataset_keywords = ['下载', '获取数据', '数据集', '找数据', '数据下载']
+        self.dataset_keywords = ["下载", "获取数据", "数据集", "找数据", "数据下载"]
         self.source_keywords = {
-            'geo': ['geo', 'gse', '数据集', '表达谱'],
-            'kegg': ['kegg', 'pathway', '通路'],
-            'uniprot': ['uniprot', '蛋白', 'protein'],
-            'reactome': ['reactome', '通路详情', 'pathway'],
-            'hpa': ['hpa', 'human protein atlas', '蛋白图谱', '亚细胞定位'],
+            "geo": ["geo", "gse", "数据集", "表达谱"],
+            "kegg": ["kegg", "pathway", "通路"],
+            "uniprot": ["uniprot", "蛋白", "protein"],
+            "reactome": ["reactome", "通路详情", "pathway"],
+            "hpa": ["hpa", "human protein atlas", "蛋白图谱", "亚细胞定位"],
         }
 
         self._build_system_prompt()
@@ -126,7 +153,9 @@ class IntentParser:
 
         return self._parse_with_keywords(user_input)
 
-    def _parse_with_llm(self, user_input: str, context: dict[str, Any] | None = None) -> dict[str, Any]:
+    def _parse_with_llm(
+        self, user_input: str, context: dict[str, Any] | None = None
+    ) -> dict[str, Any]:
         """使用 LLM 进行意图识别"""
         messages = [
             {"role": "system", "content": self.system_prompt},
@@ -135,7 +164,9 @@ class IntentParser:
             # 添加对话历史作为上下文
             for msg in context["history"][-3:]:
                 messages.append({"role": msg["role"], "content": msg["content"]})
-        messages.append({"role": "user", "content": f"用户输入：{user_input}\n请输出 JSON 格式意图："})
+        messages.append(
+            {"role": "user", "content": f"用户输入：{user_input}\n请输出 JSON 格式意图："}
+        )
 
         try:
             response = self.llm_client.chat.completions.create(
@@ -153,7 +184,11 @@ class IntentParser:
             required = ["type", "confidence", "original_input"]
             for field in required:
                 if field not in result:
-                    result[field] = user_input if field == "original_input" else (0.5 if field == "confidence" else "general")
+                    result[field] = (
+                        user_input
+                        if field == "original_input"
+                        else (0.5 if field == "confidence" else "general")
+                    )
 
             # 处理 ambiguous 类型
             if result.get("type") == "ambiguous" and not result.get("clarification"):
@@ -175,79 +210,82 @@ class IntentParser:
             for keyword in keywords:
                 if keyword in user_input:
                     return {
-                        'type': 'analysis',
-                        'analysis_type': analysis_type,
-                        'confidence': 0.8,
-                        'original_input': user_input,
-                        'secondary_intent': None,
-                        'clarification': None,
+                        "type": "analysis",
+                        "analysis_type": analysis_type,
+                        "confidence": 0.8,
+                        "original_input": user_input,
+                        "secondary_intent": None,
+                        "clarification": None,
                     }
 
         # 检查是否为数据获取意图
         for keyword in self.dataset_keywords:
             if keyword in user_input:
                 return {
-                    'type': 'fetch_data',
-                    'confidence': 0.75,
-                    'original_input': user_input,
-                    'secondary_intent': None,
-                    'clarification': None,
+                    "type": "fetch_data",
+                    "confidence": 0.75,
+                    "original_input": user_input,
+                    "secondary_intent": None,
+                    "clarification": None,
                 }
 
         # 检查是否为知识查询
         for keyword in self.knowledge_keywords:
             if keyword in user_input:
                 return {
-                    'type': 'knowledge_query',
-                    'confidence': 0.7,
-                    'original_input': user_input,
-                    'secondary_intent': None,
-                    'clarification': None,
+                    "type": "knowledge_query",
+                    "confidence": 0.7,
+                    "original_input": user_input,
+                    "secondary_intent": None,
+                    "clarification": None,
                 }
 
         # 简短输入可能是 ambiguous
         all_analysis_keywords = [kw for kws in self.analysis_keywords.values() for kw in kws]
-        if len(user_input.strip()) < 10 and not any(k in user_input for k in self.knowledge_keywords + self.dataset_keywords + all_analysis_keywords):
+        if len(user_input.strip()) < 10 and not any(
+            k in user_input
+            for k in self.knowledge_keywords + self.dataset_keywords + all_analysis_keywords
+        ):
             return {
-                'type': 'ambiguous',
-                'confidence': 0.5,
-                'original_input': user_input,
-                'secondary_intent': None,
-                'clarification': '您的输入比较简短，能否详细说明想要做什么？例如：查询基因信息、下载数据集、分析数据等。',
+                "type": "ambiguous",
+                "confidence": 0.5,
+                "original_input": user_input,
+                "secondary_intent": None,
+                "clarification": "您的输入比较简短，能否详细说明想要做什么？例如：查询基因信息、下载数据集、分析数据等。",
             }
 
         return {
-            'type': 'general',
-            'confidence': 0.5,
-            'original_input': user_input,
-            'secondary_intent': None,
-            'clarification': None,
+            "type": "general",
+            "confidence": 0.5,
+            "original_input": user_input,
+            "secondary_intent": None,
+            "clarification": None,
         }
 
     def extract_parameters(self, user_input: str) -> dict[str, Any]:
         """从用户输入中提取参数"""
         params = {}
 
-        file_pattern = r'[\w/\\:\-\.]+\.(?:csv|tsv|fastq|vcf|fasta)'
+        file_pattern = r"[\w/\\:\-\.]+\.(?:csv|tsv|fastq|vcf|fasta)"
         files = re.findall(file_pattern, user_input)
         if files:
-            params['input_files'] = files
+            params["input_files"] = files
 
-        gene_pattern = r'\b[A-Z][A-Z0-9]{1,10}\b'
+        gene_pattern = r"\b[A-Z][A-Z0-9]{1,10}\b"
         genes = re.findall(gene_pattern, user_input)
         if genes:
-            params['genes'] = genes
+            params["genes"] = genes
 
         sources = []
         for source, keywords in self.source_keywords.items():
             if any(k in user_input for k in keywords):
                 sources.append(source)
         if sources:
-            params['sources'] = sources
+            params["sources"] = sources
 
-        gse_pattern = r'\bGSE\d+\b'
+        gse_pattern = r"\bGSE\d+\b"
         gses = re.findall(gse_pattern, user_input.upper())
         if gses:
-            params['dataset_ids'] = gses
+            params["dataset_ids"] = gses
 
         return params

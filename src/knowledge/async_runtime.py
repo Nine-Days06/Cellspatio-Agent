@@ -12,6 +12,7 @@
 `asyncio.run_coroutine_threadsafe` 提交到该 loop 并等待结果。任何线程（主线程、
 FastAPI 工作线程、`asyncio.to_thread` 线程）都可安全调用。
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -41,8 +42,10 @@ class AsyncRuntime:
                 return self._loop
             loop = asyncio.new_event_loop()
             thread = threading.Thread(
-                target=self._run_forever, args=(loop,),
-                name="lightrag-async-runtime", daemon=True,
+                target=self._run_forever,
+                args=(loop,),
+                name="lightrag-async-runtime",
+                daemon=True,
             )
             thread.start()
             self._loop, self._thread = loop, thread
@@ -69,9 +72,7 @@ class AsyncRuntime:
         loop = self._ensure_loop()
         if threading.current_thread() is self._thread:
             coro.close()
-            raise RuntimeError(
-                "不能在共享运行时线程内调用同步接口；请改用 LightRAG 的 a* 异步方法"
-            )
+            raise RuntimeError("不能在共享运行时线程内调用同步接口；请改用 LightRAG 的 a* 异步方法")
         try:
             future = asyncio.run_coroutine_threadsafe(coro, loop)
         except RuntimeError:
@@ -107,6 +108,7 @@ def register_atexit(fn) -> None:
     内部的 logger.info 会抛 "I/O operation on closed file" 并打印错误栈刷屏。
     退出期关闭 logging.raiseExceptions 是消除该噪声的标准做法。
     """
+
     def _quiet() -> None:
         prev = logging.raiseExceptions
         logging.raiseExceptions = False

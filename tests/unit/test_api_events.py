@@ -1,4 +1,5 @@
 """SSE 事件契约：帧格式、tool label 补全、图表映射、消息线路编码。"""
+
 from __future__ import annotations
 
 import json
@@ -11,7 +12,7 @@ def test_sse_frame_exact_format_keeps_chinese_and_trailing_blank_line():
 
     assert frame == 'data: {"type": "delta", "text": "你好"}\n\n'
     assert frame.endswith("\n\n")
-    assert json.loads(frame[len("data: "):-2]) == {"type": "delta", "text": "你好"}
+    assert json.loads(frame[len("data: ") : -2]) == {"type": "delta", "text": "你好"}
 
 
 def test_sse_frame_appends_label_from_tool_table():
@@ -76,8 +77,15 @@ def test_wire_message_reencodes_plotly_figure_as_json_serialisable():
     from src.api.events import wire_message
 
     fig = go.Figure(go.Bar(x=["a"], y=[1]))
-    wire = wire_message({"id": 3, "role": "assistant", "content": "ok",
-                         "results": {"charts": [fig]}, "pending_script": None})
+    wire = wire_message(
+        {
+            "id": 3,
+            "role": "assistant",
+            "content": "ok",
+            "results": {"charts": [fig]},
+            "pending_script": None,
+        }
+    )
 
     assert wire["id"] == 3
     assert wire["pending_script"] is None
@@ -95,5 +103,7 @@ def test_make_event_puts_type_first():
     from src.api.events import make_event
 
     assert make_event("done", message_id=7, message={"a": 1}) == {
-        "type": "done", "message_id": 7, "message": {"a": 1},
+        "type": "done",
+        "message_id": 7,
+        "message": {"a": 1},
     }

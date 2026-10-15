@@ -4,6 +4,7 @@ Design rationale (2026 SOTA alignment):
 - ChatSpatial: schema-enforced tool calling replaces free codegen, param validity 20%→98%;
 - Enum as capability whitelist: unsupported analysis types blocked at schema level, no fake success.
 """
+
 from __future__ import annotations
 
 from typing import Any

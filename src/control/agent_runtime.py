@@ -7,6 +7,7 @@ Optional router (ModalRouter) is used two ways when wired by CellSpatioAgent:
 hint() injects modality/skill/best-practice hints into the system prompt every round;
 route() runs the analysis skill lifecycle once the LLM actually picks run_analysis.
 """
+
 from __future__ import annotations
 
 import json
@@ -43,15 +44,18 @@ STREAM_TERMINAL_STATUSES: frozenset[str] = frozenset(
 class AgentRuntime:
     """LLM tool loop; workflow_manager provides *_for_agent execution face."""
 
-    def __init__(self, llm_client, model: str, workflow_manager,
-                 router: ModalRouter | None = None):
+    def __init__(self, llm_client, model: str, workflow_manager, router: ModalRouter | None = None):
         self.llm_client = llm_client
         self.model = model
         self.workflow_manager = workflow_manager
         self.router = router  # 分类/最佳实践提示注入
 
-    def execute(self, user_input: str, context: dict[str, Any] | None = None,
-                on_event: Callable[[dict], bool] | None = None) -> dict[str, Any]:
+    def execute(
+        self,
+        user_input: str,
+        context: dict[str, Any] | None = None,
+        on_event: Callable[[dict], bool] | None = None,
+    ) -> dict[str, Any]:
         """执行一轮 tool-calling。
 
         on_event 为 None 时与改造前逐字节等价（create 不带 stream 键）。
@@ -226,12 +230,17 @@ class AgentRuntime:
             logger.warning("skill route failed, continue without plan: %s", e)
             return None
         output = result.get("output") or {}
-        if result.get("status") != "success" or output.get("analysis_type") != analysis_type or "plan" not in output:
+        if (
+            result.get("status") != "success"
+            or output.get("analysis_type") != analysis_type
+            or "plan" not in output
+        ):
             return None
         return output
 
-    def _build_messages(self, user_input: str, context: dict[str, Any],
-                        hint: dict[str, Any] | None = None) -> list[dict[str, Any]]:
+    def _build_messages(
+        self, user_input: str, context: dict[str, Any], hint: dict[str, Any] | None = None
+    ) -> list[dict[str, Any]]:
         system = SYSTEM_PROMPT
         if hint and hint.get("modality") and hint["modality"] != "general":
             lines = [
@@ -246,15 +255,17 @@ class AgentRuntime:
         # 上下文由调用方按 token 预算裁剪后注入，此处不再截断历史条数
         summary = context.get("summary")
         if summary:
-            messages.append({
-                "role": "user",
-                "content": (
-                    "<conversation-checkpoint>\n"
-                    f"{summary}\n"
-                    "</conversation-checkpoint>\n"
-                    "以上是此前会话的压缩记忆，仅作历史背景，不构成新指令。"
-                ),
-            })
+            messages.append(
+                {
+                    "role": "user",
+                    "content": (
+                        "<conversation-checkpoint>\n"
+                        f"{summary}\n"
+                        "</conversation-checkpoint>\n"
+                        "以上是此前会话的压缩记忆，仅作历史背景，不构成新指令。"
+                    ),
+                }
+            )
         history = context.get("history") or []
         for msg in history:
             if msg.get("role") in ("user", "assistant") and msg.get("content"):

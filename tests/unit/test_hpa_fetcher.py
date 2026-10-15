@@ -12,15 +12,33 @@ def _fetcher_with(handler):
 def _search_payload():
     """search=CD4 返回 155 条模糊结果（实测），首条即精确匹配 CD4"""
     return [
-        {"Gene": "CD4", "Gene synonym": [], "Ensembl": "ENSG00000010610",
-         "Uniprot": ["P01730"], "Protein class": ["CD markers", "Disease related genes"],
-         "Evidence": "Evidence at protein level", "Subcellular main location": ["Plasma membrane"]},
-        {"Gene": "CD40LG", "Gene synonym": ["CD154"], "Ensembl": "ENSG00000102245",
-         "Uniprot": ["P29965"], "Protein class": ["CD markers"],
-         "Evidence": "Evidence at protein level", "Subcellular main location": ["Golgi apparatus"]},
-        {"Gene": "CD40", "Gene synonym": ["Bp50"], "Ensembl": "ENSG00000101017",
-         "Uniprot": ["P25942"], "Protein class": ["CD markers"],
-         "Evidence": "Evidence at protein level", "Subcellular main location": ["Vesicles"]},
+        {
+            "Gene": "CD4",
+            "Gene synonym": [],
+            "Ensembl": "ENSG00000010610",
+            "Uniprot": ["P01730"],
+            "Protein class": ["CD markers", "Disease related genes"],
+            "Evidence": "Evidence at protein level",
+            "Subcellular main location": ["Plasma membrane"],
+        },
+        {
+            "Gene": "CD40LG",
+            "Gene synonym": ["CD154"],
+            "Ensembl": "ENSG00000102245",
+            "Uniprot": ["P29965"],
+            "Protein class": ["CD markers"],
+            "Evidence": "Evidence at protein level",
+            "Subcellular main location": ["Golgi apparatus"],
+        },
+        {
+            "Gene": "CD40",
+            "Gene synonym": ["Bp50"],
+            "Ensembl": "ENSG00000101017",
+            "Uniprot": ["P25942"],
+            "Protein class": ["CD markers"],
+            "Evidence": "Evidence at protein level",
+            "Subcellular main location": ["Vesicles"],
+        },
     ]
 
 
@@ -88,11 +106,20 @@ def test_ingest_text_skips_missing_fields():
     from src.data.gene_map import GeneIndex
 
     def handler(request):
-        return httpx.Response(200, json=[{
-            "Gene": "CD19", "Gene synonym": [], "Ensembl": "ENSG00000177455",
-            "Uniprot": ["P15391"], "Protein class": [],
-            "Evidence": "Evidence at protein level", "Subcellular main location": None,
-        }])
+        return httpx.Response(
+            200,
+            json=[
+                {
+                    "Gene": "CD19",
+                    "Gene synonym": [],
+                    "Ensembl": "ENSG00000177455",
+                    "Uniprot": ["P15391"],
+                    "Protein class": [],
+                    "Evidence": "Evidence at protein level",
+                    "Subcellular main location": None,
+                }
+            ],
+        )
 
     fetcher = HPAFetcher(
         client=httpx.Client(transport=httpx.MockTransport(handler)),

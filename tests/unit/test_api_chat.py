@@ -1,4 +1,5 @@
 """POST /api/chat：SSE 事件序列、404 / 409、error 事件；协作式中止链路由 T1/T3 分层覆盖。"""
+
 from __future__ import annotations
 
 import json
@@ -30,7 +31,7 @@ def _stream(client, session_id: str, prompt: str):
     assert response.headers["cache-control"] == "no-cache"
     assert response.text.endswith("\n\n")
     return [
-        json.loads(line[len("data: "):])
+        json.loads(line[len("data: ") :])
         for line in response.text.splitlines()
         if line.startswith("data: ")
     ]
@@ -41,8 +42,12 @@ def test_stream_emits_user_message_and_done_sequence(client):
     app = client.app
     app.state.agent.agent_runtime = FakeRuntime(
         events=[{"type": "delta", "text": "TP53 "}, {"type": "delta", "text": "是抑癌基因"}],
-        default={"status": "success", "type": "knowledge_response",
-                 "response": "TP53 是抑癌基因", "references": []},
+        default={
+            "status": "success",
+            "type": "knowledge_response",
+            "response": "TP53 是抑癌基因",
+            "references": [],
+        },
     )
 
     events = _stream(client, sid, "TP53 的作用？")
@@ -63,19 +68,25 @@ def test_stream_emits_tool_status_with_label(client):
 
     events = _stream(client, sid, "做差异表达")
 
-    assert events[0] == {"type": "tool_status", "name": "run_analysis",
-                         "phase": "start", "label": "运行分析"}
+    assert events[0] == {
+        "type": "tool_status",
+        "name": "run_analysis",
+        "phase": "start",
+        "label": "运行分析",
+    }
 
 
 def test_stream_emits_confirm_card_for_script_branch(client):
     sid = _new_session(client)
-    client.app.state.agent.agent_runtime = FakeRuntime(default={
-        "status": "needs_script_confirmation",
-        "message": "已生成 R 脚本",
-        "script": "library(DESeq2)",
-        "analysis_type": "differential_expression",
-        "params": {},
-    })
+    client.app.state.agent.agent_runtime = FakeRuntime(
+        default={
+            "status": "needs_script_confirmation",
+            "message": "已生成 R 脚本",
+            "script": "library(DESeq2)",
+            "analysis_type": "differential_expression",
+            "params": {},
+        }
+    )
 
     events = _stream(client, sid, "做差异表达")
 
@@ -140,8 +151,10 @@ def test_stream_combines_delta_tool_status_done_sequence(client):
     """规格 §7：单条流内 delta → tool_status → done 组合序列。"""
     sid = _new_session(client)
     client.app.state.agent.agent_runtime = FakeRuntime(
-        events=[{"type": "delta", "text": "开始分析。"},
-                {"type": "tool_status", "name": "run_analysis", "phase": "start"}],
+        events=[
+            {"type": "delta", "text": "开始分析。"},
+            {"type": "tool_status", "name": "run_analysis", "phase": "start"},
+        ],
         default={"status": "success", "message": "分析完成", "results": None},
     )
 

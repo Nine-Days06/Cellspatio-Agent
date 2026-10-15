@@ -27,6 +27,7 @@ class MockRExecutor:
 
     def execute_code(self, code):
         from types import SimpleNamespace
+
         return SimpleNamespace(returncode=0, stdout="", stderr="")
 
 
@@ -52,40 +53,44 @@ def test_analysis_workflow_full_chain():
     result = manager.execute_workflow("分析差异表达基因")
 
     # 无数据时 → needs_input（新语义：不再伪造成功）
-    assert result['status'] == 'needs_input'
-    assert result['analysis_type'] == 'differential_expression'
-    assert 'input_files' in result['message'] or '下载' in result['message'] or '数据' in result['message']
+    assert result["status"] == "needs_input"
+    assert result["analysis_type"] == "differential_expression"
+    assert (
+        "input_files" in result["message"]
+        or "下载" in result["message"]
+        or "数据" in result["message"]
+    )
 
 
 def test_visualization_intent_and_script_generation():
     """测试可视化意图解析与 R 脚本生成的整合"""
     intent = IntentParser().parse("画一个火山图")
-    assert intent['type'] == 'analysis'
-    assert intent['analysis_type'] == 'visualization'
+    assert intent["type"] == "analysis"
+    assert intent["analysis_type"] == "visualization"
 
-    code = RScriptGenerator().generate_code(intent['analysis_type'], {'plot_type': 'volcano'})
+    code = RScriptGenerator().generate_code(intent["analysis_type"], {"plot_type": "volcano"})
 
-    assert '#!/usr/bin/env Rscript' in code
-    assert 'volcano' in code
-    assert 'Volcano Plot' in code
+    assert "#!/usr/bin/env Rscript" in code
+    assert "volcano" in code
+    assert "Volcano Plot" in code
 
 
 def test_r_script_generation_to_file():
     """测试 R 脚本生成并落盘，验证生成器 → 文件管线（无需 R）"""
     generator = RScriptGenerator()
     code = generator.generate_code(
-        'differential_expression',
-        {'input_file': 'data.csv', 'output_file': 'results.csv'},
+        "differential_expression",
+        {"input_file": "data.csv", "output_file": "results.csv"},
     )
 
     with tempfile.TemporaryDirectory() as temp_dir:
-        script_path = Path(temp_dir) / 'de_analysis.R'
-        script_path.write_text(code, encoding='utf-8')
+        script_path = Path(temp_dir) / "de_analysis.R"
+        script_path.write_text(code, encoding="utf-8")
 
         assert script_path.exists()
-        content = script_path.read_text(encoding='utf-8')
-        assert content.startswith('#!/usr/bin/env Rscript')
-        assert 'read.csv' in content
+        content = script_path.read_text(encoding="utf-8")
+        assert content.startswith("#!/usr/bin/env Rscript")
+        assert "read.csv" in content
 
 
 def test_knowledge_query_workflow():
@@ -100,7 +105,7 @@ def test_knowledge_query_workflow():
 
     result = manager.execute_workflow("TP53 是什么基因？")
 
-    assert result['status'] == 'success'
-    assert result['type'] == 'knowledge_response'
-    assert 'TP53' in result['response']
+    assert result["status"] == "success"
+    assert result["type"] == "knowledge_response"
+    assert "TP53" in result["response"]
     assert knowledge_client.query_count == 1

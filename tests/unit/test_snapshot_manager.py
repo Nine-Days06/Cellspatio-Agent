@@ -1,4 +1,5 @@
 """SnapshotManager：Git worktree 创建/删除/列举/切换。"""
+
 import tempfile
 from pathlib import Path
 
@@ -11,6 +12,7 @@ def test_snapshot_manager_creates_worktree():
         repo.mkdir()
         # 初始化 git 仓库
         import subprocess
+
         subprocess.run(["git", "init"], cwd=repo, check=True, capture_output=True)
         subprocess.run(["git", "config", "user.email", "test@test.com"], cwd=repo, check=True)
         subprocess.run(["git", "config", "user.name", "Test"], cwd=repo, check=True)
@@ -36,6 +38,7 @@ def test_snapshot_manager_switches_context():
         repo = Path(tmp) / "repo"
         repo.mkdir()
         import subprocess
+
         subprocess.run(["git", "init"], cwd=repo, check=True, capture_output=True)
         subprocess.run(["git", "config", "user.email", "test@test.com"], cwd=repo, check=True)
         subprocess.run(["git", "config", "user.name", "Test"], cwd=repo, check=True)
@@ -52,5 +55,11 @@ def test_snapshot_manager_switches_context():
         subprocess.run(["git", "commit", "-m", "Add output"], cwd=snap_path, check=True)
 
         # 验证 worktree 有新提交
-        result = subprocess.run(["git", "log", "--oneline", "-1"], cwd=snap_path, capture_output=True, text=True, check=False)
+        result = subprocess.run(
+            ["git", "log", "--oneline", "-1"],
+            cwd=snap_path,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
         assert "Add output" in result.stdout

@@ -1,4 +1,5 @@
 """Skill 清单与元数据定义。"""
+
 from __future__ import annotations
 
 from typing import Any

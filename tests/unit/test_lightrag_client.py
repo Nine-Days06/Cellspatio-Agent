@@ -8,9 +8,11 @@ class FakeRAG:
         self.query_llm_calls = []
         self.query_llm_payload = {
             "llm_response": {"content": "答案正文\n\n### References\n- [1] 旧引用"},
-            "data": {"references": [
-                {"reference_id": "1", "file_path": "https://www.kegg.jp/pathway/map04115"},
-            ]},
+            "data": {
+                "references": [
+                    {"reference_id": "1", "file_path": "https://www.kegg.jp/pathway/map04115"},
+                ]
+            },
         }
 
     def insert(self, input_data, file_paths=None, **kwargs):
@@ -43,21 +45,22 @@ def _client_with_fake_rag(working_dir, config=None):
 def test_lightrag_initialization():
     """Test LightRAG initialization"""
     from src.knowledge.lightrag_client import LightRAGClient
-    
+
     with tempfile.TemporaryDirectory() as temp_dir:
         client = LightRAGClient(working_dir=temp_dir)
         assert client is not None
         assert str(client.working_dir) == temp_dir
 
+
 def test_insert_document():
     """Test document insertion"""
     from src.knowledge.lightrag_client import LightRAGClient
-    
+
     with tempfile.TemporaryDirectory() as temp_dir:
         client = LightRAGClient(working_dir=temp_dir)
         # 注意：实际测试需要 mock LLM 调用
         # 这里只是验证接口
-        assert hasattr(client, 'insert_document')
+        assert hasattr(client, "insert_document")
 
 
 def test_initialize_rag_uses_configured_models(tmp_path, monkeypatch):
@@ -68,6 +71,7 @@ def test_initialize_rag_uses_configured_models(tmp_path, monkeypatch):
     class FakeRagForInit:
         def __init__(self, **kwargs):
             captured.update(kwargs)
+
         async def initialize_storages(self):
             pass
 
@@ -114,6 +118,7 @@ def test_initialize_rag_passes_workspace_to_lightrag(tmp_path, monkeypatch):
     class FakeRagForInit:
         def __init__(self, **kwargs):
             captured.update(kwargs)
+
         async def initialize_storages(self):
             pass
 
@@ -130,7 +135,6 @@ def test_initialize_rag_passes_workspace_to_lightrag(tmp_path, monkeypatch):
     client = LightRAGClient(working_dir=tmp_path / "knowledge_base_methods")
     client._initialize_rag()
     assert captured["workspace"] == "knowledge_base_methods"
-
 
 
 def test_insert_documents_batch(tmp_path):
@@ -154,9 +158,7 @@ def test_insert_document_single_still_works(tmp_path):
 def test_insert_documents_derives_kegg_file_path(tmp_path):
     client = _client_with_fake_rag(tmp_path)
     client.insert_documents(["# KEGG 通路: map04115\n来源：https://www.kegg.jp/pathway/map04115\n"])
-    assert client._rag.file_paths_seen == [
-        ["https://www.kegg.jp/pathway/map04115"]
-    ]
+    assert client._rag.file_paths_seen == [["https://www.kegg.jp/pathway/map04115"]]
 
 
 def test_strip_references_section_cut_en_and_zh():
@@ -172,10 +174,12 @@ def test_strip_references_section_cut_en_and_zh():
 def test_format_reference_kegg_link():
     from src.knowledge.lightrag_client import format_reference
 
-    md = format_reference({
-        "reference_id": "1",
-        "file_path": "https://www.kegg.jp/pathway/map04115",
-    })
+    md = format_reference(
+        {
+            "reference_id": "1",
+            "file_path": "https://www.kegg.jp/pathway/map04115",
+        }
+    )
     assert md == "[KEGG map04115](https://www.kegg.jp/pathway/map04115)"
 
 
@@ -212,12 +216,11 @@ def test_query_with_references_strips_and_returns_refs(tmp_path):
     result = client.query_with_references("map04115 是什么")
     assert "References" not in result["response"]
     assert result["response"].startswith("答案正文")
-    assert result["references"][0]["file_path"] == (
-        "https://www.kegg.jp/pathway/map04115"
-    )
+    assert result["references"][0]["file_path"] == ("https://www.kegg.jp/pathway/map04115")
     # include_references 打开
     _q, param = client._rag.query_llm_calls[0]
     assert param.include_references is True
+
 
 def test_resolve_max_async_prefers_env(monkeypatch):
     """MAX_ASYNC 环境变量应成为并发值（.env 可调，无需改代码）"""
@@ -291,8 +294,13 @@ def test_build_storage_kwargs_pg_four_storages(monkeypatch):
     """四类 PostgreSQL storage + 补齐连接环境变量"""
     from src.knowledge import lightrag_client as m
 
-    for k in ("POSTGRES_HOST", "POSTGRES_PORT", "POSTGRES_USER",
-              "POSTGRES_PASSWORD", "POSTGRES_DATABASE"):
+    for k in (
+        "POSTGRES_HOST",
+        "POSTGRES_PORT",
+        "POSTGRES_USER",
+        "POSTGRES_PASSWORD",
+        "POSTGRES_DATABASE",
+    ):
         monkeypatch.delenv(k, raising=False)
     kw = m.build_storage_kwargs()
     assert kw == {
@@ -302,6 +310,7 @@ def test_build_storage_kwargs_pg_four_storages(monkeypatch):
         "doc_status_storage": "PGDocStatusStorage",
     }
     import os
+
     # check_storage_env_vars 要求这三个必须存在于 os.environ
     assert os.environ["POSTGRES_USER"] == "postgres"
     assert os.environ["POSTGRES_DATABASE"] == "rag"
@@ -317,5 +326,6 @@ def test_build_storage_kwargs_respects_existing_env(monkeypatch):
     monkeypatch.setenv("POSTGRES_DATABASE", "mydb")
     m.build_storage_kwargs()
     import os
+
     assert os.environ["POSTGRES_PORT"] == "6543"
     assert os.environ["POSTGRES_DATABASE"] == "mydb"

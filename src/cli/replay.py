@@ -1,4 +1,5 @@
 """CLI: python -m src.cli.replay <run_id>"""
+
 from __future__ import annotations
 
 import argparse

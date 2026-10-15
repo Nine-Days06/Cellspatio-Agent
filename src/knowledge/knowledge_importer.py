@@ -1,4 +1,5 @@
 """知识库导入模块 - 从独立文献处理项目导入数据"""
+
 import hashlib
 import json
 import logging
@@ -57,22 +58,22 @@ class ImportLedger:
         if not self.path.exists():
             return {}
         try:
-            with open(self.path, "r", encoding="utf-8") as f:
+            with open(self.path, encoding="utf-8") as f:
                 data = json.load(f)
         except (OSError, UnicodeDecodeError, json.JSONDecodeError) as e:
             logger.warning(
                 "导入台账损坏或不可读，按空台账处理（将重新导入全部文件）: %s (%s)",
-                self.path, e,
+                self.path,
+                e,
             )
             return {}
         if not isinstance(data, dict) or not isinstance(data.get("files", {}), dict):
-            logger.warning(
-                "导入台账结构非法，按空台账处理（将重新导入全部文件）: %s", self.path
-            )
+            logger.warning("导入台账结构非法，按空台账处理（将重新导入全部文件）: %s", self.path)
             return {}
         files = data.get("files", {})
         return {
-            name: entry for name, entry in files.items()
+            name: entry
+            for name, entry in files.items()
             if isinstance(name, str) and isinstance(entry, dict)
         }
 
@@ -109,56 +110,59 @@ class ImportLedger:
         except (OSError, UnicodeEncodeError) as e:
             logger.error(
                 "写入导入台账失败，本次导入结果未持久化（下次将重复导入）: %s (%s)",
-                self.path, e,
+                self.path,
+                e,
             )
 
 
 class KnowledgeImporter:
     """知识库导入器，支持多种格式导入"""
-    
+
     def __init__(self, lightrag_client):
         self.client = lightrag_client
-    
+
     def import_from_json(self, json_path: str) -> dict[str, Any]:
         """从 JSON 文件导入知识库"""
         try:
-            with open(json_path, 'r', encoding='utf-8') as f:
+            with open(json_path, encoding="utf-8") as f:
                 data = json.load(f)
-            
+
             articles = data if isinstance(data, list) else data.get("articles", [])
-            
+
             texts = [convert_article_to_text(a) for a in articles]
             count = self.client.insert_documents(texts)
-            
+
             logger.info(f"Imported {count} articles from JSON: {json_path}")
             return {"success": True, "count": count, "source": json_path}
-            
+
         except (FileNotFoundError, json.JSONDecodeError, KeyError) as e:
             logger.error(f"Failed to import from JSON: {e}")
             return {"success": False, "error": str(e)}
-    
+
     def import_from_sqlite(self, db_path: str, query: str | None = None) -> dict[str, Any]:
         """从 SQLite 数据库导入知识库"""
         try:
             conn = sqlite3.connect(db_path)
-            
+
             if query is None:
                 query = "SELECT * FROM articles WHERE human_review = 'Y' OR human_review IS NULL"
-            
+
             df = pd.read_sql_query(query, conn)
             conn.close()
-            
+
             texts = [convert_article_to_text(row.to_dict()) for _, row in df.iterrows()]
             count = self.client.insert_documents(texts)
-            
+
             logger.info(f"Imported {count} articles from SQLite: {db_path}")
             return {"success": True, "count": count, "source": db_path}
-            
+
         except (FileNotFoundError, sqlite3.Error, pd.errors.DatabaseError) as e:
             logger.error(f"Failed to import from SQLite: {e}")
             return {"success": False, "error": str(e)}
-    
-    def import_from_csv(self, csv_path: str, *, gene_lookup: dict[str, dict[str, str]] | None = None) -> dict[str, Any]:
+
+    def import_from_csv(
+        self, csv_path: str, *, gene_lookup: dict[str, dict[str, str]] | None = None
+    ) -> dict[str, Any]:
         """从 CSV 文件导入知识库
 
         gene_lookup: PMID → {mention: CURIE} 映射；None 时读本地缓存
@@ -182,30 +186,32 @@ class KnowledgeImporter:
         except (FileNotFoundError, pd.errors.EmptyDataError, pd.errors.ParserError) as e:
             logger.error(f"Failed to import from CSV: {e}")
             return {"success": False, "error": str(e)}
-    
-    def import_from_directory(self, dir_path: str, file_types: list[str] | None = None) -> dict[str, Any]:
+
+    def import_from_directory(
+        self, dir_path: str, file_types: list[str] | None = None
+    ) -> dict[str, Any]:
         """从目录批量导入（全量扫描，不查台账，历史行为保持不变）
 
         需要去重时请使用 import_incremental；此处始终跳过台账文件本身，
         避免把 import_ledger.json 当作文献 JSON 导入。
         """
         if file_types is None:
-            file_types = ['json', 'csv']
-        
+            file_types = ["json", "csv"]
+
         dir_path = Path(dir_path)
         total_count = 0
         imported_files = []
-        
+
         for file_type in file_types:
-            if file_type == 'json':
+            if file_type == "json":
                 pattern = "*.json"
-            elif file_type == 'csv':
+            elif file_type == "csv":
                 pattern = "*.csv"
-            elif file_type == 'sqlite':
+            elif file_type == "sqlite":
                 pattern = "*.db"
             else:
                 continue
-            
+
             for file_path in dir_path.glob(pattern):
                 if file_path.name == ImportLedger.LEDGER_FILENAME:
                     continue
@@ -213,7 +219,7 @@ class KnowledgeImporter:
                 if result.get("success"):
                     total_count += result.get("count", 0)
                     imported_files.append(str(file_path))
-        
+
         logger.info(f"Imported {total_count} articles from {len(imported_files)} files")
         return {"success": True, "total_count": total_count, "imported_files": imported_files}
 
@@ -255,12 +261,12 @@ class KnowledgeImporter:
             candidates = [dir_path / name for name in files]
         else:
             if file_types is None:
-                file_types = ['json', 'csv']
-            patterns: dict[str, str] = {'json': '*.json', 'csv': '*.csv', 'sqlite': '*.db'}
+                file_types = ["json", "csv"]
+            patterns: dict[str, str] = {"json": "*.json", "csv": "*.csv", "sqlite": "*.db"}
             candidates = sorted(
                 path
                 for file_type in file_types
-                for path in dir_path.glob(patterns.get(file_type, '__no_match__'))
+                for path in dir_path.glob(patterns.get(file_type, "__no_match__"))
                 if path.name != ImportLedger.LEDGER_FILENAME
             )
 
@@ -318,20 +324,23 @@ class KnowledgeImporter:
         logger.info(
             "增量导入完成: 提交 %d 篇（新批次 %d 篇），"
             "导入 %d 个文件，跳过 %d 个已导入文件，失败 %d 个",
-            total_count, new_count, len(imported_files),
-            len(skipped_files), len(failed_files),
+            total_count,
+            new_count,
+            len(imported_files),
+            len(skipped_files),
+            len(failed_files),
         )
         return result
-    
+
     def import_from_file(self, file_path: str) -> dict[str, Any]:
         """根据文件类型自动选择导入方法"""
         file_path = Path(file_path)
-        
-        if file_path.suffix.lower() == '.json':
+
+        if file_path.suffix.lower() == ".json":
             return self.import_from_json(str(file_path))
-        elif file_path.suffix.lower() == '.csv':
+        elif file_path.suffix.lower() == ".csv":
             return self.import_from_csv(str(file_path))
-        elif file_path.suffix.lower() in ['.db', '.sqlite']:
+        elif file_path.suffix.lower() in [".db", ".sqlite"]:
             return self.import_from_sqlite(str(file_path))
         else:
             return {"success": False, "error": f"Unsupported file type: {file_path.suffix}"}

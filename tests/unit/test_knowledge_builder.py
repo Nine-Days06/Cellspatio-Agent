@@ -4,6 +4,7 @@ from src.knowledge.knowledge_builder import KnowledgeBuilder
 class MockLightRAGClient:
     def __init__(self):
         self.inserted_documents = []
+
     def insert_documents(self, documents) -> int:
         self.inserted_documents.extend(documents)
         return len(documents)
@@ -13,6 +14,7 @@ class FakeFetcher:
     def __init__(self, source):
         self.source = source
         self.calls = []
+
     def ingest_text(self, asset_id) -> str:
         self.calls.append(asset_id)
         return f"# text of {self.source}:{asset_id}"
@@ -110,7 +112,10 @@ def test_build_from_cell_ontology_default_path_is_none(monkeypatch):
 
     def fake_texts(obo_path=None):
         seen["path"] = obo_path
-        return ["# Cell Ontology 术语:\nCL:0000084 T cell", "# Cell Ontology 术语:\nCL:0000085 B cell"]
+        return [
+            "# Cell Ontology 术语:\nCL:0000084 T cell",
+            "# Cell Ontology 术语:\nCL:0000085 B cell",
+        ]
 
     monkeypatch.setattr(cs, "cell_ontology_texts", fake_texts)
     client = MockLightRAGClient()
@@ -122,6 +127,7 @@ def test_build_from_cell_ontology_default_path_is_none(monkeypatch):
 
 def test_build_from_kegg_kgml_batch():
     """KGML 构建走 kegg fetcher 的 ingest_kgml_text（不是 ingest_text）"""
+
     class FakeKEGG:
         source = "kegg"
 

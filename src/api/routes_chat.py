@@ -1,4 +1,5 @@
 """POST /api/chat：SSE 流端点。工作线程跑 run_turn，事件经 asyncio 队列回传。"""
+
 from __future__ import annotations
 
 import asyncio
@@ -66,8 +67,9 @@ async def chat(body: ChatRequest, request: Request) -> StreamingResponse:
                     run_turn(agent, store, body.session_id, body.prompt, emit)
                 except Exception as exc:  # 任何失败都要变成 error 事件
                     logger.exception("chat run_turn failed")  # except 块内自动带 traceback
-                    emit(make_event("error", message=str(exc) or type(exc).__name__,
-                                    retryable=True))
+                    emit(
+                        make_event("error", message=str(exc) or type(exc).__name__, retryable=True)
+                    )
             finally:
                 lock.release()
                 try:

@@ -1,4 +1,5 @@
 """FastAPI 应用工厂：挂载 API 路由，注册全局异常兜底，按需托管前端构建产物。"""
+
 from __future__ import annotations
 
 import logging

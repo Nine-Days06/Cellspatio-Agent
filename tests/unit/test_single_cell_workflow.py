@@ -1,4 +1,5 @@
 """单细胞/空间分析工作流"""
+
 from src.control.workflow_manager import WorkflowManager
 from tests.unit.fakes import FakeExec, FakeGen, FakeIntent
 
@@ -6,8 +7,10 @@ from tests.unit.fakes import FakeExec, FakeGen, FakeIntent
 def _wm(intent, require=False):
     gen = FakeGen(return_value="# script", track_calls=True)
     wm = WorkflowManager(
-        intent_parser=intent, knowledge_client=None,
-        r_executor=FakeExec(track_codes=True), visualizer=None,
+        intent_parser=intent,
+        knowledge_client=None,
+        r_executor=FakeExec(track_codes=True),
+        visualizer=None,
         r_script_generator=gen,
         require_script_confirmation=require,
     )
@@ -57,7 +60,9 @@ def test_single_cell_confirmation_flow(tmp_path):
     assert result["analysis_type"] == "single_cell"
 
     result2 = wm.execute_confirmed_script(
-        "single_cell", result["params"], result["script"],
+        "single_cell",
+        result["params"],
+        result["script"],
         method_context=result.get("method_context"),
     )
     assert result2["status"] == "success"
@@ -87,9 +92,13 @@ def test_execute_confirmed_script_accepts_sc_and_spatial():
         extract_params_return={"input_files": ["scrna.csv"]},
     )
     wm, _ = _wm(sc_intent, require=True)
-    r1 = wm.execute_confirmed_script("single_cell", {"input_file": "a", "output_file": "b", "marker_file": "c"}, "# s")
+    r1 = wm.execute_confirmed_script(
+        "single_cell", {"input_file": "a", "output_file": "b", "marker_file": "c"}, "# s"
+    )
     assert r1["status"] == "success"
-    r2 = wm.execute_confirmed_script("spatial", {"input_file": "d", "output_file": "e", "plot_file": "f"}, "# s")
+    r2 = wm.execute_confirmed_script(
+        "spatial", {"input_file": "d", "output_file": "e", "plot_file": "f"}, "# s"
+    )
     assert r2["status"] == "success"
 
 
@@ -98,8 +107,7 @@ def test_seurat_template_full_pipeline():
 
     code = RScriptGenerator().generate_code(
         "single_cell",
-        {"input_file": "m.csv", "output_file": "sc.csv",
-         "marker_file": "markers.csv"},
+        {"input_file": "m.csv", "output_file": "sc.csv", "marker_file": "markers.csv"},
     )
     assert "Seurat" in code
     assert "FindClusters" in code

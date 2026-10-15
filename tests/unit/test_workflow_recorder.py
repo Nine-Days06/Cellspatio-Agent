@@ -1,4 +1,5 @@
 """WorkflowRecorder 行为测试。"""
+
 from src.control.workflow_recorder import WorkflowRecorder
 from src.schemas.workflow import (
     IntentRecord,
@@ -8,6 +9,7 @@ from src.schemas.workflow import (
 
 def _make_intent() -> "IntentRecord":
     from src.schemas.workflow import IntentRecord
+
     return IntentRecord(
         type="analysis",
         analysis_type="differential_expression",
@@ -18,6 +20,7 @@ def _make_intent() -> "IntentRecord":
 
 def _make_params() -> "ParameterRecord":
     from src.schemas.workflow import ParameterRecord
+
     return ParameterRecord(
         input_files=["data/counts.csv"],
         genes=["TP53"],
@@ -28,7 +31,12 @@ def test_recorder_start_execution_creates_record():
     """start_execution 创建 WorkflowExecution 记录。"""
     recorder = WorkflowRecorder()
     run_id = recorder.start_execution(
-        intent={"type": "analysis", "analysis_type": "differential_expression", "original_input": "test", "confidence": 1.0},
+        intent={
+            "type": "analysis",
+            "analysis_type": "differential_expression",
+            "original_input": "test",
+            "confidence": 1.0,
+        },
         parameters={"input_files": ["data.csv"]},
         user_input="测试输入",
         context={"history": []},
@@ -69,7 +77,11 @@ def test_recorder_records_parameters():
     """record_parameters 更新参数。"""
     recorder = WorkflowRecorder()
     run_id = recorder.start_execution(
-        intent={"type": "analysis", "analysis_type": "differential_expression", "original_input": "test"},
+        intent={
+            "type": "analysis",
+            "analysis_type": "differential_expression",
+            "original_input": "test",
+        },
         parameters={},
         user_input="test",
         context={},
@@ -84,7 +96,11 @@ def test_recorder_records_step():
     """record_step 追加步骤记录。"""
     recorder = WorkflowRecorder()
     run_id = recorder.start_execution(
-        intent={"type": "analysis", "analysis_type": "differential_expression", "original_input": "test"},
+        intent={
+            "type": "analysis",
+            "analysis_type": "differential_expression",
+            "original_input": "test",
+        },
         parameters={},
         user_input="test",
         context={},
@@ -111,13 +127,31 @@ def test_recorder_records_multiple_steps():
     """多步骤正确追加并保持顺序。"""
     recorder = WorkflowRecorder()
     run_id = recorder.start_execution(
-        intent={"type": "analysis", "analysis_type": "differential_expression", "original_input": "test"},
+        intent={
+            "type": "analysis",
+            "analysis_type": "differential_expression",
+            "original_input": "test",
+        },
         parameters={},
         user_input="test",
         context={},
     )
-    recorder.record_step(run_id, "step-1", "analysis", "run_analysis", {}, output={"status": "needs_script_confirmation"})
-    recorder.record_step(run_id, "step-2", "analysis", "run_analysis", {}, output={"status": "success", "result": {"file": "out.csv"}})
+    recorder.record_step(
+        run_id,
+        "step-1",
+        "analysis",
+        "run_analysis",
+        {},
+        output={"status": "needs_script_confirmation"},
+    )
+    recorder.record_step(
+        run_id,
+        "step-2",
+        "analysis",
+        "run_analysis",
+        {},
+        output={"status": "success", "result": {"file": "out.csv"}},
+    )
     record = recorder.get_record(run_id)
     assert len(record.steps) == 2
     assert record.steps[0].step_id == "step-1"
@@ -130,12 +164,18 @@ def test_recorder_finish_run_returns_path():
     """finish_run 返回 WRROC 存储路径。"""
     recorder = WorkflowRecorder()
     run_id = recorder.start_execution(
-        intent={"type": "analysis", "analysis_type": "differential_expression", "original_input": "test"},
+        intent={
+            "type": "analysis",
+            "analysis_type": "differential_expression",
+            "original_input": "test",
+        },
         parameters={},
         user_input="test",
         context={},
     )
-    recorder.record_step(run_id, "step-1", "analysis", "run_analysis", {}, output={"status": "success"})
+    recorder.record_step(
+        run_id, "step-1", "analysis", "run_analysis", {}, output={"status": "success"}
+    )
     path = recorder.finish_run(run_id)
     assert path.name == "workflow.json"
     assert path.parent.name == run_id
@@ -145,12 +185,23 @@ def test_recorder_export_json():
     """export_json 返回完整 JSON 字符串。"""
     recorder = WorkflowRecorder()
     run_id = recorder.start_execution(
-        intent={"type": "analysis", "analysis_type": "differential_expression", "original_input": "test"},
+        intent={
+            "type": "analysis",
+            "analysis_type": "differential_expression",
+            "original_input": "test",
+        },
         parameters={"input_files": ["data.csv"]},
         user_input="test",
         context={},
     )
-    recorder.record_step(run_id, "s1", "analysis", "run_analysis", {}, output={"status": "success", "result": {"file": "out.csv"}})
+    recorder.record_step(
+        run_id,
+        "s1",
+        "analysis",
+        "run_analysis",
+        {},
+        output={"status": "success", "result": {"file": "out.csv"}},
+    )
     recorder.finish_run(run_id)
     json_str = recorder.export_json(run_id)
     assert "run_id" in json_str
@@ -161,15 +212,34 @@ def test_recorder_export_json():
 def test_recorder_export_jsonl():
     """export_jsonl 返回每行一个步骤的 JSONL。"""
     import json
+
     recorder = WorkflowRecorder()
     run_id = recorder.start_execution(
-        intent={"type": "analysis", "analysis_type": "differential_expression", "original_input": "test"},
+        intent={
+            "type": "analysis",
+            "analysis_type": "differential_expression",
+            "original_input": "test",
+        },
         parameters={},
         user_input="test",
         context={},
     )
-    recorder.record_step(run_id, "s1", "analysis", "run_analysis", {"analysis_type": "de"}, output={"status": "success", "result": {"file": "out1.csv"}})
-    recorder.record_step(run_id, "s2", "analysis", "run_analysis", {}, output={"status": "success", "result": {"file": "out2.csv"}})
+    recorder.record_step(
+        run_id,
+        "s1",
+        "analysis",
+        "run_analysis",
+        {"analysis_type": "de"},
+        output={"status": "success", "result": {"file": "out1.csv"}},
+    )
+    recorder.record_step(
+        run_id,
+        "s2",
+        "analysis",
+        "run_analysis",
+        {},
+        output={"status": "success", "result": {"file": "out2.csv"}},
+    )
     recorder.finish_run(run_id)
     jsonl = recorder.export_jsonl(run_id)
     lines = jsonl.strip().split("\n")
@@ -190,7 +260,11 @@ def test_recorder_contextvar_isolation():
     """不同 run_id 的记录互不干扰（contextvars 隔离）。"""
     recorder = WorkflowRecorder()
     run_id1 = recorder.start_execution(
-        intent={"type": "analysis", "analysis_type": "differential_expression", "original_input": "test1"},
+        intent={
+            "type": "analysis",
+            "analysis_type": "differential_expression",
+            "original_input": "test1",
+        },
         parameters={},
         user_input="test1",
         context={},
@@ -201,8 +275,12 @@ def test_recorder_contextvar_isolation():
         user_input="test2",
         context={},
     )
-    recorder.record_step(run_id1, "s1", "analysis", "run_analysis", {}, output={"status": "success"})
-    recorder.record_step(run_id2, "s1", "analysis", "run_analysis", {}, output={"status": "needs_input"})
+    recorder.record_step(
+        run_id1, "s1", "analysis", "run_analysis", {}, output={"status": "success"}
+    )
+    recorder.record_step(
+        run_id2, "s1", "analysis", "run_analysis", {}, output={"status": "needs_input"}
+    )
     r1 = recorder.get_record(run_id1)
     r2 = recorder.get_record(run_id2)
     assert r1.intent.analysis_type.value == "differential_expression"
@@ -216,10 +294,16 @@ def test_recorder_contextvar_isolation():
 def test_start_execution_preserves_skill_plan():
     """start_execution 入参中的 skill_plan 不再被白名单吞掉。"""
     import tempfile
+
     recorder = WorkflowRecorder(wrroc_base_dir=tempfile.mkdtemp())
     plan = {"analysis_type": "differential_expression", "plan": ["质控"]}
     run_id = recorder.start_execution(
-        intent={"type": "analysis", "analysis_type": "differential_expression", "original_input": "x", "confidence": 1.0},
+        intent={
+            "type": "analysis",
+            "analysis_type": "differential_expression",
+            "original_input": "x",
+            "confidence": 1.0,
+        },
         parameters={"input_files": ["a.csv"], "skill_plan": plan},
         user_input="x",
         context={},

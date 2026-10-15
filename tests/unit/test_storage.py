@@ -4,6 +4,7 @@ from src.data.storage import FetcherStorage
 def _cleanup():
     import shutil
     from pathlib import Path
+
     shutil.rmtree("test_storage", ignore_errors=True)
     assert not Path("test_storage").exists()
 

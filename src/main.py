@@ -80,9 +80,7 @@ class CellSpatioAgent:
 
         llm_cfg = self.config.get("llm", {})
         provider = llm_cfg.get("provider")
-        lightrag_config = (
-            {"provider": provider} if provider not in (None, "mock") else {}
-        )
+        lightrag_config = {"provider": provider} if provider not in (None, "mock") else {}
 
         self.knowledge_client = LightRAGClient(
             working_dir=self.config.get("knowledge_dir", "./knowledge_base"),
@@ -96,9 +94,7 @@ class CellSpatioAgent:
 
         self.methods_kb = MethodsKb(
             client=LightRAGClient(
-                working_dir=self.config.get(
-                    "methods_knowledge_dir", "./knowledge_base_methods"
-                ),
+                working_dir=self.config.get("methods_knowledge_dir", "./knowledge_base_methods"),
                 config=lightrag_config,
             ),
         )
@@ -145,7 +141,8 @@ class CellSpatioAgent:
         self.skill_registry = SkillRegistry(skills_dir=Path(repo_root) / "skills")
         self.skill_loader = SkillLoader(self.skill_registry)
         self.modal_router = ModalRouter(
-            registry=self.skill_registry, loader=self.skill_loader,
+            registry=self.skill_registry,
+            loader=self.skill_loader,
             kg_memory=self.kg_memory,
         )
 
@@ -167,9 +164,7 @@ class CellSpatioAgent:
         context.setdefault("last_user_input", user_input)
         return self.agent_runtime.execute(user_input, context)
 
-    def confirm_and_download(
-        self, source: str, asset_id: str, query: str = ""
-    ) -> dict[str, Any]:
+    def confirm_and_download(self, source: str, asset_id: str, query: str = "") -> dict[str, Any]:
         """确认并下载数据资产（UI/CLI 供用户在候选选择后调用）"""
         return self.workflow_manager.confirm_and_download(source, asset_id, query=query)
 
@@ -192,6 +187,7 @@ class CellSpatioAgent:
     def replay(self, run_id: str) -> dict[str, Any]:
         """一键复现历史运行"""
         from src.control.replay import replay_run
+
         return replay_run(run_id, repo_root=self.config.get("repo_root", Path.cwd()))
 
     def close(self) -> None:
@@ -221,9 +217,7 @@ class CellSpatioAgent:
                         break
 
                     result = self.execute_workflow(user_input)
-                    print(
-                        f"智能体: {result.get('message', result.get('response', '无响应'))}\n"
-                    )
+                    print(f"智能体: {result.get('message', result.get('response', '无响应'))}\n")
 
                 except KeyboardInterrupt:
                     break
@@ -241,9 +235,7 @@ class CellSpatioAgent:
         import sys
 
         print("启动 Web 界面（FastAPI）...")
-        subprocess.run(
-            [sys.executable, "-m", "src.api"], check=False
-        )
+        subprocess.run([sys.executable, "-m", "src.api"], check=False)
 
 
 if __name__ == "__main__":

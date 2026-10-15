@@ -42,7 +42,7 @@ def test_load_index_maps_symbol_ensembl_and_synonym(tmp_path):
     index = load_gene_index(_write_gene_info(tmp_path))
     assert index.lookup(symbol="TP53") == "7157"
     assert index.lookup(ensembl="ENSG00000141510") == "7157"
-    assert index.lookup(symbol="P53") == "7157"      # 同义词回退
+    assert index.lookup(symbol="P53") == "7157"  # 同义词回退
     assert index.lookup(symbol="MCM2") == "4171"
 
 
@@ -50,8 +50,8 @@ def test_lookup_case_insensitive_and_symbol_priority(tmp_path):
     """大小写不敏感；符号优先于同义词。"""
     index = load_gene_index(_write_gene_info(tmp_path))
     assert index.lookup(symbol="tp53") == "7157"
-    assert index.lookup(symbol="ABG") == "1"         # 同义词
-    assert index.lookup(symbol="A1BG") == "1"        # 官方符号
+    assert index.lookup(symbol="ABG") == "1"  # 同义词
+    assert index.lookup(symbol="A1BG") == "1"  # 官方符号
 
 
 def test_lookup_unmatched_returns_empty(tmp_path):

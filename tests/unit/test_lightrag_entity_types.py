@@ -17,11 +17,15 @@ def test_install_domain_prompts_injects_once_and_keeps_format_safe():
     lightrag_client.install_domain_prompts()
     first = PROMPTS["entity_extraction_system_prompt"]
     assert "---Domain Rules" in first
-    lightrag_client.install_domain_prompts()          # 幂等
+    lightrag_client.install_domain_prompts()  # 幂等
     assert PROMPTS["entity_extraction_system_prompt"] == first
     # 注入后仍能 .format()（证明提示词未含字面大括号）
     PROMPTS["entity_extraction_system_prompt"].format(
-        tuple_delimiter="<|#|>", completion_delimiter="<|COMPLETE|>",
-        entity_types_guidance="x", examples="y", language="English",
-        max_total_records=1, max_entity_records=1,
+        tuple_delimiter="<|#|>",
+        completion_delimiter="<|COMPLETE|>",
+        entity_types_guidance="x",
+        examples="y",
+        language="English",
+        max_total_records=1,
+        max_entity_records=1,
     )

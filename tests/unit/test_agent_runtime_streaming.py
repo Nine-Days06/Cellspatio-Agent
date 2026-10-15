@@ -1,4 +1,5 @@
 """AgentRuntime 流式路径：on_event 推送 delta/tool_status、tool_calls 跨 chunk 累积、协作式中止。"""
+
 from __future__ import annotations
 
 from types import SimpleNamespace
@@ -12,7 +13,9 @@ def _text_chunk(text: str) -> SimpleNamespace:
     )
 
 
-def _tool_chunk(index: int, call_id: str = "", name: str = "", arguments: str = "") -> SimpleNamespace:
+def _tool_chunk(
+    index: int, call_id: str = "", name: str = "", arguments: str = ""
+) -> SimpleNamespace:
     call = SimpleNamespace(
         index=index,
         id=call_id or None,
@@ -116,13 +119,15 @@ def test_stream_delta_events_arrive_in_order():
 
 def test_stream_tool_calls_accumulate_across_chunks_then_dispatch():
     """工具名与 arguments 分块到达时按 index 拼接，能正确 dispatch 并进入第二轮。"""
-    llm = FakeStreamLLM([
+    llm = FakeStreamLLM(
         [
-            _tool_chunk(0, "call_1", "query_knowledge", '{"que'),
-            _tool_chunk(0, arguments='ry": "TP53 的作用"}'),
-        ],
-        [_text_chunk("抑癌基因")],
-    ])
+            [
+                _tool_chunk(0, "call_1", "query_knowledge", '{"que'),
+                _tool_chunk(0, arguments='ry": "TP53 的作用"}'),
+            ],
+            [_text_chunk("抑癌基因")],
+        ]
+    )
     wm = FakeWM({"query_knowledge": {"status": "needs_input", "message": "缺输入"}})
     runtime, _ = _runtime(llm, wm)
     sink = EventSink()
@@ -138,10 +143,12 @@ def test_stream_tool_calls_accumulate_across_chunks_then_dispatch():
 
 def test_stream_tool_message_history_carries_assembled_tool_call():
     """tool 结果回灌历史时，assistant 消息的 tool_calls 形状与非流式一致。"""
-    llm = FakeStreamLLM([
-        [_tool_chunk(0, "call_9", "query_knowledge", '{"query": "x"}')],
-        [_text_chunk("done")],
-    ])
+    llm = FakeStreamLLM(
+        [
+            [_tool_chunk(0, "call_9", "query_knowledge", '{"query": "x"}')],
+            [_text_chunk("done")],
+        ]
+    )
     wm = FakeWM({"query_knowledge": {"status": "needs_input", "message": "缺输入"}})
     runtime, _ = _runtime(llm, wm)
 
@@ -151,7 +158,8 @@ def test_stream_tool_message_history_carries_assembled_tool_call():
     assert second_round[-2]["role"] == "assistant"
     assert second_round[-2]["tool_calls"][0]["id"] == "call_9"
     assert second_round[-2]["tool_calls"][0]["function"] == {
-        "name": "query_knowledge", "arguments": '{"query": "x"}',
+        "name": "query_knowledge",
+        "arguments": '{"query": "x"}',
     }
     assert second_round[-1]["tool_call_id"] == "call_9"
 
@@ -169,7 +177,9 @@ def test_abort_on_delta_returns_aborted_result():
 
 def test_abort_on_tool_status_start_skips_dispatch():
     """tool_status start 返回 False：工具不得被执行（客户端已断开）。"""
-    llm = FakeStreamLLM([[_tool_chunk(0, "c1", "run_analysis", '{"analysis_type": "single_cell"}')]])
+    llm = FakeStreamLLM(
+        [[_tool_chunk(0, "c1", "run_analysis", '{"analysis_type": "single_cell"}')]]
+    )
     wm = FakeWM({"run_analysis": {"status": "success", "message": "ok"}})
     runtime, wm = _runtime(llm, wm)
     sink = EventSink(abort_on="tool_status")
@@ -185,15 +195,18 @@ def test_tool_status_end_emit_result_is_ignored():
     """phase=end 的 emit 返回值被忽略：工作照常进入下一轮（已产出工具结果不能丢）。
     注意：delta 事件也会推给同一回调，断言仅过滤 tool_status 类型。
     """
+
     class EndOnlySink(EventSink):
         def __call__(self, event: dict) -> bool:
             self.events.append(event)
             return event.get("phase") != "end"
 
-    llm = FakeStreamLLM([
-        [_tool_chunk(0, "c1", "query_knowledge", '{"query": "y"}')],
-        [_text_chunk("答")],
-    ])
+    llm = FakeStreamLLM(
+        [
+            [_tool_chunk(0, "c1", "query_knowledge", '{"query": "y"}')],
+            [_text_chunk("答")],
+        ]
+    )
     wm = FakeWM({"query_knowledge": {"status": "needs_input", "message": "缺输入"}})
     runtime, wm = _runtime(llm, wm)
     sink = EndOnlySink()
@@ -202,14 +215,19 @@ def test_tool_status_end_emit_result_is_ignored():
 
     assert wm.calls == [("query_knowledge", {"query": "y"})]
     assert result["message"] == "答"
-    assert [e.get("phase") for e in sink.events if e.get("type") == "tool_status"] == ["start", "end"]
+    assert [e.get("phase") for e in sink.events if e.get("type") == "tool_status"] == [
+        "start",
+        "end",
+    ]
 
 
 def test_stream_ignores_chunks_without_choices():
     """usage-only 等无 choices 的 chunk 直接跳过，不炸。"""
-    llm = FakeStreamLLM([
-        [SimpleNamespace(choices=[]), _text_chunk("好")],
-    ])
+    llm = FakeStreamLLM(
+        [
+            [SimpleNamespace(choices=[]), _text_chunk("好")],
+        ]
+    )
     runtime, _ = _runtime(llm)
     sink = EventSink()
 
@@ -241,10 +259,9 @@ def test_stream_rounds_capped_at_max_rounds():
     """持续请求工具时按 MAX_ROUNDS 收敛，返回既有上限错误文案。"""
     from src.control.agent_runtime import MAX_ROUNDS
 
-    llm = FakeStreamLLM([
-        [_tool_chunk(0, f"c{i}", "query_knowledge", '{"query": "z"}')]
-        for i in range(MAX_ROUNDS)
-    ])
+    llm = FakeStreamLLM(
+        [[_tool_chunk(0, f"c{i}", "query_knowledge", '{"query": "z"}')] for i in range(MAX_ROUNDS)]
+    )
     wm = FakeWM({"query_knowledge": {"status": "needs_input", "message": "缺输入"}})
     runtime, _ = _runtime(llm, wm)
 
@@ -262,13 +279,15 @@ def test_stream_tool_calls_accumulate_with_missing_index():
     语义：无 index 的 chunk 归入当前正在累积的槽（按出现顺序），若无当前槽则归入槽 0。
     """
     # 情况 1：首个 chunk 无 index，后续 chunk 有 index=0 —— 应归入同一槽
-    llm = FakeStreamLLM([
+    llm = FakeStreamLLM(
         [
-            _tool_chunk_no_index("call_1", "query_knowledge", '{"que'),
-            _tool_chunk(0, arguments='ry": "TP53"}'),
-        ],
-        [_text_chunk("抑癌基因")],
-    ])
+            [
+                _tool_chunk_no_index("call_1", "query_knowledge", '{"que'),
+                _tool_chunk(0, arguments='ry": "TP53"}'),
+            ],
+            [_text_chunk("抑癌基因")],
+        ]
+    )
     wm = FakeWM({"query_knowledge": {"status": "needs_input", "message": "缺输入"}})
     runtime, _ = _runtime(llm, wm)
 
@@ -279,13 +298,15 @@ def test_stream_tool_calls_accumulate_with_missing_index():
 
     # 情况 2：单工具调用，所有 chunk 均无 index —— 应归入槽 0，arguments 拼接
     # 模拟真实协议：arguments 分块传输，而非重复
-    llm2 = FakeStreamLLM([
+    llm2 = FakeStreamLLM(
         [
-            _tool_chunk_no_index("call_a", "query_knowledge", '{"query": "'),
-            _tool_chunk_no_index(arguments='TP53"}'),
-        ],
-        [_text_chunk("done")],
-    ])
+            [
+                _tool_chunk_no_index("call_a", "query_knowledge", '{"query": "'),
+                _tool_chunk_no_index(arguments='TP53"}'),
+            ],
+            [_text_chunk("done")],
+        ]
+    )
     wm2 = FakeWM({"query_knowledge": {"status": "needs_input", "message": "缺输入"}})
     runtime2, _ = _runtime(llm2, wm2)
 

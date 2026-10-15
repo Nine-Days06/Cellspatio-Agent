@@ -21,12 +21,15 @@ class KnowledgeBuilder:
     def _need_registry(self):
         if self.registry is None:
             from src.data.registry import FetcherRegistry
+
             self.registry = FetcherRegistry.build_default()
 
     def _insert_texts(self, texts: list[str]) -> int:
         return self.client.insert_documents(texts)
 
-    def build_from_pubmed(self, search_terms: list[str] | None = None, max_per_term: int = 500) -> dict[str, Any]:
+    def build_from_pubmed(
+        self, search_terms: list[str] | None = None, max_per_term: int = 500
+    ) -> dict[str, Any]:
         """弃用：文献唯一通道为 pubmed-etl 产物经 KnowledgeImporter 导入"""
         logger.warning("build_from_pubmed 已弃用：请使用 pubmed-etl 导出 + KnowledgeImporter")
         return {"inserted": 0}
@@ -46,7 +49,9 @@ class KnowledgeBuilder:
         fetcher = fetcher or self.registry.get("uniprot")
         texts = [fetcher.ingest_text(acc) for acc in accessions]
         inserted = self._insert_texts(texts)
-        logger.info(f"Built knowledge from UniProt: {len(accessions)} proteins, inserted {inserted}")
+        logger.info(
+            f"Built knowledge from UniProt: {len(accessions)} proteins, inserted {inserted}"
+        )
         return {"requested": len(accessions), "inserted": inserted}
 
     def build_from_kegg_kgml(self, pathway_ids: list[str], fetcher=None) -> dict[str, Any]:
@@ -55,7 +60,9 @@ class KnowledgeBuilder:
         fetcher = fetcher or self.registry.get("kegg")
         texts = [fetcher.ingest_kgml_text(pid) for pid in pathway_ids]
         inserted = self._insert_texts(texts)
-        logger.info(f"Built knowledge from KEGG KGML: {len(pathway_ids)} pathways, inserted {inserted}")
+        logger.info(
+            f"Built knowledge from KEGG KGML: {len(pathway_ids)} pathways, inserted {inserted}"
+        )
         return {"requested": len(pathway_ids), "inserted": inserted}
 
     def build_from_reactome(self, st_ids: list[str], fetcher=None) -> dict[str, Any]:
@@ -88,6 +95,7 @@ class KnowledgeBuilder:
     def build_from_cellmarker(self, xlsx_path: str | None = None) -> dict[str, Any]:
         """从 CellMarker 人类细胞标志物表批量构建"""
         from src.knowledge.curated_sources import cellmarker_texts
+
         texts = cellmarker_texts(Path(xlsx_path) if xlsx_path else None)
         inserted = self._insert_texts(texts)
         logger.info(f"Built knowledge from CellMarker: {len(texts)} docs, inserted {inserted}")
@@ -96,6 +104,7 @@ class KnowledgeBuilder:
     def build_from_cell_ontology(self, obo_path: str | None = None) -> dict[str, Any]:
         """从 Cell Ontology cl.obo 批量构建"""
         from src.knowledge.curated_sources import cell_ontology_texts
+
         texts = cell_ontology_texts(Path(obo_path) if obo_path else None)
         inserted = self._insert_texts(texts)
         logger.info(f"Built knowledge from Cell Ontology: {len(texts)} docs, inserted {inserted}")
@@ -106,7 +115,7 @@ class KnowledgeBuilder:
         texts = []
         for file_path in file_paths:
             try:
-                with open(file_path, 'r', encoding='utf-8') as f:
+                with open(file_path, encoding="utf-8") as f:
                     texts.append(f.read())
             except (OSError, UnicodeDecodeError) as e:
                 logger.error(f"Failed to process file {file_path}: {e}")
@@ -128,22 +137,22 @@ class KnowledgeBuilder:
 
     def build_initial_knowledge_base(self, config: dict[str, Any]) -> dict[str, Any]:
         """按 sources 批量构建初始知识库"""
-        sources = config.get('sources', [])
+        sources = config.get("sources", [])
         inserted_total = 0
         handled = []
         for source in sources:
-            source_type = source.get('type')
-            if source_type == 'pubmed':
+            source_type = source.get("type")
+            if source_type == "pubmed":
                 logger.warning("source 'pubmed' 已弃用，请使用 pubmed-etl + KnowledgeImporter")
                 continue
-            if source_type == 'kegg':
-                result = self.build_from_kegg(source.get('pathway_ids', []))
-            elif source_type == 'uniprot':
-                result = self.build_from_uniprot(source.get('accessions', []))
-            elif source_type == 'geo_metadata':
-                result = self.build_from_geo_metadata(source.get('gse_ids', []))
-            elif source_type == 'files':
-                result = self.build_from_files(source.get('file_paths', []))
+            if source_type == "kegg":
+                result = self.build_from_kegg(source.get("pathway_ids", []))
+            elif source_type == "uniprot":
+                result = self.build_from_uniprot(source.get("accessions", []))
+            elif source_type == "geo_metadata":
+                result = self.build_from_geo_metadata(source.get("gse_ids", []))
+            elif source_type == "files":
+                result = self.build_from_files(source.get("file_paths", []))
             else:
                 logger.warning(f"未知 source type: {source_type}")
                 continue

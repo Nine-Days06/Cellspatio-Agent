@@ -1,6 +1,7 @@
 # 知识检索层模块
 
 """知识检索层：LightRAG 客户端、知识构建/导入、LLM 工厂。"""
+
 from src.knowledge.knowledge_builder import KnowledgeBuilder
 from src.knowledge.knowledge_importer import KnowledgeImporter
 from src.knowledge.lightrag_client import LightRAGClient

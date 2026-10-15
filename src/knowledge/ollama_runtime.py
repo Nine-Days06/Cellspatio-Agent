@@ -1,4 +1,4 @@
-﻿"""Ollama 进程自动唤起与自动关闭。
+"""Ollama 进程自动唤起与自动关闭。
 
 embedding 唯一后端是本地 Ollama（见 llm_factory.build_embedding_func）。
 本模块负责：用到时按需拉起 `ollama serve`，空闲超过阈值后关闭**自己启动的**进程。
@@ -16,6 +16,7 @@ embedding 唯一后端是本地 Ollama（见 llm_factory.build_embedding_func）
   没尝试下载，等待用户决定，故给可执行指引而非报错
 - idle：空闲回收中/已关闭
 """
+
 from __future__ import annotations
 
 import atexit
@@ -231,7 +232,9 @@ def _terminate_owned() -> None:
     try:
         proc.terminate()
         try:
-            proc.wait(timeout=TERMINATE_GRACE)   # 顺带回收子进程句柄，避免 GC 期 "subprocess still running"
+            proc.wait(
+                timeout=TERMINATE_GRACE
+            )  # 顺带回收子进程句柄，避免 GC 期 "subprocess still running"
         except subprocess.TimeoutExpired:
             # 宽限期内没退出（信号被忽略/进程卡在内核态）→ 强杀
             proc.kill()
@@ -275,9 +278,7 @@ def _has_model(tags: dict[str, Any] | None) -> bool:
     return False
 
 
-def _ensure_model(
-    host: str, exe: str, flags: int, tags: dict[str, Any] | None = None
-) -> bool:
+def _ensure_model(host: str, exe: str, flags: int, tags: dict[str, Any] | None = None) -> bool:
     """确保所需 embedding 模型已就位；缺失则 `ollama pull`。
 
     返回是否具备模型。pull 的**退出码必须校验**——模型不存在等场景
@@ -335,7 +336,7 @@ def ensure_ready() -> None:
 
     幂等；并发调用只启动一个进程；任何失败都不抛异常，只转状态与日志。
     """
-    global _state, _detail, _managed, _proc, _last_probe_ok   # _last_used 归 touch() 所有
+    global _state, _detail, _managed, _proc, _last_probe_ok  # _last_used 归 touch() 所有
 
     # 全流程串行化；状态字段只短持 _state_lock（见代码块后的「锁分工」说明）
     with _start_lock:
@@ -391,10 +392,10 @@ def ensure_ready() -> None:
                     _state, _detail = "ready", ""
                     _last_probe_ok = _monotonic()
                 touch()
-                if _managed:      # 该分支必然 managed（starting 的前提），门只为与 spawn 分支语义一致
+                if _managed:  # 该分支必然 managed（starting 的前提），门只为与 spawn 分支语义一致
                     _ensure_reaper()
             else:
-                _terminate_owned()          # 锁外调用：函数自行锁内摘账
+                _terminate_owned()  # 锁外调用：函数自行锁内摘账
                 with _state_lock:
                     _state, _detail = "failed", f"启动超时（{int(START_TIMEOUT)}s）"
                 logger.warning("ollama start timed out after %ss", int(START_TIMEOUT))
@@ -443,7 +444,7 @@ def ensure_ready() -> None:
             )
 
         if not _wait_ready(host):
-            _terminate_owned()              # 锁外调用：函数自行锁内摘账
+            _terminate_owned()  # 锁外调用：函数自行锁内摘账
             with _state_lock:
                 _state, _detail = "failed", f"启动超时（{int(START_TIMEOUT)}s）"
             logger.warning("ollama start timed out after %ss", int(START_TIMEOUT))
@@ -456,7 +457,7 @@ def ensure_ready() -> None:
             _last_probe_ok = _monotonic()
         touch()
         logger.info("ollama ready (managed)")
-        _ensure_reaper()          # 自启的进程才可能需要空闲回收，外部实例不建线程
+        _ensure_reaper()  # 自启的进程才可能需要空闲回收，外部实例不建线程
 
 
 def reset_for_tests() -> None:
@@ -512,7 +513,7 @@ def maybe_reap() -> bool:
                 return False
             _state, _detail = "idle", f"空闲 {int(idle // 60)} 分钟，准备关闭"
         logger.info("ollama idle for %.0f min, shutting down (managed process)", idle / 60)
-        _terminate_owned()      # 仅要求不持 _state_lock；_start_lock 下调用安全
+        _terminate_owned()  # 仅要求不持 _state_lock；_start_lock 下调用安全
         with _state_lock:
             # detail 保留关闭原因：sidebar 上要能看到「为什么停了」
             _state, _detail = "stopped", f"空闲 {int(idle // 60)} 分钟，已关闭"
@@ -535,7 +536,7 @@ def _ensure_reaper() -> None:
         if _reaper_started or _idle_seconds() <= 0:
             return
         _reaper_started = True
-    _reaper_stop.clear()      # 上一轮 reset_for_tests 可能置位过，先复位再起线程
+    _reaper_stop.clear()  # 上一轮 reset_for_tests 可能置位过，先复位再起线程
     thread = threading.Thread(target=_reaper_loop, name="ollama-reaper", daemon=True)
     try:
         thread.start()

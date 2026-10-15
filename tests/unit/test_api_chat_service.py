@@ -1,4 +1,5 @@
 """chat_service.run_turn：落库时机、分支流转、事件顺序、会话锁。"""
+
 from __future__ import annotations
 
 import json
@@ -53,8 +54,14 @@ def test_user_message_is_persisted_before_runtime_runs(store):
 
 def test_general_branch_persists_assistant_message_and_done_event(store):
     sid = store.create_session()
-    runtime = FakeRuntime(default={"status": "success", "type": "knowledge_response",
-                                   "response": "抑癌基因", "references": []})
+    runtime = FakeRuntime(
+        default={
+            "status": "success",
+            "type": "knowledge_response",
+            "response": "抑癌基因",
+            "references": [],
+        }
+    )
     emit = _sink()
 
     result = run_turn(FakeAgent(runtime=runtime), store, sid, "TP53?", emit)
@@ -74,8 +81,9 @@ def test_chart_events_precede_done_event(store):
 
     sid = store.create_session()
     fig = go.Figure(go.Scatter(x=[1], y=[2]))
-    runtime = FakeRuntime(default={"status": "success", "message": "ok",
-                                   "results": {"charts": [fig]}})
+    runtime = FakeRuntime(
+        default={"status": "success", "message": "ok", "results": {"charts": [fig]}}
+    )
     emit = _sink()
 
     run_turn(FakeAgent(runtime=runtime), store, sid, "分析", emit)
@@ -88,14 +96,16 @@ def test_chart_events_precede_done_event(store):
 
 def test_script_confirmation_branch_persists_pending_script(store):
     sid = store.create_session()
-    runtime = FakeRuntime(default={
-        "status": "needs_script_confirmation",
-        "message": "已生成 R 脚本",
-        "script": "library(DESeq2)",
-        "analysis_type": "differential_expression",
-        "params": {"group_by": "condition"},
-        "method_context": "DESeq2 常规流程",
-    })
+    runtime = FakeRuntime(
+        default={
+            "status": "needs_script_confirmation",
+            "message": "已生成 R 脚本",
+            "script": "library(DESeq2)",
+            "analysis_type": "differential_expression",
+            "params": {"group_by": "condition"},
+            "method_context": "DESeq2 常规流程",
+        }
+    )
     emit = _sink()
 
     result = run_turn(FakeAgent(runtime=runtime), store, sid, "做差异表达", emit)
@@ -122,13 +132,15 @@ def test_script_confirmation_branch_persists_pending_script(store):
 def test_data_confirmation_branch_keeps_candidates_out_of_database(store):
     sid = store.create_session()
     candidates = [{"source": "geo", "asset_id": "GSE1", "title": "T"}]
-    runtime = FakeRuntime(default={
-        "status": "needs_confirmation",
-        "type": "fetch_data",
-        "candidates": candidates,
-        "query": "肝癌",
-        "message": "找到 1 个候选数据集，请选择要下载的项：",
-    })
+    runtime = FakeRuntime(
+        default={
+            "status": "needs_confirmation",
+            "type": "fetch_data",
+            "candidates": candidates,
+            "query": "肝癌",
+            "message": "找到 1 个候选数据集，请选择要下载的项：",
+        }
+    )
     emit = _sink()
 
     result = run_turn(FakeAgent(runtime=runtime), store, sid, "下载 GSE1", emit)
@@ -147,8 +159,10 @@ def test_data_confirmation_branch_keeps_candidates_out_of_database(store):
 
 def test_aborted_branch_persists_interrupted_marker(store):
     sid = store.create_session()
-    runtime = FakeRuntime(events=[{"type": "delta", "text": "半句"}],
-                          default={"status": "success", "message": "不该出现"})
+    runtime = FakeRuntime(
+        events=[{"type": "delta", "text": "半句"}],
+        default={"status": "success", "message": "不该出现"},
+    )
     emit = _sink()
 
     def abort_on_delta(event):
@@ -168,8 +182,9 @@ def test_context_carries_history_summary_and_assets(store):
     sid = store.create_session()
     store.append_message(sid, "user", "上一问")
     store.append_message(sid, "assistant", "上一答")
-    store.update_session_meta(sid, summary="## 目标\n旧目标", summary_upto=1,
-                              downloaded_assets=[{"access_path": "a.csv"}])
+    store.update_session_meta(
+        sid, summary="## 目标\n旧目标", summary_upto=1, downloaded_assets=[{"access_path": "a.csv"}]
+    )
     runtime = FakeRuntime()
 
     run_turn(FakeAgent(runtime=runtime), store, sid, "继续", _sink())
@@ -202,8 +217,7 @@ def test_soft_warn_event_emitted_when_threshold_crossed(store, monkeypatch):
 
     sid = store.create_session()
     store.append_message(sid, "user", "旧问")
-    monkeypatch.setattr(chat_service.compact, "should_soft_warn",
-                        lambda summary, window: True)
+    monkeypatch.setattr(chat_service.compact, "should_soft_warn", lambda summary, window: True)
     emit = _sink()
 
     run_turn(FakeAgent(runtime=FakeRuntime()), store, sid, "继续", emit)

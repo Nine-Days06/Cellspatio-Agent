@@ -1,4 +1,5 @@
 """一键复现：恢复 worktree、数据、环境、执行。"""
+
 from __future__ import annotations
 
 import subprocess
@@ -29,7 +30,9 @@ def replay_run(run_id: str, repo_root: Path | str | None = None) -> dict[str, An
 
     # 可选：恢复 R 环境
     if (snap_path / "renv.lock").exists():
-        subprocess.run(["R", "-e", "renv::restore()"], cwd=snap_path, check=False, capture_output=True)
+        subprocess.run(
+            ["R", "-e", "renv::restore()"], cwd=snap_path, check=False, capture_output=True
+        )
 
     return {
         "status": "success",

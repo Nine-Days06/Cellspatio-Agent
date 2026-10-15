@@ -1,4 +1,5 @@
 """LightRAG 的 LLM 与 embedding 函数工厂"""
+
 import asyncio
 import logging
 
@@ -47,22 +48,36 @@ def build_llm_func(provider: str | None = None) -> tuple:
     if config["client_type"] == "zhipuai":
         from lightrag.llm.zhipu import zhipu_complete_if_cache
 
-        async def llm_func(prompt: str, system_prompt: str | None = None,
-                           history_messages: list[dict] | None = None, **kwargs) -> str:
+        async def llm_func(
+            prompt: str,
+            system_prompt: str | None = None,
+            history_messages: list[dict] | None = None,
+            **kwargs,
+        ) -> str:
             return await zhipu_complete_if_cache(
-                prompt=prompt, model=model, api_key=api_key,
-                system_prompt=system_prompt, history_messages=history_messages or [],
+                prompt=prompt,
+                model=model,
+                api_key=api_key,
+                system_prompt=system_prompt,
+                history_messages=history_messages or [],
                 **kwargs,
             )
     else:
         from lightrag.llm.openai import openai_complete_if_cache
 
-        async def llm_func(prompt: str, system_prompt: str | None = None,
-                           history_messages: list[dict] | None = None, **kwargs) -> str:
+        async def llm_func(
+            prompt: str,
+            system_prompt: str | None = None,
+            history_messages: list[dict] | None = None,
+            **kwargs,
+        ) -> str:
             # openai_client_configs 注入共享连接池，跨调用复用 TCP+TLS
             return await openai_complete_if_cache(
-                model=model, prompt=prompt, api_key=api_key,
-                system_prompt=system_prompt, history_messages=history_messages,
+                model=model,
+                prompt=prompt,
+                api_key=api_key,
+                system_prompt=system_prompt,
+                history_messages=history_messages,
                 base_url=base_url,
                 openai_client_configs={"http_client": _shared_http()},
                 **kwargs,

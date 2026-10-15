@@ -1,6 +1,7 @@
 """ModalRouter：任务分发 + 回退链测试。"""
+
 from pathlib import Path
-from unittest.mock import AsyncMock, MagicMock, Mock
+from unittest.mock import AsyncMock, MagicMock
 
 from src.control.router import ModalRouter
 from src.skills.loader import SkillLoader
@@ -17,7 +18,9 @@ def test_router_dispatch_analysis():
     loader.create_instance.return_value = skill_instance
 
     router = ModalRouter(registry, loader)
-    result = router.route("分析差异表达基因", context={"downloaded_assets": [], "script_approved": True})
+    result = router.route(
+        "分析差异表达基因", context={"downloaded_assets": [], "script_approved": True}
+    )
 
     assert result["status"] == "success"
     assert result["modality"] == "analysis"

@@ -1,4 +1,5 @@
 """KGMemory：WorkflowRecorder → LightRAG 增量写入。"""
+
 from __future__ import annotations
 
 import logging
@@ -36,8 +37,13 @@ async def _mock_embedding(texts: list[str], **kwargs) -> np.ndarray:
 class KGMemory:
     """WorkflowRecorder → LightRAG 知识图谱增量写入。"""
 
-    def __init__(self, working_dir: Path | str, workspace: str | None = None,
-                 llm_model_func=None, embedding_func=None):
+    def __init__(
+        self,
+        working_dir: Path | str,
+        workspace: str | None = None,
+        llm_model_func=None,
+        embedding_func=None,
+    ):
         self.working_dir = Path(working_dir)
         self.working_dir.mkdir(parents=True, exist_ok=True)
 
@@ -119,7 +125,5 @@ class KGMemory:
         """关系查询：返回实体关系。"""
         self._ensure_initialized()
         param = QueryParam(mode="mix")
-        result = async_runtime.run(
-            self._rag.aquery(f"Relations of {entity}", param=param)
-        )
+        result = async_runtime.run(self._rag.aquery(f"Relations of {entity}", param=param))
         return [{"text": str(r)} for r in result] if result else []

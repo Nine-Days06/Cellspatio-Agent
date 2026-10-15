@@ -6,6 +6,7 @@
 缓存写到 data/raw/pubtator/gene_ids.json；导入时 knowledge_importer 读取注入
 `基因ID：NCBIGene:…`。可重复生成（按 PMID 覆盖写）。
 """
+
 import argparse
 import csv
 import sys

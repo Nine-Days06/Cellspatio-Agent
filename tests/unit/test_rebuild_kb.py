@@ -36,11 +36,14 @@ def test_curated_only_pass_and_clear(monkeypatch, tmp_path):
     kb = tmp_path / "knowledge_base"
     kb.mkdir()
     monkeypatch.setattr(rebuild_kb, "KB_DIR", kb)
-    _write_docs(kb, {
-        "doc1": {"content": "# KEGG 通路: map04110\nENTRY map04110"},
-        "doc2": {"content": "# UniProt 蛋白: P04637\n基因：TP53"},
-        "doc3": {"content": "# GEO 数据集: GSE123456\n标题：..."},
-    })
+    _write_docs(
+        kb,
+        {
+            "doc1": {"content": "# KEGG 通路: map04110\nENTRY map04110"},
+            "doc2": {"content": "# UniProt 蛋白: P04637\n基因：TP53"},
+            "doc3": {"content": "# GEO 数据集: GSE123456\n标题：..."},
+        },
+    )
     (kb / "vdb_constants.json").write_text("{}", encoding="utf-8")
     (kb / "EMBEDDING_MODEL.json").write_text("{}", encoding="utf-8")
 
@@ -56,10 +59,13 @@ def test_literature_reject_and_keep(monkeypatch, tmp_path):
     kb = tmp_path / "knowledge_base"
     kb.mkdir()
     monkeypatch.setattr(rebuild_kb, "KB_DIR", kb)
-    _write_docs(kb, {
-        "pub_30872783": {"content": "标题：xxx\nhttps://pubmed.ncbi.nlm.nih.gov/30872783/"},
-        "doc_kegg": {"content": "# KEGG 通路: map04110"},
-    })
+    _write_docs(
+        kb,
+        {
+            "pub_30872783": {"content": "标题：xxx\nhttps://pubmed.ncbi.nlm.nih.gov/30872783/"},
+            "doc_kegg": {"content": "# KEGG 通路: map04110"},
+        },
+    )
 
     foreign = rebuild_kb.find_foreign_docs()
     assert foreign == ["pub_30872783"]
@@ -106,10 +112,13 @@ def test_new_curated_docs_pass_guard(monkeypatch, tmp_path):
     kb = tmp_path / "knowledge_base"
     kb.mkdir()
     monkeypatch.setattr(rebuild_kb, "KB_DIR", kb)
-    _write_docs(kb, {
-        "cm1": {"content": "# CellMarker 细胞类型:\n## B cell"},
-        "cl1": {"content": "# Cell Ontology 术语:\nCL:0000084 T cell"},
-    })
+    _write_docs(
+        kb,
+        {
+            "cm1": {"content": "# CellMarker 细胞类型:\n## B cell"},
+            "cl1": {"content": "# Cell Ontology 术语:\nCL:0000084 T cell"},
+        },
+    )
     assert rebuild_kb.find_foreign_docs() == []
     rebuild_kb.clear_kb()
     assert not (kb / rebuild_kb.DOCS_FILE).exists()
@@ -117,19 +126,25 @@ def test_new_curated_docs_pass_guard(monkeypatch, tmp_path):
 
 def test_all_ok_requires_every_source():
     """逐源校验：每源 requested > 0 且 inserted == requested 才算全部成功。"""
-    assert rebuild_kb._all_sources_fully_inserted([
-        ("kegg", {"requested": 8, "inserted": 8}),
-        ("cellmarker", {"requested": 170, "inserted": 170}),
-    ])
+    assert rebuild_kb._all_sources_fully_inserted(
+        [
+            ("kegg", {"requested": 8, "inserted": 8}),
+            ("cellmarker", {"requested": 170, "inserted": 170}),
+        ]
+    )
     # 某一源 inserted < requested → 失败
-    assert not rebuild_kb._all_sources_fully_inserted([
-        ("kegg", {"requested": 8, "inserted": 8}),
-        ("geo", {"requested": 2, "inserted": 1}),
-    ])
+    assert not rebuild_kb._all_sources_fully_inserted(
+        [
+            ("kegg", {"requested": 8, "inserted": 8}),
+            ("geo", {"requested": 2, "inserted": 1}),
+        ]
+    )
     # 某一源 requested == 0 → 失败
-    assert not rebuild_kb._all_sources_fully_inserted([
-        ("cell_ontology", {"requested": 0, "inserted": 0}),
-    ])
+    assert not rebuild_kb._all_sources_fully_inserted(
+        [
+            ("cell_ontology", {"requested": 0, "inserted": 0}),
+        ]
+    )
 
 
 def test_curated_headers_cover_push3_sources():
@@ -144,11 +159,14 @@ def test_push3_docs_pass_guard(monkeypatch, tmp_path):
     kb = tmp_path / "knowledge_base"
     kb.mkdir()
     monkeypatch.setattr(rebuild_kb, "KB_DIR", kb)
-    _write_docs(kb, {
-        "kg1": {"content": "# KEGG 通路结构: hsa04110\n名称：Cell cycle"},
-        "re1": {"content": "# Reactome 通路: R-HSA-1640170\n名称：Cell Cycle"},
-        "hp1": {"content": "# HPA 蛋白: CD4\nEnsembl：ENSG00000010610"},
-    })
+    _write_docs(
+        kb,
+        {
+            "kg1": {"content": "# KEGG 通路结构: hsa04110\n名称：Cell cycle"},
+            "re1": {"content": "# Reactome 通路: R-HSA-1640170\n名称：Cell Cycle"},
+            "hp1": {"content": "# HPA 蛋白: CD4\nEnsembl：ENSG00000010610"},
+        },
+    )
     assert rebuild_kb.find_foreign_docs() == []
     rebuild_kb.clear_kb()
     assert not (kb / rebuild_kb.DOCS_FILE).exists()

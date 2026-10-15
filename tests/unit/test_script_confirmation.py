@@ -1,4 +1,5 @@
 """脚本执行前人工确认（HITL）"""
+
 from src.control.workflow_manager import WorkflowManager
 from tests.unit.fakes import FakeExec, FakeGen, FakeIntent
 
@@ -46,7 +47,8 @@ def test_execute_confirmed_script_runs_repair_loop(tmp_path):
         "output_file": str(f.with_suffix(".de_results.csv")),
     }
     result = wm.execute_confirmed_script(
-        "differential_expression", params,
+        "differential_expression",
+        params,
         "#!/usr/bin/env Rscript\n# user-approved",
     )
     assert result["status"] == "success"

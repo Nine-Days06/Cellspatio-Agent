@@ -1,4 +1,5 @@
 """sync_pubmed.py 一键同步脚本测试"""
+
 from unittest import mock
 
 import sync_pubmed
@@ -76,8 +77,10 @@ def test_sync_and_import_full(tmp_path):
         "skipped_files": [],
     }
 
-    with mock.patch("sync_pubmed.subprocess.run"), \
-         mock.patch("sync_pubmed.import_via_cli", return_value=fake_import) as m_cli:
+    with (
+        mock.patch("sync_pubmed.subprocess.run"),
+        mock.patch("sync_pubmed.import_via_cli", return_value=fake_import) as m_cli,
+    ):
         result = sync_pubmed.sync_and_import(etl_dir=tmp_path, import_dir=import_dir)
 
     m_cli.assert_called_once()
@@ -104,8 +107,10 @@ def test_sync_and_import_only_imports_the_new_csv(tmp_path):
         "skipped_files": ["articles_20260901_090000.csv"],
     }
 
-    with mock.patch("sync_pubmed.subprocess.run"), \
-         mock.patch("sync_pubmed.import_via_cli", return_value=fake_import) as m_cli:
+    with (
+        mock.patch("sync_pubmed.subprocess.run"),
+        mock.patch("sync_pubmed.import_via_cli", return_value=fake_import) as m_cli,
+    ):
         sync_pubmed.sync_and_import(etl_dir=tmp_path, import_dir=import_dir)
 
     kwargs = m_cli.call_args.kwargs
@@ -119,11 +124,18 @@ def test_sync_and_import_imported_is_new_count_not_scanned(tmp_path):
     output_dir.mkdir(parents=True)
     (output_dir / "articles_20260921_150000.csv").write_text("x", encoding="utf-8")
 
-    fake_import = {"success": True, "total_count": 500, "new_count": 3,
-                   "imported_files": ["articles_20260921_150000.csv"], "skipped_files": []}
+    fake_import = {
+        "success": True,
+        "total_count": 500,
+        "new_count": 3,
+        "imported_files": ["articles_20260921_150000.csv"],
+        "skipped_files": [],
+    }
 
-    with mock.patch("sync_pubmed.subprocess.run"), \
-         mock.patch("sync_pubmed.import_via_cli", return_value=fake_import):
+    with (
+        mock.patch("sync_pubmed.subprocess.run"),
+        mock.patch("sync_pubmed.import_via_cli", return_value=fake_import),
+    ):
         result = sync_pubmed.sync_and_import(etl_dir=tmp_path, import_dir=tmp_path / "import")
 
     assert result["imported"] == 3
@@ -135,11 +147,18 @@ def test_sync_and_import_reimport_all_scans_whole_directory(tmp_path):
     output_dir.mkdir(parents=True)
     (output_dir / "articles_20260921_160000.csv").write_text("x", encoding="utf-8")
 
-    fake_import = {"success": True, "total_count": 500, "new_count": 3,
-                   "imported_files": ["a.csv"], "skipped_files": []}
+    fake_import = {
+        "success": True,
+        "total_count": 500,
+        "new_count": 3,
+        "imported_files": ["a.csv"],
+        "skipped_files": [],
+    }
 
-    with mock.patch("sync_pubmed.subprocess.run"), \
-         mock.patch("sync_pubmed.import_via_cli", return_value=fake_import) as m_cli:
+    with (
+        mock.patch("sync_pubmed.subprocess.run"),
+        mock.patch("sync_pubmed.import_via_cli", return_value=fake_import) as m_cli,
+    ):
         result = sync_pubmed.sync_and_import(
             etl_dir=tmp_path, import_dir=tmp_path / "import", reimport_all=True
         )
@@ -156,9 +175,13 @@ def test_sync_and_import_skips_import_when_requested(tmp_path):
     (output_dir / "articles_20260921_130001.csv").write_text("x", encoding="utf-8")
 
     import_dir = tmp_path / "import"
-    with mock.patch("sync_pubmed.subprocess.run"), \
-         mock.patch("sync_pubmed.import_via_cli") as m_cli:
-        result = sync_pubmed.sync_and_import(etl_dir=tmp_path, import_dir=import_dir, do_import=False)
+    with (
+        mock.patch("sync_pubmed.subprocess.run"),
+        mock.patch("sync_pubmed.import_via_cli") as m_cli,
+    ):
+        result = sync_pubmed.sync_and_import(
+            etl_dir=tmp_path, import_dir=import_dir, do_import=False
+        )
 
     m_cli.assert_not_called()
     assert result["imported"] is None
@@ -170,8 +193,10 @@ def test_sync_and_import_no_new_data(tmp_path):
     output_dir.mkdir(parents=True)
 
     import_dir = tmp_path / "import"
-    with mock.patch("sync_pubmed.subprocess.run"), \
-         mock.patch("sync_pubmed.import_via_cli") as m_cli:
+    with (
+        mock.patch("sync_pubmed.subprocess.run"),
+        mock.patch("sync_pubmed.import_via_cli") as m_cli,
+    ):
         result = sync_pubmed.sync_and_import(etl_dir=tmp_path, import_dir=import_dir)
 
     m_cli.assert_not_called()
@@ -195,10 +220,14 @@ def test_main_parses_reimport_all_flag(tmp_path):
     etl_dir.mkdir()
     fake = {"exported": 0, "imported": 0, "failed": 0}
     with mock.patch("sync_pubmed.sync_and_import", return_value=fake) as m_sync:
-        rc = sync_pubmed.main([
-            "--etl-dir", str(etl_dir),
-            "--import-dir", str(tmp_path / "import"),
-            "--reimport-all",
-        ])
+        rc = sync_pubmed.main(
+            [
+                "--etl-dir",
+                str(etl_dir),
+                "--import-dir",
+                str(tmp_path / "import"),
+                "--reimport-all",
+            ]
+        )
     assert rc == 0
     assert m_sync.call_args.kwargs["reimport_all"] is True

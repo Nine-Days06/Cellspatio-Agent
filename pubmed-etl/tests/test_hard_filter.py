@@ -4,6 +4,7 @@
 过滤阈值一律显式 patch 掉 config.settings 的实际取值，
 避免用例随配置调整或系统时钟（PUB_YEAR_MAX = 当前年份）变化而失效。
 """
+
 import gc
 import sqlite3
 import tempfile
@@ -28,7 +29,7 @@ ABSTRACT_MIN_LEN = 50
 PUB_YEAR_MIN = 1900
 PUB_YEAR_MAX = 2025
 EXCLUDED_ARTICLE_TYPES = ("Letter", "Comment", "Editorial")
-TITLE_MIN_LEN = 10          # hard_filter.check_title 内的硬编码下限
+TITLE_MIN_LEN = 10  # hard_filter.check_title 内的硬编码下限
 
 LONG_ABSTRACT = (
     "Single-cell RNA sequencing of human tumor microenvironment reveals "
@@ -39,13 +40,29 @@ SHORT_ABSTRACT = "Too short."
 
 # articles 表列顺序与 utils/db.py 的 CREATE_ARTICLES_SQL 保持一致
 ARTICLE_COLUMNS = (
-    "pmid", "title", "abstract", "keywords", "mesh_terms", "pub_year",
-    "pub_month", "journal", "journal_abbr", "doi", "pmc_id",
-    "article_types", "authors", "affiliation", "language", "raw_xml_file",
+    "pmid",
+    "title",
+    "abstract",
+    "keywords",
+    "mesh_terms",
+    "pub_year",
+    "pub_month",
+    "journal",
+    "journal_abbr",
+    "doi",
+    "pmc_id",
+    "article_types",
+    "authors",
+    "affiliation",
+    "language",
+    "raw_xml_file",
 )
 INSERT_SQL = (
-    "INSERT INTO articles (" + ", ".join(ARTICLE_COLUMNS) + ") VALUES ("
-    + ", ".join("?" * len(ARTICLE_COLUMNS)) + ")"
+    "INSERT INTO articles ("
+    + ", ".join(ARTICLE_COLUMNS)
+    + ") VALUES ("
+    + ", ".join("?" * len(ARTICLE_COLUMNS))
+    + ")"
 )
 
 
@@ -96,9 +113,7 @@ class _TempDbTestCase(unittest.TestCase):
     def _fetch(self, pmid: str) -> sqlite3.Row:
         """取回一行 sqlite3.Row（与生产代码的 row_factory 约定一致）"""
         with get_conn(self.db_path) as conn:
-            return conn.execute(
-                "SELECT * FROM articles WHERE pmid = ?", (pmid,)
-            ).fetchone()
+            return conn.execute("SELECT * FROM articles WHERE pmid = ?", (pmid,)).fetchone()
 
     def _filter_log(self) -> dict:
         """返回 {pmid: reason}，仅限 hard_filter 阶段"""
@@ -151,9 +166,7 @@ class TestCheckAbstract(_TempDbTestCase):
     @patch.object(hard_filter, "ABSTRACT_MIN_LEN", ABSTRACT_MIN_LEN)
     def test_short_abstract_returns_length_in_reason(self):
         row = self._fetch(self._insert(pmid="40000204", abstract=SHORT_ABSTRACT))
-        self.assertEqual(
-            check_abstract(row), f"abstract_too_short({len(SHORT_ABSTRACT)}chars)"
-        )
+        self.assertEqual(check_abstract(row), f"abstract_too_short({len(SHORT_ABSTRACT)}chars)")
 
     @patch.object(hard_filter, "ABSTRACT_MIN_LEN", ABSTRACT_MIN_LEN)
     def test_length_threshold_is_inclusive(self):
@@ -161,16 +174,12 @@ class TestCheckAbstract(_TempDbTestCase):
         exact = self._fetch(self._insert(pmid="40000205", abstract="x" * ABSTRACT_MIN_LEN))
         below = self._fetch(self._insert(pmid="40000206", abstract="x" * (ABSTRACT_MIN_LEN - 1)))
         self.assertIsNone(check_abstract(exact))
-        self.assertEqual(
-            check_abstract(below), f"abstract_too_short({ABSTRACT_MIN_LEN - 1}chars)"
-        )
+        self.assertEqual(check_abstract(below), f"abstract_too_short({ABSTRACT_MIN_LEN - 1}chars)")
 
     @patch.object(hard_filter, "ABSTRACT_MIN_LEN", ABSTRACT_MIN_LEN)
     def test_abstract_is_stripped_before_length_check(self):
         """首尾空白先 strip，不应被计入长度"""
-        row = self._fetch(
-            self._insert(pmid="40000207", abstract="x" * ABSTRACT_MIN_LEN + "   ")
-        )
+        row = self._fetch(self._insert(pmid="40000207", abstract="x" * ABSTRACT_MIN_LEN + "   "))
         self.assertIsNone(check_abstract(row))
 
 
@@ -231,9 +240,7 @@ class TestCheckArticleType(_TempDbTestCase):
     @patch.object(hard_filter, "EXCLUDED_ARTICLE_TYPES", EXCLUDED_ARTICLE_TYPES)
     def test_excluded_type_among_several_is_detected(self):
         """排除类型混在多类型列表中（'|' 分隔）同样应被拦下"""
-        row = self._fetch(
-            self._insert(pmid="40000403", article_types="Journal Article|Editorial")
-        )
+        row = self._fetch(self._insert(pmid="40000403", article_types="Journal Article|Editorial"))
         self.assertEqual(check_article_type(row), "excluded_type(Editorial)")
 
     @patch.object(hard_filter, "EXCLUDED_ARTICLE_TYPES", EXCLUDED_ARTICLE_TYPES)
@@ -335,7 +342,9 @@ class TestRunHardFilter(_TempDbTestCase):
         self.assertEqual(stats["filtered"], 1)
         self.assertEqual(stats["passed"], 0)
         self.assertEqual(stats["reason_counts"]["abstract_too_short"], 1)
-        self.assertEqual(self._filter_log()[pmid], f"abstract_too_short({len(SHORT_ABSTRACT)}chars)")
+        self.assertEqual(
+            self._filter_log()[pmid], f"abstract_too_short({len(SHORT_ABSTRACT)}chars)"
+        )
 
     def test_empty_abstract_is_filtered(self):
         self._insert(pmid="40000703", abstract="")
@@ -382,10 +391,13 @@ class TestRunHardFilter(_TempDbTestCase):
         self.assertEqual(set(self._filter_log()), {second, third})
         # 查询 articles 表中不在 filter_log 里的记录（即通过过滤的记录）
         with get_conn(self.db_path) as conn:
-            passed_pmids = [r["pmid"] for r in conn.execute(
-                "SELECT pmid FROM articles WHERE NOT EXISTS ("
-                "SELECT 1 FROM filter_log WHERE pmid = articles.pmid AND stage = 'hard_filter')"
-            ).fetchall()]
+            passed_pmids = [
+                r["pmid"]
+                for r in conn.execute(
+                    "SELECT pmid FROM articles WHERE NOT EXISTS ("
+                    "SELECT 1 FROM filter_log WHERE pmid = articles.pmid AND stage = 'hard_filter')"
+                ).fetchall()
+            ]
         self.assertEqual(passed_pmids, [first])
 
     def test_duplicate_title_takes_priority_over_other_rules(self):
@@ -434,7 +446,7 @@ class TestRunHardFilter(_TempDbTestCase):
     def test_rerun_clears_logs_of_articles_that_now_pass(self):
         """上一轮被过滤、本轮已合规的记录，其历史日志必须被清除"""
         pmid = self._insert(pmid="40000721", journal="Cell")
-        self._insert(pmid="40000722", journal="Cell")   # 与上一条同标题同刊同年 → 重复
+        self._insert(pmid="40000722", journal="Cell")  # 与上一条同标题同刊同年 → 重复
         self._run()
         self.assertIn("40000722", self._filter_log())
 
@@ -469,9 +481,6 @@ class TestRunHardFilter(_TempDbTestCase):
         self.assertEqual(stats["filtered"], 0)
         self.assertEqual(stats["passed"], 0)
         self.assertEqual(self._filter_log(), {})
-
-
-
 
 
 if __name__ == "__main__":

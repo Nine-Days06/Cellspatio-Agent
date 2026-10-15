@@ -1,4 +1,5 @@
 """CodeRepairer 单测"""
+
 from src.analysis.code_repair import CodeRepairer
 
 
@@ -6,12 +7,15 @@ def test_repair_returns_new_code_from_llm():
     class Msg:
         def __init__(self, content):
             self.content = content
+
     class Choice:
         def __init__(self, content):
             self.message = Msg(content)
+
     class Resp:
         def __init__(self, content):
             self.choices = [Choice(content)]
+
     class FakeLLM:
         class chat:
             class completions:
@@ -35,4 +39,5 @@ def test_repair_llm_failure_returns_none():
                 @staticmethod
                 def create(**kwargs):
                     raise RuntimeError("x")
+
     assert CodeRepairer(llm_client=Boom()).repair("# bad", "err") is None

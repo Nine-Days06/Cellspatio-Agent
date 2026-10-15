@@ -3,8 +3,8 @@
 
 import logging
 import sys
-from pathlib import Path
 from datetime import datetime
+from pathlib import Path
 
 
 def get_logger(name: str, log_dir: Path = None) -> logging.Logger:
@@ -25,7 +25,7 @@ def get_logger(name: str, log_dir: Path = None) -> logging.Logger:
     # 控制台 handler
     if hasattr(sys.stdout, "reconfigure"):
         try:
-            sys.stdout.reconfigure(encoding='utf-8')
+            sys.stdout.reconfigure(encoding="utf-8")
         except Exception:
             pass
     ch = logging.StreamHandler(sys.stdout)

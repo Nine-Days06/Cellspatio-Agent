@@ -49,6 +49,7 @@ def test_ensure_file_downloads_with_retry(tmp_path):
 
 def test_ensure_file_exhausts_retries(tmp_path):
     """重试耗尽抛 RuntimeError，且不留下半截文件。"""
+
     def handler(request):
         return httpx.Response(500)
 
@@ -137,7 +138,9 @@ def test_cellmarker_texts_uses_ensure_file_when_no_path(monkeypatch, tmp_path):
         return xlsx
 
     monkeypatch.setattr(cs, "ensure_file", fake_ensure)
-    docs = cs.cellmarker_texts(gene_index=GeneIndex({}, {}, {}))  # 不传路径 → 走 ensure_file(CELLMARKER_URL)
+    docs = cs.cellmarker_texts(
+        gene_index=GeneIndex({}, {}, {})
+    )  # 不传路径 → 走 ensure_file(CELLMARKER_URL)
     assert called["url"] == cs.CELLMARKER_URL
     assert docs
 
@@ -217,8 +220,8 @@ def test_cell_ontology_texts_filters_and_formats(tmp_path):
         "relationship: part_of CL:0000089 ! immune system | "
         "comment: Includes CD4 and CD8 subsets." in doc
     )
-    assert "GO:0008150" not in doc   # 非 CL id 过滤
-    assert "CL:0000002" not in doc   # 废弃术语过滤
+    assert "GO:0008150" not in doc  # 非 CL id 过滤
+    assert "CL:0000002" not in doc  # 废弃术语过滤
     assert "develops_from" not in doc  # Typedef（id 非 CL:）过滤
 
 

@@ -34,12 +34,17 @@ def test_search_parses_top_level_pathways():
 def test_confirm_parses_query():
     def handler(request):
         assert "/data/query/R-HSA-1640170" in str(request.url)
-        return httpx.Response(200, json={
-            "stId": "R-HSA-1640170", "displayName": "Cell Cycle", "speciesName": "Homo sapiens",
-            "summation": [{"text": "The replication of the genome..."}],
-            "goBiologicalProcess": {"displayName": "cell cycle", "accession": "0007049"},
-            "isInDisease": False,
-        })
+        return httpx.Response(
+            200,
+            json={
+                "stId": "R-HSA-1640170",
+                "displayName": "Cell Cycle",
+                "speciesName": "Homo sapiens",
+                "summation": [{"text": "The replication of the genome..."}],
+                "goBiologicalProcess": {"displayName": "cell cycle", "accession": "0007049"},
+                "isInDisease": False,
+            },
+        )
 
     fetcher = _fetcher_with(handler)
     info = fetcher.confirm("R-HSA-1640170")
@@ -51,16 +56,32 @@ def test_confirm_parses_query():
 def test_ingest_text_renders_pathway():
     def handler(request):
         if "/containedEvents" in str(request.url):
-            return httpx.Response(200, json=[
-                {"stId": "R-HSA-69620", "displayName": "Cell Cycle Checkpoints", "className": "Pathway"},
-                {"stId": "R-HSA-69615", "displayName": "G1/S DNA Damage Checkpoints", "className": "Pathway"},
-            ])
-        return httpx.Response(200, json={
-            "stId": "R-HSA-1640170", "displayName": "Cell Cycle", "speciesName": "Homo sapiens",
-            "summation": [{"text": "The replication of the genome."}],
-            "goBiologicalProcess": {"displayName": "cell cycle", "accession": "0007049"},
-            "isInDisease": False,
-        })
+            return httpx.Response(
+                200,
+                json=[
+                    {
+                        "stId": "R-HSA-69620",
+                        "displayName": "Cell Cycle Checkpoints",
+                        "className": "Pathway",
+                    },
+                    {
+                        "stId": "R-HSA-69615",
+                        "displayName": "G1/S DNA Damage Checkpoints",
+                        "className": "Pathway",
+                    },
+                ],
+            )
+        return httpx.Response(
+            200,
+            json={
+                "stId": "R-HSA-1640170",
+                "displayName": "Cell Cycle",
+                "speciesName": "Homo sapiens",
+                "summation": [{"text": "The replication of the genome."}],
+                "goBiologicalProcess": {"displayName": "cell cycle", "accession": "0007049"},
+                "isInDisease": False,
+            },
+        )
 
     fetcher = _fetcher_with(handler)
     text = fetcher.ingest_text("R-HSA-1640170")
@@ -69,29 +90,44 @@ def test_ingest_text_renders_pathway():
     assert "物种：Homo sapiens" in text
     assert "GO 生物过程：cell cycle (GO:0007049)" in text
     assert "摘要：The replication of the genome." in text
-    assert "子事件（2）: R-HSA-69620 Cell Cycle Checkpoints; R-HSA-69615 G1/S DNA Damage Checkpoints" in text
+    assert (
+        "子事件（2）: R-HSA-69620 Cell Cycle Checkpoints; R-HSA-69615 G1/S DNA Damage Checkpoints"
+        in text
+    )
 
 
 def test_ingest_text_caps_contained_events():
     """containedEvents 超过 50 条必须封顶（实测 R-HSA-1640170 有 597 条），
     且实测部分通路返回 dict 与 int（裸 dbId）混合列表（R-HSA-109582: 6/407），
     int 元素必须被跳过。"""
+
     def handler(request):
         if "/containedEvents" in str(request.url):
-            events = [418346] + [
-                {"stId": f"R-HSA-{i:06d}", "displayName": f"Event {i}", "className": "Pathway"}
-                for i in range(600)
-            ] + [75892]
+            events = (
+                [418346]
+                + [
+                    {"stId": f"R-HSA-{i:06d}", "displayName": f"Event {i}", "className": "Pathway"}
+                    for i in range(600)
+                ]
+                + [75892]
+            )
             return httpx.Response(200, json=events)
-        return httpx.Response(200, json={
-            "stId": "R-HSA-1640170", "displayName": "Cell Cycle", "speciesName": "Homo sapiens",
-            "summation": [], "goBiologicalProcess": None, "isInDisease": False,
-        })
+        return httpx.Response(
+            200,
+            json={
+                "stId": "R-HSA-1640170",
+                "displayName": "Cell Cycle",
+                "speciesName": "Homo sapiens",
+                "summation": [],
+                "goBiologicalProcess": None,
+                "isInDisease": False,
+            },
+        )
 
     fetcher = _fetcher_with(handler)
     text = fetcher.ingest_text("R-HSA-1640170")
-    assert "子事件（50）" in text   # 封顶标签为 50
-    assert "…等 600 条" in text     # 总数为 600（2 个 int 已过滤）
-    assert "418346" not in text   # 裸 dbId 不渲染
+    assert "子事件（50）" in text  # 封顶标签为 50
+    assert "…等 600 条" in text  # 总数为 600（2 个 int 已过滤）
+    assert "418346" not in text  # 裸 dbId 不渲染
     assert "75892" not in text
     assert "摘要：无" in text  # summation 为空 → 兼容

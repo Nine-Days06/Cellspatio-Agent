@@ -1,4 +1,5 @@
 """Ollama 自动唤起/关闭的单测：全部用假依赖，不真起进程、不发真实 HTTP。"""
+
 from __future__ import annotations
 
 import itertools
@@ -169,9 +170,7 @@ def test_ensure_ready_starts_ollama_and_waits_until_ready(monkeypatch):
 
     monkeypatch.setattr(rt, "_which", lambda name: "ollama")
     monkeypatch.setattr(rt, "_probe", lambda host, timeout: probes.pop(0))
-    monkeypatch.setattr(
-        rt, "_spawn", lambda argv, flags: calls.append(argv) or FakeProc(argv)
-    )
+    monkeypatch.setattr(rt, "_spawn", lambda argv, flags: calls.append(argv) or FakeProc(argv))
     monkeypatch.setattr(rt, "_monotonic", lambda: 0.0)
 
     rt.ensure_ready()
@@ -212,17 +211,15 @@ def test_ensure_ready_pulls_model_when_missing(monkeypatch):
     """就绪但模型不在列表且 OLLAMA_AUTO_PULL=1 → 执行 ollama pull。"""
     calls: list[list[str]] = []
     probes = [
-        None,                        # 启动前探活失败
-        {"models": []},              # 启动后轮询第一次就成功（空模型列表）
-        {"models": []},              # 拉取后再探活
+        None,  # 启动前探活失败
+        {"models": []},  # 启动后轮询第一次就成功（空模型列表）
+        {"models": []},  # 拉取后再探活
     ]
 
     monkeypatch.setattr(rt, "_which", lambda name: "ollama")
     monkeypatch.setattr(rt, "_probe", lambda host, timeout: probes.pop(0))
     monkeypatch.setattr(rt, "_auto_pull", lambda: True)  # 1.6 起默认关；本用例测 pull 机制
-    monkeypatch.setattr(
-        rt, "_spawn", lambda argv, flags: calls.append(argv) or FakeProc(argv)
-    )
+    monkeypatch.setattr(rt, "_spawn", lambda argv, flags: calls.append(argv) or FakeProc(argv))
     monkeypatch.setattr(rt, "_monotonic", lambda: 0.0)
 
     rt.ensure_ready()
@@ -237,21 +234,19 @@ def test_ensure_ready_skips_pull_when_model_present(monkeypatch):
     tags = {"models": [{"name": "bge-m3:latest"}]}
     monkeypatch.setattr(rt, "_which", lambda name: "ollama")
     monkeypatch.setattr(rt, "_probe", lambda host, timeout: tags)
-    monkeypatch.setattr(
-        rt, "_spawn", lambda argv, flags: calls.append(argv) or FakeProc(argv)
-    )
+    monkeypatch.setattr(rt, "_spawn", lambda argv, flags: calls.append(argv) or FakeProc(argv))
     monkeypatch.setattr(rt, "_monotonic", lambda: 0.0)
 
     rt.ensure_ready()
 
-    assert calls == []          # 首次探活就成功，根本没启动
+    assert calls == []  # 首次探活就成功，根本没启动
     assert rt.status()["managed"] is False
 
 
 def test_ensure_ready_marks_unavailable_without_executable(monkeypatch):
     """找不到可执行文件 → unavailable，且不启动任何进程。"""
     monkeypatch.setattr(rt, "_which", lambda name: None)
-    monkeypatch.setattr(rt.os, "name", "posix")     # 跳过 Windows 兜底
+    monkeypatch.setattr(rt.os, "name", "posix")  # 跳过 Windows 兜底
     monkeypatch.setattr(rt, "_probe", lambda host, timeout: None)
     monkeypatch.setattr(rt, "_spawn", lambda argv, flags: pytest.fail("不应启动"))
 
@@ -303,9 +298,9 @@ def test_ensure_ready_marks_failed_when_pull_exits_nonzero(monkeypatch):
     """ollama pull 退出码非 0（模型不存在等）→ failed，绝不进 ready。"""
     calls: list[list[str]] = []
     probes = [
-        None,                        # 启动前探活失败
-        {"models": []},              # _wait_ready 轮询成功
-        {"models": []},              # 模型检查：仍缺 → pull（rc=1）
+        None,  # 启动前探活失败
+        {"models": []},  # _wait_ready 轮询成功
+        {"models": []},  # 模型检查：仍缺 → pull（rc=1）
     ]
 
     monkeypatch.setattr(rt, "_which", lambda name: "ollama")
@@ -330,8 +325,10 @@ def test_ensure_ready_retries_pull_when_model_still_missing(monkeypatch):
     """上次 pull 失败后，本次探活成功但模型仍缺 → 自管进程补拉，不误标 ready。"""
     calls: list[list[str]] = []
     probes = [
-        None, {"models": []}, {"models": []},   # 第一轮：启动 → 轮询 → 缺模型 → pull 失败
-        {"models": []},                          # 第二轮：探活成功（模型仍缺）；该结果直接
+        None,
+        {"models": []},
+        {"models": []},  # 第一轮：启动 → 轮询 → 缺模型 → pull 失败
+        {"models": []},  # 第二轮：探活成功（模型仍缺）；该结果直接
         #                                              复用给 _ensure_model，不再发第二次 GET
     ]
 
@@ -346,9 +343,9 @@ def test_ensure_ready_retries_pull_when_model_still_missing(monkeypatch):
     monkeypatch.setattr(rt, "_monotonic", lambda: 0.0)
 
     rt.ensure_ready()
-    assert rt.status()["state"] == "failed"       # 第一轮 pull rc=1
+    assert rt.status()["state"] == "failed"  # 第一轮 pull rc=1
 
-    rt.ensure_ready()                              # 第二轮：模型仍缺必须重试 pull
+    rt.ensure_ready()  # 第二轮：模型仍缺必须重试 pull
 
     assert calls == [
         ["ollama", "serve"],
@@ -363,9 +360,7 @@ def test_ensure_ready_retries_pull_when_model_still_missing(monkeypatch):
 def test_ensure_ready_probe_wins_when_autostart_disabled(monkeypatch):
     """AUTOSTART=0 但用户自己的 Ollama 在跑 → 探活成功仍 ready（设计 §5：先探活后判门）。"""
     monkeypatch.setattr(rt, "_autostart", lambda: False)
-    monkeypatch.setattr(
-        rt, "_probe", lambda host, timeout: {"models": [{"name": "bge-m3:latest"}]}
-    )
+    monkeypatch.setattr(rt, "_probe", lambda host, timeout: {"models": [{"name": "bge-m3:latest"}]})
     monkeypatch.setattr(rt, "_spawn", lambda argv, flags: pytest.fail("不应启动"))
 
     rt.ensure_ready()
@@ -395,7 +390,7 @@ def test_terminate_owned_kills_when_terminate_raises():
             raise RuntimeError("boom")
 
     proc = ExplodingProc(["ollama", "serve"])
-    rt._proc, rt._managed = proc, True     # 直接注入自管进程账目
+    rt._proc, rt._managed = proc, True  # 直接注入自管进程账目
 
     rt._terminate_owned()
 
@@ -418,8 +413,8 @@ def test_maybe_reap_closes_managed_process_when_idle(monkeypatch):
     proc = FakeProc(["ollama", "serve"])
     monkeypatch.setattr(rt, "_idle_seconds", lambda: 600.0)
     monkeypatch.setattr(rt, "_monotonic", lambda: 1000.0)
-    rt._state = "ready"                 # 回收门：只在 ready 状态回收
-    rt._last_used = 1000.0 - 601        # 已空闲 601 秒
+    rt._state = "ready"  # 回收门：只在 ready 状态回收
+    rt._last_used = 1000.0 - 601  # 已空闲 601 秒
     rt._proc = proc
     rt._managed = True
 
@@ -444,10 +439,10 @@ def test_maybe_reap_keeps_warm_when_eager_start_on(monkeypatch):
     monkeypatch.setattr(rt, "_idle_seconds", _REAL_IDLE_SECONDS)
     monkeypatch.setattr(rt, "_eager_start", _REAL_EAGER_START)
     monkeypatch.setattr(config, "OLLAMA_EAGER_START", True)
-    monkeypatch.setattr(config, "OLLAMA_IDLE_MINUTES", 10)   # 开着，但被 eager 压制
+    monkeypatch.setattr(config, "OLLAMA_IDLE_MINUTES", 10)  # 开着，但被 eager 压制
     monkeypatch.setattr(rt, "_monotonic", lambda: 1000.0)
     rt._state = "ready"
-    rt._last_used = 1000.0 - 99999       # 空闲远超 10 分钟
+    rt._last_used = 1000.0 - 99999  # 空闲远超 10 分钟
     rt._proc = proc
     rt._managed = True
 
@@ -506,7 +501,7 @@ def test_warm_up_async_starts_daemon_thread_when_eager_on(monkeypatch):
     assert captured["target"] is rt.ensure_ready
     assert captured.get("daemon") is True
     assert captured.get("name") == "ollama-warmup"
-    assert calls == ["ready"]          # 守护线程 start() 立即执行了目标
+    assert calls == ["ready"]  # 守护线程 start() 立即执行了目标
 
 
 def test_warm_up_async_skipped_when_autostart_disabled(monkeypatch):
@@ -518,7 +513,9 @@ def test_warm_up_async_skipped_when_autostart_disabled(monkeypatch):
     monkeypatch.setattr(rt, "_eager_start", lambda: True)
     monkeypatch.setattr(rt, "_autostart", lambda: False)
     started = []
-    monkeypatch.setattr(rt.threading, "Thread", lambda **kw: started.append(kw) or _FakeThread(**kw))
+    monkeypatch.setattr(
+        rt.threading, "Thread", lambda **kw: started.append(kw) or _FakeThread(**kw)
+    )
 
     assert rt.warm_up_async() is False
     assert started == []
@@ -609,7 +606,7 @@ def test_ensure_reaper_starts_thread_once(monkeypatch):
     monkeypatch.setattr(rt, "_idle_seconds", lambda: 600.0)
     rt._reaper_started = False
     rt._ensure_reaper()
-    rt._ensure_reaper()          # 第二次不应重复创建
+    rt._ensure_reaper()  # 第二次不应重复创建
 
     assert started == ["ollama-reaper", "started"]
     assert rt._reaper_started is True
@@ -626,7 +623,7 @@ def test_ensure_ready_fails_when_managed_but_executable_missing(monkeypatch):
     """
     monkeypatch.setattr(rt, "_probe", lambda host, timeout: {"models": []})
     monkeypatch.setattr(rt, "_which", lambda name: None)
-    monkeypatch.setattr(rt.os, "name", "posix")      # 跳过 Windows 兜底 → exe 必然 None
+    monkeypatch.setattr(rt.os, "name", "posix")  # 跳过 Windows 兜底 → exe 必然 None
     monkeypatch.setattr(rt, "_spawn", lambda argv, flags: pytest.fail("不应启动或拉模型"))
     # 直接注入自管进程账目：探活已成功，流程不会再 spawn，用例只关心 exe 缺失路径
     rt._proc, rt._managed = FakeProc(["ollama", "serve"]), True
@@ -660,11 +657,9 @@ def test_ensure_ready_starts_reaper_on_recovery_path(monkeypatch):
     monkeypatch.setattr(rt.threading, "Thread", FakeThread)
     monkeypatch.setattr(rt, "_idle_seconds", lambda: 600.0)
     monkeypatch.setattr(rt, "_which", lambda name: "ollama")
-    monkeypatch.setattr(
-        rt, "_probe", lambda host, timeout: {"models": [{"name": "bge-m3:latest"}]}
-    )
-    rt._state = "failed"                             # 不命中 ready 节流
-    rt._proc, rt._managed = FakeProc(["ollama", "serve"]), True   # 上次已自启
+    monkeypatch.setattr(rt, "_probe", lambda host, timeout: {"models": [{"name": "bge-m3:latest"}]})
+    rt._state = "failed"  # 不命中 ready 节流
+    rt._proc, rt._managed = FakeProc(["ollama", "serve"]), True  # 上次已自启
 
     rt.ensure_ready()
 
@@ -684,7 +679,7 @@ def test_maybe_reap_never_reaps_failed_managed_process(monkeypatch):
     monkeypatch.setattr(rt, "_idle_seconds", lambda: 600.0)
     monkeypatch.setattr(rt, "_monotonic", lambda: 1000.0)
     rt._state, rt._detail = "failed", "拉取模型失败（退出码 1）"
-    rt._last_used = 0.0             # 失败路径不刷新活跃时间
+    rt._last_used = 0.0  # 失败路径不刷新活跃时间
     rt._proc = proc
     rt._managed = True
 
@@ -713,7 +708,7 @@ def test_maybe_reap_takes_start_lock():
     try:
         assert finished.wait(0.2) is False, "未与启动流程互斥：回收线程直接开跑了"
     finally:
-        rt._start_lock.release()     # 断言失败也必须放锁，否则线程永久卡死
+        rt._start_lock.release()  # 断言失败也必须放锁，否则线程永久卡死
     reaper.join(timeout=5)
     assert finished.is_set() is True
     assert reaper.is_alive() is False
@@ -730,10 +725,12 @@ def test_reap_does_not_interrupt_model_pull(monkeypatch):
     def blocking_spawn(argv, flags):
         spawned = FakeProc(argv)
         if len(argv) > 1 and argv[1] == "pull":
+
             def slow_wait(timeout=None):
                 pull_started.set()
                 release_pull.wait(timeout=5)
                 return 0
+
             spawned.wait = slow_wait
         return spawned
 
@@ -743,9 +740,9 @@ def test_reap_does_not_interrupt_model_pull(monkeypatch):
     monkeypatch.setattr(rt, "_spawn", blocking_spawn)
     monkeypatch.setattr(rt, "_idle_seconds", lambda: 600.0)
     monkeypatch.setattr(rt, "_monotonic", lambda: 10_000.0)
-    rt._state = "failed"                                 # 不命中节流
-    rt._last_used = 0.0                                  # idle=10000s，远超阈值
-    rt._proc, rt._managed = proc, True                   # 自启进程正在被使用
+    rt._state = "failed"  # 不命中节流
+    rt._last_used = 0.0  # idle=10000s，远超阈值
+    rt._proc, rt._managed = proc, True  # 自启进程正在被使用
 
     ensure_thread = th.Thread(target=rt.ensure_ready)
     ensure_thread.start()
@@ -768,6 +765,7 @@ def test_terminate_owned_kills_when_wait_times_out():
 
     原实现是无条件盲睡 5s；改为 wait(timeout) 后必须覆盖超时强杀这条路径。
     """
+
     class StubbornProc(FakeProc):
         def wait(self, timeout=None):
             self.waited = True
@@ -790,6 +788,7 @@ def test_ensure_reaper_rolls_back_when_thread_start_fails(monkeypatch):
 
     否则空闲回收永久静默失效，且没有任何报错——最难排查的失败模式。
     """
+
     class ExplodingThread:
         def __init__(self, target, name, daemon):
             self.daemon = daemon
@@ -841,9 +840,7 @@ def test_ensure_model_needs_model_when_auto_pull_disabled(monkeypatch):
     monkeypatch.setattr(rt, "_probe", lambda host, timeout: probes.pop(0))
     monkeypatch.setattr(rt, "_autostart", lambda: True)
     monkeypatch.setattr(rt, "_auto_pull", lambda: False)
-    monkeypatch.setattr(
-        rt, "_spawn", lambda argv, flags: calls.append(argv) or FakeProc(argv)
-    )
+    monkeypatch.setattr(rt, "_spawn", lambda argv, flags: calls.append(argv) or FakeProc(argv))
     monkeypatch.setattr(rt, "_monotonic", lambda: 0.0)
 
     rt.ensure_ready()
@@ -870,9 +867,7 @@ def test_ensure_model_pulls_when_auto_pull_enabled(monkeypatch):
     monkeypatch.setattr(rt, "_probe", lambda host, timeout: probes.pop(0))
     monkeypatch.setattr(rt, "_autostart", lambda: True)
     monkeypatch.setattr(rt, "_auto_pull", lambda: True)
-    monkeypatch.setattr(
-        rt, "_spawn", lambda argv, flags: calls.append(argv) or FakeProc(argv)
-    )
+    monkeypatch.setattr(rt, "_spawn", lambda argv, flags: calls.append(argv) or FakeProc(argv))
     monkeypatch.setattr(rt, "_monotonic", lambda: 0.0)
 
     rt.ensure_ready()
@@ -915,9 +910,7 @@ def test_ensure_model_skips_pull_when_model_present(monkeypatch):
     monkeypatch.setattr(rt, "_probe", lambda host, timeout: tags)
     monkeypatch.setattr(rt, "_autostart", lambda: True)
     monkeypatch.setattr(rt, "_auto_pull", lambda: True)
-    monkeypatch.setattr(
-        rt, "_spawn", lambda argv, flags: calls.append(argv) or FakeProc(argv)
-    )
+    monkeypatch.setattr(rt, "_spawn", lambda argv, flags: calls.append(argv) or FakeProc(argv))
     monkeypatch.setattr(rt, "_monotonic", lambda: 0.0)
 
     rt.ensure_ready()

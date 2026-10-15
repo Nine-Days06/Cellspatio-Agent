@@ -171,7 +171,11 @@ def test_de_analysis_without_data_needs_input():
     result = manager.execute_workflow("做差异表达分析")
     assert result["status"] == "needs_input"
     assert result["analysis_type"] == "differential_expression"
-    assert "input_files" in result["message"] or "下载" in result["message"] or "数据" in result["message"]
+    assert (
+        "input_files" in result["message"]
+        or "下载" in result["message"]
+        or "数据" in result["message"]
+    )
 
 
 def test_de_analysis_queries_methods_kb_and_injects_context():
@@ -225,6 +229,7 @@ def test_de_success_writes_summary_to_knowledge_builder():
     class FakeKBBuilder:
         def __init__(self):
             self.texts = []
+
         def build_from_text(self, text, metadata=None):
             self.texts.append(text)
             return {"inserted": 1}
@@ -250,6 +255,7 @@ def test_de_failure_does_not_write_knowledge():
     class FakeKBBuilder:
         def __init__(self):
             self.texts = []
+
         def build_from_text(self, text, metadata=None):
             self.texts.append(text)
             return {"inserted": 1}
@@ -386,18 +392,22 @@ def test_de_retries_after_repair_then_succeeds():
     class FakeRepairer:
         def __init__(self):
             self.calls = []
+
         def repair(self, code, err):
             self.calls.append(err)
             return "# repaired"
 
     rep = FakeRepairer()
     call_count = {"n": 0}
+
     def flaky_side_effect(code):
         call_count["n"] += 1
         if call_count["n"] == 1:
             raise RExecutorError("first fail")
+
         class R:
             returncode = 0
+
         return R()
 
     wm = WorkflowManager(
@@ -406,7 +416,8 @@ def test_de_retries_after_repair_then_succeeds():
         r_executor=FakeExec(side_effect=flaky_side_effect),
         visualizer=None,
         r_script_generator=FakeGen(return_value="# attempt"),
-        code_repairer=rep, max_repair_attempts=2,
+        code_repairer=rep,
+        max_repair_attempts=2,
     )
     result = wm.execute_workflow("做差异表达")
     assert result["status"] == "success"
@@ -417,6 +428,7 @@ def test_de_retries_after_repair_then_succeeds():
 # ---------------------------------------------------------------------------
 # 按需补库（lazy ingest）
 # ---------------------------------------------------------------------------
+
 
 class MockKnowledgeClientWithContext:
     """带 query_context 的知识客户端；context_len 控制 miss-check 是否触发"""
@@ -557,9 +569,7 @@ def test_lazy_ingest_skips_when_context_long_enough():
     """context >= 300 → 不补库，直接 query"""
     kegg = FakeBioFetcher("kegg")
     registry = FakeBioRegistry({"kegg": kegg})
-    wm, client = _make_lazy_manager(
-        context_len=300, registry=registry, builder=FakeBuilder()
-    )
+    wm, client = _make_lazy_manager(context_len=300, registry=registry, builder=FakeBuilder())
 
     result = wm.execute_workflow("p53 通路 map04115 是什么")
 
@@ -570,6 +580,7 @@ def test_lazy_ingest_skips_when_context_long_enough():
 
 def test_lazy_ingest_skipped_without_query_context():
     """knowledge_client 无 query_context → 跳过补库，仍正常回答"""
+
     class ClientNoCtx:
         def __init__(self):
             self.query_calls = []
@@ -596,6 +607,7 @@ def test_lazy_ingest_skipped_without_query_context():
 
 def test_knowledge_workflow_uses_query_with_references():
     """有 query_with_references → 结构化引用进 result，response 仍为 str"""
+
     class StructClient:
         def query(self, query):
             raise AssertionError("should use query_with_references")
@@ -607,18 +619,19 @@ def test_knowledge_workflow_uses_query_with_references():
             }
 
     wm, _ = _make_lazy_manager(
-        context_len=999, registry=None, builder=FakeBuilder(),
+        context_len=999,
+        registry=None,
+        builder=FakeBuilder(),
         knowledge_client=StructClient(),
     )
     result = wm.execute_workflow("TP53 是什么")
     assert result["response"] == "正文\n"
-    assert result["references"] == [
-        {"reference_id": "1", "file_path": "https://x/y"}
-    ]
+    assert result["references"] == [{"reference_id": "1", "file_path": "https://x/y"}]
 
 
 def test_lazy_ingest_query_context_error_does_not_block_answer():
     """query_context 抛错 → 记警告、跳过补库，query 仍执行"""
+
     class CtxBoom:
         def query(self, query):
             return "answered"
@@ -688,9 +701,7 @@ def test_lazy_ingest_max_assets_cap():
 
 def test_lazy_ingest_search_fallback_when_no_explicit_id():
     """无显式 ID → search 兜底（gene: 前缀优先 uniprot）"""
-    kegg = FakeBioFetcher(
-        "kegg", metas=[_meta("kegg", "map04115", "p53 signaling pathway")]
-    )
+    kegg = FakeBioFetcher("kegg", metas=[_meta("kegg", "map04115", "p53 signaling pathway")])
     uni = FakeBioFetcher(
         "uniprot", metas=[_meta("uniprot", "P04637", "Cellular tumor antigen p53")]
     )
@@ -962,9 +973,7 @@ def test_intent_parse_receives_context_history():
         parse_return={"type": "general", "original_input": ""},
         extract_params_return={},
     )
-    wm = WorkflowManager(
-        intent_parser=spy, knowledge_client=None, r_executor=None, visualizer=None
-    )
+    wm = WorkflowManager(intent_parser=spy, knowledge_client=None, r_executor=None, visualizer=None)
     ctx = {"history": [{"role": "user", "content": "上一轮"}]}
     wm.execute_workflow("继续", context=ctx)
     assert spy.seen_context is ctx
@@ -1018,7 +1027,11 @@ def test_unsupported_analysis_type_returns_error():
 
     manager = WorkflowManager(
         intent_parser=FakeIntent(
-            parse_return={"type": "analysis", "analysis_type": "pathway_analysis", "original_input": ""},
+            parse_return={
+                "type": "analysis",
+                "analysis_type": "pathway_analysis",
+                "original_input": "",
+            },
             extract_params_return={},
         ),
         knowledge_client=MockKnowledgeClient(),

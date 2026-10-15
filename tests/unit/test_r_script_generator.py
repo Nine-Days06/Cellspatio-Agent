@@ -177,8 +177,7 @@ def test_spatial_visium_template():
 
     code = RScriptGenerator().generate_code(
         "spatial",
-        {"input_file": "spatial_data", "output_file": "sp.csv",
-         "plot_file": "spatial_plot.png"},
+        {"input_file": "spatial_data", "output_file": "sp.csv", "plot_file": "spatial_plot.png"},
     )
     assert "Load10X_Spatial" in code
     assert "SpatialDimPlot" in code

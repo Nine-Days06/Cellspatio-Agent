@@ -1,4 +1,5 @@
 """AgentRuntime: tool-calling dispatch, HITL short-circuit, no-tool direct, legacy fallback."""
+
 from __future__ import annotations
 
 import json
@@ -74,11 +75,28 @@ def _make_runtime(llm, wm=None):
 
 
 def test_dispatches_run_analysis_and_returns_terminal_result():
-    llm = FakeLLM([_tool_call_response("run_analysis", {"analysis_type": "differential_expression", "question": "做差异"})])
-    wm = FakeWM({"run_analysis": {"status": "success", "analysis_type": "differential_expression", "message": "ok", "results": {}}})
+    llm = FakeLLM(
+        [
+            _tool_call_response(
+                "run_analysis", {"analysis_type": "differential_expression", "question": "做差异"}
+            )
+        ]
+    )
+    wm = FakeWM(
+        {
+            "run_analysis": {
+                "status": "success",
+                "analysis_type": "differential_expression",
+                "message": "ok",
+                "results": {},
+            }
+        }
+    )
     runtime, wm = _make_runtime(llm, wm)
 
-    result = runtime.execute("对这份数据做差异表达分析", context={"downloaded_assets": [{"access_path": "a.csv"}]})
+    result = runtime.execute(
+        "对这份数据做差异表达分析", context={"downloaded_assets": [{"access_path": "a.csv"}]}
+    )
 
     assert result["status"] == "success"
     assert wm.calls[0][0] == "run_analysis"
@@ -90,7 +108,16 @@ def test_dispatches_run_analysis_and_returns_terminal_result():
 
 def test_hitl_needs_confirmation_short_circuits_without_second_llm_call():
     llm = FakeLLM([_tool_call_response("search_datasets", {"query": "GSE123456"})])
-    wm = FakeWM({"search_datasets": {"status": "needs_confirmation", "type": "fetch_data", "candidates": [], "message": "选一个"}})
+    wm = FakeWM(
+        {
+            "search_datasets": {
+                "status": "needs_confirmation",
+                "type": "fetch_data",
+                "candidates": [],
+                "message": "选一个",
+            }
+        }
+    )
     runtime, wm = _make_runtime(llm, wm)
 
     result = runtime.execute("帮我下载 GSE123456")
@@ -147,7 +174,16 @@ def test_llm_exception_falls_back_to_workflow_manager():
 
 def test_query_knowledge_dispatch():
     llm = FakeLLM([_tool_call_response("query_knowledge", {"query": "TP53 在癌症中的作用"})])
-    wm = FakeWM({"query_knowledge": {"status": "success", "type": "knowledge_response", "response": "抑癌", "references": []}})
+    wm = FakeWM(
+        {
+            "query_knowledge": {
+                "status": "success",
+                "type": "knowledge_response",
+                "response": "抑癌",
+                "references": [],
+            }
+        }
+    )
     runtime, wm = _make_runtime(llm, wm)
 
     result = runtime.execute("TP53 在癌症中的作用是什么？")
@@ -159,10 +195,15 @@ def test_query_knowledge_dispatch():
 def test_query_memory_dispatch():
     """query_memory 工具调用分发到 workflow_manager，返回记忆问答终态。"""
     llm = FakeLLM([_tool_call_response("query_memory", {"query": "上次差异表达用的什么参数"})])
-    wm = FakeWM({"query_memory": {
-        "status": "success", "type": "memory_response",
-        "response": "run-abc123 使用 DESeq2，FDR=0.05",
-    }})
+    wm = FakeWM(
+        {
+            "query_memory": {
+                "status": "success",
+                "type": "memory_response",
+                "response": "run-abc123 使用 DESeq2，FDR=0.05",
+            }
+        }
+    )
     runtime, wm = _make_runtime(llm, wm)
 
     result = runtime.execute("上次那个差异表达分析用的什么参数？")
@@ -189,11 +230,13 @@ def test_router_hint_injected_into_system_prompt():
 
     class FakeRouter:
         def hint(self, user_input):
-            return {"modality": "analysis", "skill": "differential_expression",
-                    "best_practices": "DEG 分析建议先做质控"}
+            return {
+                "modality": "analysis",
+                "skill": "differential_expression",
+                "best_practices": "DEG 分析建议先做质控",
+            }
 
-    rt = AgentRuntime(llm_client=None, model="m", workflow_manager=object(),
-                      router=FakeRouter())
+    rt = AgentRuntime(llm_client=None, model="m", workflow_manager=object(), router=FakeRouter())
     messages = rt._build_messages("差异表达", {}, hint=rt.router.hint("差异表达"))
     assert "任务路由提示" in messages[0]["content"]
     assert "analysis" in messages[0]["content"]
@@ -219,8 +262,7 @@ def test_router_hint_failure_does_not_block():
         def hint(self, user_input):
             raise RuntimeError("kg down")
 
-    rt = AgentRuntime(llm_client=None, model="m", workflow_manager=object(),
-                      router=BrokenRouter())
+    rt = AgentRuntime(llm_client=None, model="m", workflow_manager=object(), router=BrokenRouter())
     assert rt._route_hint("任意输入") is None
 
 
@@ -230,9 +272,9 @@ def test_build_messages_general_hint_not_injected():
     from src.control.tools import SYSTEM_PROMPT
 
     rt = AgentRuntime(llm_client=None, model="m", workflow_manager=object())
-    messages = rt._build_messages("差异表达", {},
-                                  hint={"modality": "general", "skill": None,
-                                        "best_practices": None})
+    messages = rt._build_messages(
+        "差异表达", {}, hint={"modality": "general", "skill": None, "best_practices": None}
+    )
     assert messages[0]["content"] == SYSTEM_PROMPT
 
 
@@ -252,8 +294,12 @@ class _ScriptedRouter:
         self.route_calls.append((user_input, dict(context or {})))
         if self.raise_on_route:
             raise RuntimeError("classifier down")
-        return {"status": "success", "modality": self.modality, "skill": "stub",
-                "output": self.output}
+        return {
+            "status": "success",
+            "modality": self.modality,
+            "skill": "stub",
+            "output": self.output,
+        }
 
 
 def test_skill_plan_none_without_router():
@@ -299,8 +345,12 @@ def test_skill_plan_degrades_on_failure_and_mismatch():
     class MismatchRouter(_ScriptedRouter):
         def route(self, user_input, context=None):
             self.route_calls.append((user_input, dict(context or {})))
-            return {"status": "success", "modality": "analysis", "skill": "single_cell",
-                    "output": {"analysis_type": "single_cell", "plan": ["聚类"]}}
+            return {
+                "status": "success",
+                "modality": "analysis",
+                "skill": "single_cell",
+                "output": {"analysis_type": "single_cell", "plan": ["聚类"]},
+            }
 
     routers = [
         _ScriptedRouter(raise_on_route=True),
@@ -317,17 +367,20 @@ def _analysis_runtime(router, wm_results=None):
     """构造一个只回放一次 run_analysis tool-call 的 runtime。"""
     from src.control.agent_runtime import AgentRuntime
 
-    llm = FakeLLM([
-        _tool_call_response("run_analysis", {"analysis_type": "differential_expression"})
-    ])
+    llm = FakeLLM(
+        [_tool_call_response("run_analysis", {"analysis_type": "differential_expression"})]
+    )
     wm = FakeWM({"run_analysis": (wm_results or {"status": "needs_input", "message": "缺输入"})})
     return AgentRuntime(llm_client=llm, model="m", workflow_manager=wm, router=router), wm
 
 
 def test_run_analysis_injects_skill_plan_without_polluting_context():
     """生产接线：方案挂进 params；用户的 HITL context 不得被写入 script_approved。"""
-    plan = {"analysis_type": "differential_expression",
-            "required_inputs": ["表达矩阵"], "plan": ["质控", "DESeq2"]}
+    plan = {
+        "analysis_type": "differential_expression",
+        "required_inputs": ["表达矩阵"],
+        "plan": ["质控", "DESeq2"],
+    }
     router = _ScriptedRouter(output=plan)
     runtime, wm = _analysis_runtime(router)
 
@@ -357,8 +410,9 @@ def test_build_messages_no_history_cap():
 
     wm = object.__new__(type("W", (), {}))  # 不会被用到
     rt = AgentRuntime(llm_client=None, model="m", workflow_manager=wm)
-    history = [{"role": "user" if i % 2 == 0 else "assistant", "content": f"m{i}"}
-               for i in range(15)]
+    history = [
+        {"role": "user" if i % 2 == 0 else "assistant", "content": f"m{i}"} for i in range(15)
+    ]
     out = rt._build_messages("最新问题", {"history": history})
     assert out[0]["role"] == "system"
     assert out[-1] == {"role": "user", "content": "最新问题"}
@@ -389,5 +443,4 @@ def test_build_messages_without_summary_has_no_checkpoint():
     rt = AgentRuntime(llm_client=None, model="m", workflow_manager=object())
     out = rt._build_messages("q", {"history": [{"role": "user", "content": "a"}]})
     assert len(out) == 3  # system + history + 当前输入
-    assert not any("<conversation-checkpoint>" in str(m.get("content"))
-                   for m in out)
+    assert not any("<conversation-checkpoint>" in str(m.get("content")) for m in out)

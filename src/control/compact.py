@@ -8,6 +8,7 @@
 - SOFT_TRIGGER   逼近时 UI 软提醒，不阻断
 - RECENT_TOKEN_BUDGET 压缩后保留在窗口内的最近消息预算
 """
+
 from __future__ import annotations
 
 import logging
@@ -40,8 +41,7 @@ def prepare_history(messages: list[dict]) -> list[dict]:
     return prepared
 
 
-def context_tokens(summary: str | None, window: list[dict],
-                   system: str | None = None) -> int:
+def context_tokens(summary: str | None, window: list[dict], system: str | None = None) -> int:
     """system + 摘要 + 历史窗口的 token 总量。"""
     if system is None:
         from src.control.tools import SYSTEM_PROMPT
@@ -54,14 +54,12 @@ def context_tokens(summary: str | None, window: list[dict],
     return total
 
 
-def should_compact(summary: str | None, window: list[dict],
-                   system: str | None = None) -> bool:
+def should_compact(summary: str | None, window: list[dict], system: str | None = None) -> bool:
     """是否达到 LLM 摘要压缩的硬阈值（TRIGGER 为模块全局，便于测试 patch）。"""
     return context_tokens(summary, window, system=system) > TRIGGER
 
 
-def select_recent(window: list[dict], budget: int | None = None
-                  ) -> tuple[list[dict], list[dict]]:
+def select_recent(window: list[dict], budget: int | None = None) -> tuple[list[dict], list[dict]]:
     """从窗口尾部向前取预算内的最近消息，返回 (older, recent)。
 
     至少保留 1 条最近消息，即使单条已超预算。
@@ -91,12 +89,9 @@ SUMMARY_PROMPT = (
 )
 
 
-def summarize(llm_client, model: str, prior: str | None,
-              messages: list[dict]) -> str:
+def summarize(llm_client, model: str, prior: str | None, messages: list[dict]) -> str:
     """调用 LLM 生成增量摘要；结果为空时抛 ValueError（交由 maybe_compact 降级）。"""
-    conversation = "\n".join(
-        f"[{msg.get('role')}] {msg.get('content')}" for msg in messages
-    )
+    conversation = "\n".join(f"[{msg.get('role')}] {msg.get('content')}" for msg in messages)
     user_content = (
         f"<prior-summary>\n{prior or '（无）'}\n</prior-summary>\n\n"
         f"<conversation>\n{conversation}\n</conversation>"
@@ -116,9 +111,9 @@ def summarize(llm_client, model: str, prior: str | None,
     return text
 
 
-def maybe_compact(summary: str | None, offset: int, prepared: list[dict],
-                  llm_summarize, system: str | None = None
-                  ) -> tuple[str | None, int]:
+def maybe_compact(
+    summary: str | None, offset: int, prepared: list[dict], llm_summarize, system: str | None = None
+) -> tuple[str | None, int]:
     """超硬阈值时摘要压缩；任何失败降级为硬截断，绝不抛异常。
 
     Args:
@@ -150,21 +145,23 @@ def maybe_compact(summary: str | None, offset: int, prepared: list[dict],
     final = str(new_summary).strip()
     logger.info(
         "上下文已压缩：摘要 %d 条消息，摘要长度 %d 字符，offset %d → %d",
-        len(older), len(final), offset, offset + len(older),
+        len(older),
+        len(final),
+        offset,
+        offset + len(older),
     )
     return final, offset + len(older)
 
 
-def _hard_trim(summary: str | None, offset: int, prepared: list[dict],
-               system: str | None = None) -> int:
+def _hard_trim(
+    summary: str | None, offset: int, prepared: list[dict], system: str | None = None
+) -> int:
     """无 LLM 时丢弃最旧历史直至低于阈值，至少保留最后 1 条。"""
-    while (offset < len(prepared) - 1
-           and should_compact(summary, prepared[offset:], system=system)):
+    while offset < len(prepared) - 1 and should_compact(summary, prepared[offset:], system=system):
         offset += 1
     return offset
 
 
-def should_soft_warn(summary: str | None, window: list[dict],
-                     system: str | None = None) -> bool:
+def should_soft_warn(summary: str | None, window: list[dict], system: str | None = None) -> bool:
     """是否达到软提醒阈值（UI 警告，不触发压缩）。"""
     return context_tokens(summary, window, system=system) > SOFT_TRIGGER

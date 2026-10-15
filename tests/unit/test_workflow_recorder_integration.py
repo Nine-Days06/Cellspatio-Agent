@@ -1,4 +1,5 @@
 """WorkflowRecorder 与 WorkflowManager 集成测试。"""
+
 import tempfile
 from pathlib import Path
 
@@ -17,6 +18,7 @@ def _get_run_id(recorder: WorkflowRecorder) -> str:
 def _init_git_repo(path: Path):
     """在指定路径初始化 git 仓库。"""
     import subprocess
+
     subprocess.run(["git", "init"], cwd=path, check=True, capture_output=True)
     subprocess.run(["git", "config", "user.email", "test@test.com"], cwd=path, check=True)
     subprocess.run(["git", "config", "user.name", "Test"], cwd=path, check=True)
@@ -49,7 +51,11 @@ def test_workflow_manager_with_recorder(monkeypatch):
         assert hasattr(agent.workflow_manager, "workflow_recorder")
         assert isinstance(agent.workflow_manager.workflow_recorder, WorkflowRecorder)
 
-        context = {"downloaded_assets": [{"source": "geo", "asset_id": "GSE1", "access_path": str(csv_file)}]}
+        context = {
+            "downloaded_assets": [
+                {"source": "geo", "asset_id": "GSE1", "access_path": str(csv_file)}
+            ]
+        }
         result = agent.execute_workflow("分析差异表达基因", context=context)
 
         # 验证 HITL 门
@@ -84,7 +90,11 @@ def test_workflow_manager_recorder_captures_intent_and_steps(monkeypatch):
         config = {"knowledge_dir": tmp, "data_dir": tmp, "repo_root": tmp}
         agent = CellSpatioAgent(config)
 
-        context = {"downloaded_assets": [{"source": "geo", "asset_id": "GSE1", "access_path": str(csv_file)}]}
+        context = {
+            "downloaded_assets": [
+                {"source": "geo", "asset_id": "GSE1", "access_path": str(csv_file)}
+            ]
+        }
         _ = agent.execute_workflow("分析差异表达基因", context=context)
 
         recorder = agent.workflow_manager.workflow_recorder

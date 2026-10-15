@@ -1,4 +1,5 @@
 """Git Worktree 快照管理：创建/删除/列举/切换 snapshots/<run_id> 分支。"""
+
 from __future__ import annotations
 
 import subprocess
@@ -18,22 +19,42 @@ class SnapshotManager:
         snap_path = self.snapshots_dir / run_id
         if snap_path.exists():
             # 已存在：更新到最新 HEAD
-            subprocess.run(["git", "fetch", "origin"], cwd=snap_path, check=False, capture_output=True)
-            subprocess.run(["git", "reset", "--hard", "origin/HEAD"], cwd=snap_path, check=False, capture_output=True)
+            subprocess.run(
+                ["git", "fetch", "origin"], cwd=snap_path, check=False, capture_output=True
+            )
+            subprocess.run(
+                ["git", "reset", "--hard", "origin/HEAD"],
+                cwd=snap_path,
+                check=False,
+                capture_output=True,
+            )
         else:
             # 新建 worktree
             branch_name = f"snapshot/{run_id}"
             subprocess.run(
                 ["git", "worktree", "add", "-b", branch_name, str(snap_path)],
-                cwd=self.repo_root, check=True, capture_output=True
+                cwd=self.repo_root,
+                check=True,
+                capture_output=True,
             )
         # 可选：提交当前变更作为快照记录（仅当有暂存变更时）
         if commit_msg:
             # 检查是否有暂存变更
-            result = subprocess.run(["git", "diff", "--cached", "--name-only"], cwd=snap_path, capture_output=True, text=True, check=False)
+            result = subprocess.run(
+                ["git", "diff", "--cached", "--name-only"],
+                cwd=snap_path,
+                capture_output=True,
+                text=True,
+                check=False,
+            )
             if result.stdout.strip():
                 subprocess.run(["git", "add", "-A"], cwd=snap_path, check=True, capture_output=True)
-                subprocess.run(["git", "commit", "-m", commit_msg], cwd=snap_path, check=True, capture_output=True)
+                subprocess.run(
+                    ["git", "commit", "-m", commit_msg],
+                    cwd=snap_path,
+                    check=True,
+                    capture_output=True,
+                )
         return snap_path
 
     def delete_snapshot(self, run_id: str, force: bool = False) -> bool:
@@ -42,9 +63,18 @@ class SnapshotManager:
         if not snap_path.exists():
             return False
         branch_name = f"snapshot/{run_id}"
-        subprocess.run(["git", "worktree", "remove", "--force" if force else "", str(snap_path)],
-                       cwd=self.repo_root, check=False, capture_output=True)
-        subprocess.run(["git", "branch", "-D", branch_name], cwd=self.repo_root, check=False, capture_output=True)
+        subprocess.run(
+            ["git", "worktree", "remove", "--force" if force else "", str(snap_path)],
+            cwd=self.repo_root,
+            check=False,
+            capture_output=True,
+        )
+        subprocess.run(
+            ["git", "branch", "-D", branch_name],
+            cwd=self.repo_root,
+            check=False,
+            capture_output=True,
+        )
         return True
 
     def list_snapshots(self) -> dict[str, str]:

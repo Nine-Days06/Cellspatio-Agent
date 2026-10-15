@@ -17,9 +17,7 @@ class MethodsKb:
             cards_dir: 方法卡片目录（build_from_cards 默认路径）
         """
         self.client = client
-        self.cards_dir = (
-            Path(cards_dir) if cards_dir else Path("knowledge_base_methods_cards")
-        )
+        self.cards_dir = Path(cards_dir) if cards_dir else Path("knowledge_base_methods_cards")
 
     def query_context(self, question: str, mode: str = "mix") -> str:
         """检索方法学上下文；失败返回空串（不阻断分析主流程）"""

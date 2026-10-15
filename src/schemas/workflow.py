@@ -6,6 +6,7 @@
 - 支持 JSON/JSONL 序列化与 JSON Schema 导出
 - 供 WorkflowRecorder、WRROCStore、Replay 复用
 """
+
 from __future__ import annotations
 
 from datetime import datetime
@@ -16,8 +17,10 @@ from pydantic import BaseModel, Field
 
 # ── 枚举定义 ──────────────────────────────────────────────────────
 
+
 class TerminalStatus(str, Enum):
     """工具/步骤终态状态。与 Phase 1 TERMINAL_STATUSES 完全一致。"""
+
     SUCCESS = "success"
     ERROR = "error"
     NEEDS_CONFIRMATION = "needs_confirmation"
@@ -28,6 +31,7 @@ class TerminalStatus(str, Enum):
 
 class AnalysisType(str, Enum):
     """支持的分析类型。与 Phase 1 SUPPORTED_ANALYSIS_TYPES 完全一致。"""
+
     DIFFERENTIAL_EXPRESSION = "differential_expression"
     SINGLE_CELL = "single_cell"
     SPATIAL = "spatial"
@@ -35,6 +39,7 @@ class AnalysisType(str, Enum):
 
 class StepType(str, Enum):
     """工作流步骤类型。对应三个工具。"""
+
     ANALYSIS = "analysis"
     FETCH_DATA = "fetch_data"
     KNOWLEDGE_QUERY = "knowledge_query"
@@ -42,6 +47,7 @@ class StepType(str, Enum):
 
 class IntentType(str, Enum):
     """意图类型。"""
+
     ANALYSIS = "analysis"
     FETCH_DATA = "fetch_data"
     KNOWLEDGE_QUERY = "knowledge_query"
@@ -50,8 +56,10 @@ class IntentType(str, Enum):
 
 # ── 记录模型 ──────────────────────────────────────────────────────
 
+
 class IntentRecord(BaseModel):
     """意图解析记录。"""
+
     type: IntentType
     analysis_type: AnalysisType | None = None
     original_input: str
@@ -60,6 +68,7 @@ class IntentRecord(BaseModel):
 
 class ParameterRecord(BaseModel):
     """参数提取记录。对应 IntentParser.extract_parameters() 返回值。"""
+
     input_files: list[str] = Field(default_factory=list)
     genes: list[str] = Field(default_factory=list)
     sources: list[str] = Field(default_factory=list)
@@ -69,6 +78,7 @@ class ParameterRecord(BaseModel):
 
 class StepOutput(BaseModel):
     """单步执行输出。"""
+
     status: TerminalStatus
     result: dict[str, Any] | None = None
     error: str | None = None
@@ -76,6 +86,7 @@ class StepOutput(BaseModel):
 
 class WorkflowStep(BaseModel):
     """单个工作流步骤记录。"""
+
     step_id: str
     step_type: StepType
     tool: Literal["run_analysis", "search_datasets", "query_knowledge"]
@@ -86,6 +97,7 @@ class WorkflowStep(BaseModel):
 
 class WorkflowExecution(BaseModel):
     """完整工作流执行记录：intent → params → steps → outputs。"""
+
     run_id: str
     timestamp: datetime = Field(default_factory=datetime.utcnow)
     intent: IntentRecord
@@ -121,8 +133,10 @@ import json
 
 # ── 兼容 WRROCStore 所需的 WorkflowRun 等模型 ─────────────────────────
 
+
 class WorkflowIntent(BaseModel):
     """意图记录。"""
+
     type: IntentType
     analysis_type: AnalysisType | None = None
     original_input: str
@@ -131,12 +145,14 @@ class WorkflowIntent(BaseModel):
 
 class WorkflowInput(BaseModel):
     """输入记录。"""
+
     user_input: str
     context: dict[str, Any] = Field(default_factory=dict)
 
 
 class WorkflowOutput(BaseModel):
     """输出记录。"""
+
     name: str
     path: str
     type: Literal["csv", "json", "txt", "png", "rds", "other"]
@@ -145,6 +161,7 @@ class WorkflowOutput(BaseModel):
 
 class WorkflowRun(BaseModel):
     """完整工作流运行记录：与 WorkflowExecution 字段兼容，字段名对齐 WRROCStore 需求。"""
+
     run_id: str
     timestamp: datetime = Field(default_factory=datetime.utcnow)
     intent: WorkflowIntent

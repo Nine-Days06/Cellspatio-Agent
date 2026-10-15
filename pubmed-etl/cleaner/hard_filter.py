@@ -15,11 +15,12 @@ import sqlite3
 from pathlib import Path
 
 from config.settings import (
-    DB_PATH,
-    LOG_DIR,
     ABSTRACT_MIN_LEN,
-    PUB_YEAR_MIN, PUB_YEAR_MAX,
+    DB_PATH,
     EXCLUDED_ARTICLE_TYPES,
+    LOG_DIR,
+    PUB_YEAR_MAX,
+    PUB_YEAR_MIN,
 )
 from utils import now_iso
 from utils.db import get_conn
@@ -35,6 +36,7 @@ VALUES (?, 'hard_filter', ?, ?)
 
 
 # ── 单条规则函数 ──────────────────────────────────────────────
+
 
 def check_language(row: sqlite3.Row) -> str | None:
     """非英文返回原因描述，否则 None"""
@@ -91,6 +93,7 @@ RULE_FUNCS = [
 
 # ── 重复标题检测 ──────────────────────────────────────────────
 
+
 def find_duplicate_titles(db_path: Path = DB_PATH, conn: sqlite3.Connection = None) -> set[str]:
     """
     找出同期刊、同年份、完全相同标题（小写规范化后）的重复 PMID。
@@ -102,7 +105,7 @@ def find_duplicate_titles(db_path: Path = DB_PATH, conn: sqlite3.Connection = No
     WHERE title IS NOT NULL AND title != ''
     """
     duplicates: set[str] = set()
-    seen: dict[tuple, str] = {}     # (norm_title, journal, year) → first_pmid
+    seen: dict[tuple, str] = {}  # (norm_title, journal, year) → first_pmid
 
     if conn is not None:
         rows = conn.execute(query).fetchall()
@@ -121,6 +124,7 @@ def find_duplicate_titles(db_path: Path = DB_PATH, conn: sqlite3.Connection = No
 
 
 # ── 主流程 ────────────────────────────────────────────────────
+
 
 def run_hard_filter(db_path: Path = DB_PATH) -> dict:
     """
@@ -147,11 +151,11 @@ def run_hard_filter(db_path: Path = DB_PATH) -> dict:
 
         # 清理旧的过滤日志（仅限当前阶段）
         conn.execute("DELETE FROM filter_log WHERE stage = 'hard_filter'")
-        
+
         # 分批读取（避免全量加载到内存）
         page_size = 5000
-        offset    = 0
-        now       = now_iso()
+        offset = 0
+        now = now_iso()
 
         while True:
             rows = conn.execute(
@@ -199,6 +203,3 @@ def run_hard_filter(db_path: Path = DB_PATH) -> dict:
         "passed": passed,
         "reason_counts": reason_counts,
     }
-
-
-

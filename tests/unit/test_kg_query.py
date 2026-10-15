@@ -1,4 +1,5 @@
 """KGQuery：自然语言查询接口测试。"""
+
 import tempfile
 from pathlib import Path
 
@@ -21,7 +22,11 @@ from src.schemas.workflow import (
 def _make_run() -> "WorkflowRun":
     return WorkflowRun(
         run_id="test-run-kgquery-001",
-        intent=WorkflowIntent(type=IntentType.ANALYSIS, analysis_type=AnalysisType.DIFFERENTIAL_EXPRESSION, original_input="test"),
+        intent=WorkflowIntent(
+            type=IntentType.ANALYSIS,
+            analysis_type=AnalysisType.DIFFERENTIAL_EXPRESSION,
+            original_input="test",
+        ),
         params={"input_file": "data.csv"},
         input=WorkflowInput(user_input="test"),
         steps=[
@@ -30,11 +35,15 @@ def _make_run() -> "WorkflowRun":
                 step_type=StepType.ANALYSIS,
                 tool="run_analysis",
                 params={"analysis_type": "differential_expression"},
-                output=StepOutput(status=TerminalStatus.SUCCESS, result={"result_file": "out.de_results.csv"}),
+                output=StepOutput(
+                    status=TerminalStatus.SUCCESS, result={"result_file": "out.de_results.csv"}
+                ),
             ),
         ],
         outputs=[
-            WorkflowOutput(name="de_results", path="out.de_results.csv", type="csv", meta={"genes": 100}),
+            WorkflowOutput(
+                name="de_results", path="out.de_results.csv", type="csv", meta={"genes": 100}
+            ),
         ],
     )
 

@@ -10,10 +10,13 @@ def _fetcher_with(handler):
 def test_search_parses_find_response():
     def handler(request):
         assert "/find/pathway/glycolysis" in str(request.url)
-        return httpx.Response(200, text=(
-            "path:hsa00010\tGlycolysis / Gluconeogenesis - Homo sapiens (human)\n"
-            "path:ec00010\tGlycolysis / Gluconeogenesis - Escherichia coli K-12\n"
-        ))
+        return httpx.Response(
+            200,
+            text=(
+                "path:hsa00010\tGlycolysis / Gluconeogenesis - Homo sapiens (human)\n"
+                "path:ec00010\tGlycolysis / Gluconeogenesis - Escherichia coli K-12\n"
+            ),
+        )
 
     fetcher = _fetcher_with(handler)
     metas = fetcher.search("glycolysis")
@@ -35,13 +38,16 @@ def test_search_respects_max_results():
 def test_confirm_parses_name_and_description():
     def handler(request):
         assert "/get/hsa00010" in str(request.url)
-        return httpx.Response(200, text=(
-            "ENTRY       hsa00010                      Pathway\n"
-            "NAME        Glycolysis / Gluconeogenesis\n"
-            "DESCRIPTION  Glycolysis is the metabolic pathway\n"
-            "xxx\n"
-            "//\n"
-        ))
+        return httpx.Response(
+            200,
+            text=(
+                "ENTRY       hsa00010                      Pathway\n"
+                "NAME        Glycolysis / Gluconeogenesis\n"
+                "DESCRIPTION  Glycolysis is the metabolic pathway\n"
+                "xxx\n"
+                "//\n"
+            ),
+        )
 
     fetcher = _fetcher_with(handler)
     info = fetcher.confirm("hsa00010")
@@ -130,6 +136,7 @@ KGML_NO_REL_FIXTURE = """<pathway name="path:hsa00010" org="hsa" number="00010" 
 
 def test_ingest_kgml_text_without_relations_or_reactions():
     """无 relation/reaction 的通路（信号图常见 0 reaction）渲染"无"占位行"""
+
     def handler(request):
         return httpx.Response(200, text=KGML_NO_REL_FIXTURE)
 
@@ -142,14 +149,18 @@ def test_ingest_kgml_text_without_relations_or_reactions():
 
 def test_kgml_falls_back_to_name_when_graphics_missing():
     """entry 无 graphics 时，显示名回退用 name 属性"""
+
     def handler(request):
-        return httpx.Response(200, text=(
-            '<pathway title="T">'
-            '<entry id="1" name="hsa:7157" type="gene"/>'
-            '<entry id="2" name="hsa:1956" type="gene"/>'
-            '<relation entry1="1" entry2="2" type="GErel"/>'
-            '</pathway>'
-        ))
+        return httpx.Response(
+            200,
+            text=(
+                '<pathway title="T">'
+                '<entry id="1" name="hsa:7157" type="gene"/>'
+                '<entry id="2" name="hsa:1956" type="gene"/>'
+                '<relation entry1="1" entry2="2" type="GErel"/>'
+                "</pathway>"
+            ),
+        )
 
     fetcher = _fetcher_with(handler)
     text = fetcher.ingest_kgml_text("hsaXXXXX")
@@ -159,6 +170,7 @@ def test_kgml_falls_back_to_name_when_graphics_missing():
 
 def test_ingest_kgml_text_includes_canonical_gene_ids():
     """KGML 的 gene entry@name（hsa:NNNN）即 Entrez，渲染为规范 token。"""
+
     def handler(request):
         return httpx.Response(200, text=KGML_FIXTURE)
 
@@ -170,15 +182,19 @@ def test_ingest_kgml_text_includes_canonical_gene_ids():
 
 def test_ingest_text_includes_pathway_gene_ids():
     """通路原文 GENE 段首列即 Entrez（实测 '            2475  MTOR; ...'）。"""
+
     def handler(request):
-        return httpx.Response(200, text=(
-            "ENTRY       hsa04930                      Pathway\n"
-            "NAME        Type II diabetes mellitus\n"
-            "GENE        2475  MTOR; serine/threonine-protein kinase mTOR\n"
-            "            3098  HK1; hexokinase-1\n"
-            "DISEASE     H00245  Diabetes mellitus\n"
-            "///\n"
-        ))
+        return httpx.Response(
+            200,
+            text=(
+                "ENTRY       hsa04930                      Pathway\n"
+                "NAME        Type II diabetes mellitus\n"
+                "GENE        2475  MTOR; serine/threonine-protein kinase mTOR\n"
+                "            3098  HK1; hexokinase-1\n"
+                "DISEASE     H00245  Diabetes mellitus\n"
+                "///\n"
+            ),
+        )
 
     fetcher = _fetcher_with(handler)
     text = fetcher.ingest_text("hsa04930")
@@ -187,6 +203,7 @@ def test_ingest_text_includes_pathway_gene_ids():
 
 def test_ingest_text_without_gene_section_omits_id_line():
     """无 GENE 段（如纯 map 通路）不产生该行。"""
+
     def handler(request):
         return httpx.Response(200, text="ENTRY       hsa00010\r\nNAME        Glycolysis\r\n///\r\n")
 

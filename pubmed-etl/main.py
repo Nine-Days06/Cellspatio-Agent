@@ -1,4 +1,4 @@
-﻿#!/usr/bin/env python3
+#!/usr/bin/env python3
 # main.py
 """
 人类多组学文献批量下载与清洗系统 — 一键运行入口
@@ -23,9 +23,7 @@ from pathlib import Path
 # 确保项目根目录在 Python 路径中
 sys.path.insert(0, str(Path(__file__).parent))
 
-from config.settings import (
-    DB_PATH, RAW_XML_DIR, OUTPUT_DIR, LOG_DIR
-)
+from config.settings import DB_PATH, LOG_DIR, OUTPUT_DIR, RAW_XML_DIR
 from utils.db import init_db
 from utils.logger import get_logger
 
@@ -33,43 +31,51 @@ logger = get_logger("main", log_dir=LOG_DIR)
 
 
 def step_download(query: str = None):
-    from downloader.pubmed_downloader import run_download
     from config.settings import PUBMED_QUERY
+    from downloader.pubmed_downloader import run_download
+
     return run_download(query or PUBMED_QUERY)
 
 
 def step_parse(xml_dir: Path = None):
     from parser.xml_parser import run_parse
+
     run_parse(xml_dir=xml_dir or RAW_XML_DIR, db_path=DB_PATH)
 
 
 def step_clean():
     from cleaner.hard_filter import run_hard_filter
+
     run_hard_filter(db_path=DB_PATH)
 
 
 def step_pdf():
     from downloader.pdf_downloader import run_pdf_download
+
     run_pdf_download(db_path=DB_PATH)
 
 
 def step_pdf_retry():
     from downloader.pdf_downloader import run_pdf_retry
+
     run_pdf_retry(db_path=DB_PATH)
 
 
 def step_validate(batch=False):
     from cleaner.llm_validator import run_validation
+
     run_validation(batch_mode=batch)
 
 
 def step_import_review(csv_path: str = None):
     from cleaner.llm_validator import import_human_review
+
     import_human_review(csv_path)
 
 
 def step_export():
     from cleaner.llm_validator import _export_articles_csv
+
     path = _export_articles_csv()
     if path:
         logger.info(f"主项目兼容文献已导出: {path}")
@@ -81,7 +87,17 @@ def main():
     )
     parser.add_argument(
         "--step",
-        choices=["download", "parse", "clean", "pdf", "pdf-retry", "validate", "import-review", "export", "all"],
+        choices=[
+            "download",
+            "parse",
+            "clean",
+            "pdf",
+            "pdf-retry",
+            "validate",
+            "import-review",
+            "export",
+            "all",
+        ],
         default="all",
         help="运行指定阶段（默认 all）",
     )

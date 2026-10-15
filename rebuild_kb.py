@@ -6,6 +6,7 @@ pubmed-etl 文献导入的 chunk、实体与关系。若文献已入库，跑本
 （公共数据库来源标记）的文档（例如带 PMID / pubmed 链接的文献），就拒绝执行并提示。
 确需清空时显式传 --force。
 """
+
 from __future__ import annotations
 
 import argparse
@@ -28,32 +29,69 @@ KEEP = {"EMBEDDING_MODEL.json"}
 # KEGG 换 hsa 物种通路：map* 参考通路无 GENE/物种段（0 基因），hsa* 含 Entrez ID；
 # map04214（果蝇凋亡）无人类对应（hsa04214 404），按主题以 hsa04151 PI3K-Akt 替换。
 KEGG_IDS = [
-    "hsa04950", "hsa04151", "hsa04215", "hsa04115",   # MODY / PI3K-Akt / 凋亡多物种 / p53
-    "hsa04930", "hsa04210", "hsa04940", "hsa04110",   # II型糖尿病 / 凋亡 / I型糖尿病 / 细胞周期
+    "hsa04950",
+    "hsa04151",
+    "hsa04215",
+    "hsa04115",  # MODY / PI3K-Akt / 凋亡多物种 / p53
+    "hsa04930",
+    "hsa04210",
+    "hsa04940",
+    "hsa04110",  # II型糖尿病 / 凋亡 / I型糖尿病 / 细胞周期
 ]
 # UniProt 10 条：全部 Homo sapiens，GeneID 位于 uniProtKBCrossReferences（genes[].geneId 实测为空）
 UNIPROT_IDS = [
-    "Q9NQ88", "P58012", "Q14644", "Q13572", "Q13813",
-    "Q9Y2B4", "P04637", "Q12888", "Q7LG56", "P01308",
+    "Q9NQ88",
+    "P58012",
+    "Q14644",
+    "Q13572",
+    "Q13813",
+    "Q9Y2B4",
+    "P04637",
+    "Q12888",
+    "Q7LG56",
+    "P01308",
 ]
 # GEO 2 条：均为真实公开数据集（GSE123456 4 样本 / GSE48351 10 样本，PMID 见 esummary）
 GEO_IDS = ["GSE123456", "GSE48351"]
 # Reactome 10 条：官方顶层通路（data/pathways/top/Homo sapiens 实测 29 条中选取）
 REACTOME_IDS = [
-    "R-HSA-1640170", "R-HSA-109582", "R-HSA-168256", "R-HSA-1430728", "R-HSA-162582",
-    "R-HSA-5357801", "R-HSA-73894", "R-HSA-69306", "R-HSA-1266738", "R-HSA-9612973",
+    "R-HSA-1640170",
+    "R-HSA-109582",
+    "R-HSA-168256",
+    "R-HSA-1430728",
+    "R-HSA-162582",
+    "R-HSA-5357801",
+    "R-HSA-73894",
+    "R-HSA-69306",
+    "R-HSA-1266738",
+    "R-HSA-9612973",
 ]
 # HPA 12 条：单细胞/空间常用细胞类型标志物（实测精确匹配全部命中）
 HPA_GENES = [
-    "CD4", "CD8A", "CD19", "PTPRC", "CD3E", "FOXP3",
-    "NCAM1", "EPCAM", "VIM", "KRT18", "IL7R", "CD68",
+    "CD4",
+    "CD8A",
+    "CD19",
+    "PTPRC",
+    "CD3E",
+    "FOXP3",
+    "NCAM1",
+    "EPCAM",
+    "VIM",
+    "KRT18",
+    "IL7R",
+    "CD68",
 ]
 
 # 本脚本负责重建的公共数据库来源标记（由各 ingest_text / curated_sources 写入）
 CURATED_HEADERS = (
-    "# KEGG 通路:", "# KEGG 通路结构:", "# UniProt 蛋白:", "# GEO 数据集:",
-    "# CellMarker 细胞类型:", "# Cell Ontology 术语:",
-    "# Reactome 通路:", "# HPA 蛋白:",
+    "# KEGG 通路:",
+    "# KEGG 通路结构:",
+    "# UniProt 蛋白:",
+    "# GEO 数据集:",
+    "# CellMarker 细胞类型:",
+    "# Cell Ontology 术语:",
+    "# Reactome 通路:",
+    "# HPA 蛋白:",
 )
 DOCS_FILE = "kv_store_full_docs.json"
 

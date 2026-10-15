@@ -16,6 +16,7 @@
 ④ 打开会话必须带 ?restore=1，否则 pending_script 永不转 expired（见
    routes_sessions._restore_pending 的过期语义）。
 """
+
 from __future__ import annotations
 
 import json

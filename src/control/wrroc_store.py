@@ -1,4 +1,5 @@
 """WRROC 存储：落盘、索引、查询、Lineage 图谱。"""
+
 from __future__ import annotations
 
 from pathlib import Path
@@ -55,21 +56,39 @@ class WRROCStore:
             return
         visited.add(run.run_id)
         # 节点：运行
-        graph.add_node(LineageNode(id=f"run:{run.run_id}", type="run", label=run.intent.analysis_type or run.intent.type))
+        graph.add_node(
+            LineageNode(
+                id=f"run:{run.run_id}",
+                type="run",
+                label=run.intent.analysis_type or run.intent.type,
+            )
+        )
         # 节点：输入文件（从 context.downloaded_assets）
         for asset in run.input.context.get("downloaded_assets", []):
             asset_path = asset.get("access_path")
             if asset_path:
                 graph.add_node(LineageNode(id=f"file:{asset_path}", type="file", label=asset_path))
-                graph.add_edge(LineageEdge(src=f"file:{asset_path}", dst=f"run:{run.run_id}", relation="input_to"))
+                graph.add_edge(
+                    LineageEdge(
+                        src=f"file:{asset_path}", dst=f"run:{run.run_id}", relation="input_to"
+                    )
+                )
         # 节点：输出文件
         for out in run.outputs:
             graph.add_node(LineageNode(id=f"file:{out.path}", type="file", label=out.path))
-            graph.add_edge(LineageEdge(src=f"run:{run.run_id}", dst=f"file:{out.path}", relation="output_from"))
+            graph.add_edge(
+                LineageEdge(src=f"run:{run.run_id}", dst=f"file:{out.path}", relation="output_from")
+            )
             # 反向查找：哪些 run 使用了该文件作为输入
             for other_run in self.list_runs():
                 if other_run.run_id != run.run_id:
                     for asset in other_run.input.context.get("downloaded_assets", []):
                         if asset.get("access_path") == out.path:
-                            graph.add_edge(LineageEdge(src=f"file:{out.path}", dst=f"run:{other_run.run_id}", relation="input_to"))
+                            graph.add_edge(
+                                LineageEdge(
+                                    src=f"file:{out.path}",
+                                    dst=f"run:{other_run.run_id}",
+                                    relation="input_to",
+                                )
+                            )
         # 递归（简单版：仅直接依赖）
