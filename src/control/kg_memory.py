@@ -111,14 +111,14 @@ class KGMemory:
     def query_entities(self, query: str) -> list[str]:
         """实体检索：返回相关实体文本片段。"""
         self._ensure_initialized()
-        param = QueryParam(mode="hybrid")
+        param = QueryParam(mode="mix")
         result = async_runtime.run(self._rag.aquery(query, param=param))
         return [str(r) for r in result] if result else []
 
     def query_relations(self, entity: str) -> list[dict]:
         """关系查询：返回实体关系。"""
         self._ensure_initialized()
-        param = QueryParam(mode="hybrid")
+        param = QueryParam(mode="mix")
         result = async_runtime.run(
             self._rag.aquery(f"Relations of {entity}", param=param)
         )

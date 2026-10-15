@@ -11,7 +11,7 @@ from typing import Any
 logger = logging.getLogger(__name__)
 
 # 按需补库：显式 ID 不在库中时触发；context 过短作为 mock/空库回退
-# （LightRAG hybrid 在非空图上几乎总是返回 30k+ 松散匹配，长度阈值不可靠）
+# （LightRAG 在非空图上几乎总是返回 30k+ 松散匹配，长度阈值不可靠）
 LAZY_INGEST_MIN_CONTEXT = int(os.environ.get("LAZY_INGEST_MIN_CONTEXT", "300"))
 # 单次提问最多自动入库条数（控延迟与体积）
 LAZY_INGEST_MAX_ASSETS = int(os.environ.get("LAZY_INGEST_MAX_ASSETS", "3"))

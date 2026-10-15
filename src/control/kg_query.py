@@ -23,7 +23,7 @@ class KGQuery:
         """
         self._kg_memory = kg_memory or KGMemory(working_dir)
 
-    def query(self, question: str, mode: str = "hybrid") -> str:
+    def query(self, question: str, mode: str = "mix") -> str:
         """自然语言提问，返回生成式回答。"""
         self._kg_memory._ensure_initialized()
         param = QueryParam(mode=mode)

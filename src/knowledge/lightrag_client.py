@@ -304,7 +304,7 @@ class LightRAGClient:
         logger.info(f"Batch inserted {len(documents)} documents")
         return len(documents)
 
-    def query(self, question: str, mode: str = "hybrid") -> str:
+    def query(self, question: str, mode: str = "mix") -> str:
         """查询知识库（纯文本；背景/兼容调用方）"""
         self._initialize_rag()
         if self._rag:
@@ -316,7 +316,7 @@ class LightRAGClient:
         return "LightRAG 未初始化"
 
     def query_with_references(
-        self, question: str, mode: str = "hybrid"
+        self, question: str, mode: str = "mix"
     ) -> dict[str, Any]:
         """查询并返回结构化引用。
 
@@ -352,7 +352,7 @@ class LightRAGClient:
             "references": expanded,
         }
 
-    def query_context(self, question: str, mode: str = "hybrid") -> str:
+    def query_context(self, question: str, mode: str = "mix") -> str:
         """只返回检索到的上下文片段（不生成回答），供注入 codegen prompt"""
         self._initialize_rag()
         if not self._rag:

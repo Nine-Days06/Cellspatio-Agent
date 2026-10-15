@@ -13,7 +13,7 @@ class FakeClient:
         self.inserted.extend(documents)
         return len(documents)
 
-    def query_context(self, question: str, mode: str = "hybrid") -> str:
+    def query_context(self, question: str, mode: str = "mix") -> str:
         self.query_calls.append({"question": question, "mode": mode})
         return self._reply
 
@@ -32,12 +32,12 @@ def test_query_context_delegates_to_client():
     out = kb.query_context("差异表达 参数")
     assert out == "METHOD CARD CONTEXT"
     assert kb.client.query_calls[0]["question"] == "差异表达 参数"
-    assert kb.client.query_calls[0]["mode"] == "hybrid"
+    assert kb.client.query_calls[0]["mode"] == "mix"
 
 
 def test_query_context_returns_empty_on_client_error():
     class Boom:
-        def query_context(self, question: str, mode: str = "hybrid") -> str:
+        def query_context(self, question: str, mode: str = "mix") -> str:
             raise RuntimeError("rag down")
 
     kb = MethodsKb(client=Boom())

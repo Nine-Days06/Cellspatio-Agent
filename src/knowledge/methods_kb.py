@@ -21,7 +21,7 @@ class MethodsKb:
             Path(cards_dir) if cards_dir else Path("knowledge_base_methods_cards")
         )
 
-    def query_context(self, question: str, mode: str = "hybrid") -> str:
+    def query_context(self, question: str, mode: str = "mix") -> str:
         """检索方法学上下文；失败返回空串（不阻断分析主流程）"""
         try:
             return self.client.query_context(question, mode=mode)
