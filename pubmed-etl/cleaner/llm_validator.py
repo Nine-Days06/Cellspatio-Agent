@@ -261,6 +261,13 @@ UPDATE_HUMAN_REVIEW_SQL = """
 UPDATE llm_validation SET human_review = ? WHERE pmid = ?
 """
 
+# 无摘要文献由人工审核：只写 human_review 不写 llm_verdict（避免被当成 LLM 已判 RELEVANT 导出）
+INSERT_MANUAL_REVIEW_SQL = """
+INSERT INTO llm_validation (pmid, llm_verdict, reason, validated_at, human_review)
+VALUES (?, NULL, '无摘要，人工审核', ?, ?)
+ON CONFLICT(pmid) DO UPDATE SET human_review = excluded.human_review
+"""
+
 
 def _build_batch_prompt(rows: list) -> str:
     """为一批文献构建 prompt 正文"""
@@ -680,6 +687,60 @@ def _export_review_csv() -> Path | None:
 
     logger.info(f"待复核清单已导出: {csv_path}")
     logger.info("请人工标注 human_review 列为 Y 或 N（通过/驳回），然后运行 --step import-review")
+    return csv_path
+
+
+def export_no_abstract_csv(db_path: Path = DB_PATH) -> Path | None:
+    """
+    导出无摘要文献清单，交由人工审核。
+
+    无摘要时 LLM 只能靠标题猜（实测是误判集中地：把 5-ALA 荧光成像的 letter
+    当成 single-cell 组学收录），故不进 LLM 判定，单独出表人工判。
+    只导出硬过滤通过、且未在 llm_validation 里有判定结果的记录。
+    """
+    with get_conn(db_path) as conn:
+        rows = conn.execute("""
+            SELECT a.pmid, a.title, a.journal, a.pub_year, a.article_types, a.doi
+            FROM articles a
+            WHERE (a.abstract IS NULL OR TRIM(a.abstract) = '')
+              AND a.pmid NOT IN (
+                  SELECT pmid FROM filter_log WHERE stage = 'hard_filter'
+              )
+              AND a.pmid NOT IN (
+                  SELECT pmid FROM llm_validation WHERE llm_verdict IS NOT NULL
+              )
+            ORDER BY a.pub_year DESC, a.pmid
+        """).fetchall()
+
+    if not rows:
+        logger.info("没有待人工审核的无摘要文献")
+        return None
+
+    out_dir = Path(OUTPUT_DIR)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+    csv_path = out_dir / f"no_abstract_manual_{ts}.csv"
+
+    with open(csv_path, "w", newline="", encoding="utf-8-sig") as f:
+        writer = csv.writer(f)
+        writer.writerow(
+            ["pmid", "title", "journal", "year", "article_types", "doi", "human_review"]
+        )
+        for row in rows:
+            writer.writerow(
+                [
+                    row["pmid"],
+                    row["title"] or "",
+                    row["journal"] or "",
+                    row["pub_year"] or "",
+                    row["article_types"] or "",
+                    row["doi"] or "",
+                    "",
+                ]
+            )
+
+    logger.info(f"无摘要文献清单已导出: {csv_path}（{len(rows)} 篇，待人工审核）")
+    logger.info("人工标注 human_review 列为 Y 或 N 后，运行 --step import-review 导入")
     return csv_path
 
 
@@ -1346,7 +1407,13 @@ def import_human_review(csv_path: str | None = None):
 
     if updates:
         with get_conn(DB_PATH) as conn:
-            conn.executemany(UPDATE_HUMAN_REVIEW_SQL, updates)
+            # 用 upsert 而非 UPDATE：无摘要文献没有 llm_validation 行，
+            # 纯 UPDATE 会静默丢行（人工审了却导不出来）
+            now = now_iso()
+            conn.executemany(
+                INSERT_MANUAL_REVIEW_SQL,
+                [(pmid, now, review) for review, pmid in updates],
+            )
 
     logger.info(f"导入完成: Y {passed} 篇, N {rejected} 篇, 跳过 {skipped} 行")
 
