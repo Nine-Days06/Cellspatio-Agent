@@ -208,8 +208,10 @@ class TestBuildJsonlFilesSplitting(unittest.TestCase):
         self.assertEqual([len(p) for _, p in groups], [3, 3, 3, 1])
 
     def test_should_not_exceed_either_limit_in_any_file(self):
+        # 单条请求已含完整系统提示词（约 9.9KB），字节上限必须大于它才有意义；
+        # 这里让字节上限容得下 3 条、条数上限卡在 2 条，验证两个上限都不被突破。
         rows = self._rows(40, abstract="A" * 300)
-        cap_bytes, cap_req = 8 * 1024, 7
+        cap_bytes, cap_req = 32 * 1024, 2
         with (
             patch.object(self.mod, "LLM_BATCH_MAX_BYTES", cap_bytes),
             patch.object(self.mod, "LLM_BATCH_MAX_REQUESTS", cap_req),
@@ -264,8 +266,10 @@ class TestBuildJsonlFilesSplitting(unittest.TestCase):
 
     def test_build_jsonl_single_should_reject_multi_file_batch(self):
         rows = self._rows(10, abstract="A" * 400)
+        # 上限须大于单行请求体积（含完整系统提示词约 8KB），
+        # 否则会先触发"单条请求超限"报错而非"需拆分多文件"报错
         with (
-            patch.object(self.mod, "LLM_BATCH_MAX_BYTES", 4096),
+            patch.object(self.mod, "LLM_BATCH_MAX_BYTES", 32 * 1024),
             self.assertRaises(ValueError) as ctx,
         ):
             self.mod._build_jsonl(rows)

@@ -59,11 +59,25 @@ PUBMED_QUERY = (
     "scRNA-seq[Title/Abstract] OR scRNAseq[Title/Abstract] OR "
     'snRNA-seq[Title/Abstract] OR "single-cell RNA sequencing"[Title/Abstract] OR '
     '"single nucleus"[Title/Abstract] OR '
+    '"single-cell sequencing"[Title/Abstract] OR '
     "CITE-seq[Title/Abstract] OR "
     "scATAC-seq[Title/Abstract] OR snATAC-seq[Title/Abstract] OR "
-    # 空间/时序：覆盖主流平台（成像式 + 测序式）；裸 spatiotemporal 会引入
+    "RNA velocity[Title/Abstract] OR "
+    '"single-cell atlas"[Title/Abstract] OR "cell atlas"[Title/Abstract] OR '
+    # 空间/时序：覆盖主流平台（成像式 + 测序式）与常见短语变体；裸 spatiotemporal 会引入
     # 大量非组学论文，限定为 transcriptomics/omics 组合
     '"spatial transcriptomics"[Title/Abstract] OR spatialomics[Title/Abstract] OR '
+    '"spatial omics"[Title/Abstract] OR "spatial multi-omics"[Title/Abstract] OR '
+    # 裸 "spatially resolved" 会引入大量光学/环境/材料噪声（实测 2565 命中里 1350 条无任何
+    # 组学词，53%），必须带组学宾语才保留：spatially resolved transcriptomics/proteomics/…
+    '"spatially resolved transcriptomics"[Title/Abstract] OR '
+    '"spatially resolved proteomics"[Title/Abstract] OR '
+    '"spatially resolved metabolomics"[Title/Abstract] OR '
+    '"spatially resolved genomics"[Title/Abstract] OR '
+    '"spatially resolved multi-omics"[Title/Abstract] OR '
+    '"spatially resolved omics"[Title/Abstract] OR '
+    '"spatially resolved mass spectrometry"[Title/Abstract] OR '
+    '"spatially resolved imaging"[Title/Abstract] OR '
     "Visium[Title/Abstract] OR MERFISH[Title/Abstract] OR "
     '"Slide-seq"[Title/Abstract] OR Slide-seqV2[Title/Abstract] OR '
     '"Stereo-seq"[Title/Abstract] OR seqFISH[Title/Abstract] OR '
@@ -72,13 +86,26 @@ PUBMED_QUERY = (
     '"spatial ATAC-seq"[Title/Abstract] OR '
     '"spatiotemporal transcriptomics"[Title/Abstract] OR '
     '"spatiotemporal omics"[Title/Abstract] OR '
+    # 空间/单细胞蛋白组（对应 LLM 收录规则 7：CyTOF、IMC、MIBI 等）
+    "CyTOF[Title/Abstract] OR "
+    '"imaging mass cytometry"[Title/Abstract] OR "mass cytometry"[Title/Abstract] OR '
+    "MIBI[Title/Abstract] OR CODEX[Title/Abstract] OR "
+    '"single-cell proteomics"[Title/Abstract] OR '
+    '"spatial proteomics"[Title/Abstract] OR '
+    '"spatial genomics"[Title/Abstract] OR "spatial epigenomics"[Title/Abstract] OR '
+    '"spatial metabolomics"[Title/Abstract] OR '
     # noexp 禁止 explode：该词默认 explode 会异常扩散（实测 10 万+命中）
     '"Single-Cell Analysis"[MeSH Terms] OR "Spatial Transcriptomics"[MeSH Terms:noexp]) AND '
-    '("Homo sapiens"[Organism] OR human[Title/Abstract] OR patients[Title/Abstract])'
-    # NOT 前置排除（检索端省下载，与后端口径对齐）：
-    # 前 7 项对应硬过滤 EXCLUDED_ARTICLE_TYPES；review 对应 LLM 排除规则5（综述默认排除）
-    " NOT (letter[pt] OR comment[pt] OR correction[pt] OR retraction[pt] OR "
-    '"published erratum"[pt] OR editorial[pt] OR news[pt] OR review[pt])'
+    # 物种过滤用 MeSH 规范词 Humans："Homo sapiens"[Organism] 不是有效字段标签，
+    # PubMed 会回落为全字段文本匹配，物种过滤不生效（实测 query translation 证实）
+    '("Humans"[MeSH Terms] OR human[Title/Abstract] OR patients[Title/Abstract])'
+    # NOT 前置排除（检索端省下载，与后端硬过滤口径对齐）：
+    # 只排撤稿 / 更正 / 勘误类。综述、letter、comment、editorial、news 不排除，
+    # 由 LLM 验证按主题相关性收录（方法库与知识问答库都需要观点性/综述内容）。
+    # 注：correction[pt]/retraction[pt] 是无效 PT 名，PubMed 会静默丢弃；
+    # 撤稿类有效写法是 retracted publication[pt] 与 "expression of concern"[pt]，
+    # 更正类由 "published erratum"[pt] 覆盖
+    ' NOT ("published erratum"[pt] OR retracted publication[pt] OR "expression of concern"[pt])'
 )
 
 # 文献时间范围
@@ -94,18 +121,17 @@ PUB_YEAR_MIN = SEARCH_YEAR_MIN
 PUB_YEAR_MAX = SEARCH_YEAR_MAX
 
 # ── 硬过滤规则 ────────────────────────────────────────────────
-# 摘要最小字符数（太短说明记录不完整）
-ABSTRACT_MIN_LEN = 80
-
-# 需要排除的文章类型（PubMed PublicationType 字段）
+# 需要排除的文章类型（PubMed PublicationType 字段，子串匹配）。
+# 只排内容不可信的类别：撤稿 / 更正 / 勘误 / 关注声明。
+# Letter / Comment / Editorial / News 不在此列——由 LLM 验证按主题相关性判断。
+# "Retraction" 是旧 PT 名（Retraction of Publication）；现行名 Retracted Publication
+# 不含该子串，需单独列出；Expression of Concern 同理纳入
 EXCLUDED_ARTICLE_TYPES = [
-    "Letter",
-    "Comment",
     "Correction",
     "Retraction",
+    "Retracted Publication",
+    "Expression of Concern",
     "Published Erratum",
-    "Editorial",
-    "News",
 ]
 
 # ── LLM 验证配置 ──────────────────────────────────────────────
