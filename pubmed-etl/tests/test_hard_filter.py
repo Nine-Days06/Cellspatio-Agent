@@ -1,8 +1,7 @@
 """hard_filter 回归测试：单条规则判定、重复标题检测与 filter_log 落库。
 
 用例全部使用临时 SQLite（tempfile 建库），绝不读写 data/processed/multiomics_lit.db。
-过滤阈值一律显式 patch 掉 config.settings 的实际取值，
-避免用例随配置调整或系统时钟（PUB_YEAR_MAX = 当前年份）变化而失效。
+过滤阈值一律显式 patch 掉 config.settings 的实际取值，避免用例随配置调整而失效。
 """
 
 import gc
@@ -14,29 +13,20 @@ from unittest.mock import patch
 
 from cleaner import hard_filter
 from cleaner.hard_filter import (
-    check_abstract,
     check_article_type,
-    check_language,
-    check_title,
-    check_year,
     find_duplicate_titles,
     run_hard_filter,
 )
 from utils.db import get_conn, init_db
 
 # ── 测试用固定阈值（覆盖 config.settings 的真实取值）────────────────
-ABSTRACT_MIN_LEN = 50
-PUB_YEAR_MIN = 1900
-PUB_YEAR_MAX = 2025
 EXCLUDED_ARTICLE_TYPES = ("Letter", "Comment", "Editorial")
-TITLE_MIN_LEN = 10  # hard_filter.check_title 内的硬编码下限
 
 LONG_ABSTRACT = (
     "Single-cell RNA sequencing of human tumor microenvironment reveals "
     "distinct malignant epithelial states and exhausted T cell niches "
     "across twelve patient donors."
 )
-SHORT_ABSTRACT = "Too short."
 
 # articles 表列顺序与 utils/db.py 的 CREATE_ARTICLES_SQL 保持一致
 ARTICLE_COLUMNS = (
@@ -124,106 +114,6 @@ class _TempDbTestCase(unittest.TestCase):
         return {row["pmid"]: row["reason"] for row in rows}
 
 
-class TestCheckLanguage(_TempDbTestCase):
-    """语言规则：非英文即过滤，空值放行"""
-
-    def test_english_passes(self):
-        row = self._fetch(self._insert(pmid="40000101", language="eng"))
-        self.assertIsNone(check_language(row))
-
-    def test_non_english_returns_reason(self):
-        row = self._fetch(self._insert(pmid="40000102", language="chi"))
-        self.assertEqual(check_language(row), "language=chi")
-
-    def test_language_is_case_insensitive(self):
-        row = self._fetch(self._insert(pmid="40000103", language="ENG"))
-        self.assertIsNone(check_language(row))
-
-    def test_missing_language_passes(self):
-        """PubMed 部分记录没有语言字段，空值不应误杀"""
-        row = self._fetch(self._insert(pmid="40000104", language=""))
-        self.assertIsNone(check_language(row))
-
-
-class TestCheckAbstract(_TempDbTestCase):
-    """摘要规则：空摘要与过短摘要均过滤"""
-
-    @patch.object(hard_filter, "ABSTRACT_MIN_LEN", ABSTRACT_MIN_LEN)
-    def test_long_abstract_passes(self):
-        row = self._fetch(self._insert(pmid="40000201"))
-        self.assertIsNone(check_abstract(row))
-
-    @patch.object(hard_filter, "ABSTRACT_MIN_LEN", ABSTRACT_MIN_LEN)
-    def test_empty_abstract_returns_abstract_empty(self):
-        row = self._fetch(self._insert(pmid="40000202", abstract=""))
-        self.assertEqual(check_abstract(row), "abstract_empty")
-
-    @patch.object(hard_filter, "ABSTRACT_MIN_LEN", ABSTRACT_MIN_LEN)
-    def test_none_abstract_returns_abstract_empty(self):
-        row = self._fetch(self._insert(pmid="40000203", abstract=None))
-        self.assertEqual(check_abstract(row), "abstract_empty")
-
-    @patch.object(hard_filter, "ABSTRACT_MIN_LEN", ABSTRACT_MIN_LEN)
-    def test_short_abstract_returns_length_in_reason(self):
-        row = self._fetch(self._insert(pmid="40000204", abstract=SHORT_ABSTRACT))
-        self.assertEqual(check_abstract(row), f"abstract_too_short({len(SHORT_ABSTRACT)}chars)")
-
-    @patch.object(hard_filter, "ABSTRACT_MIN_LEN", ABSTRACT_MIN_LEN)
-    def test_length_threshold_is_inclusive(self):
-        """长度恰好等于阈值应通过，少 1 字符应被拒（锁死 < 而非 <=）"""
-        exact = self._fetch(self._insert(pmid="40000205", abstract="x" * ABSTRACT_MIN_LEN))
-        below = self._fetch(self._insert(pmid="40000206", abstract="x" * (ABSTRACT_MIN_LEN - 1)))
-        self.assertIsNone(check_abstract(exact))
-        self.assertEqual(check_abstract(below), f"abstract_too_short({ABSTRACT_MIN_LEN - 1}chars)")
-
-    @patch.object(hard_filter, "ABSTRACT_MIN_LEN", ABSTRACT_MIN_LEN)
-    def test_abstract_is_stripped_before_length_check(self):
-        """首尾空白先 strip，不应被计入长度"""
-        row = self._fetch(self._insert(pmid="40000207", abstract="x" * ABSTRACT_MIN_LEN + "   "))
-        self.assertIsNone(check_abstract(row))
-
-
-class TestCheckYear(_TempDbTestCase):
-    """年份规则：缺失、过早、过晚均过滤"""
-
-    @patch.object(hard_filter, "PUB_YEAR_MIN", PUB_YEAR_MIN)
-    @patch.object(hard_filter, "PUB_YEAR_MAX", PUB_YEAR_MAX)
-    def test_year_in_range_passes(self):
-        row = self._fetch(self._insert(pmid="40000301", pub_year=2020))
-        self.assertIsNone(check_year(row))
-
-    @patch.object(hard_filter, "PUB_YEAR_MIN", PUB_YEAR_MIN)
-    @patch.object(hard_filter, "PUB_YEAR_MAX", PUB_YEAR_MAX)
-    def test_missing_year_returns_missing(self):
-        row = self._fetch(self._insert(pmid="40000302", pub_year=None))
-        self.assertEqual(check_year(row), "pub_year_missing")
-
-    @patch.object(hard_filter, "PUB_YEAR_MIN", PUB_YEAR_MIN)
-    @patch.object(hard_filter, "PUB_YEAR_MAX", PUB_YEAR_MAX)
-    def test_year_before_min_returns_too_old(self):
-        row = self._fetch(self._insert(pmid="40000303", pub_year=1850))
-        self.assertEqual(check_year(row), "pub_year_too_old(1850)")
-
-    @patch.object(hard_filter, "PUB_YEAR_MIN", PUB_YEAR_MIN)
-    @patch.object(hard_filter, "PUB_YEAR_MAX", PUB_YEAR_MAX)
-    def test_year_after_max_returns_future(self):
-        """上界必须被强制：真实配置的 PUB_YEAR_MAX 随系统时钟变化，此处显式 patch"""
-        row = self._fetch(self._insert(pmid="40000304", pub_year=2999))
-        self.assertEqual(check_year(row), "pub_year_future(2999)")
-
-    @patch.object(hard_filter, "PUB_YEAR_MIN", PUB_YEAR_MIN)
-    @patch.object(hard_filter, "PUB_YEAR_MAX", PUB_YEAR_MAX)
-    def test_year_bounds_are_inclusive(self):
-        low = self._fetch(self._insert(pmid="40000305", pub_year=PUB_YEAR_MIN))
-        high = self._fetch(self._insert(pmid="40000306", pub_year=PUB_YEAR_MAX))
-        under = self._fetch(self._insert(pmid="40000307", pub_year=PUB_YEAR_MIN - 1))
-        over = self._fetch(self._insert(pmid="40000308", pub_year=PUB_YEAR_MAX + 1))
-        self.assertIsNone(check_year(low))
-        self.assertIsNone(check_year(high))
-        self.assertIsNotNone(check_year(under))
-        self.assertIsNotNone(check_year(over))
-
-
 class TestCheckArticleType(_TempDbTestCase):
     """文章类型规则：命中排除列表即过滤，大小写不敏感"""
 
@@ -252,28 +142,6 @@ class TestCheckArticleType(_TempDbTestCase):
     def test_empty_types_passes(self):
         row = self._fetch(self._insert(pmid="40000405", article_types=""))
         self.assertIsNone(check_article_type(row))
-
-
-class TestCheckTitle(_TempDbTestCase):
-    """标题规则：空标题与过短标题过滤"""
-
-    def test_long_title_passes(self):
-        row = self._fetch(self._insert(pmid="40000501"))
-        self.assertIsNone(check_title(row))
-
-    def test_empty_title_rejected(self):
-        row = self._fetch(self._insert(pmid="40000502", title=""))
-        self.assertEqual(check_title(row), "title_empty_or_too_short")
-
-    def test_none_title_rejected(self):
-        row = self._fetch(self._insert(pmid="40000503", title=None))
-        self.assertEqual(check_title(row), "title_empty_or_too_short")
-
-    def test_length_threshold_is_inclusive(self):
-        exact = self._fetch(self._insert(pmid="40000504", title="y" * TITLE_MIN_LEN))
-        below = self._fetch(self._insert(pmid="40000505", title="y" * (TITLE_MIN_LEN - 1)))
-        self.assertIsNone(check_title(exact))
-        self.assertEqual(check_title(below), "title_empty_or_too_short")
 
 
 class TestFindDuplicateTitles(_TempDbTestCase):
@@ -317,9 +185,6 @@ class TestFindDuplicateTitles(_TempDbTestCase):
         self.assertNotIn(first, find_duplicate_titles(self.db_path))
 
 
-@patch.object(hard_filter, "ABSTRACT_MIN_LEN", ABSTRACT_MIN_LEN)
-@patch.object(hard_filter, "PUB_YEAR_MIN", PUB_YEAR_MIN)
-@patch.object(hard_filter, "PUB_YEAR_MAX", PUB_YEAR_MAX)
 @patch.object(hard_filter, "EXCLUDED_ARTICLE_TYPES", EXCLUDED_ARTICLE_TYPES)
 class TestRunHardFilter(_TempDbTestCase):
     """主流程：规则命中写入 filter_log，未命中即通过"""
@@ -336,47 +201,12 @@ class TestRunHardFilter(_TempDbTestCase):
         self.assertEqual(stats["reason_counts"], {})
         self.assertEqual(self._filter_log(), {})
 
-    def test_short_abstract_is_filtered(self):
-        pmid = self._insert(pmid="40000702", abstract=SHORT_ABSTRACT)
-        stats = self._run()
-        self.assertEqual(stats["filtered"], 1)
-        self.assertEqual(stats["passed"], 0)
-        self.assertEqual(stats["reason_counts"]["abstract_too_short"], 1)
-        self.assertEqual(
-            self._filter_log()[pmid], f"abstract_too_short({len(SHORT_ABSTRACT)}chars)"
-        )
-
-    def test_empty_abstract_is_filtered(self):
-        self._insert(pmid="40000703", abstract="")
-        stats = self._run()
-        self.assertEqual(stats["reason_counts"]["abstract_empty"], 1)
-
     def test_excluded_article_type_is_filtered(self):
         pmid = self._insert(pmid="40000704", article_types="Journal Article|Letter")
         stats = self._run()
         self.assertEqual(stats["filtered"], 1)
         self.assertEqual(stats["reason_counts"]["excluded_type"], 1)
         self.assertEqual(self._filter_log()[pmid], "excluded_type(Letter)")
-
-    def test_year_below_min_is_filtered(self):
-        self._insert(pmid="40000705", pub_year=1850)
-        stats = self._run()
-        self.assertEqual(stats["reason_counts"]["pub_year_too_old"], 1)
-
-    def test_year_above_max_is_filtered(self):
-        self._insert(pmid="40000706", pub_year=2999)
-        stats = self._run()
-        self.assertEqual(stats["reason_counts"]["pub_year_future"], 1)
-
-    def test_non_english_article_is_filtered(self):
-        self._insert(pmid="40000707", language="chi")
-        stats = self._run()
-        self.assertEqual(stats["reason_counts"]["language=chi"], 1)
-
-    def test_short_title_is_filtered(self):
-        self._insert(pmid="40000708", title="Omics")
-        stats = self._run()
-        self.assertEqual(stats["reason_counts"]["title_empty_or_too_short"], 1)
 
     def test_duplicate_title_keeps_first_and_filters_rest(self):
         first = self._insert(pmid="40000709", journal="Nature", pub_year=2020)
@@ -409,14 +239,14 @@ class TestRunHardFilter(_TempDbTestCase):
 
     def test_each_article_reports_exactly_one_reason(self):
         """一条记录只记一次原因，首个命中规则即短路"""
-        self._insert(pmid="40000714", abstract="", language="chi", title="")
+        self._insert(pmid="40000714", article_types="Letter")
         self._run()
         self.assertEqual(len(self._filter_log()), 1)
 
     def test_mixed_batch_splits_into_passed_and_filtered(self):
         self._insert(pmid="40000715")
-        self._insert(pmid="40000716", language="chi")
-        self._insert(pmid="40000717", abstract=SHORT_ABSTRACT)
+        self._insert(pmid="40000716", article_types="Journal Article|Editorial")
+        self._insert(pmid="40000717", article_types="Journal Article|Letter")
         stats = self._run()
         self.assertEqual(stats["total"], 3)
         self.assertEqual(stats["filtered"], 2)
@@ -425,7 +255,7 @@ class TestRunHardFilter(_TempDbTestCase):
         self.assertEqual(len(self._filter_log()), stats["filtered"])
 
     def test_filter_log_records_hard_filter_stage(self):
-        pmid = self._insert(pmid="40000718", abstract=SHORT_ABSTRACT)
+        pmid = self._insert(pmid="40000718", article_types="Journal Article|Letter")
         self._run()
         with get_conn(self.db_path) as conn:
             row = conn.execute(
@@ -437,7 +267,7 @@ class TestRunHardFilter(_TempDbTestCase):
     def test_rerun_is_idempotent(self):
         """重复运行不得叠加日志，且统计结果保持一致"""
         self._insert(pmid="40000719")
-        self._insert(pmid="40000720", abstract=SHORT_ABSTRACT)
+        self._insert(pmid="40000720", article_types="Journal Article|Letter")
         first = self._run()
         second = self._run()
         self.assertEqual(first, second)

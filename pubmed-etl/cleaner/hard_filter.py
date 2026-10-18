@@ -3,24 +3,20 @@
 硬过滤模块
 逐条检查数据库中的文献，对不符合条件的记录打上过滤标记（写入 filter_log 表）。
 过滤规则（任一满足即过滤）：
-  1. 语言不是英文（language != 'eng'）
-  2. 摘要为空或过短（< ABSTRACT_MIN_LEN 字符）
-  3. 发表年份超出范围
-  4. 文章类型属于排除列表（Letter / Comment / Correction 等）
-  5. 标题为空
-  6. 疑似重复标题（同期刊同年份完全相同的标题）
+  1. 文章类型属于排除列表（Letter / Comment / Correction 等）
+  2. 疑似重复标题（同期刊同年份完全相同的标题）
+
+注：语言、摘要长度、发表年份、标题长度的过滤均已按需求移除，
+短记录对知识库仍有价值，精度由 LLM 二次验证兜底。
 """
 
 import sqlite3
 from pathlib import Path
 
 from config.settings import (
-    ABSTRACT_MIN_LEN,
     DB_PATH,
     EXCLUDED_ARTICLE_TYPES,
     LOG_DIR,
-    PUB_YEAR_MAX,
-    PUB_YEAR_MIN,
 )
 from utils import now_iso
 from utils.db import get_conn
@@ -38,35 +34,6 @@ VALUES (?, 'hard_filter', ?, ?)
 # ── 单条规则函数 ──────────────────────────────────────────────
 
 
-def check_language(row: sqlite3.Row) -> str | None:
-    """非英文返回原因描述，否则 None"""
-    lang = (row["language"] or "").lower().strip()
-    # PubMed 英文记录标记为 'eng'；也接受空值（部分记录没有语言字段）
-    if lang and lang != "eng":
-        return f"language={lang}"
-    return None
-
-
-def check_abstract(row: sqlite3.Row) -> str | None:
-    abstract = (row["abstract"] or "").strip()
-    if not abstract:
-        return "abstract_empty"
-    if len(abstract) < ABSTRACT_MIN_LEN:
-        return f"abstract_too_short({len(abstract)}chars)"
-    return None
-
-
-def check_year(row: sqlite3.Row) -> str | None:
-    year = row["pub_year"]
-    if year is None:
-        return "pub_year_missing"
-    if year < PUB_YEAR_MIN:
-        return f"pub_year_too_old({year})"
-    if year > PUB_YEAR_MAX:
-        return f"pub_year_future({year})"
-    return None
-
-
 def check_article_type(row: sqlite3.Row) -> str | None:
     types = (row["article_types"] or "").lower()
     for excl in EXCLUDED_ARTICLE_TYPES:
@@ -75,19 +42,8 @@ def check_article_type(row: sqlite3.Row) -> str | None:
     return None
 
 
-def check_title(row: sqlite3.Row) -> str | None:
-    title = (row["title"] or "").strip()
-    if not title or len(title) < 10:
-        return "title_empty_or_too_short"
-    return None
-
-
 RULE_FUNCS = [
-    check_language,
-    check_abstract,
-    check_year,
     check_article_type,
-    check_title,
 ]
 
 
