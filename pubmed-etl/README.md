@@ -26,8 +26,9 @@ PubMed E-utilities 下载的是 **XML 格式的元数据**（标题、摘要、�
 ## 搜索策略
 
 `config/settings.py` 中的 `PUBMED_QUERY` 为默认搜索词，聚焦：
-1. 明确提及单细胞技术（`single-cell` / `scRNA-seq` / `snRNA-seq` / `scATAC-seq` / CITE-seq 等）或空间/时序组学平台（`spatial transcriptomics` / Visium / MERFISH / Slide-seq / Stereo-seq / Xenium / GeoMx / spatiotemporal transcriptomics 等）
-2. 且与人类相关（Homo sapiens / human / patients）
+1. 明确提及单细胞技术（`single-cell` / `scRNA-seq` / `snRNA-seq` / `scATAC-seq` / CITE-seq / RNA velocity 等）、空间/时序组学平台（`spatial transcriptomics` / Visium / MERFISH / Slide-seq / Stereo-seq / Xenium / GeoMx / spatiotemporal transcriptomics 等）、单细胞/空间蛋白组（CyTOF / imaging mass cytometry / MIBI / CODEX 等）或空间多组学变体（`spatial omics` / `spatially resolved` / `spatial epigenomics` / `spatial metabolomics` 等）
+2. 且与人类相关（Humans[MeSH] / human / patients）
+3. 排除撤稿 / 更正 / 勘误类（综述、letter、comment、editorial、news 不排除，由 LLM 验证按主题相关性收录——方法库与知识问答库都需要综述与观点性内容）
 
 可用 `--query` 参数覆盖默认搜索词。
 
@@ -48,7 +49,7 @@ pubmed-etl/
 │   └── xml_parser.py            # XML 解析 → SQLite（复用单连接写入）
 ├── cleaner/
 │   ├── __init__.py
-│   ├── hard_filter.py           # 硬过滤（语言/摘要/年份/类型/标题/去重）
+│   ├── hard_filter.py           # 硬过滤（年份/类型/标题/去重）
 │   └── llm_validator.py         # LLM 二次验证（支持 DeepSeek / Zhipu / OpenAI）
 ├── utils/
 │   ├── __init__.py              # now_iso() 工具函数

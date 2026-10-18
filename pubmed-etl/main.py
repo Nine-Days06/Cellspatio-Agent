@@ -13,6 +13,7 @@
   python main.py --step validate   # LLM 二次验证（需设置 ZHIPU_API_KEY / DEEPSEEK_API_KEY / OPENAI_API_KEY 之一）
   python main.py --step import-review  # 导入人工复核结果
   python main.py --step export         # 导出复核通过文献的原始信息 CSV
+  python main.py --step export-no-abstract  # 导出无摘要文献清单供人工审核（不进 LLM）
   python main.py --query "multi-omics AND human"  # 自定义搜索词
 """
 
@@ -81,6 +82,13 @@ def step_export():
         logger.info(f"主项目兼容文献已导出: {path}")
 
 
+def step_export_no_abstract():
+    """导出无摘要文献清单供人工审核（LLM 无法可靠判定）"""
+    from cleaner.llm_validator import export_no_abstract_csv
+
+    export_no_abstract_csv()
+
+
 def main():
     parser = argparse.ArgumentParser(
         description="人类单细胞与空间/时序组学 PubMed 文献批量下载与清洗系统"
@@ -96,6 +104,7 @@ def main():
             "validate",
             "import-review",
             "export",
+            "export-no-abstract",
             "all",
         ],
         default="all",
@@ -157,6 +166,9 @@ def main():
 
     if step == "export":
         step_export()
+
+    if step == "export-no-abstract":
+        step_export_no_abstract()
 
     logger.info("✔  全部流程完成")
     logger.info(f"   输出目录: {OUTPUT_DIR}")
