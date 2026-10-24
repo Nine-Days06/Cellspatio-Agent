@@ -1,10 +1,13 @@
+import csv
 import json
 import logging
+import math
 import os
 import re
 import uuid
 from collections.abc import Iterator
 from contextlib import contextmanager
+from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from typing import Any
 
@@ -122,6 +125,59 @@ class WorkflowManager:
             candidate = context["downloaded_assets"][-1].get("access_path")
             if candidate and Path(candidate).exists():
                 return candidate
+        return None
+
+    @staticmethod
+    def _validate_sc_input(input_file: str | None) -> dict[str, Any] | None:
+        """流式校验基因行、细胞列的 counts CSV；合法时返回 None。"""
+        if not input_file or not Path(input_file).exists():
+            return {
+                "status": "needs_input",
+                "type": "analysis",
+                "analysis_type": "single_cell",
+                "message": "未检测到数据文件，请提供原始 counts CSV（首列为基因，其他列为细胞）",
+                "results": {},
+            }
+
+        try:
+            with open(input_file, newline="", encoding="utf-8-sig") as handle:
+                reader = csv.reader(handle, strict=True)
+                header = next(reader, [])
+                cells = [cell.strip() for cell in header[1:]]
+                if not cells or not all(cells) or len(set(cells)) != len(cells):
+                    raise ValueError("CSV 必须包含基因列及非空、唯一的细胞列名")
+                genes: set[str] = set()
+                for row in reader:
+                    if len(row) != len(header):
+                        raise ValueError("CSV 数据行的列数必须与表头一致")
+                    gene = row[0].strip()
+                    if not gene or gene in genes:
+                        raise ValueError("基因标识必须非空且唯一")
+                    genes.add(gene)
+                    for raw in row[1:]:
+                        # 按十进制校验，避免浮点转换把微小小数吞成整数。
+                        count = Decimal(raw.strip())
+                        if (
+                            not count.is_finite()
+                            or count < 0
+                            or count != count.to_integral_value()
+                            or not math.isfinite(float(count))
+                        ):
+                            raise ValueError("counts 必须是有限的非负整数，不可缺失或四舍五入")
+                if not genes:
+                    raise ValueError("计数矩阵不能为空")
+        except (OSError, UnicodeError, csv.Error, InvalidOperation, ValueError) as exc:
+            logger.warning("Invalid single-cell counts CSV: %s", exc)
+            return {
+                "status": "error",
+                "type": "analysis",
+                "analysis_type": "single_cell",
+                "message": (
+                    "无效 counts CSV：请检查文件可读性、基因与细胞标识及行列结构；"
+                    "计数必须是有限的非负整数，不能缺失或使用标准化表达值"
+                ),
+                "results": {},
+            }
         return None
 
     def _generate_or_finish(
@@ -322,35 +378,16 @@ class WorkflowManager:
             )
 
         input_file = self._resolve_input_file(params, context)
-        if not input_file:
-            # 无数据：生成示例脚本进入确认流程，让用户审阅或取消（冒烟/演示路径）
-            run_params = {
-                "input_file": "scrna_matrix.csv",
-                "output_file": "sc_clusters.csv",
-                "marker_file": "sc_markers.csv",
-            }
-            method_context = self._method_context_for("single_cell", params)
-            code = self.r_script_generator.generate_code(
-                "single_cell",
-                run_params,
-                method_context=method_context,
-            )
-            result = {
-                "status": "needs_script_confirmation",
-                "analysis_type": "single_cell",
-                "script": code,
-                "params": run_params,
-                "method_context": method_context,
-                "message": "未检测到数据文件，已生成示例 Seurat 脚本（占位输入），请确认或取消",
-            }
+        result = self._validate_sc_input(input_file)
+        if result is not None:
             if self.workflow_recorder and run_id:
                 self.workflow_recorder.record_step(
                     run_id,
-                    step_id="sc_analysis_no_input",
+                    step_id="sc_analysis_input_check",
                     step_type="analysis",
                     tool="run_analysis",
                     params={"analysis_type": "single_cell"},
-                    output={"status": "needs_script_confirmation", "script": code[:100]},
+                    output={"status": result["status"], "message": result["message"]},
                 )
             return result
 
@@ -437,6 +474,10 @@ class WorkflowManager:
         """执行分析的核心逻辑：repair 循环、结果处理、知识库记录"""
         from src.analysis.r_executor import RExecutorError
 
+        if analysis_type == "single_cell":
+            result = self._validate_sc_input(params.get("input_file"))
+            if result is not None:
+                return result
         input_file = params["input_file"]
         output_file = params["output_file"]
 

@@ -373,7 +373,10 @@ if (!requireNamespace("Seurat", quietly = TRUE)) {{
 library(Seurat)
 
 mat <- as.matrix(read.csv(input_file, row.names = 1, check.names = FALSE))
-mat <- round(mat)
+if (nrow(mat) == 0 || ncol(mat) == 0 || !is.numeric(mat) ||
+    any(!is.finite(mat)) || any(mat < 0) || any(mat != floor(mat))) {{
+    stop("输入必须是非空的原始 counts 矩阵：有限、非负整数，不能缺失或四舍五入")
+}}
 obj <- CreateSeuratObject(counts = mat, min.cells = 3, min.features = 200)
 if (ncol(obj) < 10) {{
     stop("质控后细胞数 < 10，请检查输入矩阵")
