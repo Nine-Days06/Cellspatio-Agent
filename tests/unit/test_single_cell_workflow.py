@@ -1,5 +1,9 @@
 """单细胞/空间分析工作流"""
 
+from unittest.mock import Mock
+
+import pytest
+
 from src.control.workflow_manager import WorkflowManager
 from tests.unit.fakes import FakeExec, FakeGen, FakeIntent
 
@@ -19,7 +23,7 @@ def _wm(intent, require=False):
 
 def test_single_cell_routes_and_output_names(tmp_path):
     f = tmp_path / "m.csv"
-    f.write_text("c1,c2\nG1,1,2\n", encoding="utf-8")
+    f.write_text("gene,c1,c2\nG1,0,2.0\n", encoding="utf-8")
     sc_intent = FakeIntent(
         parse_return={"type": "analysis", "analysis_type": "single_cell", "original_input": ""},
         extract_params_return={"input_files": ["scrna.csv"]},
@@ -34,21 +38,93 @@ def test_single_cell_routes_and_output_names(tmp_path):
     assert gen.last["params"]["marker_file"].endswith(".sc_markers.csv")
 
 
-def test_single_cell_no_data_generates_script_for_confirmation(tmp_path):
+@pytest.mark.parametrize("require", [False, True])
+def test_single_cell_no_data_needs_input(tmp_path, require):
     sc_intent = FakeIntent(
         parse_return={"type": "analysis", "analysis_type": "single_cell", "original_input": ""},
-        extract_params_return={"input_files": ["scrna.csv"]},
+        extract_params_return={"input_files": [str(tmp_path / "missing.csv")]},
     )
-    wm, _ = _wm(sc_intent, require=False)
+    wm, gen = _wm(sc_intent, require=require)
     result = wm.execute_workflow("做单细胞聚类")
-    assert result["status"] == "needs_script_confirmation"
+    assert result["status"] == "needs_input"
+    assert result["analysis_type"] == "single_cell"
     assert "未检测到数据文件" in result["message"]
-    assert result["script"]
+    assert "script" not in result
+    assert gen.calls == []
+    assert wm.r_executor.codes == []
+
+
+@pytest.mark.parametrize("require", [False, True])
+@pytest.mark.parametrize(
+    "csv_text",
+    [
+        "",
+        "gene,c1,c2\n",
+        "gene\nG1\n",
+        "gene,c1,c2\nG1,1,\n",
+        "gene,c1,c2\nG1,1,NA\n",
+        "gene,c1,c2\nG1,1,NaN\n",
+        "gene,c1,c2\nG1,1,Inf\n",
+        "gene,c1,c2\nG1,1,-Inf\n",
+        "gene,c1,c2\nG1,1,1e309\n",
+        "gene,c1,c2\nG1,1,-1\n",
+        "gene,c1,c2\nG1,1,1.5\n",
+        "gene,c1,c2\nG1,1,1.00000000000000000001\n",
+        "gene,c1,c2\nG1,1,not_a_count\n",
+        "gene,c1,c2\nG1,1\n",
+        "gene,c1,c2\nG1,1,2,3\n",
+        "gene,c1,c1\nG1,1,2\n",
+        "gene,c1,\nG1,1,2\n",
+        "gene,c1,c2\n,1,2\n",
+        "gene,c1,c2\nG1,1,2\nG1,3,4\n",
+    ],
+)
+def test_single_cell_invalid_csv_stops_before_codegen(tmp_path, csv_text, require):
+    f = tmp_path / "invalid.csv"
+    f.write_text(csv_text, encoding="utf-8")
+    wm, gen = _wm(FakeIntent(), require=require)
+    wm.methods_kb = Mock()
+    result = wm.run_analysis_for_agent(
+        "single_cell", {"input_files": [str(f)]}, {"script_approved": True}
+    )
+
+    assert result["status"] == "error"
+    assert result["analysis_type"] == "single_cell"
+    assert "script" not in result
+    assert gen.calls == []
+    assert wm.r_executor.codes == []
+    wm.methods_kb.query_context.assert_not_called()
+    assert f.read_text(encoding="utf-8") == csv_text
+
+
+def test_single_cell_directory_is_not_counts_csv(tmp_path):
+    wm, gen = _wm(FakeIntent())
+    result = wm.run_analysis_for_agent("single_cell", {"input_files": [str(tmp_path)]})
+
+    assert result["status"] == "error"
+    assert gen.calls == []
+    assert wm.r_executor.codes == []
+
+
+@pytest.mark.parametrize("has_invalid_file", [False, True])
+def test_single_cell_rejection_is_recorded(tmp_path, has_invalid_file):
+    f = tmp_path / "counts.csv"
+    if has_invalid_file:
+        f.write_text("gene,c1\nG1,0.5\n", encoding="utf-8")
+    wm, _ = _wm(FakeIntent())
+    wm.workflow_recorder = Mock()
+    wm.workflow_recorder.start_execution.return_value = "run-input-check"
+
+    result = wm.run_analysis_for_agent("single_cell", {"input_files": [str(f)]})
+
+    recorded = wm.workflow_recorder.record_step.call_args.kwargs["output"]
+    assert recorded == {"status": result["status"], "message": result["message"]}
+    wm.workflow_recorder.finish_run.assert_called_once_with("run-input-check")
 
 
 def test_single_cell_confirmation_flow(tmp_path):
     f = tmp_path / "m.csv"
-    f.write_text("c1,c2\nG1,1,2\n", encoding="utf-8")
+    f.write_text("gene,c1,c2\nG1,1,2\n", encoding="utf-8")
     sc_intent = FakeIntent(
         parse_return={"type": "analysis", "analysis_type": "single_cell", "original_input": ""},
         extract_params_return={"input_files": ["scrna.csv"]},
@@ -69,6 +145,33 @@ def test_single_cell_confirmation_flow(tmp_path):
     assert len(wm.r_executor.codes) == 1
 
 
+@pytest.mark.parametrize("changed_counts", [None, "gene,c1,c2\nG1,1,0.5\n"])
+def test_single_cell_confirmation_rechecks_input(tmp_path, changed_counts):
+    f = tmp_path / "counts.csv"
+    f.write_text("gene,c1,c2\nG1,1,2\n", encoding="utf-8")
+    wm, gen = _wm(FakeIntent(), require=True)
+    pending = wm.run_analysis_for_agent("single_cell", {"input_files": [str(f)]})
+    assert pending["status"] == "needs_script_confirmation"
+
+    if changed_counts is None:
+        f.unlink()
+    else:
+        f.write_text(changed_counts, encoding="utf-8")
+    result = wm.execute_confirmed_script("single_cell", pending["params"], pending["script"])
+
+    assert result["status"] == ("needs_input" if changed_counts is None else "error")
+    assert len(gen.calls) == 1
+    assert wm.r_executor.codes == []
+
+
+def test_single_cell_confirmation_without_input_needs_input():
+    wm, _ = _wm(FakeIntent(), require=True)
+    result = wm.execute_confirmed_script("single_cell", {}, "# previously generated")
+
+    assert result["status"] == "needs_input"
+    assert wm.r_executor.codes == []
+
+
 def test_spatial_routes(tmp_path):
     d = tmp_path / "spatial_run"
     d.mkdir()
@@ -86,14 +189,16 @@ def test_spatial_routes(tmp_path):
     assert gen.last["params"]["plot_file"].endswith(".spatial_plot.png")
 
 
-def test_execute_confirmed_script_accepts_sc_and_spatial():
+def test_execute_confirmed_script_accepts_sc_and_spatial(tmp_path):
+    f = tmp_path / "counts.csv"
+    f.write_text("gene,c1,c2\nG1,1,2\n", encoding="utf-8")
     sc_intent = FakeIntent(
         parse_return={"type": "analysis", "analysis_type": "single_cell", "original_input": ""},
         extract_params_return={"input_files": ["scrna.csv"]},
     )
     wm, _ = _wm(sc_intent, require=True)
     r1 = wm.execute_confirmed_script(
-        "single_cell", {"input_file": "a", "output_file": "b", "marker_file": "c"}, "# s"
+        "single_cell", {"input_file": str(f), "output_file": "b", "marker_file": "c"}, "# s"
     )
     assert r1["status"] == "success"
     r2 = wm.execute_confirmed_script(
@@ -116,3 +221,9 @@ def test_seurat_template_full_pipeline():
     assert "单细胞分析模板" not in code
     assert 'output_file <- "sc.csv"' in code
     assert 'marker_file <- "markers.csv"' in code
+    assert "round(mat)" not in code
+    assert "!is.numeric(mat)" in code
+    assert "!is.finite(mat)" in code
+    assert "mat < 0" in code
+    assert "mat != floor(mat)" in code
+    assert code.index("!is.finite(mat)") < code.index("CreateSeuratObject")

@@ -3,12 +3,19 @@
 不依赖 R 环境、不调用外部 API，使用 Mock 类替代外部组件。
 """
 
+import json
 import tempfile
 from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import Mock
 
+import pytest
+
+from src.control.agent_runtime import AgentRuntime
 from src.control.intent_parser import IntentParser
 from src.control.r_script_generator import RScriptGenerator
 from src.control.workflow_manager import WorkflowManager
+from tests.unit.fakes import FakeExec
 
 
 class MockKnowledgeClient:
@@ -60,6 +67,55 @@ def test_analysis_workflow_full_chain():
         or "下载" in result["message"]
         or "数据" in result["message"]
     )
+
+
+@pytest.mark.parametrize(
+    ("counts", "expected_status"),
+    [(None, "needs_input"), ("0.5", "error"), ("2", "needs_script_confirmation")],
+)
+def test_single_cell_input_gate_through_agent_runtime(tmp_path, counts, expected_status):
+    """真实工具分发与工作流共用门禁，非法输入不生成或执行脚本。"""
+    generator = Mock(wraps=RScriptGenerator())
+    executor = FakeExec(track_codes=True)
+    manager = WorkflowManager(
+        intent_parser=IntentParser(),
+        knowledge_client=None,
+        r_executor=executor,
+        visualizer=None,
+        r_script_generator=generator,
+        require_script_confirmation=True,
+    )
+    llm = Mock()
+    tool_call = SimpleNamespace(
+        id="call_single_cell",
+        function=SimpleNamespace(
+            name="run_analysis", arguments=json.dumps({"analysis_type": "single_cell"})
+        ),
+    )
+    llm.chat.completions.create.return_value = SimpleNamespace(
+        choices=[SimpleNamespace(message=SimpleNamespace(content=None, tool_calls=[tool_call]))]
+    )
+    runtime = AgentRuntime(llm_client=llm, model="fake-model", workflow_manager=manager)
+    context = {}
+    if counts is not None:
+        input_file = tmp_path / "counts.csv"
+        input_file.write_text(f"gene,c1,c2\nG1,1,{counts}\n", encoding="utf-8")
+        context["downloaded_assets"] = [{"access_path": str(input_file)}]
+
+    result = runtime.execute("对这份数据做单细胞聚类", context)
+
+    assert result["status"] == expected_status
+    assert result["analysis_type"] == "single_cell"
+    llm.chat.completions.create.assert_called_once()
+    assert executor.codes == []
+    assert "script_approved" not in context
+    if counts == "2":
+        generator.generate_code.assert_called_once()
+        assert "CreateSeuratObject" in result["script"]
+        assert "round(mat)" not in result["script"]
+    else:
+        generator.generate_code.assert_not_called()
+        assert "script" not in result
 
 
 def test_visualization_intent_and_script_generation():
