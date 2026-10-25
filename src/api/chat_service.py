@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import sqlite3
 import threading
 from collections.abc import Callable
 from typing import Any
@@ -139,6 +140,26 @@ def run_turn(
         )
         emit(make_event("done", message_id=last["id"], message=wire_message(last)))
         return result
+
+    if result.get("stage") == "qc_review" and result.get("status") == "needs_confirmation":
+        from pathlib import Path
+
+        from src.analysis.qc_preview import register_evidence
+        from src.api.routes_qc import qc_root
+
+        try:
+            directory = Path(result["results"]["qc_artifacts"]["metadata.json"]).resolve().parent
+            evidence = register_evidence(directory, qc_root(agent))
+            store.register_qc_run(session_id, directory.name, str(directory), evidence)
+            result["results"]["qc_run_id"] = directory.name
+        except (OSError, ValueError, KeyError, TypeError, sqlite3.Error) as exc:
+            result = {
+                "status": "error",
+                "analysis_type": "single_cell",
+                "stage": "qc_review",
+                "message": f"QC 会话关联失败，不能预览或批准：{exc}",
+                "results": {"qc_artifacts": result.get("results", {}).get("qc_artifacts", {})},
+            }
 
     message = build_assistant_message(result)
     last = _persist(store, session_id, message["content"], results=result.get("results"))

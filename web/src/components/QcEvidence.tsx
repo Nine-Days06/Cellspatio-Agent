@@ -1,12 +1,13 @@
 import type { MessageResults } from '@/lib/types'
+import { QcReview } from '@/components/QcReview'
 
-/** 本地只读证据，不提供过滤或参数批准操作。 */
-export function QcEvidence({ results }: { results: MessageResults }) {
+/** 本地 QC 证据与关联阈值选择；不提供实际过滤操作。 */
+export function QcEvidence({ results, sessionId, onRecorded }: { results: MessageResults; sessionId?: string; onRecorded?: () => void }) {
   const qc = results.qc
   return (
     <section aria-label="过滤前 QC 证据" className="mt-3 space-y-3 border-t border-border pt-3 text-sm">
       <h3 className="font-semibold">{qc ? '过滤前 QC · 等待科学审阅' : 'QC 未完成 · 本地证据已保留'}</h3>
-      <p className="text-muted-foreground">未批准阈值，未过滤、聚类或注释。</p>
+      <p className="text-muted-foreground">此阶段未执行过滤、聚类或注释。</p>
       {qc && <>
         <p>全部 RNA barcode：{qc.cells.toLocaleString()} · RNA features：{qc.features.toLocaleString()}</p>
         {qc.warnings.map((warning) => <p key={warning} role="note" className="text-amber-700 dark:text-amber-400">{warning}</p>)}
@@ -28,6 +29,7 @@ export function QcEvidence({ results }: { results: MessageResults }) {
           <span className="font-medium">{name}</span><code className="block break-all text-muted-foreground">{path}</code>
         </li>)}</ul>
       </details>}
+      {results.qc_run_id && sessionId ? <QcReview key={`${sessionId}:${results.qc_run_id}`} sessionId={sessionId} runId={results.qc_run_id} onRecorded={onRecorded} /> : qc && <p className="text-xs text-muted-foreground">只读证据；交互选择需要重新运行 QC 并建立会话关联。</p>}
     </section>
   )
 }

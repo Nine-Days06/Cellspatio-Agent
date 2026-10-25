@@ -5,6 +5,8 @@ import type {
   SessionSummary,
   SidebarResponse,
   WireMessage,
+  QcReviewState,
+  QcThresholds,
 } from '@/lib/types'
 
 /** 统一 HTTP 错误：message 直接用后端 detail（已是中文），UI 可直接展示。 */
@@ -83,4 +85,23 @@ export function fetchSidebar(sessionId?: string): Promise<SidebarResponse> {
 
 export function confirmAction(body: ConfirmRequestBody): Promise<{ message: WireMessage }> {
   return request('/api/confirm', jsonInit('POST', body))
+}
+
+const qcPath = (sessionId: string, runId: string) =>
+  `/api/sessions/${encodeURIComponent(sessionId)}/qc/${encodeURIComponent(runId)}`
+
+export function fetchQc(sessionId: string, runId: string): Promise<QcReviewState> {
+  return request(qcPath(sessionId, runId))
+}
+
+export function previewQc(sessionId: string, runId: string, params: QcThresholds): Promise<QcReviewState> {
+  return request(`${qcPath(sessionId, runId)}/preview`, jsonInit('POST', params))
+}
+
+export function approveQc(sessionId: string, runId: string, previewId: string, reason: string): Promise<QcReviewState> {
+  return request(`${qcPath(sessionId, runId)}/approve`, jsonInit('POST', { preview_id: previewId, reason }))
+}
+
+export function filterQc(sessionId: string, runId: string, previewId: string): Promise<QcReviewState> {
+  return request(`${qcPath(sessionId, runId)}/filter`, jsonInit('POST', { preview_id: previewId }))
 }

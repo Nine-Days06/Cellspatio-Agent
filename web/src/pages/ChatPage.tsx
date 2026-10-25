@@ -212,7 +212,7 @@ export function ChatPage() {
   const env = sidebarQuery.data?.env ?? DEFAULT_ENV
 
   return (
-    <div className="flex h-screen bg-background text-foreground">
+    <div className="flex h-screen flex-col bg-background text-foreground sm:flex-row">
       <Sidebar
         sessions={sessions}
         activeId={sessionId}
@@ -223,8 +223,9 @@ export function ChatPage() {
         onCreated={handleCreated}
         onDeleted={handleDeleted}
       />
-      <main className="flex min-w-0 flex-1 flex-col">
+      <main className="flex min-h-0 min-w-0 flex-1 flex-col">
         <MessageList
+          onQcRecorded={() => { void queryClient.invalidateQueries({ queryKey: queryKeys.messages(sessionId ?? '') }) }}
           messages={history}
           draft={draft}
           busy={busy}

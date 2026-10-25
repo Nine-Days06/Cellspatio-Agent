@@ -35,6 +35,7 @@ export interface MessageResults {
   charts?: ChartItem[]
   qc?: QcEvidence
   qc_artifacts?: Record<string, string>
+  qc_run_id?: string
   [key: string]: unknown
 }
 
@@ -50,6 +51,44 @@ export interface QcEvidence {
   warnings: string[]
   versions: string[]
   metrics: Record<string, { available: number; min: number | null; median: number | null; max: number | null }>
+}
+
+export interface QcThresholds {
+  n_feature_min: number
+  n_feature_max: number
+  percent_mt_max: number
+  n_count_min: number | null
+  n_count_max: number | null
+}
+
+export interface QcPreview {
+  preview_id: string
+  params: Omit<QcThresholds, 'percent_mt_max'> & { percent_mt_max: string }
+  summary: { total: number; kept: number; excluded: number; excluded_percent: number; reason_counts: Record<string, number>; blocked: string[]; filtered: false }
+  status: 'pending' | 'approved'
+  binding_sha256: string
+  approved_at: string | null
+  reason: string | null
+}
+
+export interface QcReviewState {
+  run_id: string
+  revision: number
+  qc: QcEvidence
+  active_preview: QcPreview | null
+  approvals: QcPreview[]
+  blocked: string[]
+  attempts?: FilterAttempt[]
+}
+
+export interface FilterAttempt {
+  attempt_id: string
+  preview_id: string
+  status: 'running' | 'completed' | 'failed' | 'interrupted'
+  directory: string
+  created_at: string
+  finished_at: string | null
+  result: { cells?: number; features?: number; error?: string; versions?: string[]; artifacts?: Record<string, { path: string; bytes: number; sha256: string }> } | null
 }
 
 export type PendingScriptStatus = 'pending' | 'confirmed' | 'cancelled' | 'expired'

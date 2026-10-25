@@ -18,6 +18,7 @@ export interface MessageListProps {
   notice: { kind: 'info' | 'error'; text: string } | null
   softWarn: boolean
   onRetry?: () => void
+  onQcRecorded?: () => void
 }
 
 /** 图表、QC 证据或待确认脚本卡片存在时，不用空消息兜底。 */
@@ -50,6 +51,7 @@ export function MessageList({
   notice,
   softWarn,
   onRetry,
+  onQcRecorded,
 }: MessageListProps) {
   const endRef = useRef<HTMLDivElement>(null)
   const lastTool = tools.length > 0 ? tools[tools.length - 1] : null
@@ -60,7 +62,7 @@ export function MessageList({
   }, [messages.length, draft, tools.length])
 
   return (
-    <div className="flex-1 overflow-y-auto px-4 py-3" data-testid="message-list">
+    <div className="min-h-0 flex-1 overflow-y-auto px-4 py-3" data-testid="message-list">
       <SoftWarnBanner visible={softWarn} />
       <div className="mx-auto flex max-w-3xl flex-col gap-3">
         {messages.map((message) => {
@@ -93,7 +95,7 @@ export function MessageList({
                       ))}
                     </div>
                   )}
-                  {message.results?.qc_artifacts && <QcEvidence results={message.results} />}
+                  {message.results?.qc_artifacts && <QcEvidence results={message.results} sessionId={message.session_id} onRecorded={onQcRecorded} />}
                 </>
               ) : (
                 <div className="whitespace-pre-wrap text-sm">{message.content}</div>

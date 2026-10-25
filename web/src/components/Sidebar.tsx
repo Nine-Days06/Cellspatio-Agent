@@ -78,7 +78,7 @@ export function Sidebar({
   }
 
   return (
-    <aside className="flex w-64 shrink-0 flex-col border-r border-border bg-card">
+    <aside className="flex max-h-44 w-full shrink-0 flex-col overflow-y-auto border-b border-border bg-card sm:max-h-none sm:w-64 sm:border-r sm:border-b-0">
       <div className="flex items-center justify-between gap-2 border-b border-border px-3 py-3">
         <span className="text-sm font-semibold tracking-tight">CellSpatio</span>
         <Button

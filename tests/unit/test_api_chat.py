@@ -101,7 +101,7 @@ def test_unknown_session_returns_404(client):
     assert "nope" not in chat_service._locks
 
 
-def test_qc_evidence_persists_without_pending_script(client):
+def test_unverified_qc_keeps_artifact_references_without_pending_script(client):
     sid = _new_session(client)
     evidence = {
         "qc": {"cells": 2700, "scientific_status": "unreviewed"},
@@ -121,7 +121,8 @@ def test_qc_evidence_persists_without_pending_script(client):
     assert [event["type"] for event in events] == ["done"]
     restored = client.get(f"/api/sessions/{sid}/messages?restore=1").json()
     last = restored["messages"][-1]
-    assert last["results"] == evidence
+    assert last["results"] == {"qc_artifacts": evidence["qc_artifacts"]}
+    assert "QC 会话关联失败" in last["content"]
     assert last["pending_script"] is None and restored["pending_script"] is None
     assert "分析完成" not in last["content"]
 
