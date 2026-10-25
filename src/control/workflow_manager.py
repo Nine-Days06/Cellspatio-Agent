@@ -5,11 +5,14 @@ import math
 import os
 import re
 import uuid
+import zlib
 from collections.abc import Iterator
 from contextlib import contextmanager
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from typing import Any
+
+from src.data.tenx import validate_tenx
 
 logger = logging.getLogger(__name__)
 
@@ -129,17 +132,24 @@ class WorkflowManager:
 
     @staticmethod
     def _validate_sc_input(input_file: str | None) -> dict[str, Any] | None:
-        """流式校验基因行、细胞列的 counts CSV；合法时返回 None。"""
+        """流式校验 counts CSV 或 10x MTX 目录；合法时返回 None。"""
         if not input_file or not Path(input_file).exists():
             return {
                 "status": "needs_input",
                 "type": "analysis",
                 "analysis_type": "single_cell",
-                "message": "未检测到数据文件，请提供原始 counts CSV（首列为基因，其他列为细胞）",
+                "message": "未检测到数据文件，请提供 10x MTX 目录或原始 counts CSV（首列为基因，其他列为细胞）",
                 "results": {},
             }
 
         try:
+            if Path(input_file).is_dir():
+                validate_tenx(Path(input_file))
+                return None
+            if Path(input_file).suffix.lower() != ".csv":
+                raise ValueError(
+                    "仅支持 10x MTX 目录或 counts CSV，不支持 H5/H5AD、Seurat 对象或 FASTQ"
+                )
             with open(input_file, newline="", encoding="utf-8-sig") as handle:
                 reader = csv.reader(handle, strict=True)
                 header = next(reader, [])
@@ -166,14 +176,23 @@ class WorkflowManager:
                             raise ValueError("counts 必须是有限的非负整数，不可缺失或四舍五入")
                 if not genes:
                     raise ValueError("计数矩阵不能为空")
-        except (OSError, UnicodeError, csv.Error, InvalidOperation, ValueError) as exc:
-            logger.warning("Invalid single-cell counts CSV: %s", exc)
+        except (
+            OSError,
+            EOFError,
+            zlib.error,
+            UnicodeError,
+            csv.Error,
+            InvalidOperation,
+            ValueError,
+            OverflowError,
+        ) as exc:
+            logger.warning("Invalid single-cell counts input: %s", exc)
             return {
                 "status": "error",
                 "type": "analysis",
                 "analysis_type": "single_cell",
                 "message": (
-                    "无效 counts CSV：请检查文件可读性、基因与细胞标识及行列结构；"
+                    f"无效单细胞输入：{exc}。请提供完整 10x MTX 三件套或 counts CSV；"
                     "计数必须是有限的非负整数，不能缺失或使用标准化表达值"
                 ),
                 "results": {},
@@ -391,8 +410,11 @@ class WorkflowManager:
                 )
             return result
 
-        out = str(Path(input_file).with_suffix(".sc_clusters.csv"))
-        marker = str(Path(input_file).with_suffix(".sc_markers.csv"))
+        input_path = Path(input_file)
+        # 目录名可能含点，不能用 with_suffix 截掉样本名。
+        output_prefix = str(input_path if input_path.is_dir() else input_path.with_suffix(""))
+        out = output_prefix + ".sc_clusters.csv"
+        marker = output_prefix + ".sc_markers.csv"
         run_params = {
             "input_file": input_file,
             "output_file": out,

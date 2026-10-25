@@ -71,7 +71,13 @@ def test_analysis_workflow_full_chain():
 
 @pytest.mark.parametrize(
     ("counts", "expected_status"),
-    [(None, "needs_input"), ("0.5", "error"), ("2", "needs_script_confirmation")],
+    [
+        (None, "needs_input"),
+        ("0.5", "error"),
+        ("2", "needs_script_confirmation"),
+        ("10x", "needs_script_confirmation"),
+        ("10x-invalid", "error"),
+    ],
 )
 def test_single_cell_input_gate_through_agent_runtime(tmp_path, counts, expected_status):
     """真实工具分发与工作流共用门禁，非法输入不生成或执行脚本。"""
@@ -98,8 +104,19 @@ def test_single_cell_input_gate_through_agent_runtime(tmp_path, counts, expected
     runtime = AgentRuntime(llm_client=llm, model="fake-model", workflow_manager=manager)
     context = {}
     if counts is not None:
-        input_file = tmp_path / "counts.csv"
-        input_file.write_text(f"gene,c1,c2\nG1,1,{counts}\n", encoding="utf-8")
+        if counts.startswith("10x"):
+            input_file = tmp_path / "sample.v1"
+            input_file.mkdir()
+            value = "1" if counts == "10x" else "0.5"
+            (input_file / "matrix.mtx").write_text(
+                f"%%MatrixMarket matrix coordinate integer general\n1 2 1\n1 1 {value}\n",
+                encoding="utf-8",
+            )
+            (input_file / "barcodes.tsv").write_text("c1\nc2\n", encoding="utf-8")
+            (input_file / "features.tsv").write_text("id1\tG1\tGene Expression\n", encoding="utf-8")
+        else:
+            input_file = tmp_path / "counts.csv"
+            input_file.write_text(f"gene,c1,c2\nG1,1,{counts}\n", encoding="utf-8")
         context["downloaded_assets"] = [{"access_path": str(input_file)}]
 
     result = runtime.execute("对这份数据做单细胞聚类", context)
@@ -109,10 +126,13 @@ def test_single_cell_input_gate_through_agent_runtime(tmp_path, counts, expected
     llm.chat.completions.create.assert_called_once()
     assert executor.codes == []
     assert "script_approved" not in context
-    if counts == "2":
+    if expected_status == "needs_script_confirmation":
         generator.generate_code.assert_called_once()
         assert "CreateSeuratObject" in result["script"]
         assert "round(mat)" not in result["script"]
+        if counts == "10x":
+            assert "Read10X" in result["script"] and "ReadMtx" in result["script"]
+            assert result["params"]["output_file"].endswith("sample.v1.sc_clusters.csv")
     else:
         generator.generate_code.assert_not_called()
         assert "script" not in result

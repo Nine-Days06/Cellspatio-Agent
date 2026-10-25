@@ -222,8 +222,8 @@ def test_seurat_template_full_pipeline():
     assert 'output_file <- "sc.csv"' in code
     assert 'marker_file <- "markers.csv"' in code
     assert "round(mat)" not in code
-    assert "!is.numeric(mat)" in code
-    assert "!is.finite(mat)" in code
-    assert "mat < 0" in code
-    assert "mat != floor(mat)" in code
-    assert code.index("!is.finite(mat)") < code.index("CreateSeuratObject")
+    assert "!is.numeric(counts)" in code
+    assert "!is.finite(counts)" in code
+    assert "counts < 0" in code
+    assert "counts != floor(counts)" in code
+    assert code.index("!is.finite(counts)") < code.index("CreateSeuratObject")
