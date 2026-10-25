@@ -267,9 +267,13 @@ data/raw/
 
 每个精确预览/绑定/过滤版本只执行一次，重复点击或刷新只读权威状态。运行中不能修改选择或删除会话；失败保留证据，不自动重跑，需要新的预览与批准。服务重启把未完成任务标为 `interrupted`，不会恢复执行；仅适用于本地单进程。成功停在 `filter_review`，技术完成但科学未复核，不授权归一化、聚类或注释。原件前后哈希不是不可变快照，仍可能无法发现运行中改动后又恢复的情况。
 
+过滤完成且父输入、QC、选择与产物身份仍有效时，页面另提供“归一化与 PCA · 独立授权”。读取状态或刷新不执行计算；须填写本地授权依据并独立点击执行。固定流程为 LogNormalize（scale factor 10,000）→ vst（最多 2,000 features）→ 仅变异特征 Scale（不回归）→ PCA（seed 42）。实际 PC 数为 `min(30, 细胞数 - 1, 可用特征数 - 1)`，至少需要 3 个细胞和 3 个可用特征；不足或退化失败，不放宽 QC。当前版本限定 R 4.6.1 / Seurat 5.6.0 / SeuratObject 5.4.0 / Matrix 1.7.5 / irlba 2.4.1，其他版本拒绝执行。
+
+PCA 保存对象、特征映射、数值证据与本地诊断图，不改写 counts 或父证据。同一父产物绑定与工具版本的运行、完成、失败或中断记录均不重复执行；阶段运行中不能修改该 run 的选择或删除会话。完成停在 `pca_review` / `unreviewed`，等待人工维度选择复核，不自动选择下游 dims，也不运行聚类、UMAP、marker 或注释。授权不代表科学认可；逐细胞数据、授权依据和数值表不回灌外部 LLM 或共享 KG。Scale 为稠密数据，本片仅适用于受信本地单进程，不是生产资源隔离或任务队列。
+
 ### 7.3 失败自动修复
 
-差异表达及空间脚本执行失败时，智能体自动携带报错信息让 LLM 改写脚本重试，**最多修复 2 次**（即同一任务最多执行 3 次）。单细胞 QC/过滤失败只保留原脚本、日志和元数据，不自动重跑或修复。R 脚本单次执行超时仍为 300 秒。
+差异表达及空间脚本执行失败时，智能体自动携带报错信息让 LLM 改写脚本重试，**最多修复 2 次**（即同一任务最多执行 3 次）。单细胞 QC/过滤/PCA 失败只保留证据，不自动重跑或修复。R 脚本单次执行超时仍为 300 秒，不是完整任务截止时间。
 
 ### 7.4 分析产物
 
@@ -279,6 +283,7 @@ data/raw/
 |---|---|
 | 差异表达 | `<输入名>.de_results.csv`（列：gene, log2FoldChange, lfcSE, stat, pvalue, padj） |
 | 单细胞 QC | `data/analysis/sc_qc/<run_id>/` 内的 `cell_qc.csv`、`features.csv`、`summary.json`、`qc.png`、`script.R`、`versions.txt`、日志及 `metadata.json` |
+| 单细胞 PCA | `data/analysis/sc_pca/<attempt_id>/` 内的 `seurat_pca.rds`、`feature_mapping.csv`、`variable_features.csv`、`pca_embeddings.csv`、`pca_loadings.csv`、`pca_stdev.csv`、`pca_diagnostics.png`、固定脚本、参数、版本、日志及元数据；页面仅提供校验后的本地诊断图，不是任意文件下载接口 |
 | 空间转录组 | `<输入名>.spatial_clusters.csv`、`<输入名>.spatial_plot.png`（输入为目录时文件名以 `.` 开头） |
 | 差异表达 / 空间分析 | `output/capsules/<时间戳>/` 复现胶囊（原始问题、脚本、意图、元数据） |
 

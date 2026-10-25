@@ -7,6 +7,7 @@ import type {
   WireMessage,
   QcReviewState,
   QcThresholds,
+  PcaState,
 } from '@/lib/types'
 
 /** 统一 HTTP 错误：message 直接用后端 detail（已是中文），UI 可直接展示。 */
@@ -104,4 +105,19 @@ export function approveQc(sessionId: string, runId: string, previewId: string, r
 
 export function filterQc(sessionId: string, runId: string, previewId: string): Promise<QcReviewState> {
   return request(`${qcPath(sessionId, runId)}/filter`, jsonInit('POST', { preview_id: previewId }))
+}
+
+const pcaPath = (sessionId: string, runId: string, filterAttemptId: string) =>
+  `${qcPath(sessionId, runId)}/pca/${encodeURIComponent(filterAttemptId)}`
+
+export function fetchPca(sessionId: string, runId: string, filterAttemptId: string): Promise<PcaState> {
+  return request(pcaPath(sessionId, runId, filterAttemptId))
+}
+
+export function executePca(sessionId: string, runId: string, filterAttemptId: string, binding: string, reason: string): Promise<PcaState> {
+  return request(pcaPath(sessionId, runId, filterAttemptId), jsonInit('POST', { binding_sha256: binding, reason }))
+}
+
+export function pcaDiagnosticPath(sessionId: string, runId: string, filterAttemptId: string, attemptId: string): string {
+  return `${pcaPath(sessionId, runId, filterAttemptId)}/${encodeURIComponent(attemptId)}/diagnostic`
 }

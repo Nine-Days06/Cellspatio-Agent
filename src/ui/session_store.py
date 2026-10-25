@@ -72,6 +72,22 @@ CREATE TABLE IF NOT EXISTS sc_filter_attempts (
     message_id INTEGER REFERENCES messages(id) ON DELETE SET NULL,
     UNIQUE(run_id, preview_id, binding_sha256, tool_version)
 );
+CREATE TABLE IF NOT EXISTS sc_pca_attempts (
+    attempt_id TEXT PRIMARY KEY,
+    filter_attempt_id TEXT NOT NULL REFERENCES sc_filter_attempts(attempt_id) ON DELETE CASCADE,
+    run_id TEXT NOT NULL REFERENCES qc_runs(run_id) ON DELETE CASCADE,
+    binding_sha256 TEXT NOT NULL,
+    tool_version TEXT NOT NULL,
+    protocol TEXT NOT NULL,
+    reason TEXT NOT NULL,
+    directory TEXT NOT NULL UNIQUE,
+    status TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    finished_at TEXT,
+    result TEXT,
+    message_id INTEGER REFERENCES messages(id) ON DELETE SET NULL,
+    UNIQUE(filter_attempt_id, binding_sha256, tool_version)
+);
 """
 
 
@@ -182,6 +198,12 @@ class SessionStore:
                 (session_id,),
             ).fetchone():
                 raise ValueError("过滤运行中，不能删除会话")
+            if conn.execute(
+                "SELECT 1 FROM sc_pca_attempts a JOIN qc_runs r USING(run_id) "
+                "WHERE r.session_id = ? AND a.status = 'running'",
+                (session_id,),
+            ).fetchone():
+                raise ValueError("PCA 运行中，不能删除会话")
             conn.execute("DELETE FROM messages WHERE session_id = ?", (session_id,))
             conn.execute("DELETE FROM sessions WHERE id = ?", (session_id,))
 
@@ -246,6 +268,9 @@ class SessionStore:
             attempts = conn.execute(
                 "SELECT * FROM sc_filter_attempts WHERE run_id = ? ORDER BY rowid", (run_id,)
             ).fetchall()
+            pca_attempts = conn.execute(
+                "SELECT * FROM sc_pca_attempts WHERE run_id = ? ORDER BY rowid", (run_id,)
+            ).fetchall()
         run = dict(row)
         run["evidence"] = json.loads(run["evidence"])
         run["previews"] = [
@@ -261,6 +286,10 @@ class SessionStore:
         run["attempts"] = [
             {**dict(a), "result": json.loads(a["result"]) if a["result"] else None}
             for a in attempts
+        ]
+        run["pca_attempts"] = [
+            {**dict(a), "result": json.loads(a["result"]) if a["result"] else None}
+            for a in pca_attempts
         ]
         return run
 
@@ -341,6 +370,10 @@ class SessionStore:
             "SELECT 1 FROM sc_filter_attempts WHERE run_id = ? AND status = 'running'", (run_id,)
         ).fetchone():
             raise ValueError("过滤运行中，不能修改选择")
+        if conn.execute(
+            "SELECT 1 FROM sc_pca_attempts WHERE run_id = ? AND status = 'running'", (run_id,)
+        ).fetchone():
+            raise ValueError("PCA 运行中，不能修改选择")
 
     def start_sc_filter(
         self,
@@ -456,6 +489,134 @@ class SessionStore:
             conn.execute("BEGIN IMMEDIATE")
             conn.execute(
                 "UPDATE sc_filter_attempts SET status = 'interrupted', finished_at = ? "
+                "WHERE status = 'running'",
+                (_now(),),
+            )
+
+    def start_sc_pca(
+        self,
+        session_id: str,
+        run_id: str,
+        revision: int,
+        filter_attempt_id: str,
+        binding: str,
+        tool_version: str,
+        protocol: dict[str, Any],
+        reason: str,
+        directory: str,
+        attempt_id: str,
+    ) -> dict[str, Any]:
+        """短事务认领独立授权；哈希期间的选择变化通过 revision 拒绝。"""
+        with self._conn() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            run = conn.execute(
+                "SELECT * FROM qc_runs WHERE session_id = ? AND run_id = ?", (session_id, run_id)
+            ).fetchone()
+            if run is None:
+                raise ValueError("QC 关联不存在")
+            previous = conn.execute(
+                "SELECT * FROM sc_pca_attempts WHERE filter_attempt_id = ? "
+                "AND binding_sha256 = ? AND tool_version = ?",
+                (filter_attempt_id, binding, tool_version),
+            ).fetchone()
+            if previous:
+                return {**dict(previous), "claimed": False}
+            self._require_no_filter(conn, run_id)
+            parent = conn.execute(
+                "SELECT a.*, p.status AS approval FROM sc_filter_attempts a "
+                "JOIN qc_previews p USING(preview_id) WHERE a.attempt_id = ? AND a.run_id = ?",
+                (filter_attempt_id, run_id),
+            ).fetchone()
+            if (
+                run["revision"] != revision
+                or parent is None
+                or parent["status"] != "completed"
+                or parent["approval"] != "approved"
+                or run["active_preview_id"] != parent["preview_id"]
+            ):
+                raise ValueError("仅可授权当前已批准且过滤完成的父阶段，请刷新")
+            conn.execute(
+                "INSERT INTO sc_pca_attempts (attempt_id, filter_attempt_id, run_id, binding_sha256, "
+                "tool_version, protocol, reason, directory, status, created_at) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'running', ?)",
+                (
+                    attempt_id,
+                    filter_attempt_id,
+                    run_id,
+                    binding,
+                    tool_version,
+                    json.dumps(protocol, ensure_ascii=False),
+                    reason,
+                    directory,
+                    _now(),
+                ),
+            )
+            conn.execute("UPDATE qc_runs SET revision = revision + 1 WHERE run_id = ?", (run_id,))
+        return {"attempt_id": attempt_id, "directory": directory, "claimed": True}
+
+    def finish_sc_pca(self, attempt_id: str, result: dict[str, Any]) -> None:
+        """终态和安全阶段消息原子保存；私有分析证据不进入聊天。"""
+        if result["status"] not in ("completed", "failed"):
+            raise ValueError("PCA 终态非法")
+        with self._conn() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            attempt = conn.execute(
+                "SELECT a.*, r.session_id FROM sc_pca_attempts a JOIN qc_runs r USING(run_id) "
+                "WHERE attempt_id = ?",
+                (attempt_id,),
+            ).fetchone()
+            if attempt is None or attempt["status"] != "running":
+                raise ValueError("PCA 任务不在运行状态")
+            sid, now = attempt["session_id"], _now()
+            seq = conn.execute(
+                "SELECT COALESCE(MAX(seq), 0) + 1 FROM messages WHERE session_id = ?", (sid,)
+            ).fetchone()[0]
+            message_id = conn.execute(
+                "INSERT INTO messages (session_id, seq, role, content, timestamp, results) "
+                "VALUES (?, ?, 'assistant', ?, ?, ?)",
+                (
+                    sid,
+                    seq,
+                    "归一化与 PCA 产物已保存，等待审阅；科学未复核，未执行聚类或注释。"
+                    if result["status"] == "completed"
+                    else "归一化与 PCA 失败，本地证据保留；不会自动重跑。",
+                    now,
+                    _encode_results(
+                        {
+                            "sc_pca": {
+                                "run_id": attempt["run_id"],
+                                "filter_attempt_id": attempt["filter_attempt_id"],
+                                "attempt_id": attempt_id,
+                                "stage": "pca_review",
+                                "technical_status": result["status"],
+                                "scientific_status": "unreviewed",
+                            }
+                        }
+                    ),
+                ),
+            ).lastrowid
+            conn.execute(
+                "UPDATE sc_pca_attempts SET status = ?, finished_at = ?, result = ?, message_id = ? "
+                "WHERE attempt_id = ? AND status = 'running'",
+                (
+                    result["status"],
+                    now,
+                    json.dumps(result, ensure_ascii=False),
+                    message_id,
+                    attempt_id,
+                ),
+            )
+            conn.execute(
+                "UPDATE qc_runs SET revision = revision + 1 WHERE run_id = ?", (attempt["run_id"],)
+            )
+            conn.execute("UPDATE sessions SET updated_at = ? WHERE id = ?", (now, sid))
+
+    def interrupt_sc_pcas(self) -> None:
+        """单进程启动恢复：旧 running 标中断，不接管或重跑。"""
+        with self._conn() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            conn.execute(
+                "UPDATE sc_pca_attempts SET status = 'interrupted', finished_at = ? "
                 "WHERE status = 'running'",
                 (_now(),),
             )

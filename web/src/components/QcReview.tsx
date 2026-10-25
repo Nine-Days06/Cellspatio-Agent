@@ -2,6 +2,7 @@ import { useEffect, useRef, useState, type FormEvent } from 'react'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Textarea } from '@/components/ui/textarea'
+import { PcaReview } from '@/components/PcaReview'
 import { approveQc, fetchQc, filterQc, previewQc } from '@/lib/api'
 import type { QcReviewState, QcThresholds } from '@/lib/types'
 
@@ -28,6 +29,7 @@ export function QcReview({ sessionId, runId, onRecorded }: { sessionId: string; 
   const [reason, setReason] = useState('')
   const [busy, setBusy] = useState(true)
   const [filtering, setFiltering] = useState(false)
+  const [pcaRunning, setPcaRunning] = useState<string[]>([])
   const [error, setError] = useState('')
   const generation = useRef(0)
 
@@ -53,6 +55,7 @@ export function QcReview({ sessionId, runId, onRecorded }: { sessionId: string; 
     setError('')
     setBusy(true)
     setFiltering(false)
+    setPcaRunning([])
     fetchQc(sessionId, runId).then((next) => {
       if (ticket === generation.current) accept(next)
     }).catch((err: Error) => {
@@ -63,7 +66,7 @@ export function QcReview({ sessionId, runId, onRecorded }: { sessionId: string; 
     return () => { generation.current++ }
   }, [sessionId, runId])
 
-  const running = state?.attempts?.some((attempt) => attempt.status === 'running') ?? false
+  const running = (state?.attempts?.some((attempt) => attempt.status === 'running') ?? false) || !!state?.pca_running || pcaRunning.length > 0
   useEffect(() => {
     if (!running || busy) return
     const ticket = generation.current
@@ -102,6 +105,14 @@ export function QcReview({ sessionId, runId, onRecorded }: { sessionId: string; 
     if (ticket === generation.current) setFiltering(false)
   }
 
+  function pcaRecorded() {
+    const ticket = generation.current
+    void fetchQc(sessionId, runId).then((next) => {
+      if (ticket === generation.current) accept(next)
+    }).catch((err: Error) => { if (ticket === generation.current) setError(err.message) })
+    onRecorded?.()
+  }
+
   function preview(event: FormEvent) {
     event.preventDefault()
     const params: QcThresholds = {
@@ -118,7 +129,7 @@ export function QcReview({ sessionId, runId, onRecorded }: { sessionId: string; 
   const active = state?.active_preview
   const unchanged = previewValues === JSON.stringify(values)
   const blocked = [...(state?.blocked ?? []), ...(active?.summary.blocked ?? [])]
-  const canApprove = active?.status === 'pending' && unchanged && !busy && blocked.length === 0 && reason.trim().length > 0
+  const canApprove = active?.status === 'pending' && unchanged && !busy && !running && blocked.length === 0 && reason.trim().length > 0
   const attempted = state?.attempts?.some((attempt) => attempt.preview_id === active?.preview_id) ?? false
   const canFilter = active?.status === 'approved' && unchanged && !busy && !running && !attempted && blocked.length === 0
   return (
@@ -146,7 +157,7 @@ export function QcReview({ sessionId, runId, onRecorded }: { sessionId: string; 
         <code className="block break-all text-xs text-muted-foreground">预览 {active.preview_id} · 绑定 {active.binding_sha256}</code>
         {!unchanged && <p role="status">阈值已编辑，请重新生成预览后批准。</p>}
         {active.status === 'pending' && <>
-          <label className="block space-y-1"><span>选择依据（仅本地记录）</span><Textarea value={reason} maxLength={2000} disabled={busy} onChange={(event) => setReason(event.target.value)} /></label>
+          <label className="block space-y-1"><span>选择依据（仅本地记录）</span><Textarea value={reason} maxLength={2000} disabled={busy || running} onChange={(event) => setReason(event.target.value)} /></label>
           <Button type="button" disabled={!canApprove} onClick={() => void perform(() => approveQc(sessionId, runId, active.preview_id, reason.trim()), true)}>记录此过滤选择</Button>
         </>}
         {active.status === 'approved' && <>
@@ -164,6 +175,9 @@ export function QcReview({ sessionId, runId, onRecorded }: { sessionId: string; 
           {attempt.result?.versions && <p>{attempt.result.versions.join(' / ')}</p>}
           <p className="break-all">本地目录：{attempt.directory}</p>
           {attempt.result?.artifacts && <ul>{Object.entries(attempt.result.artifacts).map(([name, artifact]) => <li key={name} className="break-all">{name} · {artifact.bytes.toLocaleString()} bytes · SHA256 {artifact.sha256}</li>)}</ul>}
+          {attempt.status === 'completed' && <PcaReview sessionId={sessionId} runId={runId} filterAttemptId={attempt.attempt_id}
+            onRunning={(value) => setPcaRunning((ids) => value ? (ids.includes(attempt.attempt_id) ? ids : [...ids, attempt.attempt_id]) : (ids.includes(attempt.attempt_id) ? ids.filter((id) => id !== attempt.attempt_id) : ids))}
+            onRecorded={pcaRecorded} />}
         </div>)}
       </section>}
       {(state?.approvals.length ?? 0) > 0 && <section aria-label="已批准选择" className="space-y-2">

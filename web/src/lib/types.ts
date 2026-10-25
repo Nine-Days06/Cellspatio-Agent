@@ -79,6 +79,25 @@ export interface QcReviewState {
   approvals: QcPreview[]
   blocked: string[]
   attempts?: FilterAttempt[]
+  pca_running?: boolean
+}
+
+export interface PcaState {
+  run_id: string
+  filter_attempt_id: string
+  protocol: Record<string, unknown>
+  tool_version: string
+  binding_sha256: string | null
+  source_summary: { cells: number; features: number } | null
+  blocked: string[]
+  attempts: {
+    attempt_id: string
+    binding_sha256: string
+    status: FilterAttempt['status']
+    created_at: string
+    finished_at: string | null
+    result: { cells?: number; features?: number; selected_features?: number; usable_features?: number; actual_pcs?: number; pc_reduction_reason?: string; versions?: string[]; error?: string; elapsed_seconds?: number; scientific_status?: string } | null
+  }[]
 }
 
 export interface FilterAttempt {

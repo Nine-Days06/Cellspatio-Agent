@@ -5,6 +5,7 @@ import { approveQc, fetchQc, filterQc, previewQc } from '@/lib/api'
 import type { QcReviewState } from '@/lib/types'
 
 vi.mock('@/lib/api', () => ({ fetchQc: vi.fn(), previewQc: vi.fn(), approveQc: vi.fn(), filterQc: vi.fn() }))
+vi.mock('@/components/PcaReview', () => ({ PcaReview: () => <div>PCA 独立授权</div> }))
 const initial: QcReviewState = {
   run_id: 'r1', revision: 0, qc: {} as QcReviewState['qc'], active_preview: null, approvals: [], blocked: [],
 }
@@ -35,6 +36,15 @@ async function enterPreview() {
 }
 
 describe('QC review', () => {
+  it('disables QC changes while PCA is running in another view', async () => {
+    vi.mocked(fetchQc).mockResolvedValue({ ...preview, pca_running: true })
+    render(<QcReview sessionId="s1" runId="r1" />)
+    await screen.findByRole('region', { name: '排除预览' })
+    expect(screen.getByLabelText('RNA features 下限')).toBeDisabled()
+    expect(screen.getByLabelText('选择依据（仅本地记录）')).toBeDisabled()
+    expect(screen.getByRole('button', { name: '生成排除预览' })).toBeDisabled()
+    expect(screen.getByRole('button', { name: '记录此过滤选择' })).toBeDisabled()
+  })
   it('starts blank, previews explicit parameters, disables edited selection, records and restores approval', async () => {
     const recorded = vi.fn()
     const view = render(<QcReview sessionId="s1" runId="r1" onRecorded={recorded} />)
