@@ -218,7 +218,7 @@ data/raw/
 | 类型 | 说明 | 触发示例 |
 |---|---|---|
 | `differential_expression` | bulk 差异表达（DESeq2） | 「对这些数据做差异表达分析」 |
-| `single_cell` | 单细胞聚类 / 注释（Seurat） | 「对数据做单细胞聚类」 |
+| `single_cell` | 固定的过滤前 RNA QC（Seurat/Matrix 读取） | 「对数据做单细胞 QC」 |
 | `spatial` | 空间转录组（Visium） | 「做空间转录组分析」 |
 
 **暂不支持**（智能体会明确告知，不会执行）：通路富集、独立火山图等其他分析类型。
@@ -252,25 +252,29 @@ data/raw/
 
 - **10x MTX 目录**：`matrix.mtx`、`barcodes.tsv`、`features.tsv`（旧版可用两列 `genes.tsv`）；每个文件可独立使用 `.gz`，同一组件只能存在一个版本。基因 ID 与 barcode 必须唯一，gene symbol 可重复；多模态矩阵只分析 `Gene Expression`。
 - **counts CSV**：首列为唯一基因标识，其余列为唯一细胞标识，行为基因、列为细胞。
-- counts 必须为有限的非负整数，不能缺失或四舍五入。MatrixMarket 支持 `coordinate integer/real general`，`real` 声明也必须逐值为整数；非法输入在生成脚本前阻断，确认后执行前再次校验。
-- 暂不支持 H5/H5AD、Seurat 对象或 FASTQ。10x 读取保留稀疏矩阵；原输入不会被改写。包含校验代码不等于任意 LLM 脚本已安全受控，仍需人工审阅。
+- counts 必须为有限的非负整数，不能缺失或四舍五入。MatrixMarket 支持 `coordinate integer/real general`，`real` 声明也必须逐值为整数；非法输入在固定 QC 执行前阻断。
+- 暂不支持 H5/H5AD、Seurat 对象或 FASTQ。10x 读取保留稀疏矩阵；原输入不会被改写。
+
+单细胞入口只运行固定过滤前 QC，不再生成待确认的自由 R 脚本。统计全部 RNA barcode 的 `nCount_RNA`、`nFeature_RNA`、`percent.mt`，保留原 feature ID / symbol / 唯一读取名称映射。人类线粒体基因按原 symbol 的 `^MT-` 匹配；无法匹配或零 counts 的比例为 `NA`，附原因，不误记为零、不联网补映射。
+
+结果停在 `needs_confirmation` / `qc_review`，页面只读展示证据与图表，标明科学未审阅；此状态没有过滤参数批准按钮，也不会自动过滤、标准化、聚类或注释。旧的单细胞脚本确认请求被拒绝，请重新发起 QC。QC 不调用 LLM 代码生成、自动修复、外部结果解释或共享 KG 写入，持久化证据不回灌模型。
 
 ### 7.3 失败自动修复
 
-脚本执行失败时，智能体自动携带报错信息让 LLM 改写脚本重试，**最多修复 2 次**（即同一任务最多执行 3 次）。修复过程无需你操作；全部失败则返回报错信息。R 脚本单次执行超时 300 秒。
+差异表达及空间脚本执行失败时，智能体自动携带报错信息让 LLM 改写脚本重试，**最多修复 2 次**（即同一任务最多执行 3 次）。单细胞 QC 失败只保留原脚本、日志和元数据，不自动重跑或修复。R 脚本单次执行超时仍为 300 秒。
 
 ### 7.4 分析产物
 
-产物是**磁盘上的文件**（不是页面内嵌图表），路径在回复与「结果解读」中给出：
+产物写入磁盘；单细胞 QC 另在页面展示只读汇总与图表，本地路径不是下载链接：
 
-| 分析类型 | 产物文件（输出到输入文件同目录） |
+| 分析类型 | 产物文件与位置 |
 |---|---|
 | 差异表达 | `<输入名>.de_results.csv`（列：gene, log2FoldChange, lfcSE, stat, pvalue, padj） |
-| 单细胞 | `<输入名>.sc_clusters.csv`（细胞聚类 + UMAP 坐标）、`<输入名>.sc_markers.csv`（标记基因） |
+| 单细胞 QC | `data/analysis/sc_qc/<run_id>/` 内的 `cell_qc.csv`、`features.csv`、`summary.json`、`qc.png`、`script.R`、`versions.txt`、日志及 `metadata.json` |
 | 空间转录组 | `<输入名>.spatial_clusters.csv`、`<输入名>.spatial_plot.png`（输入为目录时文件名以 `.` 开头） |
-| 每次分析 | `output/capsules/<时间戳>/` 复现胶囊（原始问题、脚本、意图、元数据） |
+| 差异表达 / 空间分析 | `output/capsules/<时间戳>/` 复现胶囊（原始问题、脚本、意图、元数据） |
 
-单细胞输入为目录时，两张结果表位于该目录的同级，以完整目录名作为前缀（如 `sample.v1.sc_clusters.csv`），不写入三件套目录。
+每次 QC 使用独立输出目录，不覆盖原三件套或先前结果。元数据记录输入路径、大小、运行前后 SHA256、环境版本与状态；哈希一致性检查不是不可变输入快照，也不等于完整复现包。技术完成不等于科学验收。
 
 示例对话：
 
@@ -427,7 +431,7 @@ python -m evals.run_eval --p3d
 知识库首次写入会把模型名锁定到 `knowledge_base/EMBEDDING_MODEL.json`。换模型需删除 `knowledge_base/` 下除该文件外的内容（或整个目录）后重建（`python rebuild_kb.py`）。
 
 **Q：为什么页面上看不到图表 / 表格？**
-分析产物以文件形式写到磁盘（第 7.4 节表格），按回复给出的 `output_file` 路径打开即可。页面内图表窗格是预留功能，当前版本不渲染。
+分析产物以文件形式写到磁盘（第 7.4 节表格）。单细胞 QC 会在页面展示汇总与图表；证据路径仅指向服务器本地文件，当前没有安全下载接口。
 
 **Q：选了 KEGG / UniProt 候选点「确认下载」报错？**
 预期行为——只有 GEO 提供文件下载。请在下拉框选择 `geo` 来源的候选。

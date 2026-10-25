@@ -444,3 +444,43 @@ def test_build_messages_without_summary_has_no_checkpoint():
     out = rt._build_messages("q", {"history": [{"role": "user", "content": "a"}]})
     assert len(out) == 3  # system + history + 当前输入
     assert not any("<conversation-checkpoint>" in str(m.get("content")) for m in out)
+
+
+def test_qc_plan_and_hint_do_not_call_shared_router():
+    """受控 QC 不走最佳实践查询或带 teardown 的技能生命周期。"""
+    from src.control.agent_runtime import AgentRuntime
+
+    class ForbiddenRouter:
+        def hint(self, user_input):
+            raise AssertionError("QC must not query shared KG")
+
+        def route(self, user_input, context):
+            raise AssertionError("QC must not write skill KG")
+
+    rt = AgentRuntime(None, "m", object(), ForbiddenRouter())
+    assert rt._route_hint("单细胞 RNA 分析")["best_practices"] is None
+    plan = rt._skill_plan("单细胞 RNA 分析", "single_cell")
+    assert plan["analysis_type"] == "single_cell"
+    assert "不执行过滤、聚类或注释" in str(plan["plan"])
+
+
+def test_qc_results_and_artifacts_do_not_enter_model_history():
+    """持久化 results 不是授权模型读取的摘要。"""
+    rt, _ = _make_runtime(None)
+    out = rt._build_messages(
+        "继续",
+        {
+            "history": [
+                {
+                    "role": "assistant",
+                    "content": "QC 等待审阅",
+                    "results": {
+                        "qc": {"private": "CELL_SECRET"},
+                        "qc_artifacts": {"x": "PRIVATE_PATH"},
+                    },
+                }
+            ]
+        },
+    )
+    assert "CELL_SECRET" not in str(out) and "PRIVATE_PATH" not in str(out)
+    assert out[1] == {"role": "assistant", "content": "QC 等待审阅"}

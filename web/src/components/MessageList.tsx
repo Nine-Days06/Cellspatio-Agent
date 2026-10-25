@@ -1,5 +1,6 @@
 import { useEffect, useRef, type ReactNode } from 'react'
 import { ChartBlock } from '@/components/ChartBlock'
+import { QcEvidence } from '@/components/QcEvidence'
 import { MarkdownMessage } from '@/components/MarkdownMessage'
 import { SoftWarnBanner } from '@/components/SoftWarnBanner'
 import { ToolStatus, type ToolStatusEntry } from '@/components/ToolStatus'
@@ -19,9 +20,9 @@ export interface MessageListProps {
   onRetry?: () => void
 }
 
-/** 空内容判定的「视觉内容」：图表或消息内嵌的待确认脚本卡片，任一存在都不兜底（约束 1）。 */
+/** 图表、QC 证据或待确认脚本卡片存在时，不用空消息兜底。 */
 function hasVisuals(message: WireMessage): boolean {
-  return (message.results?.charts?.length ?? 0) > 0 || Boolean(message.pending_script)
+  return (message.results?.charts?.length ?? 0) > 0 || Boolean(message.pending_script) || Boolean(message.results?.qc_artifacts)
 }
 
 function Bubble({ role, children }: { role: 'user' | 'assistant'; children: ReactNode }) {
@@ -92,6 +93,7 @@ export function MessageList({
                       ))}
                     </div>
                   )}
+                  {message.results?.qc_artifacts && <QcEvidence results={message.results} />}
                 </>
               ) : (
                 <div className="whitespace-pre-wrap text-sm">{message.content}</div>

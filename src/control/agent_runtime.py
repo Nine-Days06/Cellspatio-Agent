@@ -104,6 +104,8 @@ class AgentRuntime:
                     return dict(ABORTED_RESULT)
                 result = self._dispatch(tool_calls[0], user_input, context)
                 status = result.get("status")
+                if result.get("analysis_type") == "single_cell":
+                    return result
 
                 # 非流式：所有 TERMINAL_STATUSES 即刻返回（保持原有行为）
                 # 流式：仅 STREAM_TERMINAL_STATUSES 为终态；
@@ -202,6 +204,11 @@ class AgentRuntime:
 
     def _route_hint(self, user_input: str) -> dict[str, Any] | None:
         """调用 ModalRouter.hint；无 router 或失败时返回 None（不阻断主流程）。"""
+        from src.control.classifier import TaskClassifier
+
+        classification = TaskClassifier().classify(user_input)
+        if classification.get("skill") == "single_cell":
+            return {**classification, "best_practices": None}
         if self.router is None:
             return None
         try:
@@ -211,16 +218,16 @@ class AgentRuntime:
             return None
 
     def _skill_plan(self, user_input: str, analysis_type: str) -> dict[str, Any] | None:
-        """调 route() 取分析技能静态方案；任何异常/不适用情形都返回 None（不阻断主流程）。
+        """QC 直接取静态方案以避开共享记忆；其他分析复用既有技能生命周期。"""
+        if analysis_type == "single_cell":
+            from skills.single_cell.main import PLAN, REQUIRED_INPUTS
 
-        与 hint() 分工：hint() 每轮只分类 + 查最佳实践并注入 system prompt；
-        本方法在确定要跑分析时真正 load 技能并跑 setup → execute → teardown，
-        teardown 内向 KGMemory 写技能执行记忆（生产可达的记忆通道）。
-
-        分析类技能 execute() 只产静态方案（无 I/O），不替代 WorkflowManager 的真实分析；
-        R 脚本 HITL 门在 WorkflowManager._generate_or_finish 独立生效，故此处显式传
-        script_approved=True，且只传新建 dict，不污染调用方 context。
-        """
+            return {
+                "analysis_type": analysis_type,
+                "plan": PLAN,
+                "required_inputs": REQUIRED_INPUTS,
+                "best_practices": None,
+            }
         hint = self._route_hint(user_input)
         if not hint or hint.get("modality") != "analysis":
             return None

@@ -54,17 +54,16 @@ def _manager(require=True):
 
 @pytest.mark.parametrize("legacy", [False, True])
 @pytest.mark.parametrize("compressed", list(product((False, True), repeat=3)))
-def test_layouts_route_and_preserve_directory_names(tenx_dir, legacy, compressed):
+def test_layouts_route_and_preserve_directory_names(tenx_dir, legacy, compressed, monkeypatch):
     directory = tenx_dir(legacy=legacy, compressed=compressed)
     original = {p.name: p.read_bytes() for p in directory.iterdir()}
+    qc = Mock(return_value={"status": "needs_confirmation", "stage": "qc_review"})
+    monkeypatch.setattr("src.analysis.sc_qc.run_sc_qc", qc)
     wm = _manager()
-    pending = wm.run_analysis_for_agent("single_cell", {"input_files": [str(directory)]})
-    assert pending["status"] == "needs_script_confirmation"
-    assert pending["params"]["output_file"] == str(directory.parent / "sample.v1.sc_clusters.csv")
-    assert pending["params"]["marker_file"] == str(directory.parent / "sample.v1.sc_markers.csv")
-    result = wm.execute_confirmed_script("single_cell", pending["params"], pending["script"])
-    assert result["status"] == "success"
-    assert len(wm.r_executor.codes) == 1
+    result = wm.run_analysis_for_agent("single_cell", {"input_files": [str(directory)]})
+    assert result["status"] == "needs_confirmation"
+    assert qc.call_args.args[0] == str(directory)
+    assert wm.r_script_generator.calls == []
     assert {p.name: p.read_bytes() for p in directory.iterdir()} == original
 
 
@@ -131,17 +130,11 @@ def test_real_header_integer_counts_route_without_rewriting(tenx_dir, legacy, zi
         legacy=legacy,
         compressed=(zipped,) * 3,
         overrides={
-            "matrix.mtx": f"%%MatrixMarket matrix coordinate real general\n2 2 1\n1 1 {count}\n",
+            "matrix.mtx": f"%%MatrixMarket matrix coordinate real general\n2 2 1\n1 1 {count}\n"
         },
     )
     original = {p.name: p.read_bytes() for p in directory.iterdir()}
-    wm = _manager()
-    pending = wm.run_analysis_for_agent("single_cell", {"input_files": [str(directory)]})
-    assert pending["status"] == "needs_script_confirmation"
-    assert (
-        wm.execute_confirmed_script("single_cell", pending["params"], pending["script"])["status"]
-        == "success"
-    )
+    assert WorkflowManager._validate_sc_input(str(directory)) is None
     assert {p.name: p.read_bytes() for p in directory.iterdir()} == original
 
 
@@ -221,32 +214,14 @@ def test_multimodal_and_zero_counts_are_accepted(tenx_dir):
     assert WorkflowManager._validate_sc_input(str(directory)) is None
 
 
-@pytest.mark.parametrize("change", ["delete", "count", "real_count", "gzip", "feature_type"])
-def test_confirmation_rechecks_input(tenx_dir, change):
-    directory = tenx_dir(compressed=(True, True, True))
+def test_old_single_cell_confirmation_is_rejected(tenx_dir):
+    directory = tenx_dir()
     wm = _manager()
-    pending = wm.run_analysis_for_agent("single_cell", {"input_files": [str(directory)]})
-    assert pending["status"] == "needs_script_confirmation"
-    if change == "delete":
-        (directory / "barcodes.tsv.gz").unlink()
-    elif change == "gzip":
-        path = directory / "matrix.mtx.gz"
-        path.write_bytes(path.read_bytes()[:-4])
-    else:
-        path = directory / (
-            "matrix.mtx.gz" if change in ("count", "real_count") else "features.tsv.gz"
-        )
-        with gzip.open(path, "wt", encoding="utf-8") as handle:
-            handle.write(
-                "%%MatrixMarket matrix coordinate integer general\n2 2 1\n1 1 0.5\n"
-                if change == "count"
-                else "%%MatrixMarket matrix coordinate real general\n2 2 1\n1 1 1.00000000000000000001\n"
-                if change == "real_count"
-                else "id1\tG1\tAntibody Capture\nid2\tG2\tAntibody Capture\n"
-            )
-    result = wm.execute_confirmed_script("single_cell", pending["params"], pending["script"])
+    result = wm.execute_confirmed_script(
+        "single_cell", {"input_file": str(directory)}, "stop('must not run')"
+    )
     assert result["status"] == "error"
-    assert len(wm.r_script_generator.calls) == 1
+    assert wm.r_script_generator.calls == []
     assert wm.r_executor.codes == []
 
 

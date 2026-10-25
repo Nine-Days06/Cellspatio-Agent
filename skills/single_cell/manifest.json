@@ -1,8 +1,8 @@
 {
   "metadata": {
     "name": "single_cell",
-    "version": "1.0.0",
-    "description": "单细胞聚类分析编排：校验输入并产出分析方案",
+    "version": "1.1.0",
+    "description": "单细胞过滤前 QC：固定证据流程，等待科学审阅",
     "author": "CellSpatio",
     "tags": ["analysis", "single-cell"],
     "entry_point": "main"

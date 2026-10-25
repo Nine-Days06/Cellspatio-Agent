@@ -101,6 +101,31 @@ def test_unknown_session_returns_404(client):
     assert "nope" not in chat_service._locks
 
 
+def test_qc_evidence_persists_without_pending_script(client):
+    sid = _new_session(client)
+    evidence = {
+        "qc": {"cells": 2700, "scientific_status": "unreviewed"},
+        "qc_artifacts": {"cell_qc.csv": "D:/local/cell_qc.csv"},
+    }
+    client.app.state.agent.agent_runtime = FakeRuntime(
+        default={
+            "status": "needs_confirmation",
+            "type": "analysis",
+            "analysis_type": "single_cell",
+            "stage": "qc_review",
+            "message": "QC 等待科学审阅",
+            "results": evidence,
+        }
+    )
+    events = _stream(client, sid, "单细胞 QC")
+    assert [event["type"] for event in events] == ["done"]
+    restored = client.get(f"/api/sessions/{sid}/messages?restore=1").json()
+    last = restored["messages"][-1]
+    assert last["results"] == evidence
+    assert last["pending_script"] is None and restored["pending_script"] is None
+    assert "分析完成" not in last["content"]
+
+
 def test_concurrent_generation_on_same_session_returns_409(client):
     sid = _new_session(client)
     lock = session_lock(sid)

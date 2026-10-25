@@ -181,6 +181,9 @@ class WorkflowRecorder:
         # 转换为 WorkflowRun 并持久化
         run = self._to_workflow_run(exec_)
         wf_path = self.store.persist(run)
+        # QC 的逐细胞证据和路径只留本地，不触发 Git 快照或共享 KG。
+        if exec_.intent.analysis_type == AnalysisType.SINGLE_CELL:
+            return wf_path
         # 自动创建 Git 快照
         from src.control.snapshot_manager import SnapshotManager
 

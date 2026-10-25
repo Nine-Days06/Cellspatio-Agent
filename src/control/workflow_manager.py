@@ -386,7 +386,7 @@ class WorkflowManager:
     def _execute_sc_analysis(
         self, params: dict[str, Any], context: dict[str, Any], run_id: str | None = None
     ) -> dict[str, Any]:
-        """单细胞分析：聚类、标记基因"""
+        """单细胞固定过滤前 QC；不批准或执行下游分析。"""
         if self.workflow_recorder and run_id:
             self.workflow_recorder.record_step(
                 run_id,
@@ -410,18 +410,10 @@ class WorkflowManager:
                 )
             return result
 
-        input_path = Path(input_file)
-        # 目录名可能含点，不能用 with_suffix 截掉样本名。
-        output_prefix = str(input_path if input_path.is_dir() else input_path.with_suffix(""))
-        out = output_prefix + ".sc_clusters.csv"
-        marker = output_prefix + ".sc_markers.csv"
-        run_params = {
-            "input_file": input_file,
-            "output_file": out,
-            "marker_file": marker,
-        }
-        method_context = self._method_context_for("single_cell", params)
-        return self._generate_or_finish("single_cell", run_params, method_context, context)
+        from src.analysis.sc_qc import run_sc_qc
+
+        root = Path(self.workflow_recorder.repo_root) if self.workflow_recorder else Path.cwd()
+        return run_sc_qc(input_file, self.r_executor, root / "data" / "analysis" / "sc_qc", run_id)
 
     def _execute_spatial_analysis(
         self, params: dict[str, Any], context: dict[str, Any], run_id: str | None = None
@@ -497,9 +489,12 @@ class WorkflowManager:
         from src.analysis.r_executor import RExecutorError
 
         if analysis_type == "single_cell":
-            result = self._validate_sc_input(params.get("input_file"))
-            if result is not None:
-                return result
+            return {
+                "status": "error",
+                "type": "analysis",
+                "analysis_type": "single_cell",
+                "message": "单细胞自由脚本执行已停用，请重新运行固定 QC。",
+            }
         input_file = params["input_file"]
         output_file = params["output_file"]
 
@@ -602,11 +597,11 @@ class WorkflowManager:
         method_context: str | None = None,
     ) -> dict[str, Any]:
         """用户确认脚本后执行（含 repair 循环）"""
-        if analysis_type not in ("differential_expression", "single_cell", "spatial"):
+        if analysis_type not in ("differential_expression", "spatial"):
             return {
                 "status": "error",
                 "analysis_type": analysis_type,
-                "message": f"暂不支持确认执行的分析类型: {analysis_type}",
+                "message": f"暂不支持确认执行的分析类型: {analysis_type}；单细胞请重新运行固定 QC。",
             }
         return self._finish_analysis(
             analysis_type,

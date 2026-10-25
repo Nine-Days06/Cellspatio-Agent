@@ -33,7 +33,23 @@ export type ChartItem =
 /** results 是个 dict：charts 之外还可能有 statistics/data/returncode 等（一期不渲染）。 */
 export interface MessageResults {
   charts?: ChartItem[]
+  qc?: QcEvidence
+  qc_artifacts?: Record<string, string>
   [key: string]: unknown
+}
+
+export interface QcEvidence {
+  tool_version: string
+  stage: 'qc_review'
+  scientific_status: 'unreviewed'
+  filtered: false
+  cells: number
+  features: number
+  zero_count_cells: number
+  mt_symbol_resolved: boolean
+  warnings: string[]
+  versions: string[]
+  metrics: Record<string, { available: number; min: number | null; median: number | null; max: number | null }>
 }
 
 export type PendingScriptStatus = 'pending' | 'confirmed' | 'cancelled' | 'expired'

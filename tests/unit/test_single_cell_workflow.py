@@ -21,21 +21,35 @@ def _wm(intent, require=False):
     return wm, gen
 
 
-def test_single_cell_routes_and_output_names(tmp_path):
+@pytest.mark.parametrize("approved", [False, True])
+def test_single_cell_routes_to_fixed_qc(tmp_path, monkeypatch, approved):
     f = tmp_path / "m.csv"
     f.write_text("gene,c1,c2\nG1,0,2.0\n", encoding="utf-8")
-    sc_intent = FakeIntent(
-        parse_return={"type": "analysis", "analysis_type": "single_cell", "original_input": ""},
-        extract_params_return={"input_files": ["scrna.csv"]},
+    intent = FakeIntent(
+        parse_return={"type": "analysis", "analysis_type": "single_cell", "original_input": ""}
     )
-    wm, gen = _wm(sc_intent, require=False)
-    ctx = {"downloaded_assets": [{"access_path": str(f)}]}
-    result = wm.execute_workflow("做单细胞聚类", context=ctx)
-    assert result["status"] == "success"
-    assert result["analysis_type"] == "single_cell"
-    assert gen.last["type"] == "single_cell"
-    assert gen.last["params"]["output_file"].endswith(".sc_clusters.csv")
-    assert gen.last["params"]["marker_file"].endswith(".sc_markers.csv")
+    wm, gen = _wm(intent, require=True)
+    wm.methods_kb = Mock()
+    wm.explainer = Mock()
+    wm.code_repairer = Mock()
+    qc = Mock(
+        return_value={
+            "status": "needs_confirmation",
+            "analysis_type": "single_cell",
+            "stage": "qc_review",
+        }
+    )
+    monkeypatch.setattr("src.analysis.sc_qc.run_sc_qc", qc)
+    result = wm.execute_workflow(
+        "做单细胞聚类",
+        {"downloaded_assets": [{"access_path": str(f)}], "script_approved": approved},
+    )
+    assert result["stage"] == "qc_review"
+    assert qc.call_args.args[0] == str(f)
+    assert gen.calls == []
+    wm.methods_kb.query_context.assert_not_called()
+    wm.explainer.explain.assert_not_called()
+    wm.code_repairer.repair.assert_not_called()
 
 
 @pytest.mark.parametrize("require", [False, True])
@@ -122,54 +136,18 @@ def test_single_cell_rejection_is_recorded(tmp_path, has_invalid_file):
     wm.workflow_recorder.finish_run.assert_called_once_with("run-input-check")
 
 
-def test_single_cell_confirmation_flow(tmp_path):
-    f = tmp_path / "m.csv"
-    f.write_text("gene,c1,c2\nG1,1,2\n", encoding="utf-8")
-    sc_intent = FakeIntent(
-        parse_return={"type": "analysis", "analysis_type": "single_cell", "original_input": ""},
-        extract_params_return={"input_files": ["scrna.csv"]},
-    )
-    wm, _ = _wm(sc_intent, require=True)
-    ctx = {"downloaded_assets": [{"access_path": str(f)}]}
-    result = wm.execute_workflow("做单细胞聚类", context=ctx)
-    assert result["status"] == "needs_script_confirmation"
-    assert result["analysis_type"] == "single_cell"
-
-    result2 = wm.execute_confirmed_script(
-        "single_cell",
-        result["params"],
-        result["script"],
-        method_context=result.get("method_context"),
-    )
-    assert result2["status"] == "success"
-    assert len(wm.r_executor.codes) == 1
-
-
-@pytest.mark.parametrize("changed_counts", [None, "gene,c1,c2\nG1,1,0.5\n"])
-def test_single_cell_confirmation_rechecks_input(tmp_path, changed_counts):
-    f = tmp_path / "counts.csv"
-    f.write_text("gene,c1,c2\nG1,1,2\n", encoding="utf-8")
+@pytest.mark.parametrize("params", [{}, {"input_file": "missing.csv"}])
+def test_single_cell_old_script_cannot_bypass_qc(params):
     wm, gen = _wm(FakeIntent(), require=True)
-    pending = wm.run_analysis_for_agent("single_cell", {"input_files": [str(f)]})
-    assert pending["status"] == "needs_script_confirmation"
-
-    if changed_counts is None:
-        f.unlink()
-    else:
-        f.write_text(changed_counts, encoding="utf-8")
-    result = wm.execute_confirmed_script("single_cell", pending["params"], pending["script"])
-
-    assert result["status"] == ("needs_input" if changed_counts is None else "error")
-    assert len(gen.calls) == 1
-    assert wm.r_executor.codes == []
-
-
-def test_single_cell_confirmation_without_input_needs_input():
-    wm, _ = _wm(FakeIntent(), require=True)
-    result = wm.execute_confirmed_script("single_cell", {}, "# previously generated")
-
-    assert result["status"] == "needs_input"
-    assert wm.r_executor.codes == []
+    result = wm.execute_confirmed_script("single_cell", params, "# previously generated")
+    assert result["status"] == "error"
+    assert gen.calls == [] and wm.r_executor.codes == []
+    assert (
+        wm._finish_analysis("single_cell", params, "# bypass", None, {"script_approved": True})[
+            "status"
+        ]
+        == "error"
+    )
 
 
 def test_spatial_routes(tmp_path):
@@ -189,22 +167,12 @@ def test_spatial_routes(tmp_path):
     assert gen.last["params"]["plot_file"].endswith(".spatial_plot.png")
 
 
-def test_execute_confirmed_script_accepts_sc_and_spatial(tmp_path):
-    f = tmp_path / "counts.csv"
-    f.write_text("gene,c1,c2\nG1,1,2\n", encoding="utf-8")
-    sc_intent = FakeIntent(
-        parse_return={"type": "analysis", "analysis_type": "single_cell", "original_input": ""},
-        extract_params_return={"input_files": ["scrna.csv"]},
-    )
-    wm, _ = _wm(sc_intent, require=True)
-    r1 = wm.execute_confirmed_script(
-        "single_cell", {"input_file": str(f), "output_file": "b", "marker_file": "c"}, "# s"
-    )
-    assert r1["status"] == "success"
-    r2 = wm.execute_confirmed_script(
+def test_execute_confirmed_script_still_accepts_spatial():
+    wm, _ = _wm(FakeIntent(), require=True)
+    result = wm.execute_confirmed_script(
         "spatial", {"input_file": "d", "output_file": "e", "plot_file": "f"}, "# s"
     )
-    assert r2["status"] == "success"
+    assert result["status"] == "success"
 
 
 def test_seurat_template_full_pipeline():
