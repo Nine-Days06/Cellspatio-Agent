@@ -1,5 +1,9 @@
 """Test main.py LLM wiring and HITL switch"""
 
+import pytest
+
+pytestmark = pytest.mark.pg
+
 
 def test_main_wires_llm_components(monkeypatch):
     from src.main import CellSpatioAgent

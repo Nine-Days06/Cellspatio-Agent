@@ -5,6 +5,7 @@ import uuid
 from pathlib import Path
 
 import numpy as np
+import pytest
 from lightrag.utils import EmbeddingFunc
 
 from src.control.kg_memory import KGMemory
@@ -20,6 +21,8 @@ from src.schemas.workflow import (
     WorkflowRun,
     WorkflowStep,
 )
+
+pytestmark = pytest.mark.pg
 
 
 def _unique_ws(prefix: str) -> str:

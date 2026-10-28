@@ -92,6 +92,23 @@ def test_status_shape_has_exactly_three_keys():
     assert isinstance(status["detail"], str)
 
 
+@windows_only
+def test_find_exe_ignores_inaccessible_fallback(monkeypatch):
+    """默认安装路径无读取权限时仍可正常返回未找到。"""
+
+    class InaccessiblePath:
+        def __truediv__(self, _part):
+            return self
+
+        def is_file(self):
+            raise PermissionError("access denied")
+
+    monkeypatch.setenv("LOCALAPPDATA", "C:/inaccessible")
+    monkeypatch.setattr(rt, "Path", lambda _path: InaccessiblePath())
+
+    assert rt._find_exe() is None
+
+
 def test_ensure_ready_marks_ready_when_probe_succeeds(monkeypatch):
     monkeypatch.setattr(rt, "_probe", lambda host, timeout: {"models": []})
 
