@@ -419,6 +419,51 @@ def checked_completed_pca(
     }
 
 
+def dimension_binding(
+    run: dict[str, Any],
+    parent: dict[str, Any],
+    attempt: dict[str, Any],
+    checked: dict[str, Any],
+    version: str,
+) -> str:
+    """共享人工维度来源身份，不把 revision 或自由文本放进绑定。"""
+    payload = {
+        "session_id": run["session_id"],
+        "run_id": run["run_id"],
+        "preview_id": parent["preview_id"],
+        "filter_attempt_id": parent["attempt_id"],
+        "pca_attempt_id": attempt["attempt_id"],
+        "pca_parent_binding": attempt["binding_sha256"],
+        "tool_version": PCA_TOOL_VERSION,
+        "protocol": PROTOCOL,
+        "artifacts": checked["artifacts"],
+        "record_version": version,
+    }
+    return _digest(json.dumps(payload, sort_keys=True, ensure_ascii=False).encode())
+
+
+def current_dimensions(
+    run: dict[str, Any],
+    attempt: dict[str, Any],
+    binding: str | None,
+    version: str,
+) -> dict[str, Any] | None:
+    """只认最新记录的严格 revision；执行快照不使用此判定。"""
+    history = [d for d in run["dimension_reviews"] if d["pca_attempt_id"] == attempt["attempt_id"]]
+    latest = history[-1] if history else None
+    return (
+        latest
+        if latest
+        and binding
+        and (
+            latest["binding_sha256"] == binding
+            and latest["record_version"] == version
+            and latest["source_revision"] + 1 == run["revision"]
+        )
+        else None
+    )
+
+
 def run_sc_pca(
     run: dict[str, Any],
     parent: dict[str, Any],

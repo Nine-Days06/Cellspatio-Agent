@@ -11,7 +11,14 @@ from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 
-from src.api import routes_chat, routes_meta, routes_pca, routes_qc, routes_sessions
+from src.api import (
+    routes_chat,
+    routes_clusters,
+    routes_meta,
+    routes_pca,
+    routes_qc,
+    routes_sessions,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -44,6 +51,7 @@ def create_app(agent: Any) -> FastAPI:
         """单进程启动只标记旧过滤任务中断，不恢复执行。"""
         routes_sessions._store().interrupt_sc_filters()
         routes_sessions._store().interrupt_sc_pcas()
+        routes_sessions._store().interrupt_sc_clusters()
         yield
 
     app = FastAPI(title="CellSpatio API", lifespan=lifespan)
@@ -53,6 +61,7 @@ def create_app(agent: Any) -> FastAPI:
     app.include_router(routes_meta.router)
     app.include_router(routes_qc.router)
     app.include_router(routes_pca.router)
+    app.include_router(routes_clusters.router)
     app.add_exception_handler(Exception, _unhandled_exception_handler)
     # router 必须先于 StaticFiles 挂载，否则 /api/* 会被 SPA 回退拦截
     if _WEB_DIST.is_dir():

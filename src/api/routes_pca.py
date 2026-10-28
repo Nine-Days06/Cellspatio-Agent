@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 import logging
 import sqlite3
 import uuid
@@ -13,12 +12,14 @@ from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import Response
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
-from src.analysis.qc_preview import _digest, _identity
+from src.analysis.qc_preview import _identity
 from src.analysis.sc_pca import (
     PCA_TOOL_VERSION,
     PROTOCOL,
     checked_completed_pca,
     checked_parent,
+    current_dimensions,
+    dimension_binding,
     run_sc_pca,
 )
 from src.api.chat_service import session_lock
@@ -49,7 +50,10 @@ def view(run: dict[str, Any], parent: dict[str, Any], root: Path) -> dict[str, A
     except (OSError, ValueError, KeyError, TypeError) as exc:
         blocked.append(str(exc))
     attempts = [a for a in run["pca_attempts"] if a["filter_attempt_id"] == parent["attempt_id"]]
-    if any(a["status"] == "running" for a in [*run["attempts"], *run["pca_attempts"]]):
+    if any(
+        a["status"] == "running"
+        for a in [*run["attempts"], *run["pca_attempts"], *run.get("cluster_attempts", [])]
+    ):
         blocked.append("该 run 有阶段运行中")
     return {
         "run_id": run["run_id"],
@@ -205,38 +209,21 @@ def dimension_view(
     blocked = []
     try:
         checked = checked_completed_pca(run, parent, attempt, root)
-        payload = {
-            "session_id": run["session_id"],
-            "run_id": run["run_id"],
-            "preview_id": parent["preview_id"],
-            "filter_attempt_id": parent["attempt_id"],
-            "pca_attempt_id": attempt["attempt_id"],
-            "pca_parent_binding": attempt["binding_sha256"],
-            "tool_version": PCA_TOOL_VERSION,
-            "protocol": PROTOCOL,
-            "artifacts": checked["artifacts"],
-            "record_version": DIMENSION_RECORD_VERSION,
-        }
-        binding = _digest(json.dumps(payload, sort_keys=True, ensure_ascii=False).encode())
+        binding = dimension_binding(run, parent, attempt, checked, DIMENSION_RECORD_VERSION)
         evidence = {k: checked[k] for k in ("actual_pcs", "stdev")}
     except OSError:
         blocked.append("PCA 或父证据文件不可读取，请检查本地产物")
     except (ValueError, KeyError, TypeError, OverflowError) as exc:
         blocked.append(str(exc))
-    if any(a["status"] == "running" for a in [*run["attempts"], *run["pca_attempts"]]):
+    if any(
+        a["status"] == "running"
+        for a in [*run["attempts"], *run["pca_attempts"], *run.get("cluster_attempts", [])]
+    ):
         blocked.append("该 run 有阶段运行中，不能记录维度")
     history = [d for d in run["dimension_reviews"] if d["pca_attempt_id"] == attempt["attempt_id"]]
     latest = history[-1] if history else None
     current = (
-        latest
-        if latest
-        and not blocked
-        and (
-            latest["binding_sha256"] == binding
-            and latest["record_version"] == DIMENSION_RECORD_VERSION
-            and latest["source_revision"] + 1 == run["revision"]
-        )
-        else None
+        None if blocked else current_dimensions(run, attempt, binding, DIMENSION_RECORD_VERSION)
     )
     return {
         "run_id": run["run_id"],

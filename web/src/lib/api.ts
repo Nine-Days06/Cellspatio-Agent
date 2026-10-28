@@ -9,6 +9,7 @@ import type {
   QcThresholds,
   PcaState,
   PcaDimensionsState,
+  ClusterState,
 } from '@/lib/types'
 
 /** 统一 HTTP 错误：message 直接用后端 detail（已是中文），UI 可直接展示。 */
@@ -129,4 +130,19 @@ export function fetchPcaDimensions(sessionId: string, runId: string, filterAttem
 
 export function recordPcaDimensions(sessionId: string, runId: string, filterAttemptId: string, attemptId: string, binding: string, revision: number, nDims: number, reason: string): Promise<PcaDimensionsState> {
   return request(`${pcaPath(sessionId, runId, filterAttemptId)}/${encodeURIComponent(attemptId)}/dimensions`, jsonInit('POST', { binding_sha256: binding, revision, n_dims: nDims, reason }))
+}
+
+const clusterPath = (sessionId: string, runId: string, filterAttemptId: string, pcaAttemptId: string) =>
+  `${qcPath(sessionId, runId)}/clusters/${encodeURIComponent(filterAttemptId)}/${encodeURIComponent(pcaAttemptId)}`
+
+export function fetchClusters(sessionId: string, runId: string, filterAttemptId: string, pcaAttemptId: string): Promise<ClusterState> {
+  return request(clusterPath(sessionId, runId, filterAttemptId, pcaAttemptId))
+}
+
+export function executeClusters(sessionId: string, runId: string, filterAttemptId: string, pcaAttemptId: string, binding: string, reviewId: string, revision: number, reason: string): Promise<ClusterState> {
+  return request(`${clusterPath(sessionId, runId, filterAttemptId, pcaAttemptId)}/execute`, jsonInit('POST', { binding_sha256: binding, dimension_review_id: reviewId, revision, reason }))
+}
+
+export function clusterDiagnosticPath(sessionId: string, runId: string, filterAttemptId: string, pcaAttemptId: string, attemptId: string): string {
+  return `${clusterPath(sessionId, runId, filterAttemptId, pcaAttemptId)}/${encodeURIComponent(attemptId)}/diagnostic`
 }

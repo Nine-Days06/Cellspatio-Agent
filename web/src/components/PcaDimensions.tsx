@@ -6,8 +6,8 @@ import { fetchPcaDimensions, recordPcaDimensions } from '@/lib/api'
 import type { PcaDimensionsState } from '@/lib/types'
 
 /** 人工选择是独立事实；本控件没有分析执行入口。 */
-export function PcaDimensions({ sessionId, runId, filterAttemptId, attemptId, revision, onRecorded }: {
-  sessionId: string; runId: string; filterAttemptId: string; attemptId: string; revision: number; onRecorded?: () => void
+export function PcaDimensions({ sessionId, runId, filterAttemptId, attemptId, revision, disabled = false, onRecorded }: {
+  sessionId: string; runId: string; filterAttemptId: string; attemptId: string; revision: number; disabled?: boolean; onRecorded?: () => void
 }) {
   const [state, setState] = useState<PcaDimensionsState | null>(null)
   const [nDims, setNDims] = useState('')
@@ -59,7 +59,7 @@ export function PcaDimensions({ sessionId, runId, filterAttemptId, attemptId, re
 
   const k = Number(nDims)
   const valid = /^\d+$/.test(nDims) && Number.isInteger(k) && k >= 1 && k <= (state?.evidence?.actual_pcs ?? 0)
-  const available = !!state?.binding_sha256 && !busy && state.blocked.length === 0
+  const available = !!state?.binding_sha256 && !busy && !disabled && state.blocked.length === 0
   return <section aria-label="PCA 维度选择记录" className="space-y-3 rounded-lg border border-border p-3">
     <h5 className="font-medium">记录下游维度选择 · 不执行</h5>
     <p>仅支持手工前缀 1..k，无默认或自动推荐。实际 PCs 是证据范围，不是科学适用性保证。</p>

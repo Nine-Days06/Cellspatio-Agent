@@ -45,6 +45,7 @@ def view(run: dict[str, Any], blocked: str | None = None) -> dict[str, Any]:
         "approvals": [p for p in run["previews"] if p["status"] == "approved"],
         "blocked": [blocked] if blocked else [],
         "pca_running": any(a["status"] == "running" for a in run.get("pca_attempts", [])),
+        "cluster_running": any(a["status"] == "running" for a in run.get("cluster_attempts", [])),
         "attempts": [
             {
                 **{

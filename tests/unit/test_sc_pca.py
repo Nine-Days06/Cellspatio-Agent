@@ -39,6 +39,7 @@ def outputs(script):
     source = json.loads(Path(script).read_text().split("parent_dir <- ")[1].splitlines()[0])
     parent = Path(source)
     rows = list(csv.DictReader((parent / "features.csv").open()))
+    barcodes = [r["barcode"] for r in csv.DictReader((parent / "barcodes.csv").open())]
     keys = [f"F{i:08d}" for i in range(1, 4)]
     fields = [*rows[0], "parent_rowname", "seurat_feature_key"]
     mapping = [[*r.values(), r["unique_name"], k] for r, k in zip(rows, keys, strict=True)]
@@ -51,7 +52,7 @@ def outputs(script):
     table(
         directory / "pca_embeddings.csv",
         ["barcode", "PC_1", "PC_2"],
-        [[b, 1, 2] for b in ("c1", "c2", "c3")],
+        [[b, i + 1, (i % 3) + 1] for i, b in enumerate(barcodes)],
     )
     table(
         directory / "pca_loadings.csv",
@@ -68,7 +69,7 @@ def outputs(script):
     (directory / "summary.json").write_text(
         json.dumps(
             {
-                "cells": 3,
+                "cells": len(barcodes),
                 "features": 3,
                 "selected_features": 3,
                 "usable_features": 3,
@@ -83,10 +84,19 @@ def outputs(script):
 
 
 @pytest.fixture
-def parent_ready(tmp_path, monkeypatch):
+def parent_ready(tmp_path, monkeypatch, request):
     """走已有固定 QC、注册、预览、批准、过滤 API；仅 R 替身。"""
     source = tmp_path / "counts.csv"
-    source.write_text("gene,c1,c2,c3\nMT-X,1,2,3\nA_B,2,3,1\nA|B,3,1,2\n")
+    cells = getattr(request, "param", 3)
+    barcodes = [f"c{i}" for i in range(1, cells + 1)]
+    table(
+        source,
+        ["gene", *barcodes],
+        [
+            [g, *[(i + shift) % 3 + 1 for i in range(cells)]]
+            for shift, g in enumerate(("MT-X", "A_B", "A|B"))
+        ],
+    )
     root = tmp_path / "data/analysis/sc_qc"
 
     def qc_output(script):
@@ -99,7 +109,7 @@ def parent_ready(tmp_path, monkeypatch):
         table(
             directory / "cell_qc.csv",
             ["barcode", "nCount_RNA", "nFeature_RNA", "percent_mt", "missing_reason"],
-            [[b, 6, 3, 100 / 6 * i, ""] for i, b in enumerate(("c1", "c2", "c3"), 1)],
+            [[b, 6, 3, 100 / 6 * (i % 3 + 1), ""] for i, b in enumerate(barcodes)],
         )
         (directory / "versions.txt").write_text("R 4.6.1\nSeurat 5.6.0\nMatrix 1.7.5\n")
         (directory / "qc.png").write_bytes(b"\x89PNG\r\n\x1a\n")
@@ -128,8 +138,8 @@ def parent_ready(tmp_path, monkeypatch):
 
     def filter_output(script):
         directory = Path(script).parent
-        table(directory / "barcodes.csv", ["barcode"], [[b] for b in ("c1", "c2", "c3")])
-        (directory / "dimensions.txt").write_text("3\n3\n9\n")
+        table(directory / "barcodes.csv", ["barcode"], [[b] for b in barcodes])
+        (directory / "dimensions.txt").write_text(f"3\n{cells}\n{cells * 3}\n")
         (directory / "versions.txt").write_text("R 4.6.1\nSeurat 5.6.0\nMatrix 1.7.5\n")
         (directory / "filtered_counts.rds").write_bytes(b"mock-counts")
         return SimpleNamespace(returncode=0, stdout="ok", stderr="")

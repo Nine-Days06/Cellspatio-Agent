@@ -5,6 +5,11 @@ import { executePca, fetchPca, fetchPcaDimensions } from '@/lib/api'
 import type { PcaState } from '@/lib/types'
 
 vi.mock('@/lib/api', () => ({ fetchPca: vi.fn(), executePca: vi.fn(), fetchPcaDimensions: vi.fn(), recordPcaDimensions: vi.fn(), pcaDiagnosticPath: () => '/local/diagnostic' }))
+vi.mock('@/components/ClusterReview', () => ({
+  ClusterReview: ({ onRunning }: { onRunning?: (running: boolean) => void }) => (
+    <button type="button" onClick={() => onRunning?.(true)}>模拟聚类运行</button>
+  ),
+}))
 const initial: PcaState = { run_id: 'r1', filter_attempt_id: 'f1', protocol: { normalize: 'LogNormalize' }, tool_version: '1.0.0', binding_sha256: 'binding', source_summary: { cells: 3, features: 3 }, blocked: [], attempts: [] }
 const completed: PcaState = { ...initial, attempts: [{ attempt_id: 'a1', binding_sha256: 'binding', status: 'completed', created_at: 'now', finished_at: 'later', result: { cells: 3, usable_features: 3, actual_pcs: 2 } }] }
 
@@ -88,5 +93,22 @@ describe('PCA independent authorization', () => {
     expect(executePca).toHaveBeenCalledOnce()
     expect(fetchPca).toHaveBeenCalledTimes(2)
     expect(screen.getByRole('button', { name: '独立授权并执行归一化与 PCA' })).toBeDisabled()
+  })
+
+  it('revision 更新重读权威状态，聚类运行使用独立阶段文案且不轮询 PCA', async () => {
+    const view = render(<PcaReview sessionId="s1" runId="r1" filterAttemptId="f1" revision={4} />)
+    await screen.findByText(/父过滤：3 细胞/)
+    vi.mocked(fetchPca).mockClear()
+    view.rerender(<PcaReview sessionId="s1" runId="r1" filterAttemptId="f1" revision={5} />)
+    await waitFor(() => expect(fetchPca).toHaveBeenCalledWith('s1', 'r1', 'f1'))
+    vi.mocked(fetchPca).mockResolvedValue(completed)
+    view.rerender(<PcaReview sessionId="s1" runId="r1" filterAttemptId="f1" revision={6} />)
+    await screen.findByText('PCA 已保存，等待维度选择复核')
+    fireEvent.click(screen.getByRole('button', { name: '模拟聚类运行' }))
+    expect(screen.getByRole('button', { name: '聚类与 UMAP 运行中…' })).toBeDisabled()
+    expect(screen.getByText(/聚类与 UMAP 运行中；该 run 的阈值/)).toBeInTheDocument()
+    const calls = vi.mocked(fetchPca).mock.calls.length
+    await new Promise((resolve) => setTimeout(resolve, 1700))
+    expect(fetchPca).toHaveBeenCalledTimes(calls)
   })
 })

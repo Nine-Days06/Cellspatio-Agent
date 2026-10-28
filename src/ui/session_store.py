@@ -100,6 +100,26 @@ CREATE TABLE IF NOT EXISTS sc_pca_dimension_reviews (
     message_id INTEGER REFERENCES messages(id) ON DELETE SET NULL,
     UNIQUE(pca_attempt_id, binding_sha256, record_version, source_revision)
 );
+CREATE TABLE IF NOT EXISTS sc_cluster_attempts (
+    attempt_id TEXT PRIMARY KEY,
+    run_id TEXT NOT NULL REFERENCES qc_runs(run_id) ON DELETE CASCADE,
+    pca_attempt_id TEXT NOT NULL REFERENCES sc_pca_attempts(attempt_id) ON DELETE CASCADE,
+    review_id TEXT NOT NULL REFERENCES sc_pca_dimension_reviews(review_id) ON DELETE CASCADE,
+    snapshot TEXT NOT NULL,
+    binding_sha256 TEXT NOT NULL,
+    tool_version TEXT NOT NULL,
+    protocol TEXT NOT NULL,
+    source_revision INTEGER NOT NULL,
+    claim_revision INTEGER NOT NULL,
+    reason TEXT NOT NULL,
+    directory TEXT NOT NULL UNIQUE,
+    status TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    finished_at TEXT,
+    result TEXT,
+    message_id INTEGER REFERENCES messages(id) ON DELETE SET NULL,
+    UNIQUE(pca_attempt_id, binding_sha256, tool_version)
+);
 """
 
 
@@ -216,6 +236,12 @@ class SessionStore:
                 (session_id,),
             ).fetchone():
                 raise ValueError("PCA 运行中，不能删除会话")
+            if conn.execute(
+                "SELECT 1 FROM sc_cluster_attempts a JOIN qc_runs r USING(run_id) "
+                "WHERE r.session_id = ? AND a.status = 'running'",
+                (session_id,),
+            ).fetchone():
+                raise ValueError("聚类运行中，不能删除会话")
             conn.execute("DELETE FROM messages WHERE session_id = ?", (session_id,))
             conn.execute("DELETE FROM sessions WHERE id = ?", (session_id,))
 
@@ -288,6 +314,9 @@ class SessionStore:
                 "ON d.pca_attempt_id = a.attempt_id WHERE a.run_id = ? ORDER BY d.rowid",
                 (run_id,),
             ).fetchall()
+            cluster_attempts = conn.execute(
+                "SELECT * FROM sc_cluster_attempts WHERE run_id = ? ORDER BY rowid", (run_id,)
+            ).fetchall()
         run = dict(row)
         run["evidence"] = json.loads(run["evidence"])
         run["previews"] = [
@@ -310,6 +339,14 @@ class SessionStore:
         ]
         run["dimension_reviews"] = [
             {**dict(d), "dims": json.loads(d["dims"])} for d in dimension_reviews
+        ]
+        run["cluster_attempts"] = [
+            {
+                **dict(a),
+                "snapshot": json.loads(a["snapshot"]),
+                "result": json.loads(a["result"]) if a["result"] else None,
+            }
+            for a in cluster_attempts
         ]
         return run
 
@@ -394,6 +431,10 @@ class SessionStore:
             "SELECT 1 FROM sc_pca_attempts WHERE run_id = ? AND status = 'running'", (run_id,)
         ).fetchone():
             raise ValueError("PCA 运行中，不能修改选择")
+        if conn.execute(
+            "SELECT 1 FROM sc_cluster_attempts WHERE run_id = ? AND status = 'running'", (run_id,)
+        ).fetchone():
+            raise ValueError("聚类运行中，不能修改选择")
 
     def start_sc_filter(
         self,
@@ -765,6 +806,218 @@ class SessionStore:
                 "UPDATE sc_pca_attempts SET status = 'interrupted', finished_at = ? "
                 "WHERE status = 'running'",
                 (_now(),),
+            )
+
+    @staticmethod
+    def _cluster_source_matches(
+        conn: sqlite3.Connection, run: sqlite3.Row, snapshot: dict[str, Any]
+    ) -> bool:
+        """只比较认领快照，不把本次 revision 推进当上游失效。"""
+        if json.loads(run["evidence"]) != snapshot["evidence"]:
+            return False
+        parent, pca, review = snapshot["parent"], snapshot["pca"], snapshot["review"]
+        live_parent = conn.execute(
+            "SELECT a.*, p.status AS approval FROM sc_filter_attempts a JOIN qc_previews p USING(preview_id) "
+            "WHERE a.attempt_id = ? AND a.run_id = ?",
+            (parent["attempt_id"], run["run_id"]),
+        ).fetchone()
+        live_pca = conn.execute(
+            "SELECT * FROM sc_pca_attempts WHERE attempt_id = ? AND run_id = ?",
+            (pca["attempt_id"], run["run_id"]),
+        ).fetchone()
+        live_review = conn.execute(
+            "SELECT * FROM sc_pca_dimension_reviews WHERE pca_attempt_id = ? ORDER BY rowid DESC LIMIT 1",
+            (pca["attempt_id"],),
+        ).fetchone()
+        return bool(
+            live_parent
+            and live_pca
+            and live_review
+            and run["active_preview_id"] == parent["preview_id"]
+            and live_parent["approval"] == "approved"
+            and live_parent["status"] == live_pca["status"] == "completed"
+            and all(
+                live_parent[k] == parent[k]
+                for k in ("preview_id", "binding_sha256", "tool_version", "directory")
+            )
+            and json.loads(live_parent["result"]) == parent["result"]
+            and all(
+                live_pca[k] == pca[k]
+                for k in (
+                    "filter_attempt_id",
+                    "binding_sha256",
+                    "tool_version",
+                    "protocol",
+                    "directory",
+                )
+            )
+            and json.loads(live_pca["result"]) == pca["result"]
+            and {**dict(live_review), "dims": json.loads(live_review["dims"])} == review
+        )
+
+    def start_sc_cluster(
+        self,
+        session_id: str,
+        run_id: str,
+        revision: int,
+        snapshot: dict[str, Any],
+        binding: str,
+        tool_version: str,
+        protocol: dict[str, Any],
+        reason: str,
+        directory: str,
+        attempt_id: str,
+    ) -> dict[str, Any]:
+        """短事务 CAS 认领，保存完整授权维度和父身份快照。"""
+        with self._conn() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            run = conn.execute(
+                "SELECT * FROM qc_runs WHERE session_id = ? AND run_id = ?", (session_id, run_id)
+            ).fetchone()
+            if run is None:
+                raise ValueError("QC 关联不存在")
+            previous = conn.execute(
+                "SELECT * FROM sc_cluster_attempts WHERE pca_attempt_id = ? AND binding_sha256 = ? AND tool_version = ?",
+                (snapshot["pca"]["attempt_id"], binding, tool_version),
+            ).fetchone()
+            if previous:
+                if previous["review_id"] != snapshot["review"]["review_id"]:
+                    raise ValueError("维度关联冲突")
+                return {**dict(previous), "claimed": False}
+            self._require_no_filter(conn, run_id)
+            if (
+                run["revision"] != revision
+                or snapshot["review"]["source_revision"] + 1 != revision
+                or not self._cluster_source_matches(conn, run, snapshot)
+            ):
+                raise ValueError("维度或父身份已变化，请刷新后重新授权")
+            conn.execute(
+                "INSERT INTO sc_cluster_attempts (attempt_id, run_id, pca_attempt_id, review_id, snapshot, "
+                "binding_sha256, tool_version, protocol, source_revision, claim_revision, reason, directory, status, created_at) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'running', ?)",
+                (
+                    attempt_id,
+                    run_id,
+                    snapshot["pca"]["attempt_id"],
+                    snapshot["review"]["review_id"],
+                    json.dumps(snapshot, ensure_ascii=False),
+                    binding,
+                    tool_version,
+                    json.dumps(protocol),
+                    revision,
+                    revision + 1,
+                    reason,
+                    directory,
+                    _now(),
+                ),
+            )
+            conn.execute("UPDATE qc_runs SET revision = revision + 1 WHERE run_id = ?", (run_id,))
+            row = dict(
+                conn.execute(
+                    "SELECT * FROM sc_cluster_attempts WHERE attempt_id = ?", (attempt_id,)
+                ).fetchone()
+            )
+        return {**row, "snapshot": snapshot, "claimed": True}
+
+    def finish_sc_cluster(
+        self, attempt_id: str, result: dict[str, Any], expected: dict[str, Any] | None = None
+    ) -> dict[str, Any]:
+        """终态/消息/revision 原子保存；外部改变只阻止成功，不阻止失败收口。"""
+        if result["status"] not in ("completed", "failed", "interrupted"):
+            raise ValueError("聚类终态非法")
+        with self._conn() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            attempt = conn.execute(
+                "SELECT * FROM sc_cluster_attempts WHERE attempt_id = ?", (attempt_id,)
+            ).fetchone()
+            if attempt is None or attempt["status"] != "running":
+                raise ValueError("聚类任务不在运行状态")
+            run = conn.execute(
+                "SELECT * FROM qc_runs WHERE run_id = ?", (attempt["run_id"],)
+            ).fetchone()
+            snapshot = json.loads(attempt["snapshot"])
+            if result["status"] == "completed" and (
+                expected is None
+                or run["revision"] != expected["claim_revision"]
+                or snapshot != expected["snapshot"]
+                or any(
+                    attempt[k] != expected[k]
+                    for k in (
+                        "run_id",
+                        "pca_attempt_id",
+                        "review_id",
+                        "binding_sha256",
+                        "tool_version",
+                        "protocol",
+                        "source_revision",
+                        "claim_revision",
+                        "directory",
+                        "reason",
+                    )
+                )
+                or not self._cluster_source_matches(conn, run, snapshot)
+            ):
+                result = {**result, "status": "failed", "error": "运行中授权快照或父身份发生变化"}
+            sid, now = run["session_id"], _now()
+            seq = conn.execute(
+                "SELECT COALESCE(MAX(seq), 0) + 1 FROM messages WHERE session_id = ?", (sid,)
+            ).fetchone()[0]
+            message_id = conn.execute(
+                "INSERT INTO messages (session_id, seq, role, content, timestamp, results) VALUES (?, ?, 'assistant', ?, ?, ?)",
+                (
+                    sid,
+                    seq,
+                    "聚类与 UMAP 产物已保存，科学未复核；未执行 markers 或注释。"
+                    if result["status"] == "completed"
+                    else "聚类与 UMAP 失败或中断，本地证据保留；不会自动重跑。",
+                    now,
+                    _encode_results(
+                        {
+                            "sc_cluster": {
+                                "run_id": attempt["run_id"],
+                                "pca_attempt_id": attempt["pca_attempt_id"],
+                                "attempt_id": attempt_id,
+                                "stage": "cluster_review",
+                                "technical_status": result["status"],
+                                "scientific_status": "unreviewed",
+                            }
+                        }
+                    ),
+                ),
+            ).lastrowid
+            conn.execute(
+                "UPDATE sc_cluster_attempts SET status = ?, finished_at = ?, result = ?, message_id = ? WHERE attempt_id = ?",
+                (
+                    result["status"],
+                    now,
+                    json.dumps(result, ensure_ascii=False),
+                    message_id,
+                    attempt_id,
+                ),
+            )
+            conn.execute(
+                "UPDATE qc_runs SET revision = revision + 1 WHERE run_id = ?", (run["run_id"],)
+            )
+            conn.execute("UPDATE sessions SET updated_at = ? WHERE id = ?", (now, sid))
+        return result
+
+    def interrupt_sc_clusters(self) -> None:
+        """单进程启动中断遗留作业，安全消息与 revision 随终态原子提交。"""
+        with self._conn() as conn:
+            ids = [
+                r[0]
+                for r in conn.execute(
+                    "SELECT attempt_id FROM sc_cluster_attempts WHERE status = 'running'"
+                )
+            ]
+        for attempt_id in ids:
+            self.finish_sc_cluster(
+                attempt_id,
+                {
+                    "status": "interrupted",
+                    "stage": "cluster_review",
+                    "scientific_status": "unreviewed",
+                },
             )
 
     def get_messages(self, session_id: str) -> list[dict[str, Any]]:

@@ -16,7 +16,7 @@
 - **引导式分析**：自然语言驱动的人类单细胞与空间/时序组学数据分析
 - **知识增强**：基于 RAG + 知识图谱的专业问答
 - **跨源基因统一**：各源入库文本统一为 NCBIGene CURIE token（`src/data/gene_map.py`），GEO/KEGG/UniProt/Reactome/HPA/PubMed 的基因实体在 LightRAG 图中跨源合并
-- **分析覆盖**：bulk 差异表达、空间转录组；受控单细胞入口停在 QC / 过滤 / PCA 审阅与人工维度记录，未接聚类或注释；知识问答跨组学
+- **分析覆盖**：bulk 差异表达、空间转录组；受控单细胞入口覆盖 QC、过滤、PCA 与人工维度记录，并在 completed PCA 下独立授权固定 neighbors / Louvain / UMAP，停在聚类结果未复核；未接 markers 或注释；知识问答跨组学
 - **脚本确认**：差异表达与空间分析的 LLM 脚本确认后执行，失败自动修复（≤2 次）；受控单细胞使用固定工具，失败不自动修复或重跑
 - **单细胞/时空**：Seurat / Visium 流程
 - **混合架构**：Python 控制 + R 分析，发挥各自优势

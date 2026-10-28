@@ -66,7 +66,7 @@ export function QcReview({ sessionId, runId, onRecorded }: { sessionId: string; 
     return () => { generation.current++ }
   }, [sessionId, runId])
 
-  const running = (state?.attempts?.some((attempt) => attempt.status === 'running') ?? false) || !!state?.pca_running || pcaRunning.length > 0
+  const running = (state?.attempts?.some((attempt) => attempt.status === 'running') ?? false) || !!state?.pca_running || !!state?.cluster_running || pcaRunning.length > 0
   useEffect(() => {
     if (!running || busy) return
     const ticket = generation.current

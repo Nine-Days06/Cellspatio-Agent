@@ -80,6 +80,7 @@ export interface QcReviewState {
   blocked: string[]
   attempts?: FilterAttempt[]
   pca_running?: boolean
+  cluster_running?: boolean
 }
 
 export interface PcaState {
@@ -111,6 +112,34 @@ export interface PcaDimensionReview {
   created_at: string
   message_id: number | null
   invalidated_reason?: string | null
+}
+
+export interface ClusterState {
+  run_id: string
+  pca_attempt_id: string
+  revision: number
+  protocol: Record<string, unknown>
+  tool_version: string
+  stage: 'cluster_review'
+  scientific_status: 'unreviewed'
+  binding_sha256: string | null
+  selection: { review_id: string; dims: number[]; record_version: string } | null
+  source_summary: { cells: number; actual_pcs: number; n_epochs: number } | null
+  blocked: string[]
+  attempts: {
+    attempt_id: string
+    review_id: string
+    binding_sha256: string
+    status: FilterAttempt['status']
+    created_at: string
+    finished_at: string | null
+    source_revision: number
+    claim_revision: number
+    dims: number[]
+    invalidated_reason: string | null
+    error: string | null
+    result: { cells: number; clusters: number; n_epochs: number; seurat_threads: number; versions: string[]; cluster_sizes: { cluster_id: string; cells: number; proportion: number }[] } | null
+  }[]
 }
 
 export interface PcaDimensionsState {
