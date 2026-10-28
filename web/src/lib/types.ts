@@ -100,6 +100,34 @@ export interface PcaState {
   }[]
 }
 
+export interface PcaDimensionReview {
+  review_id: string
+  pca_attempt_id: string
+  binding_sha256: string
+  record_version: string
+  source_revision: number
+  dims: number[]
+  reason: string
+  created_at: string
+  message_id: number | null
+  invalidated_reason?: string | null
+}
+
+export interface PcaDimensionsState {
+  run_id: string
+  filter_attempt_id: string
+  attempt_id: string
+  record_version: string
+  stage: 'pca_review'
+  scientific_status: 'unreviewed'
+  revision: number
+  binding_sha256: string | null
+  evidence: { actual_pcs: number; stdev: { pc: string; stdev: number }[] } | null
+  blocked: string[]
+  current: PcaDimensionReview | null
+  history: PcaDimensionReview[]
+}
+
 export interface FilterAttempt {
   attempt_id: string
   preview_id: string

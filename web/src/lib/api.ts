@@ -8,6 +8,7 @@ import type {
   QcReviewState,
   QcThresholds,
   PcaState,
+  PcaDimensionsState,
 } from '@/lib/types'
 
 /** 统一 HTTP 错误：message 直接用后端 detail（已是中文），UI 可直接展示。 */
@@ -120,4 +121,12 @@ export function executePca(sessionId: string, runId: string, filterAttemptId: st
 
 export function pcaDiagnosticPath(sessionId: string, runId: string, filterAttemptId: string, attemptId: string): string {
   return `${pcaPath(sessionId, runId, filterAttemptId)}/${encodeURIComponent(attemptId)}/diagnostic`
+}
+
+export function fetchPcaDimensions(sessionId: string, runId: string, filterAttemptId: string, attemptId: string): Promise<PcaDimensionsState> {
+  return request(`${pcaPath(sessionId, runId, filterAttemptId)}/${encodeURIComponent(attemptId)}/dimensions`)
+}
+
+export function recordPcaDimensions(sessionId: string, runId: string, filterAttemptId: string, attemptId: string, binding: string, revision: number, nDims: number, reason: string): Promise<PcaDimensionsState> {
+  return request(`${pcaPath(sessionId, runId, filterAttemptId)}/${encodeURIComponent(attemptId)}/dimensions`, jsonInit('POST', { binding_sha256: binding, revision, n_dims: nDims, reason }))
 }

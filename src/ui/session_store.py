@@ -88,6 +88,18 @@ CREATE TABLE IF NOT EXISTS sc_pca_attempts (
     message_id INTEGER REFERENCES messages(id) ON DELETE SET NULL,
     UNIQUE(filter_attempt_id, binding_sha256, tool_version)
 );
+CREATE TABLE IF NOT EXISTS sc_pca_dimension_reviews (
+    review_id TEXT PRIMARY KEY,
+    pca_attempt_id TEXT NOT NULL REFERENCES sc_pca_attempts(attempt_id) ON DELETE CASCADE,
+    binding_sha256 TEXT NOT NULL,
+    record_version TEXT NOT NULL,
+    source_revision INTEGER NOT NULL,
+    dims TEXT NOT NULL,
+    reason TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    message_id INTEGER REFERENCES messages(id) ON DELETE SET NULL,
+    UNIQUE(pca_attempt_id, binding_sha256, record_version, source_revision)
+);
 """
 
 
@@ -271,6 +283,11 @@ class SessionStore:
             pca_attempts = conn.execute(
                 "SELECT * FROM sc_pca_attempts WHERE run_id = ? ORDER BY rowid", (run_id,)
             ).fetchall()
+            dimension_reviews = conn.execute(
+                "SELECT d.* FROM sc_pca_dimension_reviews d JOIN sc_pca_attempts a "
+                "ON d.pca_attempt_id = a.attempt_id WHERE a.run_id = ? ORDER BY d.rowid",
+                (run_id,),
+            ).fetchall()
         run = dict(row)
         run["evidence"] = json.loads(run["evidence"])
         run["previews"] = [
@@ -290,6 +307,9 @@ class SessionStore:
         run["pca_attempts"] = [
             {**dict(a), "result": json.loads(a["result"]) if a["result"] else None}
             for a in pca_attempts
+        ]
+        run["dimension_reviews"] = [
+            {**dict(d), "dims": json.loads(d["dims"])} for d in dimension_reviews
         ]
         return run
 
@@ -610,6 +630,132 @@ class SessionStore:
                 "UPDATE qc_runs SET revision = revision + 1 WHERE run_id = ?", (attempt["run_id"],)
             )
             conn.execute("UPDATE sessions SET updated_at = ? WHERE id = ?", (now, sid))
+
+    def record_pca_dimensions(
+        self,
+        session_id: str,
+        run: dict[str, Any],
+        parent: dict[str, Any],
+        attempt: dict[str, Any],
+        binding: str,
+        version: str,
+        revision: int,
+        dims: list[int],
+        reason: str,
+    ) -> None:
+        """追加人工事实与安全消息；CAS 防止校验期间发生选择变化。"""
+        # shortcut: 文件哈希在事务外检查，本地证据可被外部改写；生产隔离另片处理。
+        with self._conn() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            row = conn.execute(
+                "SELECT * FROM qc_runs WHERE session_id = ? AND run_id = ?",
+                (session_id, run["run_id"]),
+            ).fetchone()
+            if row is None:
+                raise ValueError("QC 关联不存在")
+            previous = conn.execute(
+                "SELECT * FROM sc_pca_dimension_reviews WHERE pca_attempt_id = ? "
+                "AND binding_sha256 = ? AND record_version = ? AND source_revision = ?",
+                (attempt["attempt_id"], binding, version, revision),
+            ).fetchone()
+            if previous:
+                if json.loads(previous["dims"]) != dims or previous["reason"] != reason:
+                    raise ValueError("同一 revision 的记录内容冲突，请刷新")
+                return
+            self._require_no_filter(conn, run["run_id"])
+            live_parent = conn.execute(
+                "SELECT a.*, p.status AS approval FROM sc_filter_attempts a "
+                "JOIN qc_previews p USING(preview_id) WHERE a.attempt_id = ? AND a.run_id = ?",
+                (parent["attempt_id"], run["run_id"]),
+            ).fetchone()
+            live_pca = conn.execute(
+                "SELECT * FROM sc_pca_attempts WHERE attempt_id = ? AND run_id = ?",
+                (attempt["attempt_id"], run["run_id"]),
+            ).fetchone()
+            if (
+                row["revision"] != revision
+                or json.loads(row["evidence"]) != run["evidence"]
+                or live_parent is None
+                or live_parent["status"] != "completed"
+                or live_parent["approval"] != "approved"
+                or row["active_preview_id"] != parent["preview_id"]
+                or any(
+                    live_parent[k] != parent[k]
+                    for k in ("binding_sha256", "tool_version", "directory")
+                )
+                or json.loads(live_parent["result"]) != parent["result"]
+                or live_pca is None
+                or live_pca["status"] != "completed"
+                or any(
+                    live_pca[k] != attempt[k]
+                    for k in (
+                        "filter_attempt_id",
+                        "binding_sha256",
+                        "tool_version",
+                        "protocol",
+                        "directory",
+                    )
+                )
+                or json.loads(live_pca["result"]) != attempt["result"]
+            ):
+                raise ValueError("PCA 或父选择已变化，请刷新后重新记录")
+            latest = conn.execute(
+                "SELECT * FROM sc_pca_dimension_reviews WHERE pca_attempt_id = ? ORDER BY rowid DESC LIMIT 1",
+                (attempt["attempt_id"],),
+            ).fetchone()
+            if (
+                latest
+                and latest["binding_sha256"] == binding
+                and latest["record_version"] == version
+                and latest["source_revision"] + 1 == revision
+                and json.loads(latest["dims"]) == dims
+                and latest["reason"] == reason
+            ):
+                return
+            review_id, now = uuid.uuid4().hex, _now()
+            seq = conn.execute(
+                "SELECT COALESCE(MAX(seq), 0) + 1 FROM messages WHERE session_id = ?", (session_id,)
+            ).fetchone()[0]
+            message_id = conn.execute(
+                "INSERT INTO messages (session_id, seq, role, content, timestamp, results) "
+                "VALUES (?, ?, 'assistant', ?, ?, ?)",
+                (
+                    session_id,
+                    seq,
+                    "维度选择已记录，科学未复核；未授权下游执行。",
+                    now,
+                    _encode_results(
+                        {
+                            "pca_dimensions": {
+                                "run_id": run["run_id"],
+                                "filter_attempt_id": parent["attempt_id"],
+                                "attempt_id": attempt["attempt_id"],
+                                "review_id": review_id,
+                                "stage": "pca_review",
+                                "scientific_status": "unreviewed",
+                            }
+                        }
+                    ),
+                ),
+            ).lastrowid
+            conn.execute(
+                "INSERT INTO sc_pca_dimension_reviews VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (
+                    review_id,
+                    attempt["attempt_id"],
+                    binding,
+                    version,
+                    revision,
+                    json.dumps(dims),
+                    reason,
+                    now,
+                    message_id,
+                ),
+            )
+            conn.execute(
+                "UPDATE qc_runs SET revision = revision + 1 WHERE run_id = ?", (run["run_id"],)
+            )
+            conn.execute("UPDATE sessions SET updated_at = ? WHERE id = ?", (now, session_id))
 
     def interrupt_sc_pcas(self) -> None:
         """单进程启动恢复：旧 running 标中断，不接管或重跑。"""

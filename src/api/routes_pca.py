@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import json
+import logging
 import sqlite3
 import uuid
 from pathlib import Path
@@ -11,13 +13,21 @@ from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import Response
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
-from src.analysis.qc_preview import _identity
-from src.analysis.sc_pca import PCA_TOOL_VERSION, PROTOCOL, checked_parent, run_sc_pca
+from src.analysis.qc_preview import _digest, _identity
+from src.analysis.sc_pca import (
+    PCA_TOOL_VERSION,
+    PROTOCOL,
+    checked_completed_pca,
+    checked_parent,
+    run_sc_pca,
+)
 from src.api.chat_service import session_lock
 from src.api.routes_qc import qc_root, require_run
 from src.ui.session_store import SessionStore
 
 router = APIRouter(prefix="/api/sessions/{session_id}/qc/{run_id}/pca", tags=["pca"])
+logger = logging.getLogger(__name__)
+DIMENSION_RECORD_VERSION = "sc-pca-dimensions/1.0.0"
 
 
 def require_parent(run: dict[str, Any], filter_attempt_id: str) -> dict[str, Any]:
@@ -169,6 +179,167 @@ def execute_pca(
         raise HTTPException(409, str(exc)) from exc
     finally:
         lock.release()
+
+
+def require_pca(run: dict[str, Any], filter_attempt_id: str, attempt_id: str) -> dict[str, Any]:
+    """只定位本会话关联的 PCA，不能借用其他父记录。"""
+    attempt = next(
+        (
+            a
+            for a in run["pca_attempts"]
+            if a["attempt_id"] == attempt_id and a["filter_attempt_id"] == filter_attempt_id
+        ),
+        None,
+    )
+    if attempt is None:
+        raise HTTPException(404, "PCA 关联不存在")
+    return attempt
+
+
+def dimension_view(
+    run: dict[str, Any], parent: dict[str, Any], attempt: dict[str, Any], root: Path
+) -> dict[str, Any]:
+    """恢复当前选择及失效历史；不返回原始细胞表或私有产物路径。"""
+    evidence = None
+    binding = None
+    blocked = []
+    try:
+        checked = checked_completed_pca(run, parent, attempt, root)
+        payload = {
+            "session_id": run["session_id"],
+            "run_id": run["run_id"],
+            "preview_id": parent["preview_id"],
+            "filter_attempt_id": parent["attempt_id"],
+            "pca_attempt_id": attempt["attempt_id"],
+            "pca_parent_binding": attempt["binding_sha256"],
+            "tool_version": PCA_TOOL_VERSION,
+            "protocol": PROTOCOL,
+            "artifacts": checked["artifacts"],
+            "record_version": DIMENSION_RECORD_VERSION,
+        }
+        binding = _digest(json.dumps(payload, sort_keys=True, ensure_ascii=False).encode())
+        evidence = {k: checked[k] for k in ("actual_pcs", "stdev")}
+    except OSError:
+        blocked.append("PCA 或父证据文件不可读取，请检查本地产物")
+    except (ValueError, KeyError, TypeError, OverflowError) as exc:
+        blocked.append(str(exc))
+    if any(a["status"] == "running" for a in [*run["attempts"], *run["pca_attempts"]]):
+        blocked.append("该 run 有阶段运行中，不能记录维度")
+    history = [d for d in run["dimension_reviews"] if d["pca_attempt_id"] == attempt["attempt_id"]]
+    latest = history[-1] if history else None
+    current = (
+        latest
+        if latest
+        and not blocked
+        and (
+            latest["binding_sha256"] == binding
+            and latest["record_version"] == DIMENSION_RECORD_VERSION
+            and latest["source_revision"] + 1 == run["revision"]
+        )
+        else None
+    )
+    return {
+        "run_id": run["run_id"],
+        "filter_attempt_id": parent["attempt_id"],
+        "attempt_id": attempt["attempt_id"],
+        "record_version": DIMENSION_RECORD_VERSION,
+        "stage": "pca_review",
+        "scientific_status": "unreviewed",
+        "revision": run["revision"],
+        "binding_sha256": binding if not blocked else None,
+        "evidence": evidence,
+        "blocked": blocked,
+        "current": current,
+        "history": [
+            {
+                **d,
+                "invalidated_reason": None
+                if d == current
+                else (
+                    "已有更新的人工记录"
+                    if d != latest
+                    else "PCA 身份、父选择、记录版本或 run revision 已变化；需重新明确记录"
+                ),
+            }
+            for d in history
+        ],
+    }
+
+
+@router.get("/{filter_attempt_id}/{attempt_id}/dimensions")
+def get_dimensions(
+    session_id: str, run_id: str, filter_attempt_id: str, attempt_id: str, request: Request
+) -> dict[str, Any]:
+    """只读证据和人工事实，不调用 R、LLM 或 KG。"""
+    run = require_run(SessionStore(), session_id, run_id)
+    return dimension_view(
+        run,
+        require_parent(run, filter_attempt_id),
+        require_pca(run, filter_attempt_id, attempt_id),
+        qc_root(request.app.state.agent),
+    )
+
+
+class DimensionRequest(PcaRequest):
+    """首版仅手工前缀 1..k；严格整数，不接受隐含类型转换。"""
+
+    revision: int = Field(strict=True, ge=0, le=2**63 - 1)
+    n_dims: int = Field(strict=True, ge=1, le=PROTOCOL["pca"]["npcs_max"])
+
+
+@router.post("/{filter_attempt_id}/{attempt_id}/dimensions")
+def record_dimensions(
+    session_id: str,
+    run_id: str,
+    filter_attempt_id: str,
+    attempt_id: str,
+    body: DimensionRequest,
+    request: Request,
+) -> dict[str, Any]:
+    """显式条件写入；旧请求重发只能返回历史，绝不重新激活。"""
+    store = SessionStore()
+    run = require_run(store, session_id, run_id)
+    parent = require_parent(run, filter_attempt_id)
+    attempt = require_pca(run, filter_attempt_id, attempt_id)
+    root = qc_root(request.app.state.agent)
+    previous = next(
+        (
+            d
+            for d in run["dimension_reviews"]
+            if d["pca_attempt_id"] == attempt_id
+            and d["binding_sha256"] == body.binding_sha256
+            and d["record_version"] == DIMENSION_RECORD_VERSION
+            and d["source_revision"] == body.revision
+        ),
+        None,
+    )
+    if previous:
+        if previous["dims"] != list(range(1, body.n_dims + 1)) or previous["reason"] != body.reason:
+            raise HTTPException(409, "同一 revision 的记录内容冲突，请刷新")
+        return dimension_view(run, parent, attempt, root)
+    state = dimension_view(run, parent, attempt, root)
+    if not state["binding_sha256"] or body.binding_sha256 != state["binding_sha256"]:
+        raise HTTPException(409, "PCA 证据绑定不可记录或已变化，请刷新")
+    if body.n_dims > state["evidence"]["actual_pcs"]:
+        raise HTTPException(422, "维度数不能超过已计算的 actual_pcs")
+    try:
+        store.record_pca_dimensions(
+            session_id,
+            run,
+            parent,
+            attempt,
+            body.binding_sha256,
+            DIMENSION_RECORD_VERSION,
+            body.revision,
+            list(range(1, body.n_dims + 1)),
+            body.reason,
+        )
+    except ValueError as exc:
+        raise HTTPException(409, str(exc)) from exc
+    except sqlite3.OperationalError as exc:
+        logger.exception("PCA dimension record database write failed")
+        raise HTTPException(409, "维度记录写入失败，请检查本地数据库并只读刷新") from exc
+    return get_dimensions(session_id, run_id, filter_attempt_id, attempt_id, request)
 
 
 @router.get("/{filter_attempt_id}/{attempt_id}/diagnostic")

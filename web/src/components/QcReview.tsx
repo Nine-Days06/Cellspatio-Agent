@@ -175,7 +175,7 @@ export function QcReview({ sessionId, runId, onRecorded }: { sessionId: string; 
           {attempt.result?.versions && <p>{attempt.result.versions.join(' / ')}</p>}
           <p className="break-all">本地目录：{attempt.directory}</p>
           {attempt.result?.artifacts && <ul>{Object.entries(attempt.result.artifacts).map(([name, artifact]) => <li key={name} className="break-all">{name} · {artifact.bytes.toLocaleString()} bytes · SHA256 {artifact.sha256}</li>)}</ul>}
-          {attempt.status === 'completed' && <PcaReview sessionId={sessionId} runId={runId} filterAttemptId={attempt.attempt_id}
+          {attempt.status === 'completed' && <PcaReview sessionId={sessionId} runId={runId} filterAttemptId={attempt.attempt_id} revision={state!.revision}
             onRunning={(value) => setPcaRunning((ids) => value ? (ids.includes(attempt.attempt_id) ? ids : [...ids, attempt.attempt_id]) : (ids.includes(attempt.attempt_id) ? ids.filter((id) => id !== attempt.attempt_id) : ids))}
             onRecorded={pcaRecorded} />}
         </div>)}

@@ -3,10 +3,12 @@ import { Button } from '@/components/ui/button'
 import { Textarea } from '@/components/ui/textarea'
 import { executePca, fetchPca, pcaDiagnosticPath } from '@/lib/api'
 import type { PcaState } from '@/lib/types'
+import { PcaDimensions } from '@/components/PcaDimensions'
 
 /** PCA 是独立授权；恢复和轮询只有 GET，不会重跑失败或中断。 */
-export function PcaReview({ sessionId, runId, filterAttemptId, onRunning, onRecorded }: {
+export function PcaReview({ sessionId, runId, filterAttemptId, revision, onRunning, onRecorded }: {
   sessionId: string; runId: string; filterAttemptId: string
+  revision: number
   onRunning?: (running: boolean) => void; onRecorded?: () => void
 }) {
   const [state, setState] = useState<PcaState | null>(null)
@@ -94,6 +96,7 @@ export function PcaReview({ sessionId, runId, filterAttemptId, onRunning, onReco
       {a.result?.pc_reduction_reason && <p>{a.result.pc_reduction_reason}</p>}
       {a.result?.versions && <p className="break-all text-xs">{a.result.versions.join(' / ')}</p>}
       {a.status === 'completed' && <img className="h-auto max-w-full" src={pcaDiagnosticPath(sessionId, runId, filterAttemptId, a.attempt_id)} alt="PCA 标准差肘部图与前两主成分诊断；不代表已选择下游维度" />}
+      {a.status === 'completed' && <PcaDimensions key={`${sessionId}:${runId}:${filterAttemptId}:${a.attempt_id}`} sessionId={sessionId} runId={runId} filterAttemptId={filterAttemptId} attemptId={a.attempt_id} revision={revision} onRecorded={onRecorded} />}
     </div>)}
   </section>
 }

@@ -358,6 +358,67 @@ def _check_outputs(directory: Path, parent_directory: Path) -> dict[str, Any]:
     return {**summary, "versions": versions}
 
 
+def checked_completed_pca(
+    run: dict[str, Any], parent: dict[str, Any], attempt: dict[str, Any], root: Path
+) -> dict[str, Any]:
+    """只读复用第四片结构校验及登记身份；不启动 R 或改写证据。"""
+    source = checked_parent(run, parent, root)
+    if (
+        attempt["status"] != "completed"
+        or attempt["filter_attempt_id"] != parent["attempt_id"]
+        or attempt["tool_version"] != PCA_TOOL_VERSION
+        or json.loads(attempt["protocol"]) != PROTOCOL
+        or attempt["binding_sha256"] != source["binding_sha256"]
+    ):
+        raise ValueError("PCA 未完成或当前父绑定、协议、版本不符")
+    directory = Path(attempt["directory"]).resolve()
+    if directory != root.parent / "sc_pca" / attempt["attempt_id"]:
+        raise ValueError("PCA 目录非法")
+    meta_path = directory / "metadata.json"
+    if meta_path.resolve().parent != directory:
+        raise ValueError("PCA metadata 路径非法")
+    meta = json.loads(meta_path.read_bytes())
+    if meta != attempt["result"] or any(
+        meta.get(k) != v
+        for k, v in {
+            "tool": "sc_pca",
+            "tool_version": PCA_TOOL_VERSION,
+            "protocol": PROTOCOL,
+            "run_id": run["run_id"],
+            "filter_attempt_id": parent["attempt_id"],
+            "binding_sha256": source["binding_sha256"],
+            "status": "completed",
+            "stage": "pca_review",
+            "scientific_status": "unreviewed",
+            "returncode": 0,
+            "source_before": source["source"],
+            "source_after": source["source"],
+        }.items()
+    ):
+        raise ValueError("PCA metadata 与权威结果不一致")
+    paths = [directory / name for name in meta["artifacts"]]
+    if any(p.resolve().parent != directory or not p.is_file() for p in paths):
+        raise ValueError("PCA 登记文件缺失或路径非法")
+    identities = {Path(r["path"]).name: r for r in _fingerprints(paths)}
+    if identities != meta["artifacts"] or not set(OUTPUT_FILES) <= identities.keys():
+        raise ValueError("PCA 文件身份已变化")
+    summary = _check_outputs(directory, Path(parent["directory"]).resolve())
+    if any(meta.get(k) != v for k, v in summary.items()):
+        raise ValueError("PCA 汇总与产物不一致")
+    if (directory / "script.R").read_text(encoding="utf-8") != pca_script(
+        Path(parent["directory"]).resolve(), directory
+    ):
+        raise ValueError("PCA 固定脚本不符")
+    return {
+        "actual_pcs": summary["actual_pcs"],
+        "stdev": [
+            {"pc": r["pc"], "stdev": float(r["stdev"])}
+            for r in _records((directory / "pca_stdev.csv").read_bytes())
+        ],
+        "artifacts": identities,
+    }
+
+
 def run_sc_pca(
     run: dict[str, Any],
     parent: dict[str, Any],
