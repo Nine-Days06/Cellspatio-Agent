@@ -24,8 +24,10 @@ def _new_session(client) -> str:
     return client.post("/api/sessions", json={}).json()["session"]["id"]
 
 
-def _stream(client, session_id: str, prompt: str):
-    response = client.post("/api/chat", json={"session_id": session_id, "prompt": prompt})
+def _stream(client, session_id: str, prompt: str, mode: str = "chat"):
+    response = client.post(
+        "/api/chat", json={"session_id": session_id, "prompt": prompt, "mode": mode}
+    )
     assert response.status_code == 200
     assert response.headers["content-type"].startswith("text/event-stream")
     assert response.headers["cache-control"] == "no-cache"
@@ -221,3 +223,37 @@ def test_user_message_persisted_even_when_runtime_fails(client):
     assert stored[0]["role"] == "user"
     assert stored[0]["content"] == "问个问题"
     assert len(stored) == 1
+
+
+def test_unknown_mode_is_rejected_before_creating_turn(client):
+    sid = _new_session(client)
+    response = client.post("/api/chat", json={"session_id": sid, "prompt": "hi", "mode": "bogus"})
+
+    assert response.status_code == 422
+    assert SessionStore().get_messages(sid) == []
+
+
+def test_knowledge_qa_mode_returns_evidence_package(client, monkeypatch):
+    sid = _new_session(client)
+    payload = {
+        "answer_id": "qa-route",
+        "schema_version": "knowledge-qa/1.0.0",
+        "status": "success",
+        "outcome": "insufficient_evidence",
+        "answer": "没有可追溯证据。",
+        "claims": [],
+        "limitations": [],
+        "clarifications": [],
+        "evidence": [],
+        "sources": [],
+        "review_status": "unreviewed",
+    }
+    monkeypatch.setattr("src.knowledge.qa.run_knowledge_qa", lambda *a, **k: payload)
+
+    events = _stream(client, sid, "TP53 的功能是什么？", mode="knowledge_qa")
+
+    assert [event["type"] for event in events] == ["tool_status", "tool_status", "done"]
+    assert events[-1]["message"]["results"]["knowledge_qa"]["answer_id"] == "qa-route"
+    stored = SessionStore().get_messages(sid)
+    assert stored[-1]["content"] == "没有可追溯证据。"
+    assert client.app.state.agent.agent_runtime.calls == []

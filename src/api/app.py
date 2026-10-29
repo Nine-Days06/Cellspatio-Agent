@@ -14,6 +14,7 @@ from fastapi.staticfiles import StaticFiles
 from src.api import (
     routes_chat,
     routes_clusters,
+    routes_markers,
     routes_meta,
     routes_pca,
     routes_qc,
@@ -52,6 +53,7 @@ def create_app(agent: Any) -> FastAPI:
         routes_sessions._store().interrupt_sc_filters()
         routes_sessions._store().interrupt_sc_pcas()
         routes_sessions._store().interrupt_sc_clusters()
+        routes_sessions._store().interrupt_sc_markers()
         yield
 
     app = FastAPI(title="CellSpatio API", lifespan=lifespan)
@@ -62,6 +64,7 @@ def create_app(agent: Any) -> FastAPI:
     app.include_router(routes_qc.router)
     app.include_router(routes_pca.router)
     app.include_router(routes_clusters.router)
+    app.include_router(routes_markers.router)
     app.add_exception_handler(Exception, _unhandled_exception_handler)
     # router 必须先于 StaticFiles 挂载，否则 /api/* 会被 SPA 回退拦截
     if _WEB_DIST.is_dir():

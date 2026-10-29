@@ -14,6 +14,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from src.analysis.qc_preview import _identity
 from src.analysis.sc_pca import (
+    DIMENSION_RECORD_VERSION,
     PCA_TOOL_VERSION,
     PROTOCOL,
     checked_completed_pca,
@@ -28,7 +29,6 @@ from src.ui.session_store import SessionStore
 
 router = APIRouter(prefix="/api/sessions/{session_id}/qc/{run_id}/pca", tags=["pca"])
 logger = logging.getLogger(__name__)
-DIMENSION_RECORD_VERSION = "sc-pca-dimensions/1.0.0"
 
 
 def require_parent(run: dict[str, Any], filter_attempt_id: str) -> dict[str, Any]:
@@ -52,7 +52,12 @@ def view(run: dict[str, Any], parent: dict[str, Any], root: Path) -> dict[str, A
     attempts = [a for a in run["pca_attempts"] if a["filter_attempt_id"] == parent["attempt_id"]]
     if any(
         a["status"] == "running"
-        for a in [*run["attempts"], *run["pca_attempts"], *run.get("cluster_attempts", [])]
+        for a in [
+            *run["attempts"],
+            *run["pca_attempts"],
+            *run.get("cluster_attempts", []),
+            *run.get("marker_attempts", []),
+        ]
     ):
         blocked.append("该 run 有阶段运行中")
     return {
@@ -217,7 +222,12 @@ def dimension_view(
         blocked.append(str(exc))
     if any(
         a["status"] == "running"
-        for a in [*run["attempts"], *run["pca_attempts"], *run.get("cluster_attempts", [])]
+        for a in [
+            *run["attempts"],
+            *run["pca_attempts"],
+            *run.get("cluster_attempts", []),
+            *run.get("marker_attempts", []),
+        ]
     ):
         blocked.append("该 run 有阶段运行中，不能记录维度")
     history = [d for d in run["dimension_reviews"] if d["pca_attempt_id"] == attempt["attempt_id"]]

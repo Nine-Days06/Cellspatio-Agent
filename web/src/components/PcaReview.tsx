@@ -89,9 +89,9 @@ export function PcaReview({ sessionId, runId, filterAttemptId, revision, onRunni
     {state?.source_summary && <p>父过滤：{state.source_summary.cells.toLocaleString()} 细胞 · {state.source_summary.features.toLocaleString()} features</p>}
     {state && <details><summary>完整固定协议与绑定</summary><pre className="whitespace-pre-wrap break-all text-xs">{JSON.stringify(state.protocol, null, 2)}</pre><code className="block break-all text-xs">工具 {state.tool_version} · 父过滤 {filterAttemptId} · 绑定 {state.binding_sha256 ?? '不可授权'}</code></details>}
     <label className="block space-y-1"><span>PCA 授权依据（仅本地记录）</span><Textarea maxLength={2000} value={reason} disabled={busy || running || attempted || !state} onChange={(event) => setReason(event.target.value)} /></label>
-    <Button type="button" disabled={!canExecute} onClick={() => void execute()}>{clusterRunning.length > 0 && !pcaRunning ? '聚类与 UMAP 运行中…' : running ? 'PCA 运行中…' : '独立授权并执行归一化与 PCA'}</Button>
+    <Button type="button" disabled={!canExecute} onClick={() => void execute()}>{clusterRunning.length > 0 && !pcaRunning ? '聚类或 marker 运行中…' : running ? 'PCA 运行中…' : '独立授权并执行归一化与 PCA'}</Button>
     <p className="text-xs text-muted-foreground">授权不是科学认可；刷新不执行，失败和中断不自动重跑。原始 counts 与父 QC 不改写；诊断图仅本地读取。</p>
-    {running && <p role="status">{clusterRunning.length > 0 && !pcaRunning ? '聚类与 UMAP 运行中；该 run 的阈值、过滤与维度记录暂不可用。' : 'PCA 运行中；该 run 的阈值与过滤修改暂不可用。'}</p>}
+    {running && <p role="status">{clusterRunning.length > 0 && !pcaRunning ? '聚类或 marker 运行中；该 run 的阈值、过滤与维度记录暂不可用。' : 'PCA 运行中；该 run 的阈值与过滤修改暂不可用。'}</p>}
     {state?.attempts.map((a) => <div key={a.attempt_id} className="space-y-2">
       <p role="status">{({ running: 'PCA 运行中', completed: 'PCA 已保存，等待维度选择复核', failed: 'PCA 失败，需要人工处理', interrupted: 'PCA 中断，需要人工处理' })[a.status]}</p>
       <code className="block break-all text-xs">{a.attempt_id}</code>
@@ -102,7 +102,7 @@ export function PcaReview({ sessionId, runId, filterAttemptId, revision, onRunni
       {a.status === 'completed' && <img className="h-auto max-w-full" src={pcaDiagnosticPath(sessionId, runId, filterAttemptId, a.attempt_id)} alt="PCA 标准差肘部图与前两主成分诊断；不代表已选择下游维度" />}
       {a.status === 'completed' && <>
         <PcaDimensions key={`${sessionId}:${runId}:${filterAttemptId}:${a.attempt_id}`} sessionId={sessionId} runId={runId} filterAttemptId={filterAttemptId} attemptId={a.attempt_id} revision={revision} disabled={running} onRecorded={onRecorded} />
-        <ClusterReview key={`cluster:${sessionId}:${runId}:${filterAttemptId}:${a.attempt_id}`} sessionId={sessionId} runId={runId} filterAttemptId={filterAttemptId} pcaAttemptId={a.attempt_id} revision={revision} onRecorded={onRecorded} onRunning={(active) => setClusterRunning((ids) => active ? [...ids.filter((id) => id !== a.attempt_id), a.attempt_id] : ids.filter((id) => id !== a.attempt_id))} />
+        <ClusterReview key={`cluster:${sessionId}:${runId}:${filterAttemptId}:${a.attempt_id}`} sessionId={sessionId} runId={runId} filterAttemptId={filterAttemptId} pcaAttemptId={a.attempt_id} revision={revision} disabled={running} onRecorded={onRecorded} onRunning={(active) => setClusterRunning((ids) => active ? [...ids.filter((id) => id !== a.attempt_id), a.attempt_id] : ids.filter((id) => id !== a.attempt_id))} />
       </>}
     </div>)}
   </section>

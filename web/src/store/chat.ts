@@ -9,6 +9,7 @@ import { create } from 'zustand'
 import { streamChat, type SseEvent } from '@/lib/sse'
 import {
   chartFromEvent,
+  type ChatMode,
   type ChartItem,
   type DataCardPayload,
   type ScriptCardPayload,
@@ -63,7 +64,7 @@ interface ChatState {
   /** error 收尾：关 busy + 写错误提示；busy 已关时幂等（不覆盖已有提示） */
   failTurn: (message: string) => void
   /** 发起一轮对话：beginTurn → streamChat 接线；busy 或无会话时直接返回 */
-  send: (prompt: string) => Promise<void>
+  send: (prompt: string, mode?: ChatMode) => Promise<void>
   /** 中止当前流：只 abort 信号，busy 等 onEnd(aborted) 收尾才关 */
   stop: () => void
 }
@@ -219,7 +220,7 @@ export const useChatStore = create<ChatState>((set, get) => {
       set({ busy: false, tools: [], draft: '', notice: { kind: 'error', text: message } })
     },
 
-    async send(prompt) {
+    async send(prompt, mode = 'chat') {
       const { sessionId, busy } = get()
       if (busy || !sessionId) return
 
@@ -230,6 +231,7 @@ export const useChatStore = create<ChatState>((set, get) => {
         await streamChat({
           sessionId,
           prompt,
+          mode,
           signal: controller.signal,
           onEvent: dispatch,
           onEnd: (reason) => {

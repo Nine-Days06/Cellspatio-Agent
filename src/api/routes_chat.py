@@ -6,7 +6,7 @@ import asyncio
 import logging
 import threading
 from collections.abc import AsyncIterator
-from typing import Any
+from typing import Any, Literal
 
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import StreamingResponse
@@ -32,6 +32,7 @@ class ChatRequest(BaseModel):
 
     session_id: str
     prompt: str
+    mode: Literal["chat", "knowledge_qa"] = "chat"
 
 
 @router.post("/chat")
@@ -64,7 +65,7 @@ async def chat(body: ChatRequest, request: Request) -> StreamingResponse:
         def worker() -> None:
             try:
                 try:
-                    run_turn(agent, store, body.session_id, body.prompt, emit)
+                    run_turn(agent, store, body.session_id, body.prompt, emit, mode=body.mode)
                 except Exception as exc:  # 任何失败都要变成 error 事件
                     logger.exception("chat run_turn failed")  # except 块内自动带 traceback
                     emit(

@@ -17,6 +17,7 @@ from src.analysis.sc_filter import FILTER_TOOL_VERSION, filter_script, verified_
 from src.analysis.sc_qc import _fingerprints
 
 PCA_TOOL_VERSION = "1.0.0"
+DIMENSION_RECORD_VERSION = "sc-pca-dimensions/1.0.0"
 PROTOCOL = {
     "schema": "sc-pca/1.0.0",
     "object": {"assay": "RNA", "min.cells": 0, "min.features": 0},

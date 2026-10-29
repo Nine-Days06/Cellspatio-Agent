@@ -279,11 +279,17 @@ PCA 保存对象、特征映射、数值证据与本地诊断图，不改写 cou
 
 当前维度记录有效且 `k >= 2` 时，completed PCA 下另提供“受控邻居图 / 聚类 / UMAP · 独立授权”。需填写本次作业的本地依据并单独执行；记录维度不等于授权。项目固定使用 20-NN Annoy、Louvain（resolution 0.5，seed 42）和二维 30-NN uwot（cosine，seed 42，单线程），要求所选 PCs 为连续前缀且每行范数有限非零、各列非退化。本片至少 31 细胞；不足时阻断，不缩短邻居数或放宽 QC。细胞数不超过 10,000 时 UMAP 500 epochs，否则 200 epochs。
 
-同一 PCA/维度/协议绑定只执行一次；运行中不能修改该 run 的选择、维度或删除会话。失败和中断保留证据且不自动重跑，重试须记录新的维度选择并再次明确授权。成功停在 `cluster_review` / `unreviewed`，展示固定协议、聚类数量、群大小和带编号的 UMAP 图；不运行 markers、不命名细胞类型、不给出科学结论。逐细胞嵌入与数值表、授权依据不进入聊天、外部 LLM 或共享 KG。R 单次执行仍受 300 秒上限；超时如实失败，不自动降参数。
+同一 PCA/维度/协议绑定只执行一次；运行中不能修改该 run 的选择、维度或删除会话。失败和中断保留证据且不自动重跑，重试须记录新的维度选择并再次明确授权。成功停在 `cluster_review` / `unreviewed`，展示固定协议、聚类数量、群大小和带编号的 UMAP 图；不自动运行 markers、不命名细胞类型、不给出科学结论。逐细胞嵌入与数值表、授权依据不进入聊天、外部 LLM 或共享 KG。R 单次执行仍受 300 秒上限；超时如实失败，不自动降参数。
+
+已完成且身份有效的聚类下提供“探索性聚类接受”：查看编号 UMAP、簇大小及限制，明确勾选并填写本地依据。保存只追加绑定此次聚类、协议、产物和 revision 的接受事实，不执行 R，也不代表专家认可。随后另填本次 marker 授权依据并单独点击执行；接受聚类不等于授权 marker。至少需要两簇，每簇及其余合并各不少于 3 细胞；否则阻断，不合并小簇。上游证据或最新接受记录变化时旧结果保留为失效历史，不展示可用候选和图。
+
+固定 marker 使用 RNA 已有 LogNormalize `data`、全部 RNA features、Seurat 5.6.0 + Presto 1.1.0 的全簇 Wilcoxon 快速路径：`max.cells.per.ident=Inf`、`min.pct=0.01`、`logfc.threshold=0.1`、`only.pos=FALSE`、seed 42。`return.thresh=0.01` 筛原始 p 值，表同时保存按全部 RNA 基因数 Bonferroni 校正的 p 值；不能把所有候选宣称为校正后显著。聚类与检验使用同一批细胞，结果只是探索性候选，不是独立生物学验证。版本/分支不符、部分检验失败、输入变化或超时均失败，不抽样、不更换后端、不自动重跑。
+
+成功停在 `marker_review` / `unreviewed`：页面显示每簇候选量（合法零候选不是失败）、每页最多 100 行的候选统计，以及每簇正向 top 5 去重后的点图。完整双向表、绘图数值、参数、脚本、版本、sessionInfo 和日志留在本地。刷新、断联恢复与重复授权只读状态；重启遗留任务标 interrupted，不恢复计算。运行中不能修改上游、重新接受聚类或删除会话。接受/授权依据只在本地控件与数据库，不进入聊天、外部 LLM 或共享 KG；本片不自动命名细胞类型，仍不提供多用户鉴权、任务队列或不可变输入快照。
 
 ### 7.3 失败自动修复
 
-差异表达及空间脚本执行失败时，智能体自动携带报错信息让 LLM 改写脚本重试，**最多修复 2 次**（即同一任务最多执行 3 次）。单细胞 QC/过滤/PCA/聚类与 UMAP 失败只保留证据，不自动重跑或修复。R 脚本单次执行超时仍为 300 秒，不是完整任务截止时间。
+差异表达及空间脚本执行失败时，智能体自动携带报错信息让 LLM 改写脚本重试，**最多修复 2 次**（即同一任务最多执行 3 次）。单细胞 QC/过滤/PCA/聚类与 UMAP/marker 失败只保留证据，不自动重跑或修复。R 脚本单次执行超时仍为 300 秒，不是完整任务截止时间。
 
 ### 7.4 分析产物
 
@@ -295,6 +301,7 @@ PCA 保存对象、特征映射、数值证据与本地诊断图，不改写 cou
 | 单细胞 QC | `data/analysis/sc_qc/<run_id>/` 内的 `cell_qc.csv`、`features.csv`、`summary.json`、`qc.png`、`script.R`、`versions.txt`、日志及 `metadata.json` |
 | 单细胞 PCA | `data/analysis/sc_pca/<attempt_id>/` 内的 `seurat_pca.rds`、`feature_mapping.csv`、`variable_features.csv`、`pca_embeddings.csv`、`pca_loadings.csv`、`pca_stdev.csv`、`pca_diagnostics.png`、固定脚本、参数、版本、日志及元数据；页面仅提供校验后的本地诊断图，不是任意文件下载接口 |
 | 单细胞聚类与 UMAP | `data/analysis/sc_clusters/<attempt_id>/` 内的 `seurat_clustered.rds`、`neighbors.rds`、`clusters.csv`、`umap_embeddings.csv`、`cluster_sizes.csv`、`umap_clusters.png`、`summary.json`、`metadata.json`、固定脚本、版本与日志；页面仅提供校验后的本地 UMAP 图 |
+| 单细胞 marker | `data/analysis/sc_markers/<attempt_id>/` 内的 `markers.csv`（原 feature ID/symbol 与双向统计）、`cluster_marker_summary.csv`、`marker_dotplot_data.csv`、`marker_dotplot.png`、`summary.json`、`metadata.json`、固定脚本、版本、sessionInfo 与日志；页面仅提供校验后的候选分页和点图，不是逐细胞数据或任意文件下载接口 |
 | 空间转录组 | `<输入名>.spatial_clusters.csv`、`<输入名>.spatial_plot.png`（输入为目录时文件名以 `.` 开头） |
 | 差异表达 / 空间分析 | `output/capsules/<时间戳>/` 复现胶囊（原始问题、脚本、意图、元数据） |
 
@@ -316,13 +323,23 @@ PCA 保存对象、特征映射、数值证据与本地诊断图，不改写 cou
 
 ### 8.1 直接提问
 
-知识问答无需任何准备（前提：已配好 LLM 与 embedding）：
+输入框上方选「知识问答」再提问（前提：已配好 LLM 与 embedding）。该模式只检索一次知识库、生成一次带引用回答，**不读取会话历史、摘要、下载资产或 KG 记忆**：
 
 ```
-你:   TP53 在癌症中的作用是什么？
-你:   差异表达分析为什么用 DESeq2 而不是 TPM？
-智能体: （回答 + 下方列出「来源」引用条目）
+你:   Which markers identify exhausted T cells?
+智能体: （结论 + 每条论断的 [E1] 引用 + 来源 + 可展开的检索原文）
 ```
+
+- 每条论断必须引用本次检索到的证据编号；引用不存在的编号会被判为失败，不静默修补。
+- 来源只认 PMID 或 DOI；两者都解析不到的片段（含形状异常的检索结果）不会交给模型，`config.untraceable_chunks` 记录丢弃数。
+- 检索预算写在 `config`：`max_evidence`（默认 8 条）、`max_evidence_chars`（单条默认 4000 字）、`timeout_seconds`。
+- 检索显式关闭 LightRAG 共享缓存（`config.retrieval_cache="disabled"`），答案生成也不读缓存（`answer_cache="none"`）；生成上限 `answer_max_tokens`（默认 4000）。
+- `retrieval_calls`/`answer_llm_calls` 是服务层**发起次数**，不是实际 HTTP 次数：SDK 层遇限流等错误仍会重试，上限见 `answer_sdk_max_attempts`；整轮已超时则不再发起，计数保持 0。
+- 徽章固定标「未复核」：证据支持只代表检索片段支持，不代表已人工核实。回答包另存 `session_id` 与 `question_message_id` 便于回溯。
+- 论断必须带 `basis`：`fact` 表示证据直接陈述，`inference` 表示由证据推出的判断（界面分别显示「事实」「推断」）；缺失或取值非法整轮判失败。
+- 回答正文只允许 http(s) 链接，远程图片不自动加载（改为显示替代文本），避免第三方内容借回答正文加载。
+- 断连时该轮仍会落一条 `status="interrupted"` 的回答包，刷新后可见「已中断」；若断连发生在生成之后，已产出的回答与证据会保留，但状态仍记为中断。
+- `config` 另记 `lightrag_version`、`workspace`、`source_batch`（当前固定 `unknown`）、`retrieval_ms`、`generation_ms`；`keyword_llm_calls`/`embedding_calls` 因 LightRAG 不暴露真实值而固定为 `unknown`。
 
 ### 8.2 文献一键同步（pubmed-etl → 知识库）
 
@@ -500,3 +517,4 @@ python -m evals.run_eval --p3d
    - 已知限制的新增、修复或移除（第 14 章逐条核对）
 3. **事实优先**：内容以代码实际行为为准；写入指南的命令应实际运行验证（更新「最后核对日期」）。
 4. **保持结构**：更新后检查目录锚点与 README 跳转链接仍然有效。
+

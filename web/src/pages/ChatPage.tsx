@@ -16,7 +16,13 @@ import { MessageList } from '@/components/MessageList'
 import { Sidebar } from '@/components/Sidebar'
 import { ApiError, confirmAction } from '@/lib/api'
 import { queryKeys, useMessages, useSessions, useSidebar } from '@/lib/queries'
-import type { ConfirmRequestBody, EnvStatus, KbStats, SessionSummary } from '@/lib/types'
+import type {
+  ChatMode,
+  ConfirmRequestBody,
+  EnvStatus,
+  KbStats,
+  SessionSummary,
+} from '@/lib/types'
 import { useChatStore } from '@/store/chat'
 
 const DEFAULT_KB: KbStats = { initialized: false }
@@ -37,6 +43,8 @@ export function ChatPage() {
   const [slowHint, setSlowHint] = useState(false)
   /** POST /api/confirm 失败的后端中文 detail；发起新一轮确认前置 null */
   const [confirmError, setConfirmError] = useState<string | null>(null)
+  /** 本轮模式：知识问答只走证据链，智能对话走现有工具循环 */
+  const [mode, setMode] = useState<ChatMode>('chat')
 
   const sessionId = useChatStore((s) => s.sessionId)
   const history = useChatStore((s) => s.history)
@@ -129,15 +137,26 @@ export function ChatPage() {
     if (!prompt || busy) return
     setInput('')
     setConfirmError(null)
-    void send(prompt)
+    void send(prompt, mode)
   }
 
   /** 约束 1 重试：重发本会话最后一条用户消息 */
   function handleRetry(): void {
     const state = useChatStore.getState()
     if (state.busy) return
-    const lastUser = [...state.history].reverse().find((m) => m.role === 'user')
-    if (lastUser) void send(lastUser.content)
+    const history = state.history
+    const lastUserAt = history.reduce((at, m, i) => (m.role === 'user' ? i : at), -1)
+    if (lastUserAt < 0) return
+    // 沿用上一轮回复所在的链路，而不是当前开关：切模式后重试不该换链路
+    const reply = history.slice(lastUserAt + 1).find((m) => m.role === 'assistant')
+    // 没有回复可参考时保持当前开关，避免把知识问答静默换成普通对话
+    const replayMode: ChatMode = reply
+      ? reply.results?.knowledge_qa
+        ? 'knowledge_qa'
+        : 'chat'
+      : mode
+    setMode(replayMode)
+    void send(history[lastUserAt].content, replayMode)
   }
 
   /** 确认执行：发起前先清旧错误；成功按 action 回写卡片状态 / 清卡（T7 契约） */
@@ -166,7 +185,7 @@ export function ChatPage() {
     const card = useChatStore.getState().scriptCard
     if (!card) return
     setConfirmError(null)
-    void send(card.user_request)
+    void send(card.user_request, 'chat')
   }
 
   /** 切换会话：先停旧流（防事件串台）再复位；重复选中当前会话不重置历史 */
@@ -259,10 +278,51 @@ export function ChatPage() {
           {busy && slowHint && (
             <p className="mb-1.5 text-xs text-muted-foreground">仍在执行，可能耗时较久</p>
           )}
+          <div
+            role="radiogroup"
+            aria-label="对话模式"
+            className="mb-2 inline-flex rounded-lg border border-border p-0.5"
+          >
+            {[
+              { value: 'chat' as const, label: '智能对话' },
+              { value: 'knowledge_qa' as const, label: '知识问答' },
+            ].map((item) => (
+              <button
+                key={item.value}
+                type="button"
+                role="radio"
+                aria-checked={mode === item.value}
+                tabIndex={mode === item.value ? 0 : -1}
+                disabled={busy}
+                onClick={() => setMode(item.value)}
+                onKeyDown={(e) => {
+                  if (e.key !== 'ArrowLeft' && e.key !== 'ArrowRight') return
+                  e.preventDefault()
+                  const next = item.value === 'chat' ? 'knowledge_qa' : 'chat'
+                  setMode(next)
+                  e.currentTarget.parentElement
+                    ?.querySelectorAll<HTMLButtonElement>('[role="radio"]')
+                    .item(next === 'chat' ? 0 : 1)
+                    ?.focus()
+                }}
+                className={`rounded-md px-2.5 py-1 text-xs ${
+                  mode === item.value
+                    ? 'bg-primary text-primary-foreground'
+                    : 'text-muted-foreground hover:bg-muted'
+                } disabled:opacity-50`}
+              >
+                {item.label}
+              </button>
+            ))}
+          </div>
           <div className="flex items-end gap-2">
             <textarea
               aria-label="输入你的问题"
-              placeholder="输入你的问题…"
+              placeholder={
+                mode === 'knowledge_qa'
+                  ? '提出一个单细胞或空间组学问题，回答将附文献片段…'
+                  : '输入你的问题…'
+              }
               rows={2}
               className="flex-1 resize-none rounded-lg border border-border bg-card p-2 text-sm outline-none focus-visible:ring-1 focus-visible:ring-ring"
               value={input}

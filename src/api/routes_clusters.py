@@ -11,7 +11,7 @@ from typing import Any
 
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import Response
-from pydantic import Field
+from pydantic import Field, field_validator
 
 from src.analysis.qc_preview import _identity
 from src.analysis.sc_cluster import (
@@ -22,6 +22,7 @@ from src.analysis.sc_cluster import (
     execution_binding,
     run_sc_cluster,
 )
+from src.analysis.sc_marker_reviews import CLUSTER_RECORD_VERSION, review_view
 from src.api import routes_pca
 from src.api.chat_service import session_lock
 from src.api.routes_pca import dimension_view, require_parent, require_pca
@@ -73,9 +74,10 @@ def view(
         blocked.extend(state["blocked"] or ["无当前有效维度记录；请回上游明确记录至少 2 个 PCs"])
     display_snapshot = auth_snapshot or (latest["snapshot"] if latest else None)
     cluster_running = any(a["status"] == "running" for a in run["cluster_attempts"])
-    if any(a["status"] == "running" for a in [*run["attempts"], *run["pca_attempts"]]) or (
-        cluster_running and latest is not None and latest["status"] != "running"
-    ):
+    if any(
+        a["status"] == "running"
+        for a in [*run["attempts"], *run["pca_attempts"], *run.get("marker_attempts", [])]
+    ) or (cluster_running and latest is not None and latest["status"] != "running"):
         blocked.append("该 run 有阶段运行中，不能新授权")
     attempts_view = []
     for a in attempts:
@@ -333,3 +335,110 @@ def diagnostic(
     except EVIDENCE_ERRORS as exc:
         raise HTTPException(409, "聚类图或来源身份已变化；请检查本地证据") from exc
     return Response(data, media_type="image/png", headers={"Cache-Control": "no-store"})
+
+
+def require_cluster(run: dict[str, Any], pca_attempt_id: str, attempt_id: str) -> dict[str, Any]:
+    """只定位本 run 与 PCA 下的确切聚类尝试。"""
+    cluster = next(
+        (
+            a
+            for a in run["cluster_attempts"]
+            if a["attempt_id"] == attempt_id and a["pca_attempt_id"] == pca_attempt_id
+        ),
+        None,
+    )
+    if cluster is None:
+        raise HTTPException(404, "聚类关联不存在")
+    return cluster
+
+
+class ClusterReviewRequest(routes_pca.PcaRequest):
+    """只记录严格 true 的探索性接受，不接受类型名称或分析参数。"""
+
+    revision: int = Field(strict=True, ge=0, le=2**63 - 1)
+    accepted: bool = Field(strict=True)
+
+    @field_validator("accepted")
+    @classmethod
+    def accept_only(cls, value: bool) -> bool:
+        """拒绝含糊接受和科学批准替代字段。"""
+        if value is not True:
+            raise ValueError("只有明确的探索性接受可记录")
+        return value
+
+
+@router.get("/{filter_attempt_id}/{pca_attempt_id}/{attempt_id}/review")
+def get_review(
+    session_id: str,
+    run_id: str,
+    filter_attempt_id: str,
+    pca_attempt_id: str,
+    attempt_id: str,
+    request: Request,
+) -> dict[str, Any]:
+    """只读证据与本地人工事实；不执行 R、LLM 或 KG。"""
+    try:
+        run = require_run(SessionStore(), session_id, run_id)
+        require_parent(run, filter_attempt_id)
+        require_pca(run, filter_attempt_id, pca_attempt_id)
+        return review_view(
+            run, require_cluster(run, pca_attempt_id, attempt_id), qc_root(request.app.state.agent)
+        )
+    except sqlite3.Error as exc:
+        logger.error("cluster review database read failed: %s", type(exc).__name__)
+        raise HTTPException(409, "聚类复核读取失败，请只读刷新") from exc
+
+
+@router.post("/{filter_attempt_id}/{pca_attempt_id}/{attempt_id}/review")
+def record_review(
+    session_id: str,
+    run_id: str,
+    filter_attempt_id: str,
+    pca_attempt_id: str,
+    attempt_id: str,
+    body: ClusterReviewRequest,
+    request: Request,
+) -> dict[str, Any]:
+    """追加接受事实；旧请求重发仅返回历史，不重新激活或授权 marker。"""
+    try:
+        store = SessionStore()
+        run = require_run(store, session_id, run_id)
+        require_parent(run, filter_attempt_id)
+        require_pca(run, filter_attempt_id, pca_attempt_id)
+        cluster = require_cluster(run, pca_attempt_id, attempt_id)
+        root = qc_root(request.app.state.agent)
+        previous = next(
+            (
+                d
+                for d in run["cluster_reviews"]
+                if d["cluster_attempt_id"] == attempt_id
+                and d["binding_sha256"] == body.binding_sha256
+                and d["record_version"] == CLUSTER_RECORD_VERSION
+                and d["source_revision"] == body.revision
+            ),
+            None,
+        )
+        if previous:
+            if previous["reason"] != body.reason or previous["accepted"] is not True:
+                raise HTTPException(409, "同一 revision 的聚类复核内容冲突")
+            return review_view(run, cluster, root)
+        state = review_view(run, cluster, root)
+        if not state["binding_sha256"] or state["binding_sha256"] != body.binding_sha256:
+            raise HTTPException(409, "聚类证据不可记录或已变化，请只读刷新")
+        store.record_sc_cluster_review(
+            session_id,
+            run,
+            cluster,
+            body.binding_sha256,
+            CLUSTER_RECORD_VERSION,
+            body.revision,
+            body.reason,
+        )
+        return get_review(
+            session_id, run_id, filter_attempt_id, pca_attempt_id, attempt_id, request
+        )
+    except sqlite3.Error as exc:
+        logger.error("cluster review database write failed: %s", type(exc).__name__)
+        raise HTTPException(409, "聚类复核写入失败，请只读刷新") from exc
+    except ValueError as exc:
+        raise HTTPException(409, "聚类复核或父身份冲突，请只读刷新") from exc

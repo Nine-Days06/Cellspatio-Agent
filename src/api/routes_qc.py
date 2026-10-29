@@ -46,6 +46,7 @@ def view(run: dict[str, Any], blocked: str | None = None) -> dict[str, Any]:
         "blocked": [blocked] if blocked else [],
         "pca_running": any(a["status"] == "running" for a in run.get("pca_attempts", [])),
         "cluster_running": any(a["status"] == "running" for a in run.get("cluster_attempts", [])),
+        "marker_running": any(a["status"] == "running" for a in run.get("marker_attempts", [])),
         "attempts": [
             {
                 **{

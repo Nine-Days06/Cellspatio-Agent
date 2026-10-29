@@ -329,6 +329,47 @@ describe('ChatPage 约束落点（1/2）', () => {
     )
   })
 
+  it('知识问答模式：方向键切换，发送时带上 mode', async () => {
+    const sid = nextSid()
+    await renderReady(sid)
+    const chatRadio = screen.getByRole('radio', { name: '智能对话' })
+    const qaRadio = screen.getByRole('radio', { name: '知识问答' })
+
+    chatRadio.focus()
+    fireEvent.keyDown(chatRadio, { key: 'ArrowRight' })
+    expect(qaRadio).toHaveAttribute('aria-checked', 'true')
+    expect(qaRadio).toHaveFocus()
+
+    const box = screen.getByPlaceholderText(/提出一个单细胞或空间组学问题/)
+    fireEvent.change(box, { target: { value: 'Which markers identify exhausted T cells?' } })
+    fireEvent.keyDown(box, { key: 'Enter' })
+
+    await waitFor(() =>
+      expect(streamChatMock).toHaveBeenCalledWith(
+        expect.objectContaining({ sessionId: sid, mode: 'knowledge_qa' }),
+      ),
+    )
+  })
+
+  it('重试沿用上一轮回复的链路，而不是当前开关', async () => {
+    const sid = nextSid()
+    const user = makeMsg(sid, { role: 'user', content: '普通问题' })
+    const emptyReply = makeMsg(sid, { role: 'assistant', content: '' })
+    await renderReady(sid, { messages: [user, emptyReply] })
+    const qaRadio = screen.getByRole('radio', { name: '知识问答' })
+    fireEvent.click(qaRadio)
+    expect(qaRadio).toHaveAttribute('aria-checked', 'true')
+
+    fireEvent.click(screen.getByRole('button', { name: '重试' }))
+
+    await waitFor(() =>
+      expect(streamChatMock).toHaveBeenCalledWith(
+        expect.objectContaining({ sessionId: sid, prompt: '普通问题', mode: 'chat' }),
+      ),
+    )
+    expect(screen.getByRole('radio', { name: '智能对话' })).toHaveAttribute('aria-checked', 'true')
+  })
+
   it('约束2：过程条为 end 时输入区仍是生成态，不出现「已完成」', async () => {
     const sid = nextSid()
     await renderReady(sid)

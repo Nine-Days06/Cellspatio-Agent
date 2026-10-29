@@ -3,6 +3,8 @@ import tempfile
 
 class FakeRAG:
     def __init__(self):
+        self.enable_llm_cache = True
+        self.cache_states = []
         self.inserted = []
         self.file_paths_seen = []
         self.query_llm_calls = []
@@ -32,6 +34,10 @@ class FakeRAG:
 
     async def aquery_llm(self, question, param=None, **kwargs):
         return self.query_llm(question, param=param, **kwargs)
+
+    async def aquery_data(self, question, param=None):
+        self.cache_states.append(self.enable_llm_cache)
+        return {"status": "success", "data": {}, "metadata": {}}
 
 
 def _client_with_fake_rag(working_dir, config=None):
@@ -288,6 +294,19 @@ def test_client_uses_resolved_max_parallel_insert(monkeypatch, tmp_path):
     assert m.LightRAGClient(working_dir=wd, max_parallel_insert=7)._max_parallel_insert == 7
     monkeypatch.delenv("MAX_PARALLEL_INSERT", raising=False)
     assert m.LightRAGClient(working_dir=wd)._max_parallel_insert is None
+
+
+def test_query_data_cache_switch_is_per_call(tmp_path):
+    """问答需单次关闭 LightRAG 共享缓存，且不能污染其他调用方。"""
+    client = _client_with_fake_rag(str(tmp_path))
+    client._initialize_rag = lambda: None
+
+    client.query_data("问题", use_cache=False)
+    assert client._rag.cache_states == [False]
+    assert client._rag.enable_llm_cache is True
+
+    client.query_data("问题")
+    assert client._rag.cache_states == [False, True]
 
 
 def test_build_storage_kwargs_pg_four_storages(monkeypatch):

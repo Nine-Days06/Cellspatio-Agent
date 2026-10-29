@@ -105,8 +105,8 @@ describe('PCA independent authorization', () => {
     view.rerender(<PcaReview sessionId="s1" runId="r1" filterAttemptId="f1" revision={6} />)
     await screen.findByText('PCA 已保存，等待维度选择复核')
     fireEvent.click(screen.getByRole('button', { name: '模拟聚类运行' }))
-    expect(screen.getByRole('button', { name: '聚类与 UMAP 运行中…' })).toBeDisabled()
-    expect(screen.getByText(/聚类与 UMAP 运行中；该 run 的阈值/)).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: '聚类或 marker 运行中…' })).toBeDisabled()
+    expect(screen.getByText(/聚类或 marker 运行中；该 run 的阈值/)).toBeInTheDocument()
     const calls = vi.mocked(fetchPca).mock.calls.length
     await new Promise((resolve) => setTimeout(resolve, 1700))
     expect(fetchPca).toHaveBeenCalledTimes(calls)

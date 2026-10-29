@@ -120,6 +120,38 @@ CREATE TABLE IF NOT EXISTS sc_cluster_attempts (
     message_id INTEGER REFERENCES messages(id) ON DELETE SET NULL,
     UNIQUE(pca_attempt_id, binding_sha256, tool_version)
 );
+CREATE TABLE IF NOT EXISTS sc_cluster_reviews (
+    review_id TEXT PRIMARY KEY,
+    cluster_attempt_id TEXT NOT NULL REFERENCES sc_cluster_attempts(attempt_id) ON DELETE CASCADE,
+    binding_sha256 TEXT NOT NULL,
+    record_version TEXT NOT NULL,
+    source_revision INTEGER NOT NULL,
+    accepted INTEGER NOT NULL CHECK(accepted = 1),
+    reason TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    message_id INTEGER REFERENCES messages(id) ON DELETE SET NULL,
+    UNIQUE(cluster_attempt_id, binding_sha256, record_version, source_revision)
+);
+CREATE TABLE IF NOT EXISTS sc_marker_attempts (
+    attempt_id TEXT PRIMARY KEY,
+    run_id TEXT NOT NULL REFERENCES qc_runs(run_id) ON DELETE CASCADE,
+    cluster_attempt_id TEXT NOT NULL REFERENCES sc_cluster_attempts(attempt_id) ON DELETE CASCADE,
+    review_id TEXT NOT NULL REFERENCES sc_cluster_reviews(review_id) ON DELETE CASCADE,
+    snapshot TEXT NOT NULL,
+    binding_sha256 TEXT NOT NULL,
+    tool_version TEXT NOT NULL,
+    protocol TEXT NOT NULL,
+    source_revision INTEGER NOT NULL,
+    claim_revision INTEGER NOT NULL,
+    reason TEXT NOT NULL,
+    directory TEXT NOT NULL UNIQUE,
+    status TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    finished_at TEXT,
+    result TEXT,
+    message_id INTEGER REFERENCES messages(id) ON DELETE SET NULL,
+    UNIQUE(cluster_attempt_id, binding_sha256, tool_version)
+);
 """
 
 
@@ -242,6 +274,12 @@ class SessionStore:
                 (session_id,),
             ).fetchone():
                 raise ValueError("聚类运行中，不能删除会话")
+            if conn.execute(
+                "SELECT 1 FROM sc_marker_attempts a JOIN qc_runs r USING(run_id) "
+                "WHERE r.session_id = ? AND a.status = 'running'",
+                (session_id,),
+            ).fetchone():
+                raise ValueError("marker 运行中，不能删除会话")
             conn.execute("DELETE FROM messages WHERE session_id = ?", (session_id,))
             conn.execute("DELETE FROM sessions WHERE id = ?", (session_id,))
 
@@ -317,6 +355,14 @@ class SessionStore:
             cluster_attempts = conn.execute(
                 "SELECT * FROM sc_cluster_attempts WHERE run_id = ? ORDER BY rowid", (run_id,)
             ).fetchall()
+            cluster_reviews = conn.execute(
+                "SELECT d.* FROM sc_cluster_reviews d JOIN sc_cluster_attempts a "
+                "ON d.cluster_attempt_id = a.attempt_id WHERE a.run_id = ? ORDER BY d.rowid",
+                (run_id,),
+            ).fetchall()
+            marker_attempts = conn.execute(
+                "SELECT * FROM sc_marker_attempts WHERE run_id = ? ORDER BY rowid", (run_id,)
+            ).fetchall()
         run = dict(row)
         run["evidence"] = json.loads(run["evidence"])
         run["previews"] = [
@@ -347,6 +393,17 @@ class SessionStore:
                 "result": json.loads(a["result"]) if a["result"] else None,
             }
             for a in cluster_attempts
+        ]
+        run["cluster_reviews"] = [
+            {**dict(d), "accepted": bool(d["accepted"])} for d in cluster_reviews
+        ]
+        run["marker_attempts"] = [
+            {
+                **dict(a),
+                "snapshot": json.loads(a["snapshot"]),
+                "result": json.loads(a["result"]) if a["result"] else None,
+            }
+            for a in marker_attempts
         ]
         return run
 
@@ -435,6 +492,10 @@ class SessionStore:
             "SELECT 1 FROM sc_cluster_attempts WHERE run_id = ? AND status = 'running'", (run_id,)
         ).fetchone():
             raise ValueError("聚类运行中，不能修改选择")
+        if conn.execute(
+            "SELECT 1 FROM sc_marker_attempts WHERE run_id = ? AND status = 'running'", (run_id,)
+        ).fetchone():
+            raise ValueError("marker 运行中，不能修改选择")
 
     def start_sc_filter(
         self,
@@ -1019,6 +1080,294 @@ class SessionStore:
                     "scientific_status": "unreviewed",
                 },
             )
+
+    @classmethod
+    def _marker_source_matches(
+        cls, conn: sqlite3.Connection, run: sqlite3.Row, snapshot: dict[str, Any]
+    ) -> bool:
+        """完整当前接受记录与聚类身份必须和认领快照相等。"""
+        cluster, review = snapshot["cluster"], snapshot["review"]
+        row = conn.execute(
+            "SELECT * FROM sc_cluster_reviews WHERE cluster_attempt_id = ? ORDER BY rowid DESC LIMIT 1",
+            (cluster["attempt_id"],),
+        ).fetchone()
+        return bool(
+            row
+            and {**dict(row), "accepted": bool(row["accepted"])} == review
+            and cls._completed_cluster_matches(conn, run, cluster)
+        )
+
+    def start_sc_markers(
+        self,
+        session_id: str,
+        run_id: str,
+        revision: int,
+        snapshot: dict[str, Any],
+        binding: str,
+        tool_version: str,
+        protocol: dict[str, Any],
+        reason: str,
+        directory: str,
+        attempt_id: str,
+    ) -> dict[str, Any]:
+        """短事务 CAS 认领，保存完整聚类接受和父身份快照。"""
+        with self._conn() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            run = conn.execute(
+                "SELECT * FROM qc_runs WHERE session_id = ? AND run_id = ?", (session_id, run_id)
+            ).fetchone()
+            if run is None:
+                raise ValueError("QC 关联不存在")
+            previous = conn.execute(
+                "SELECT * FROM sc_marker_attempts WHERE cluster_attempt_id = ? AND binding_sha256 = ? AND tool_version = ?",
+                (snapshot["cluster"]["attempt_id"], binding, tool_version),
+            ).fetchone()
+            if previous:
+                if previous["review_id"] != snapshot["review"]["review_id"]:
+                    raise ValueError("聚类复核关联冲突")
+                return {**dict(previous), "claimed": False}
+            self._require_no_filter(conn, run_id)
+            if (
+                run["revision"] != revision
+                or snapshot["review"]["source_revision"] + 1 != revision
+                or not self._marker_source_matches(conn, run, snapshot)
+            ):
+                raise ValueError("聚类接受或父身份已变化，请刷新后重新授权")
+            conn.execute(
+                "INSERT INTO sc_marker_attempts (attempt_id, run_id, cluster_attempt_id, review_id, snapshot, "
+                "binding_sha256, tool_version, protocol, source_revision, claim_revision, reason, directory, status, created_at) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'running', ?)",
+                (
+                    attempt_id,
+                    run_id,
+                    snapshot["cluster"]["attempt_id"],
+                    snapshot["review"]["review_id"],
+                    json.dumps(snapshot, ensure_ascii=False),
+                    binding,
+                    tool_version,
+                    json.dumps(protocol),
+                    revision,
+                    revision + 1,
+                    reason,
+                    directory,
+                    _now(),
+                ),
+            )
+            conn.execute("UPDATE qc_runs SET revision = revision + 1 WHERE run_id = ?", (run_id,))
+            row = dict(
+                conn.execute(
+                    "SELECT * FROM sc_marker_attempts WHERE attempt_id = ?", (attempt_id,)
+                ).fetchone()
+            )
+        return {**row, "snapshot": snapshot, "claimed": True}
+
+    def finish_sc_markers(
+        self, attempt_id: str, result: dict[str, Any], expected: dict[str, Any] | None = None
+    ) -> dict[str, Any]:
+        """终态/消息/revision 原子保存；外部改变只阻止成功，不阻止失败收口。"""
+        if result["status"] not in ("completed", "failed", "interrupted"):
+            raise ValueError("marker 终态非法")
+        with self._conn() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            attempt = conn.execute(
+                "SELECT * FROM sc_marker_attempts WHERE attempt_id = ?", (attempt_id,)
+            ).fetchone()
+            if attempt is None or attempt["status"] != "running":
+                raise ValueError("marker 任务不在运行状态")
+            run = conn.execute(
+                "SELECT * FROM qc_runs WHERE run_id = ?", (attempt["run_id"],)
+            ).fetchone()
+            snapshot = json.loads(attempt["snapshot"])
+            if result["status"] == "completed" and (
+                expected is None
+                or run["revision"] != expected["claim_revision"]
+                or snapshot != expected["snapshot"]
+                or any(
+                    attempt[k] != expected[k]
+                    for k in (
+                        "run_id",
+                        "cluster_attempt_id",
+                        "review_id",
+                        "binding_sha256",
+                        "tool_version",
+                        "protocol",
+                        "source_revision",
+                        "claim_revision",
+                        "directory",
+                        "reason",
+                    )
+                )
+                or not self._marker_source_matches(conn, run, snapshot)
+            ):
+                result = {**result, "status": "failed", "error": "运行中授权快照或父身份发生变化"}
+            sid, now = run["session_id"], _now()
+            seq = conn.execute(
+                "SELECT COALESCE(MAX(seq), 0) + 1 FROM messages WHERE session_id = ?", (sid,)
+            ).fetchone()[0]
+            message_id = conn.execute(
+                "INSERT INTO messages (session_id, seq, role, content, timestamp, results) VALUES (?, ?, 'assistant', ?, ?, ?)",
+                (
+                    sid,
+                    seq,
+                    "marker 候选与诊断产物已保存，科学未复核；未执行细胞类型注释。"
+                    if result["status"] == "completed"
+                    else "marker 失败或中断，本地证据保留；不会自动重跑。",
+                    now,
+                    _encode_results(
+                        {
+                            "sc_markers": {
+                                "run_id": attempt["run_id"],
+                                "cluster_attempt_id": attempt["cluster_attempt_id"],
+                                "attempt_id": attempt_id,
+                                "stage": "marker_review",
+                                "technical_status": result["status"],
+                                "scientific_status": "unreviewed",
+                            }
+                        }
+                    ),
+                ),
+            ).lastrowid
+            conn.execute(
+                "UPDATE sc_marker_attempts SET status = ?, finished_at = ?, result = ?, message_id = ? WHERE attempt_id = ?",
+                (
+                    result["status"],
+                    now,
+                    json.dumps(result, ensure_ascii=False),
+                    message_id,
+                    attempt_id,
+                ),
+            )
+            conn.execute(
+                "UPDATE qc_runs SET revision = revision + 1 WHERE run_id = ?", (run["run_id"],)
+            )
+            conn.execute("UPDATE sessions SET updated_at = ? WHERE id = ?", (now, sid))
+        return result
+
+    def interrupt_sc_markers(self) -> None:
+        """单进程启动中断遗留作业，安全消息与 revision 随终态原子提交。"""
+        with self._conn() as conn:
+            ids = [
+                r[0]
+                for r in conn.execute(
+                    "SELECT attempt_id FROM sc_marker_attempts WHERE status = 'running'"
+                )
+            ]
+        for attempt_id in ids:
+            self.finish_sc_markers(
+                attempt_id,
+                {
+                    "status": "interrupted",
+                    "stage": "marker_review",
+                    "scientific_status": "unreviewed",
+                },
+            )
+
+    @classmethod
+    def _completed_cluster_matches(
+        cls, conn: sqlite3.Connection, run: sqlite3.Row, cluster: dict[str, Any]
+    ) -> bool:
+        """短事务重查完整聚类身份及其父快照；文件仍在事务外验证。"""
+        row = conn.execute(
+            "SELECT * FROM sc_cluster_attempts WHERE attempt_id = ? AND run_id = ?",
+            (cluster["attempt_id"], run["run_id"]),
+        ).fetchone()
+        if row is None or row["status"] != "completed":
+            return False
+        live = {
+            **dict(row),
+            "snapshot": json.loads(row["snapshot"]),
+            "result": json.loads(row["result"]),
+        }
+        return live == cluster and cls._cluster_source_matches(conn, run, cluster["snapshot"])
+
+    def record_sc_cluster_review(
+        self,
+        session_id: str,
+        run: dict[str, Any],
+        cluster: dict[str, Any],
+        binding: str,
+        version: str,
+        revision: int,
+        reason: str,
+    ) -> None:
+        """接受事实、安全消息与 revision 原子追加；不授权或启动 marker。"""
+        # shortcut: 哈希在事务外核实；本地文件不可变隔离留给生产部署片。
+        with self._conn() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            row = conn.execute(
+                "SELECT * FROM qc_runs WHERE session_id = ? AND run_id = ?",
+                (session_id, run["run_id"]),
+            ).fetchone()
+            if row is None:
+                raise ValueError("QC 关联不存在")
+            previous = conn.execute(
+                "SELECT * FROM sc_cluster_reviews WHERE cluster_attempt_id = ? "
+                "AND binding_sha256 = ? AND record_version = ? AND source_revision = ?",
+                (cluster["attempt_id"], binding, version, revision),
+            ).fetchone()
+            if previous:
+                if previous["accepted"] != 1 or previous["reason"] != reason:
+                    raise ValueError("同一 revision 的聚类复核内容冲突")
+                return
+            self._require_no_filter(conn, run["run_id"])
+            if row["revision"] != revision or not self._completed_cluster_matches(
+                conn, row, cluster
+            ):
+                raise ValueError("聚类或父身份已变化，请刷新后重新记录")
+            latest = conn.execute(
+                "SELECT * FROM sc_cluster_reviews WHERE cluster_attempt_id = ? ORDER BY rowid DESC LIMIT 1",
+                (cluster["attempt_id"],),
+            ).fetchone()
+            if (
+                latest
+                and latest["binding_sha256"] == binding
+                and latest["record_version"] == version
+                and latest["source_revision"] + 1 == revision
+                and latest["reason"] == reason
+            ):
+                return
+            review_id, now = uuid.uuid4().hex, _now()
+            seq = conn.execute(
+                "SELECT COALESCE(MAX(seq), 0) + 1 FROM messages WHERE session_id = ?", (session_id,)
+            ).fetchone()[0]
+            message_id = conn.execute(
+                "INSERT INTO messages (session_id, seq, role, content, timestamp, results) "
+                "VALUES (?, ?, 'assistant', ?, ?, ?)",
+                (
+                    session_id,
+                    seq,
+                    "探索性聚类接受已记录，科学未复核；未授权 marker 或注释。",
+                    now,
+                    _encode_results(
+                        {
+                            "sc_cluster_review": {
+                                "run_id": run["run_id"],
+                                "cluster_attempt_id": cluster["attempt_id"],
+                                "review_id": review_id,
+                                "stage": "cluster_review",
+                                "scientific_status": "unreviewed",
+                            }
+                        }
+                    ),
+                ),
+            ).lastrowid
+            conn.execute(
+                "INSERT INTO sc_cluster_reviews VALUES (?, ?, ?, ?, ?, 1, ?, ?, ?)",
+                (
+                    review_id,
+                    cluster["attempt_id"],
+                    binding,
+                    version,
+                    revision,
+                    reason,
+                    now,
+                    message_id,
+                ),
+            )
+            conn.execute(
+                "UPDATE qc_runs SET revision = revision + 1 WHERE run_id = ?", (run["run_id"],)
+            )
+            conn.execute("UPDATE sessions SET updated_at = ? WHERE id = ?", (now, session_id))
 
     def get_messages(self, session_id: str) -> list[dict[str, Any]]:
         with self._conn() as conn:

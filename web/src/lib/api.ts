@@ -10,6 +10,9 @@ import type {
   PcaState,
   PcaDimensionsState,
   ClusterState,
+  ClusterAcceptanceState,
+  MarkerState,
+  MarkerPage,
 } from '@/lib/types'
 
 /** 统一 HTTP 错误：message 直接用后端 detail（已是中文），UI 可直接展示。 */
@@ -145,4 +148,33 @@ export function executeClusters(sessionId: string, runId: string, filterAttemptI
 
 export function clusterDiagnosticPath(sessionId: string, runId: string, filterAttemptId: string, pcaAttemptId: string, attemptId: string): string {
   return `${clusterPath(sessionId, runId, filterAttemptId, pcaAttemptId)}/${encodeURIComponent(attemptId)}/diagnostic`
+}
+
+type MarkerSource = { sessionId: string; runId: string; filterAttemptId: string; pcaAttemptId: string; clusterAttemptId: string }
+
+const acceptancePath = (source: MarkerSource) => `${clusterPath(source.sessionId, source.runId, source.filterAttemptId, source.pcaAttemptId)}/${encodeURIComponent(source.clusterAttemptId)}/review`
+const markerPath = (source: MarkerSource) => `${qcPath(source.sessionId, source.runId)}/markers/${encodeURIComponent(source.filterAttemptId)}/${encodeURIComponent(source.pcaAttemptId)}/${encodeURIComponent(source.clusterAttemptId)}`
+
+export function fetchClusterAcceptance(source: MarkerSource): Promise<ClusterAcceptanceState> {
+  return request(acceptancePath(source))
+}
+
+export function recordClusterAcceptance(source: MarkerSource, binding: string, revision: number, reason: string): Promise<ClusterAcceptanceState> {
+  return request(acceptancePath(source), jsonInit('POST', { binding_sha256: binding, revision, accepted: true, reason }))
+}
+
+export function fetchMarkers(source: MarkerSource): Promise<MarkerState> {
+  return request(markerPath(source))
+}
+
+export function executeMarkers(source: MarkerSource, binding: string, reviewId: string, revision: number, reason: string): Promise<MarkerState> {
+  return request(`${markerPath(source)}/execute`, jsonInit('POST', { binding_sha256: binding, cluster_review_id: reviewId, revision, reason }))
+}
+
+export function markerDiagnosticPath(source: MarkerSource, attemptId: string): string {
+  return `${markerPath(source)}/${encodeURIComponent(attemptId)}/diagnostic`
+}
+
+export function fetchMarkerCandidates(source: MarkerSource, attemptId: string, offset: number): Promise<MarkerPage> {
+  return request(`${markerPath(source)}/${encodeURIComponent(attemptId)}/candidates?offset=${offset}&limit=100`)
 }

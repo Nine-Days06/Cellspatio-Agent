@@ -1,5 +1,6 @@
 import { useEffect, useRef, type ReactNode } from 'react'
 import { ChartBlock } from '@/components/ChartBlock'
+import { KnowledgeAnswer } from '@/components/KnowledgeAnswer'
 import { QcEvidence } from '@/components/QcEvidence'
 import { MarkdownMessage } from '@/components/MarkdownMessage'
 import { SoftWarnBanner } from '@/components/SoftWarnBanner'
@@ -23,7 +24,7 @@ export interface MessageListProps {
 
 /** 图表、QC 证据或待确认脚本卡片存在时，不用空消息兜底。 */
 function hasVisuals(message: WireMessage): boolean {
-  return (message.results?.charts?.length ?? 0) > 0 || Boolean(message.pending_script) || Boolean(message.results?.qc_artifacts)
+  return (message.results?.charts?.length ?? 0) > 0 || Boolean(message.pending_script) || Boolean(message.results?.qc_artifacts) || Boolean(message.results?.knowledge_qa)
 }
 
 function Bubble({ role, children }: { role: 'user' | 'assistant'; children: ReactNode }) {
@@ -86,7 +87,10 @@ export function MessageList({
                       )}
                     </div>
                   ) : (
-                    <MarkdownMessage text={message.content} />
+                    <MarkdownMessage
+                      text={message.content}
+                      restrictExternalContent={Boolean(message.results?.knowledge_qa)}
+                    />
                   )}
                   {(message.results?.charts ?? []).length > 0 && (
                     <div data-testid="charts-slot" className="mt-2">
@@ -96,6 +100,7 @@ export function MessageList({
                     </div>
                   )}
                   {message.results?.qc_artifacts && <QcEvidence results={message.results} sessionId={message.session_id} onRecorded={onQcRecorded} />}
+                  {message.results?.knowledge_qa && <KnowledgeAnswer data={message.results.knowledge_qa} />}
                 </>
               ) : (
                 <div className="whitespace-pre-wrap text-sm">{message.content}</div>
@@ -133,3 +138,4 @@ export function MessageList({
     </div>
   )
 }
+

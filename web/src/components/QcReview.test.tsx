@@ -36,8 +36,8 @@ async function enterPreview() {
 }
 
 describe('QC review', () => {
-  it('disables QC changes while PCA is running in another view', async () => {
-    vi.mocked(fetchQc).mockResolvedValue({ ...preview, pca_running: true })
+  it.each(['pca_running', 'cluster_running', 'marker_running'] as const)('disables QC changes while %s is running in another view', async (stage) => {
+    vi.mocked(fetchQc).mockResolvedValue({ ...preview, [stage]: true })
     render(<QcReview sessionId="s1" runId="r1" />)
     await screen.findByRole('region', { name: '排除预览' })
     expect(screen.getByLabelText('RNA features 下限')).toBeDisabled()

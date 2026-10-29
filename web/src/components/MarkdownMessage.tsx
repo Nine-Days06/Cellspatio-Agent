@@ -48,10 +48,12 @@ function CodeBlock({ children }: { children?: ReactNode }) {
 export interface MarkdownMessageProps {
   text: string
   className?: string
+  /** 模型生成的正文只允许 http(s) 链接，且不自动加载远程图片 */
+  restrictExternalContent?: boolean
 }
 
 /** Markdown 渲染：进入视口前降级为逐行纯文本（惰性），进入后才挂 ReactMarkdown + 语法高亮。 */
-export function MarkdownMessage({ text, className }: MarkdownMessageProps) {
+export function MarkdownMessage({ text, className, restrictExternalContent }: MarkdownMessageProps) {
   const hostRef = useRef<HTMLDivElement>(null)
   const [visible, setVisible] = useState(false)
 
@@ -82,11 +84,18 @@ export function MarkdownMessage({ text, className }: MarkdownMessageProps) {
           rehypePlugins={[rehypeHighlight]}
           components={{
             pre: ({ children }) => <CodeBlock>{children}</CodeBlock>,
-            a: ({ href, children }) => (
-              <a href={href} target="_blank" rel="noreferrer" className="text-primary underline">
-                {children}
-              </a>
-            ),
+            a: ({ href, children }) =>
+              restrictExternalContent && !/^https?:\/\//i.test(href ?? '') ? (
+                <span>{children}</span>
+              ) : (
+                <a href={href} target="_blank" rel="noreferrer" className="text-primary underline">
+                  {children}
+                </a>
+              ),
+            // 远程图片会在渲染时直接请求第三方，泄露访问者地址，因此只显示替代文本
+            ...(restrictExternalContent
+              ? { img: ({ alt }: { alt?: string }) => <span className="text-muted-foreground">{alt || '[图片]'}</span> }
+              : {}),
           }}
         >
           {text}
@@ -102,3 +111,4 @@ export function MarkdownMessage({ text, className }: MarkdownMessageProps) {
     </div>
   )
 }
+

@@ -1,10 +1,11 @@
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
-import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { ClusterReview } from '@/components/ClusterReview'
 import { executeClusters, fetchClusters } from '@/lib/api'
 import type { ClusterState } from '@/lib/types'
 
 vi.mock('@/lib/api', () => ({ fetchClusters: vi.fn(), executeClusters: vi.fn(), clusterDiagnosticPath: () => '/local/cluster.png' }))
+vi.mock('@/components/MarkerReview', () => ({ MarkerReview: ({ onRunning }: { onRunning: (active: boolean) => void }) => <button onClick={() => onRunning(true)}>模拟 marker 运行</button> }))
 const initial: ClusterState = { run_id: 'r1', pca_attempt_id: 'p1', revision: 7, tool_version: '1.0.0', protocol: { seed: 42 }, stage: 'cluster_review', scientific_status: 'unreviewed', binding_sha256: 'binding', selection: { review_id: 'review1', dims: [1, 2], record_version: '1' }, source_summary: { cells: 40, actual_pcs: 30, n_epochs: 500 }, blocked: [], attempts: [] }
 const completed: ClusterState = { ...initial, revision: 9, binding_sha256: null, blocked: [], attempts: [{ attempt_id: 'a1', review_id: 'review1', dims: [1, 2], binding_sha256: 'binding', status: 'completed', created_at: 'now', finished_at: 'later', source_revision: 7, claim_revision: 8, error: null, invalidated_reason: null, result: { cells: 40, clusters: 2, cluster_sizes: [{ cluster_id: '0', cells: 22, proportion: 0.55 }, { cluster_id: '1', cells: 18, proportion: 0.45 }], n_epochs: 500, versions: ['R 4.6.1'], seurat_threads: 1 } }] }
 const props = { sessionId: 's1', runId: 'r1', filterAttemptId: 'f1', pcaAttemptId: 'p1', revision: 7 }
@@ -13,8 +14,23 @@ beforeEach(() => {
   vi.mocked(fetchClusters).mockResolvedValue(initial)
   vi.mocked(executeClusters).mockResolvedValue(completed)
 })
+afterEach(() => { vi.useRealTimers() })
 
 describe('受控聚类独立授权', () => {
+  it('marker 运行只传播互斥状态，不轮询或误报聚类完成', async () => {
+    vi.useFakeTimers()
+    vi.mocked(fetchClusters).mockResolvedValue(completed)
+    const recorded = vi.fn(); const running = vi.fn()
+    render(<ClusterReview {...props} onRecorded={recorded} onRunning={running} />)
+    await act(async () => {})
+    fireEvent.click(screen.getByRole('button', { name: '模拟 marker 运行' }))
+    await act(async () => { await vi.advanceTimersByTimeAsync(6000) })
+    expect(fetchClusters).toHaveBeenCalledTimes(1)
+    expect(recorded).not.toHaveBeenCalled()
+    expect(running).toHaveBeenLastCalledWith(true)
+    expect(screen.getByRole('button', { name: '下游 marker 运行中…' })).toBeDisabled()
+  })
+
   it('空初值、明确确切绑定/review/revision，刷新恢复只有 GET', async () => {
     const recorded = vi.fn()
     const view = render(<ClusterReview {...props} onRecorded={recorded} />)
