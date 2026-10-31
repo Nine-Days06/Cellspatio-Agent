@@ -118,6 +118,9 @@ def test_unknown_evidence_reference_is_rejected():
 
     assert result["status"] == "error"
     assert result["error"]["stage"] == "validation"
+    assert result["config"]["validation_error"] == "claim references unknown evidence"
+    assert result["config"]["validation_outcome"] == "supported_answer"
+    assert result["config"]["validation_claim_count"] == 1
     assert result["evidence"], "失败包仍保留已检索证据"
 
 
@@ -162,6 +165,7 @@ def test_generation_failure_is_not_retried():
 
     assert result["status"] == "error"
     assert result["error"]["stage"] == "generation"
+    assert result["config"]["generation_error"] == "TimeoutError"
     assert len(calls) == 1
 
 

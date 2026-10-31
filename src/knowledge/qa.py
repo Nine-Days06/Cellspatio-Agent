@@ -63,6 +63,7 @@ _ANSWER_PROMPT = """你是单细胞与空间组学文献证据助手。只能依
 
 规则：
 - outcome=supported_answer 时必须给出至少一条 claims，且每条论断至少引用一个真实存在的 E 编号。
+- 只有 supported_answer / conflicting_evidence 可以填写 claims；其他 outcome 的 claims 必须为空数组。
 - basis 用 fact（证据直接陈述）或 inference（由证据推出的判断），不得声称证据之外的事实。
 - 证据只支持部分结论时，只陈述被支持的部分，其余写入 limitations。
 - 证据与问题的物种、组织或技术背景不符时用 context_mismatch；证据互相矛盾时用 conflicting_evidence。
@@ -96,6 +97,65 @@ def _now_iso() -> str:
 def _answer_id() -> str:
     """回答包稳定标识。"""
     return f"qa-{uuid.uuid4().hex}"
+
+
+def answer_binding_sha256(answer: dict[str, Any]) -> str:
+    """计算人工复核绑定的规范哈希。
+
+    绑定回答身份、结论、引用关系、证据原文和来源适用性；耗时、缓存标志等
+    运行信息不参与哈希，避免同一回答重跑后无法匹配复核记录。
+    """
+    evidence = sorted(
+        (
+            {
+                "evidence_id": item.get("evidence_id"),
+                "chunk_id": item.get("chunk_id"),
+                "source_id": item.get("source_id"),
+                "content": item.get("content"),
+                "content_sha256": item.get("content_sha256"),
+            }
+            for item in answer.get("evidence") or []
+            if isinstance(item, dict)
+        ),
+        key=lambda item: (
+            str(item.get("evidence_id") or ""),
+            str(item.get("chunk_id") or ""),
+        ),
+    )
+    sources = sorted(
+        (
+            {
+                "source_id": item.get("source_id"),
+                "pmid": item.get("pmid"),
+                "doi": item.get("doi"),
+                "species": item.get("species"),
+                "tissue": item.get("tissue"),
+                "technology": item.get("technology"),
+            }
+            for item in answer.get("sources") or []
+            if isinstance(item, dict)
+        ),
+        key=lambda item: str(item.get("source_id") or ""),
+    )
+    config = answer.get("config") if isinstance(answer.get("config"), dict) else {}
+    payload = {
+        "answer_id": answer.get("answer_id"),
+        "schema_version": answer.get("schema_version"),
+        "question": answer.get("question"),
+        "status": answer.get("status"),
+        "outcome": answer.get("outcome"),
+        "answer": answer.get("answer"),
+        "claims": answer.get("claims") or [],
+        "limitations": answer.get("limitations") or [],
+        "clarifications": answer.get("clarifications") or [],
+        "evidence": evidence,
+        "sources": sources,
+        "error": answer.get("error"),
+        "workspace": config.get("workspace"),
+        "lightrag_version": config.get("lightrag_version"),
+    }
+    canonical = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
 
 def _lightrag_version() -> str:
@@ -399,17 +459,22 @@ def _compose_answer(
         raw = _run_stage(llm_func(prompt, **request_limits), deadline)
     except Exception as exc:  # noqa: BLE001 - 生成失败不自动重试
         logger.warning("knowledge qa generation failed: %s", type(exc).__name__)
+        meta["generation_error"] = type(exc).__name__
         raise QaStageError("generation", "答案生成失败，请稍后重试。", meta) from exc
 
+    parsed: dict[str, Any] = {}
+    outcome = ""
+    raw_claims: list[Any] = []
     try:
         parsed = _parse_answer(raw)
         outcome = str(parsed.get("outcome") or "")
         answer = str(parsed.get("answer") or "").strip()
+        raw_claims = parsed.get("claims") if isinstance(parsed.get("claims"), list) else []
         if outcome not in OUTCOMES:
             raise ValueError("unknown outcome")
         if not answer:
             raise ValueError("empty answer")
-        claims = _normalize_claims(parsed.get("claims"), {e["evidence_id"] for e in evidence})
+        claims = _normalize_claims(raw_claims, {e["evidence_id"] for e in evidence})
         clarifications = _str_list(parsed.get("clarifications"))
         if outcome == "supported_answer" and not claims:
             raise ValueError("supported answer without claims")
@@ -420,7 +485,11 @@ def _compose_answer(
         if outcome == "needs_context" and not clarifications:
             raise ValueError("needs_context without clarifications")
     except Exception as exc:  # noqa: BLE001 - 非法生成按失败收口，不修补重试
-        logger.warning("knowledge qa answer rejected: %s", type(exc).__name__)
+        logger.warning("knowledge qa answer rejected: %s: %s", type(exc).__name__, exc)
+        # 固定规则文本进 config 便于跑批定位；不对用户展示模型原文
+        meta["validation_error"] = str(exc)[:200] or type(exc).__name__
+        meta["validation_outcome"] = outcome or None
+        meta["validation_claim_count"] = len(raw_claims)
         raise QaStageError("validation", "生成的回答未通过证据引用校验，请重试。", meta) from exc
 
     meta["generation_ms"] = round((time.monotonic() - started) * 1000)
