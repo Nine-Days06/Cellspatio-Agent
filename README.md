@@ -40,8 +40,8 @@
 
 ```cmd
 REM 克隆项目
-git clone https://github.com/Nine-Days06/cellspatio-agent.git
-cd cellspatio-agent
+git clone https://github.com/Nine-Days06/Cellspatio-Agent.git
+cd Cellspatio-Agent
 
 REM 运行设置脚本
 setup.bat
@@ -161,6 +161,7 @@ cellspatio-agent/
 │   │   └── lineage.py           # Lineage 图谱模型
 │   ├── knowledge/       # 知识检索层
 │   │   ├── lightrag_client.py    # LightRAG 封装
+│   │   ├── qa.py                 # 受控知识问答（五阶段 + 证据绑定 + 复核）
 │   │   ├── prompt_profile.py     # 领域提示词加载与注入（entity_types/domain_rules）
 │   │   ├── prompts/              # 领域提示词文件（英文实体类型 + 抽取规则）
 │   │   ├── knowledge_builder.py  # 批量构建
@@ -169,9 +170,17 @@ cellspatio-agent/
 │   │   └── article_text.py       # 文章转文本公共函数
 │   ├── analysis/        # 分析层
 │   │   ├── r_executor.py         # R 执行器
+│   │   ├── qc_preview.py         # QC 阈值决策预览与证据校验
+│   │   ├── sc_qc.py              # 受控单细胞 QC
+│   │   ├── sc_filter.py          # 受控单细胞过滤
+│   │   ├── sc_pca.py             # PCA + 人工维度记录
+│   │   ├── sc_cluster.py         # neighbors/Louvain/UMAP + 人工接受
+│   │   ├── sc_markers.py         # Presto marker（结果须人工复核）
+│   │   ├── sc_marker_reviews.py  # Marker 复核绑定与视图
 │   │   ├── visualization.py      # 可视化
 │   │   └── result_explainer.py   # 结果解释
 │   └── data/            # 数据层
+│       ├── tenx.py              # 10x 目录三件套校验
 │       ├── fetchers/             # 公共数据库 Fetcher（GEO/KEGG/UniProt/Reactome/HPA）
 │       ├── gene_map.py           # 基因 ID 统一（NCBI gene_info → NCBIGene CURIE）
 │       ├── pubtator.py           # PubTator3 PMID→基因 CURIE 取数与缓存
@@ -188,11 +197,15 @@ cellspatio-agent/
 ├── docs/                # 文档
 ├── evals/               # 评测体系
 │   ├── cases.jsonl           # 金标用例
-│   └── run_eval.py           # 评测运行器 (--scripted/--live/--p3d)
+│   ├── run_eval.py           # 评测运行器 (--scripted/--live/--p3d)
+│   ├── qa_cases.jsonl        # 知识问答跑批用例（12 例）
+│   ├── qa_review.py          # 问答复核表单格式化与记录
+│   └── run_qa_eval.py        # QA 跑批评测（--only/--out，质量门槛 quality_claim_allowed）
 ├── build_pubtator_cache.py # 预计算 PubTator3 PMID→基因 CURIE 缓存（导入前执行一次）
 ├── canary_extract.py       # 真实抽取金丝雀：小样本入库读实体、判定抽取质量
 ├── rebuild_kb.py           # 知识库重建（KGML/Reactome/HPA）
 ├── sync_pubmed.py          # 文献一键同步（pubmed-etl 导出 → 主项目导入）
+├── start_pg.ps1            # 项目内 PostgreSQL 启停（端口 5433，测试库 rag_test）
 ├── setup.bat            # Windows 一键安装脚本
 └── .env.example         # 环境变量示例
 ```
@@ -210,6 +223,9 @@ python -m pytest tests/integration/
 # 全量测试
 python -m pytest tests/
 
+# Windows 单测门禁（自动启停项目内 PG + pytest 临时目录）
+.\run_unit_tests.ps1
+
 # P3d 专项评测（Skill路由+KG写入/查询+最佳实践）
 python -m evals.run_eval --p3d
 
@@ -220,25 +236,23 @@ python -m evals.run_eval --scripted
 python -m evals.run_eval --live --provider zhipu
 ```
 
-### 代码风格
+### 代码风格与提交门禁
 ```bash
-# 安装开发工具（black/ruff/pytest；setup.bat 已自动包含）
+# 安装开发工具（ruff/pytest；setup.bat 已自动包含）
 pip install -e .[dev]
 
 # 格式化代码
-black src/ tests/
+ruff format src/ tests/ pubmed-etl/ *.py
 
 # 代码检查
-ruff check src/ tests/
+ruff check src/ tests/ pubmed-etl/ *.py
 ```
+
+提交前门禁与分支约定见 [CONTRIBUTING.md](./CONTRIBUTING.md)：`main`/`dev` 禁止直接提交，`feature/*` 从 `dev` 分出并合回 `dev`。
 
 ## 贡献指南
 
-1. Fork 项目
-2. 创建特性分支 (`git checkout -b feature/amazing-feature`)
-3. 提交更改 (`git commit -m 'Add amazing feature'`)
-4. 推送到分支 (`git push origin feature/amazing-feature`)
-4. 创建 Pull Request
+完整协作约定（分支模型、Conventional Commits、本地门禁、PR 模板）见 [CONTRIBUTING.md](./CONTRIBUTING.md)。
 
 ## 许可证
 
