@@ -310,6 +310,9 @@ describe('send：SSE 接线', () => {
       expect.objectContaining({ sessionId: 's1', prompt: '跑差异表达' }),
     )
 
+    // 模式随请求透传；未指定时保持 chat
+    expect(vi.mocked(streamChat).mock.calls[0][0].mode).toBe('chat')
+
     ctl.onEvent?.({ type: 'delta', text: '正在' })
     ctl.onEvent?.({ type: 'delta', text: '处理' })
     expect(useChatStore.getState().draft).toBe('正在处理')
@@ -346,6 +349,20 @@ describe('send：SSE 接线', () => {
     ctl.onEnd?.('error')
     expect(useChatStore.getState().notice).toEqual({ kind: 'error', text: 'LLM 调用失败' })
 
+    release()
+    await pending
+  })
+
+  it('知识问答模式随请求透传', async () => {
+    const { ctl, release } = holdStream()
+    useChatStore.getState().setSession('s1', [])
+    const pending = useChatStore.getState().send('TP53 的功能是什么？', 'knowledge_qa')
+
+    expect(streamChat).toHaveBeenCalledWith(
+      expect.objectContaining({ prompt: 'TP53 的功能是什么？', mode: 'knowledge_qa' }),
+    )
+
+    ctl.onEnd?.('done')
     release()
     await pending
   })

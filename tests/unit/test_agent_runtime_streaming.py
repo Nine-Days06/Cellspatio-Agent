@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
+import pytest
+
 from tests.unit.test_agent_runtime import FakeWM, _text_response
 
 
@@ -97,6 +99,26 @@ def test_non_stream_call_passes_no_stream_kwarg():
     assert "stream" not in llm.calls[0]
     assert llm.calls[0]["tool_choice"] == "auto"
     assert wm.calls == []
+
+
+@pytest.mark.parametrize("status", ["needs_confirmation", "needs_input", "error"])
+def test_qc_is_terminal_without_sending_results_to_llm(status):
+    """成功、缺输入、失败都停住，不将本地证据回灌模型。"""
+    llm = FakeStreamLLM(
+        [
+            [_tool_chunk(0, "qc1", "run_analysis", '{"analysis_type":"single_cell"}')],
+        ]
+    )
+    evidence = {
+        "status": status,
+        "analysis_type": "single_cell",
+        "stage": "qc_review",
+        "results": {"qc_artifacts": {"x": "PRIVATE_PATH"}},
+    }
+    runtime, _ = _runtime(llm, FakeWM({"run_analysis": evidence}))
+    assert runtime.execute("单细胞 RNA 分析", on_event=EventSink()) == evidence
+    assert len(llm.calls) == 1
+    assert "PRIVATE_PATH" not in str(llm.calls)
 
 
 def test_stream_delta_events_arrive_in_order():

@@ -36,7 +36,9 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
             "description": (
                 "Execute omics analysis. Only supports enum types; "
                 "input file prefers context's latest downloaded asset, then params. "
-                "When no data available, backend returns needs_input; do not fabricate success."
+                "When no data available, backend returns needs_input; do not fabricate success. "
+                "single_cell only runs fixed unfiltered RNA QC and stops for scientific review; "
+                "it does not filter, cluster, annotate or approve parameters."
             ),
             "parameters": {
                 "type": "object",
@@ -130,4 +132,5 @@ Constraints:
 - At most ONE tool call per turn; tool results returned by system, you MUST NOT fabricate tool outputs.
 - When user requests unsupported analysis type (e.g., pathway enrichment, volcano plot standalone), do NOT call tool; directly inform of three supported types.
 - Tool returning needs_* status means waiting for user confirmation or more input; forward that status's message to user directly.
+- single_cell runs only unfiltered human RNA QC; never claim filtering, clustering, annotation or scientific acceptance.
 """

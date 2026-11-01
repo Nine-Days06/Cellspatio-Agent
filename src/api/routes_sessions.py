@@ -59,6 +59,8 @@ def delete_session(session_id: str) -> dict[str, Any]:
         raise HTTPException(status_code=409, detail="该会话已有任务在进行")
     try:
         store.delete_session(session_id)
+    except ValueError as exc:
+        raise HTTPException(409, str(exc)) from exc
     finally:
         lock.release()
     return {"deleted": session_id}

@@ -203,6 +203,28 @@ afterEach(() => {
 })
 
 describe('ChatPage 输入区：键位 / 停止 / 错误提示（约束 3）', () => {
+  it('起步提示填入问题、切换模式并聚焦，不自动发送或创建会话', async () => {
+    await renderReady(nextSid(), { messages: [] })
+    fireEvent.click(screen.getByRole('button', { name: /查阅文献证据/ }))
+    const box = screen.getByRole('textbox', { name: '输入你的问题' })
+    expect(box).toHaveValue('scRNA-seq 与 snRNA-seq 有什么区别？各自适用于哪些样本？')
+    expect(box).toHaveFocus()
+    expect(screen.getByRole('radio', { name: '知识问答' })).toHaveAttribute('aria-checked', 'true')
+    expect(streamChatMock).not.toHaveBeenCalled()
+    expect(createSessionMock).not.toHaveBeenCalled()
+  })
+
+  it('输入区随内容增高但限制高度，清空后缩回', async () => {
+    await renderReady(nextSid())
+    const box = screen.getByRole('textbox', { name: '输入你的问题' })
+    Object.defineProperty(box, 'scrollHeight', { configurable: true, value: 400 })
+    fireEvent.change(box, { target: { value: '多行\n问题' } })
+    expect(box.style.height).toBe('144px')
+    Object.defineProperty(box, 'scrollHeight', { configurable: true, value: 48 })
+    fireEvent.change(box, { target: { value: '' } })
+    expect(box.style.height).toBe('48px')
+  })
+
   it('打开页面自动选中首个会话，首次拉历史带 restore=1 并渲染历史消息', async () => {
     const sid = nextSid()
     await renderReady(sid, { messages: [makeMsg(sid, { role: 'user', content: '初始问题' })] })
@@ -218,7 +240,7 @@ describe('ChatPage 输入区：键位 / 停止 / 错误提示（约束 3）', ()
   it('Enter 发送（清空输入、进入生成态），Shift+Enter 与空输入不发送', async () => {
     const sid = nextSid()
     await renderReady(sid)
-    const box = screen.getByPlaceholderText<HTMLTextAreaElement>('输入你的问题…')
+    const box = screen.getByRole<HTMLTextAreaElement>('textbox', { name: '输入你的问题' })
 
     // Shift+Enter：处理器不拦截（交给浏览器默认换行），绝不触发发送
     fireEvent.keyDown(box, { key: 'Enter', shiftKey: true })
@@ -250,7 +272,7 @@ describe('ChatPage 输入区：键位 / 停止 / 错误提示（约束 3）', ()
       return new Promise<void>(() => {})
     })
 
-    const box = screen.getByPlaceholderText('输入你的问题…')
+    const box = screen.getByRole('textbox', { name: '输入你的问题' })
     fireEvent.change(box, { target: { value: '中断我' } })
     fireEvent.keyDown(box, { key: 'Enter' })
     await waitFor(() => expect(signal).toBeDefined())
@@ -261,6 +283,24 @@ describe('ChatPage 输入区：键位 / 停止 / 错误提示（约束 3）', ()
     expect(signal!.aborted).toBe(true)
     expect(screen.getByText(/正在结束当前步骤/)).toBeInTheDocument()
     // 约束 3：只置 abort，不承诺瞬时取消（busy 等 onEnd 收尾）
+    expect(useChatStore.getState().busy).toBe(true)
+  })
+
+  it('抽屉打开时 Esc 不误停正在进行的对话', async () => {
+    const sid = nextSid()
+    await renderReady(sid)
+    let signal: AbortSignal | undefined
+    streamChatMock.mockImplementation((options: { signal: AbortSignal }) => {
+      signal = options.signal
+      return new Promise<void>(() => {})
+    })
+    fireEvent.change(screen.getByRole('textbox', { name: '输入你的问题' }), { target: { value: '继续运行' } })
+    fireEvent.click(screen.getByRole('button', { name: '发送' }))
+    await waitFor(() => expect(signal).toBeDefined())
+    fireEvent.click(screen.getByRole('button', { name: '会话' }))
+    const dialog = await screen.findByRole('dialog', { name: '会话导航' })
+    fireEvent.keyDown(dialog, { key: 'Escape' })
+    expect(signal!.aborted).toBe(false)
     expect(useChatStore.getState().busy).toBe(true)
   })
 
@@ -288,7 +328,7 @@ describe('ChatPage 输入区：键位 / 停止 / 错误提示（约束 3）', ()
       Promise.reject(new ApiError(409, '该会话已有任务在进行')),
     )
 
-    const box = screen.getByPlaceholderText('输入你的问题…')
+    const box = screen.getByRole('textbox', { name: '输入你的问题' })
     fireEvent.change(box, { target: { value: '跑个分析' } })
     fireEvent.keyDown(box, { key: 'Enter' })
 
@@ -329,6 +369,47 @@ describe('ChatPage 约束落点（1/2）', () => {
     )
   })
 
+  it('知识问答模式：方向键切换，发送时带上 mode', async () => {
+    const sid = nextSid()
+    await renderReady(sid)
+    const chatRadio = screen.getByRole('radio', { name: '智能对话' })
+    const qaRadio = screen.getByRole('radio', { name: '知识问答' })
+
+    chatRadio.focus()
+    fireEvent.keyDown(chatRadio, { key: 'ArrowRight' })
+    expect(qaRadio).toHaveAttribute('aria-checked', 'true')
+    expect(qaRadio).toHaveFocus()
+
+    const box = screen.getByPlaceholderText(/提出一个单细胞或空间组学问题/)
+    fireEvent.change(box, { target: { value: 'Which markers identify exhausted T cells?' } })
+    fireEvent.keyDown(box, { key: 'Enter' })
+
+    await waitFor(() =>
+      expect(streamChatMock).toHaveBeenCalledWith(
+        expect.objectContaining({ sessionId: sid, mode: 'knowledge_qa' }),
+      ),
+    )
+  })
+
+  it('重试沿用上一轮回复的链路，而不是当前开关', async () => {
+    const sid = nextSid()
+    const user = makeMsg(sid, { role: 'user', content: '普通问题' })
+    const emptyReply = makeMsg(sid, { role: 'assistant', content: '' })
+    await renderReady(sid, { messages: [user, emptyReply] })
+    const qaRadio = screen.getByRole('radio', { name: '知识问答' })
+    fireEvent.click(qaRadio)
+    expect(qaRadio).toHaveAttribute('aria-checked', 'true')
+
+    fireEvent.click(screen.getByRole('button', { name: '重试' }))
+
+    await waitFor(() =>
+      expect(streamChatMock).toHaveBeenCalledWith(
+        expect.objectContaining({ sessionId: sid, prompt: '普通问题', mode: 'chat' }),
+      ),
+    )
+    expect(screen.getByRole('radio', { name: '智能对话' })).toHaveAttribute('aria-checked', 'true')
+  })
+
   it('约束2：过程条为 end 时输入区仍是生成态，不出现「已完成」', async () => {
     const sid = nextSid()
     await renderReady(sid)
@@ -367,6 +448,17 @@ describe('ChatPage 约束落点（1/2）', () => {
 })
 
 describe('ChatPage 确认卡片接线', () => {
+  it('确认卡出现时允许自身收缩滚动，给输入区保留空间', async () => {
+    const sid = nextSid()
+    await renderReady(sid)
+    act(() => useChatStore.setState({ scriptCard: pendingCard() }))
+
+    const dock = screen.getByTestId('confirm-dock')
+    expect(dock).toHaveClass('min-h-0', 'shrink', 'overflow-y-auto')
+    expect(dock).not.toHaveClass('shrink-0')
+    expect(screen.getByRole('button', { name: '发送' })).toBeInTheDocument()
+  })
+
   it('?restore=1 恢复：pending 脚本按顶层 pending_script 转 expired 并挂回卡片', async () => {
     const sid = nextSid()
     const embedded: PendingScript = {

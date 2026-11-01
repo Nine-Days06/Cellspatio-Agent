@@ -1,7 +1,7 @@
 /** SSE 客户端：POST /api/chat 的 fetch 流解析 + 事件分发 + AbortController。
 
 后端契约（src/api/events.py + routes_chat.py）：
-- 请求：POST /api/chat，body {"session_id": "...", "prompt": "..."}
+- 请求：POST /api/chat，body {"session_id": "...", "prompt": "...", "mode": "chat"|"knowledge_qa"}
 - 响应：text/event-stream，每帧一行 `data: {json}\n\n`
 - 事件 7 类：delta / tool_status / confirm_card / chart / compressed / done / error
 - 错误：404 / 409 / 422，body 均为 {"detail": "..."}
@@ -27,11 +27,13 @@ export type EndReason = 'done' | 'error' | 'aborted' | 'closed'
 
 // ApiError 单一实现住在 api.ts：sse 只 re-export，避免两个同名类导致 instanceof 判断分裂。
 import { ApiError } from '@/lib/api'
+import type { ChatMode } from '@/lib/types'
 export { ApiError }
 
 export interface StreamChatOptions {
   sessionId: string
   prompt: string
+  mode?: ChatMode
   onEvent: (event: SseEvent) => void
   onEnd: (reason: EndReason) => void
   signal?: AbortSignal
@@ -60,7 +62,7 @@ async function toApiError(response: Response): Promise<ApiError> {
  * 关闭——onEnd 一定会被调用且只调用一次；tool_status 只用于渲染过程条文案。
  */
 export async function streamChat(options: StreamChatOptions): Promise<void> {
-  const { sessionId, prompt, onEvent, onEnd, signal } = options
+  const { sessionId, prompt, mode = 'chat', onEvent, onEnd, signal } = options
   let ended = false
   const finish = (reason: EndReason) => {
     if (ended) return
@@ -73,7 +75,7 @@ export async function streamChat(options: StreamChatOptions): Promise<void> {
     response = await fetch('/api/chat', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ session_id: sessionId, prompt }),
+      body: JSON.stringify({ session_id: sessionId, prompt, mode }),
       signal,
     })
   } catch (err) {

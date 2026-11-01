@@ -10,6 +10,12 @@ logger = logging.getLogger(__name__)
 class RExecutorError(Exception):
     """R 执行器错误"""
 
+    def __init__(self, message: str, stdout: str = "", stderr: str = ""):
+        """保留失败输出，供受控流程写入本地证据。"""
+        super().__init__(message)
+        self.stdout = stdout
+        self.stderr = stderr
+
 
 class RExecutor:
     """R 脚本执行器"""
@@ -147,7 +153,12 @@ class RExecutor:
         self, script_path: str, args: list[str] | None = None
     ) -> subprocess.CompletedProcess:
         """执行 R 脚本"""
-        cmd = [self._resolve_rscript(), str(script_path)] + (args or [])
+        # Windows 上 R 4.6.x 的 Rscript.exe 打不开脚本时自身 0xC0000005 崩溃并弹
+        # "内存不能为 written" 对话框（无人值守时会卡住前台），先校验再调用。
+        script_path = str(script_path)
+        if not os.path.isfile(script_path):
+            raise RExecutorError(f"R script not found: {script_path}")
+        cmd = [self._resolve_rscript(), script_path] + (args or [])
         logger.info(f"Executing R script: {cmd}")
 
         try:
@@ -162,7 +173,7 @@ class RExecutor:
             if result.returncode != 0:
                 error_msg = f"R script failed with return code {result.returncode}: {result.stderr}"
                 logger.error(error_msg)
-                raise RExecutorError(error_msg)
+                raise RExecutorError(error_msg, result.stdout, result.stderr)
 
             return result
 

@@ -32,6 +32,7 @@ build/
 data/cache/
 data/raw/
 data/import/
+data/analysis/
 data/lineage.jsonl
 knowledge_base/
 knowledge_base_methods/

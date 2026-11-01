@@ -75,3 +75,21 @@ def test_no_llm_uses_template():
 def test_unknown_type_unchanged():
     gen = RScriptGenerator()
     assert gen.generate_code("unknown_type", {}) == "# 不支持的分析类型: unknown_type"
+
+
+def test_single_cell_llm_receives_and_preserves_input_block():
+    params = {"input_file": r"D:\sample", "output_file": "out.csv"}
+    input_code = RScriptGenerator._single_cell_input_code(params)
+    llm = _fake_llm("#!/usr/bin/env Rscript\n" + input_code + "cat('done')")
+    code = RScriptGenerator(llm_client=llm).generate_code("single_cell", params)
+    assert code.endswith("cat('done')")
+    assert input_code in llm.prompts[0]["messages"][0]["content"]
+    assert "原样" in llm.prompts[0]["messages"][0]["content"]
+
+
+def test_single_cell_llm_missing_input_block_falls_back():
+    llm = _fake_llm("#!/usr/bin/env Rscript\nmat <- read.csv('bad.csv')")
+    code = RScriptGenerator(llm_client=llm).generate_code("single_cell", {"input_file": "10x"})
+    assert "Read10X" in code and "ReadMtx" in code
+    assert "CreateSeuratObject" in code
+    assert "bad.csv" not in code

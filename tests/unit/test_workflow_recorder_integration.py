@@ -3,8 +3,12 @@
 import tempfile
 from pathlib import Path
 
+import pytest
+
 from src.control.workflow_recorder import WorkflowRecorder
 from src.main import CellSpatioAgent
+
+pytestmark = pytest.mark.pg
 
 
 def _get_run_id(recorder: WorkflowRecorder) -> str:

@@ -74,3 +74,6 @@ ignore = ["E501"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 asyncio_mode = "auto"
+markers = [
+    "pg: 需要本地 PostgreSQL（tests/conftest.py 会重定向到 rag_test）",
+]

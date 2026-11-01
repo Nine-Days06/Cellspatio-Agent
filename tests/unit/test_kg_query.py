@@ -3,6 +3,8 @@
 import tempfile
 from pathlib import Path
 
+import pytest
+
 from src.control.kg_memory import KGMemory
 from src.control.kg_query import KGQuery
 from src.schemas.workflow import (
@@ -17,6 +19,8 @@ from src.schemas.workflow import (
     WorkflowRun,
     WorkflowStep,
 )
+
+pytestmark = pytest.mark.pg
 
 
 def _make_run() -> "WorkflowRun":

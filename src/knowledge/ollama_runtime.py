@@ -161,8 +161,12 @@ def _find_exe() -> str | None:
         local = os.environ.get("LOCALAPPDATA", "")
         if local:
             fallback = Path(local) / "Programs" / "Ollama" / "ollama.exe"
-            if fallback.is_file():
-                return str(fallback)
+            try:
+                if fallback.is_file():
+                    return str(fallback)
+            except OSError as exc:
+                # 受限账户可能连 stat 默认安装目录都被拒绝；按“未安装”处理。
+                logger.debug("ollama fallback path inaccessible: %s", exc)
     return None
 
 

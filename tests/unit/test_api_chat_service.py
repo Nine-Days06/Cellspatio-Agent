@@ -52,6 +52,121 @@ def test_user_message_is_persisted_before_runtime_runs(store):
     assert emit.collected[-1]["type"] == "done"
 
 
+def test_knowledge_qa_mode_bypasses_history_runtime_and_compaction(store, monkeypatch):
+    """显式问答只把本轮问题交给证据链，不压缩历史、不进入工具循环。"""
+    sid = store.create_session()
+    store.append_message(sid, "user", "历史里的秘密")
+    store.append_message(sid, "assistant", "历史回答")
+    store.update_session_meta(sid, summary="历史摘要", summary_upto=2)
+    payload = {
+        "answer_id": "qa-test",
+        "schema_version": "knowledge-qa/1.0.0",
+        "status": "success",
+        "outcome": "supported_answer",
+        "answer": "可追溯回答",
+        "claims": [],
+        "evidence": [],
+        "sources": [],
+        "review_status": "unreviewed",
+    }
+    seen: list[str] = []
+    seen_kwargs: list[dict] = []
+
+    def fake_run(client, question, **kwargs):
+        seen.append(question)
+        seen_kwargs.append(kwargs)
+        return payload
+
+    monkeypatch.setattr("src.knowledge.qa.run_knowledge_qa", fake_run)
+    agent = FakeAgent()
+    agent.knowledge_client = object()
+    emit = _sink()
+
+    result = run_turn(agent, store, sid, "新问题", emit, mode="knowledge_qa")
+
+    assert seen == ["新问题"]
+    user_message_id = [m for m in store.get_messages(sid) if m["role"] == "user"][-1]["id"]
+    assert seen_kwargs == [{"session_id": sid, "question_message_id": user_message_id}]
+    assert agent.agent_runtime.calls == []
+    assert store.get_session(sid)["summary"] == "历史摘要"
+    last = store.get_messages(sid)[-1]
+    assert last["content"] == "可追溯回答"
+    assert last["results"]["knowledge_qa"]["answer_id"] == "qa-test"
+    assert [event["type"] for event in emit.collected] == [
+        "tool_status",
+        "tool_status",
+        "done",
+    ]
+    assert result["type"] == "knowledge_qa"
+
+
+def test_knowledge_qa_stops_before_retrieval_when_client_is_gone(store, monkeypatch):
+    """启动事件发不出去说明连接已断，不再发起检索/生成调用。"""
+    sid = store.create_session()
+    called: list[str] = []
+
+    def fake_run(client, question, **kwargs):
+        called.append(question)
+        return {}
+
+    monkeypatch.setattr("src.knowledge.qa.run_knowledge_qa", fake_run)
+    agent = FakeAgent()
+    agent.knowledge_client = object()
+    emit = _sink(abort_types=("tool_status",))
+
+    result = run_turn(agent, store, sid, "新问题", emit, mode="knowledge_qa")
+
+    assert called == []
+    assert result["status"] == "interrupted"
+    last = store.get_messages(sid)[-1]
+    assert last["role"] == "assistant"
+    assert last["results"]["knowledge_qa"]["status"] == "interrupted"
+    assert (
+        last["results"]["knowledge_qa"]["question_message_id"]
+        == [m for m in store.get_messages(sid) if m["role"] == "user"][-1]["id"]
+    )
+
+
+def test_knowledge_qa_prompt_excludes_history_summary_and_assets(store, monkeypatch):
+    """证据边界：模型只应看到本轮问题与本轮检索片段。"""
+    sid = store.create_session()
+    store.append_message(sid, "user", "历史里的秘密")
+    store.append_message(sid, "assistant", "历史回答")
+    store.update_session_meta(sid, summary="历史摘要", summary_upto=2)
+
+    class Client:
+        def query_data(self, question, mode="mix", **kwargs):
+            return {
+                "status": "success",
+                "data": {
+                    "chunks": [
+                        {
+                            "chunk_id": "c1",
+                            "content": "标题：A paper\n摘要：Retrieved evidence.\nPMID：38947524",
+                        }
+                    ]
+                },
+                "metadata": {},
+            }
+
+    prompts: list[str] = []
+
+    async def fake_llm(prompt, **kwargs):
+        prompts.append(prompt)
+        return json.dumps({"outcome": "insufficient_evidence", "answer": "证据不足"})
+
+    monkeypatch.setattr("src.knowledge.qa.build_llm_func", lambda: (fake_llm, "fake-model"))
+    agent = FakeAgent()
+    agent.knowledge_client = Client()
+
+    run_turn(agent, store, sid, "新问题", _sink(), mode="knowledge_qa")
+
+    assert prompts, "生成阶段应当被调用"
+    for sentinel in ("历史里的秘密", "历史回答", "历史摘要"):
+        assert sentinel not in prompts[0]
+    assert "Retrieved evidence." in prompts[0]
+
+
 def test_general_branch_persists_assistant_message_and_done_event(store):
     sid = store.create_session()
     runtime = FakeRuntime(
@@ -234,3 +349,74 @@ def test_session_lock_is_per_session_and_reentrant_lookup():
     first.release()
     assert first.acquire(blocking=False) is True
     first.release()
+
+
+def test_knowledge_qa_persist_failure_is_not_reported_as_success(store, monkeypatch):
+    """落库失败必须冒泡，不能对外宣称这一轮已完成。"""
+    sid = store.create_session()
+    monkeypatch.setattr(
+        "src.knowledge.qa.run_knowledge_qa",
+        lambda client, question, **kwargs: {
+            "answer_id": "qa-test",
+            "status": "success",
+            "outcome": "supported_answer",
+            "answer": "回答",
+            "claims": [],
+            "evidence": [],
+            "sources": [],
+            "review_status": "unreviewed",
+        },
+    )
+    real_append = store.append_message
+
+    def flaky_append(session_id, role, content, **kwargs):
+        if role == "assistant":
+            raise RuntimeError("disk full")
+        return real_append(session_id, role, content, **kwargs)
+
+    monkeypatch.setattr(store, "append_message", flaky_append)
+    agent = FakeAgent()
+    agent.knowledge_client = object()
+    emit = _sink()
+
+    with pytest.raises(RuntimeError, match="disk full"):
+        run_turn(agent, store, sid, "问题", emit, mode="knowledge_qa")
+
+    assert [e["type"] for e in emit.collected] == ["tool_status", "tool_status"]
+
+
+def test_knowledge_qa_disconnect_after_generation_keeps_answer(store, monkeypatch):
+    """生成完才发现断连：落 interrupted，但保留已产出的回答，且不发 done。"""
+    sid = store.create_session()
+    payload = {
+        "answer_id": "qa-done",
+        "status": "success",
+        "outcome": "supported_answer",
+        "answer": "已有回答",
+        "claims": [],
+        "evidence": [],
+        "sources": [],
+        "review_status": "unreviewed",
+    }
+    monkeypatch.setattr("src.knowledge.qa.run_knowledge_qa", lambda client, question, **kw: payload)
+    collected: list[dict] = []
+    seen: list[int] = []
+
+    def emit(event):
+        collected.append(event)
+        if event["type"] == "tool_status":
+            seen.append(1)
+            return len(seen) == 1
+        return True
+
+    agent = FakeAgent()
+    agent.knowledge_client = object()
+
+    result = run_turn(agent, store, sid, "问题", emit, mode="knowledge_qa")
+
+    assert result["status"] == "interrupted"
+    assert [e["type"] for e in collected] == ["tool_status", "tool_status"]
+    pkg = store.get_messages(sid)[-1]["results"]["knowledge_qa"]
+    assert pkg["status"] == "interrupted"
+    assert pkg["answer"] == "已有回答"
+    assert store.get_messages(sid)[-1]["content"] == "已有回答"

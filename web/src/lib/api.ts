@@ -5,6 +5,14 @@ import type {
   SessionSummary,
   SidebarResponse,
   WireMessage,
+  QcReviewState,
+  QcThresholds,
+  PcaState,
+  PcaDimensionsState,
+  ClusterState,
+  ClusterAcceptanceState,
+  MarkerState,
+  MarkerPage,
 } from '@/lib/types'
 
 /** 统一 HTTP 错误：message 直接用后端 detail（已是中文），UI 可直接展示。 */
@@ -83,4 +91,90 @@ export function fetchSidebar(sessionId?: string): Promise<SidebarResponse> {
 
 export function confirmAction(body: ConfirmRequestBody): Promise<{ message: WireMessage }> {
   return request('/api/confirm', jsonInit('POST', body))
+}
+
+const qcPath = (sessionId: string, runId: string) =>
+  `/api/sessions/${encodeURIComponent(sessionId)}/qc/${encodeURIComponent(runId)}`
+
+export function fetchQc(sessionId: string, runId: string): Promise<QcReviewState> {
+  return request(qcPath(sessionId, runId))
+}
+
+export function previewQc(sessionId: string, runId: string, params: QcThresholds): Promise<QcReviewState> {
+  return request(`${qcPath(sessionId, runId)}/preview`, jsonInit('POST', params))
+}
+
+export function approveQc(sessionId: string, runId: string, previewId: string, reason: string): Promise<QcReviewState> {
+  return request(`${qcPath(sessionId, runId)}/approve`, jsonInit('POST', { preview_id: previewId, reason }))
+}
+
+export function filterQc(sessionId: string, runId: string, previewId: string): Promise<QcReviewState> {
+  return request(`${qcPath(sessionId, runId)}/filter`, jsonInit('POST', { preview_id: previewId }))
+}
+
+const pcaPath = (sessionId: string, runId: string, filterAttemptId: string) =>
+  `${qcPath(sessionId, runId)}/pca/${encodeURIComponent(filterAttemptId)}`
+
+export function fetchPca(sessionId: string, runId: string, filterAttemptId: string): Promise<PcaState> {
+  return request(pcaPath(sessionId, runId, filterAttemptId))
+}
+
+export function executePca(sessionId: string, runId: string, filterAttemptId: string, binding: string, reason: string): Promise<PcaState> {
+  return request(pcaPath(sessionId, runId, filterAttemptId), jsonInit('POST', { binding_sha256: binding, reason }))
+}
+
+export function pcaDiagnosticPath(sessionId: string, runId: string, filterAttemptId: string, attemptId: string): string {
+  return `${pcaPath(sessionId, runId, filterAttemptId)}/${encodeURIComponent(attemptId)}/diagnostic`
+}
+
+export function fetchPcaDimensions(sessionId: string, runId: string, filterAttemptId: string, attemptId: string): Promise<PcaDimensionsState> {
+  return request(`${pcaPath(sessionId, runId, filterAttemptId)}/${encodeURIComponent(attemptId)}/dimensions`)
+}
+
+export function recordPcaDimensions(sessionId: string, runId: string, filterAttemptId: string, attemptId: string, binding: string, revision: number, nDims: number, reason: string): Promise<PcaDimensionsState> {
+  return request(`${pcaPath(sessionId, runId, filterAttemptId)}/${encodeURIComponent(attemptId)}/dimensions`, jsonInit('POST', { binding_sha256: binding, revision, n_dims: nDims, reason }))
+}
+
+const clusterPath = (sessionId: string, runId: string, filterAttemptId: string, pcaAttemptId: string) =>
+  `${qcPath(sessionId, runId)}/clusters/${encodeURIComponent(filterAttemptId)}/${encodeURIComponent(pcaAttemptId)}`
+
+export function fetchClusters(sessionId: string, runId: string, filterAttemptId: string, pcaAttemptId: string): Promise<ClusterState> {
+  return request(clusterPath(sessionId, runId, filterAttemptId, pcaAttemptId))
+}
+
+export function executeClusters(sessionId: string, runId: string, filterAttemptId: string, pcaAttemptId: string, binding: string, reviewId: string, revision: number, reason: string): Promise<ClusterState> {
+  return request(`${clusterPath(sessionId, runId, filterAttemptId, pcaAttemptId)}/execute`, jsonInit('POST', { binding_sha256: binding, dimension_review_id: reviewId, revision, reason }))
+}
+
+export function clusterDiagnosticPath(sessionId: string, runId: string, filterAttemptId: string, pcaAttemptId: string, attemptId: string): string {
+  return `${clusterPath(sessionId, runId, filterAttemptId, pcaAttemptId)}/${encodeURIComponent(attemptId)}/diagnostic`
+}
+
+type MarkerSource = { sessionId: string; runId: string; filterAttemptId: string; pcaAttemptId: string; clusterAttemptId: string }
+
+const acceptancePath = (source: MarkerSource) => `${clusterPath(source.sessionId, source.runId, source.filterAttemptId, source.pcaAttemptId)}/${encodeURIComponent(source.clusterAttemptId)}/review`
+const markerPath = (source: MarkerSource) => `${qcPath(source.sessionId, source.runId)}/markers/${encodeURIComponent(source.filterAttemptId)}/${encodeURIComponent(source.pcaAttemptId)}/${encodeURIComponent(source.clusterAttemptId)}`
+
+export function fetchClusterAcceptance(source: MarkerSource): Promise<ClusterAcceptanceState> {
+  return request(acceptancePath(source))
+}
+
+export function recordClusterAcceptance(source: MarkerSource, binding: string, revision: number, reason: string): Promise<ClusterAcceptanceState> {
+  return request(acceptancePath(source), jsonInit('POST', { binding_sha256: binding, revision, accepted: true, reason }))
+}
+
+export function fetchMarkers(source: MarkerSource): Promise<MarkerState> {
+  return request(markerPath(source))
+}
+
+export function executeMarkers(source: MarkerSource, binding: string, reviewId: string, revision: number, reason: string): Promise<MarkerState> {
+  return request(`${markerPath(source)}/execute`, jsonInit('POST', { binding_sha256: binding, cluster_review_id: reviewId, revision, reason }))
+}
+
+export function markerDiagnosticPath(source: MarkerSource, attemptId: string): string {
+  return `${markerPath(source)}/${encodeURIComponent(attemptId)}/diagnostic`
+}
+
+export function fetchMarkerCandidates(source: MarkerSource, attemptId: string, offset: number): Promise<MarkerPage> {
+  return request(`${markerPath(source)}/${encodeURIComponent(attemptId)}/candidates?offset=${offset}&limit=100`)
 }

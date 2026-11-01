@@ -11,12 +11,19 @@
  */
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { useQueryClient } from '@tanstack/react-query'
+import { ArrowUp, Square } from 'lucide-react'
 import { ConfirmCard } from '@/components/ConfirmCard'
 import { MessageList } from '@/components/MessageList'
 import { Sidebar } from '@/components/Sidebar'
 import { ApiError, confirmAction } from '@/lib/api'
 import { queryKeys, useMessages, useSessions, useSidebar } from '@/lib/queries'
-import type { ConfirmRequestBody, EnvStatus, KbStats, SessionSummary } from '@/lib/types'
+import type {
+  ChatMode,
+  ConfirmRequestBody,
+  EnvStatus,
+  KbStats,
+  SessionSummary,
+} from '@/lib/types'
 import { useChatStore } from '@/store/chat'
 
 const DEFAULT_KB: KbStats = { initialized: false }
@@ -31,12 +38,21 @@ const DEFAULT_ENV: EnvStatus = {
 export function ChatPage() {
   // 输入区本地状态：draft 属于流式输出，输入框不共用
   const [input, setInput] = useState('')
+  const inputRef = useRef<HTMLTextAreaElement>(null)
+  useEffect(() => {
+    const field = inputRef.current
+    if (!field) return
+    field.style.height = 'auto'
+    field.style.height = `${Math.min(field.scrollHeight, 144)}px`
+  }, [input])
   /** 已请求停止（诚实文案）；busy 结束时由效果复位 */
   const [stopping, setStopping] = useState(false)
   /** 超 30s 无 store 事件（约束 3c） */
   const [slowHint, setSlowHint] = useState(false)
   /** POST /api/confirm 失败的后端中文 detail；发起新一轮确认前置 null */
   const [confirmError, setConfirmError] = useState<string | null>(null)
+  /** 本轮模式：知识问答只走证据链，智能对话走现有工具循环 */
+  const [mode, setMode] = useState<ChatMode>('chat')
 
   const sessionId = useChatStore((s) => s.sessionId)
   const history = useChatStore((s) => s.history)
@@ -100,7 +116,7 @@ export function ChatPage() {
 
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') requestStop()
+      if (event.key === 'Escape' && !document.querySelector('[role="dialog"]')) requestStop()
     }
     window.addEventListener('keydown', onKeyDown)
     return () => window.removeEventListener('keydown', onKeyDown)
@@ -129,15 +145,26 @@ export function ChatPage() {
     if (!prompt || busy) return
     setInput('')
     setConfirmError(null)
-    void send(prompt)
+    void send(prompt, mode)
   }
 
   /** 约束 1 重试：重发本会话最后一条用户消息 */
   function handleRetry(): void {
     const state = useChatStore.getState()
     if (state.busy) return
-    const lastUser = [...state.history].reverse().find((m) => m.role === 'user')
-    if (lastUser) void send(lastUser.content)
+    const history = state.history
+    const lastUserAt = history.reduce((at, m, i) => (m.role === 'user' ? i : at), -1)
+    if (lastUserAt < 0) return
+    // 沿用上一轮回复所在的链路，而不是当前开关：切模式后重试不该换链路
+    const reply = history.slice(lastUserAt + 1).find((m) => m.role === 'assistant')
+    // 没有回复可参考时保持当前开关，避免把知识问答静默换成普通对话
+    const replayMode: ChatMode = reply
+      ? reply.results?.knowledge_qa
+        ? 'knowledge_qa'
+        : 'chat'
+      : mode
+    setMode(replayMode)
+    void send(history[lastUserAt].content, replayMode)
   }
 
   /** 确认执行：发起前先清旧错误；成功按 action 回写卡片状态 / 清卡（T7 契约） */
@@ -166,7 +193,7 @@ export function ChatPage() {
     const card = useChatStore.getState().scriptCard
     if (!card) return
     setConfirmError(null)
-    void send(card.user_request)
+    void send(card.user_request, 'chat')
   }
 
   /** 切换会话：先停旧流（防事件串台）再复位；重复选中当前会话不重置历史 */
@@ -212,7 +239,7 @@ export function ChatPage() {
   const env = sidebarQuery.data?.env ?? DEFAULT_ENV
 
   return (
-    <div className="flex h-screen bg-background text-foreground">
+    <div className="workspace flex h-dvh flex-col overflow-hidden bg-background text-foreground md:flex-row">
       <Sidebar
         sessions={sessions}
         activeId={sessionId}
@@ -223,8 +250,17 @@ export function ChatPage() {
         onCreated={handleCreated}
         onDeleted={handleDeleted}
       />
-      <main className="flex min-w-0 flex-1 flex-col">
+      <main className="flex min-h-0 min-w-0 flex-1 flex-col">
+        <header className="workspace-header flex shrink-0 items-center justify-between gap-4 border-b border-border px-5 py-4 md:px-9">
+          <div className="min-w-0">
+            <h1 className="truncate text-lg font-semibold tracking-tight md:text-xl" title={sessions.find((s) => s.id === sessionId)?.title}>{sessions.find((s) => s.id === sessionId)?.title ?? '新会话'}</h1>
+            <p className="mt-1 text-xs text-muted-foreground">单细胞与时空组学分析记录{history.length > 0 && ` · ${history.length} 条记录`}</p>
+          </div>
+          <span className="flex shrink-0 items-center gap-2 text-xs text-muted-foreground"><span aria-hidden="true" className={`size-1.5 rounded-full ${busy ? 'bg-primary' : 'bg-muted-foreground/50'}`} />{busy ? '正在执行' : '等待输入'}</span>
+        </header>
         <MessageList
+          key={sessionId}
+          onQcRecorded={() => { void queryClient.invalidateQueries({ queryKey: queryKeys.messages(sessionId ?? '') }) }}
           messages={history}
           draft={draft}
           busy={busy}
@@ -232,9 +268,13 @@ export function ChatPage() {
           notice={notice}
           softWarn={softWarn}
           onRetry={handleRetry}
+          onStarter={(prompt, nextMode) => { setInput(prompt); setMode(nextMode); inputRef.current?.focus() }}
         />
         {(scriptCard || dataCard) && (
-          <div className="border-t border-border px-4 py-3">
+          <div
+            data-testid="confirm-dock"
+            className="confirm-dock max-h-[35dvh] min-h-0 shrink overflow-y-auto border-t border-border bg-card px-5 py-3 md:px-9"
+          >
             <ConfirmCard
               scriptCard={scriptCard}
               dataCard={dataCard}
@@ -246,7 +286,8 @@ export function ChatPage() {
           </div>
         )}
         {/* 输入区：状态行只看 store.busy（约束 2），停止文案不承诺瞬时取消（约束 3） */}
-        <div className="border-t border-border p-3">
+        <div className="composer shrink-0 px-5 pb-3 pt-2 md:px-9">
+          <div className="mx-auto max-w-6xl">
           {busy && !stopping && (
             <p className="mb-1.5 text-xs text-muted-foreground">生成中…</p>
           )}
@@ -258,12 +299,55 @@ export function ChatPage() {
           {busy && slowHint && (
             <p className="mb-1.5 text-xs text-muted-foreground">仍在执行，可能耗时较久</p>
           )}
+          <div className="composer-shell rounded-xl border border-border bg-card px-3 pb-2 pt-2">
+          <div
+            role="radiogroup"
+            aria-label="对话模式"
+            className="mb-1 inline-flex gap-1"
+          >
+            {[
+              { value: 'chat' as const, label: '智能对话' },
+              { value: 'knowledge_qa' as const, label: '知识问答' },
+            ].map((item) => (
+              <button
+                key={item.value}
+                type="button"
+                role="radio"
+                aria-checked={mode === item.value}
+                tabIndex={mode === item.value ? 0 : -1}
+                disabled={busy}
+                onClick={() => setMode(item.value)}
+                onKeyDown={(e) => {
+                  if (e.key !== 'ArrowLeft' && e.key !== 'ArrowRight') return
+                  e.preventDefault()
+                  const next = item.value === 'chat' ? 'knowledge_qa' : 'chat'
+                  setMode(next)
+                  e.currentTarget.parentElement
+                    ?.querySelectorAll<HTMLButtonElement>('[role="radio"]')
+                    .item(next === 'chat' ? 0 : 1)
+                    ?.focus()
+                }}
+                className={`min-h-11 rounded-md px-3 py-2 text-sm ${
+                  mode === item.value
+                    ? 'bg-accent font-medium text-accent-foreground'
+                    : 'text-muted-foreground hover:bg-muted'
+                } disabled:opacity-50`}
+              >
+                {item.label}
+              </button>
+            ))}
+          </div>
           <div className="flex items-end gap-2">
             <textarea
+              ref={inputRef}
               aria-label="输入你的问题"
-              placeholder="输入你的问题…"
-              rows={2}
-              className="flex-1 resize-none rounded-lg border border-border bg-card p-2 text-sm outline-none focus-visible:ring-1 focus-visible:ring-ring"
+              placeholder={
+                mode === 'knowledge_qa'
+                  ? '提出一个单细胞或空间组学问题，回答将附文献片段…'
+                  : '描述你的数据、样本或分析目标…'
+              }
+              rows={1}
+              className="composer-input min-h-12 min-w-0 flex-1 resize-none rounded-md bg-transparent px-2 py-3 text-base leading-6 focus-visible:outline-none"
               value={input}
               onChange={(e) => setInput(e.target.value)}
               onKeyDown={(e) => {
@@ -279,8 +363,9 @@ export function ChatPage() {
                 type="button"
                 onClick={requestStop}
                 disabled={stopping}
-                className="rounded-lg border border-border px-3 py-2 text-sm hover:bg-muted disabled:opacity-50"
+                className="min-h-11 rounded-lg border border-border px-4 py-2 text-sm hover:bg-muted disabled:opacity-50"
               >
+                <Square className="mr-1 inline size-3 fill-current" aria-hidden="true" />
                 停止
               </button>
             ) : (
@@ -288,11 +373,15 @@ export function ChatPage() {
                 type="button"
                 onClick={handleSend}
                 disabled={!input.trim()}
-                className="rounded-lg border border-border px-3 py-2 text-sm hover:bg-muted disabled:opacity-50"
+                className="min-h-11 rounded-lg bg-primary px-4 py-2 text-sm text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
               >
+                <ArrowUp className="mr-1 inline size-4" aria-hidden="true" />
                 发送
               </button>
             )}
+          </div>
+          </div>
+          <p className="composer-help mt-2 text-xs text-muted-foreground">{mode === 'knowledge_qa' ? '回答附论断与原文证据；结果仍需人工复核。' : 'Enter 发送，Shift + Enter 换行；分析须独立授权。'}</p>
           </div>
         </div>
       </main>

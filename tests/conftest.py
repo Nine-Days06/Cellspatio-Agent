@@ -8,6 +8,8 @@ import pytest
 
 # 测试专用 PG 库：与生产库 rag 隔离，测试写入不会污染真实知识库
 _TEST_PG_DATABASE = "rag_test"
+_PG_READY: bool | None = None
+_PG_PROBE_TIMEOUT_SECONDS = 10
 
 
 async def _ensure_test_database() -> None:
@@ -20,7 +22,13 @@ async def _ensure_test_database() -> None:
     password = os.environ.get("POSTGRES_PASSWORD", "")
 
     conn = await asyncpg.connect(
-        host=host, port=port, user=user, password=password, database="postgres"
+        host=host,
+        port=port,
+        user=user,
+        password=password,
+        database="postgres",
+        timeout=3,
+        command_timeout=5,
     )
     try:
         exists = await conn.fetchval(
@@ -32,7 +40,13 @@ async def _ensure_test_database() -> None:
         await conn.close()
 
     conn = await asyncpg.connect(
-        host=host, port=port, user=user, password=password, database=_TEST_PG_DATABASE
+        host=host,
+        port=port,
+        user=user,
+        password=password,
+        database=_TEST_PG_DATABASE,
+        timeout=3,
+        command_timeout=5,
     )
     try:
         await conn.execute("CREATE EXTENSION IF NOT EXISTS vector")
@@ -40,24 +54,27 @@ async def _ensure_test_database() -> None:
         await conn.close()
 
 
-@pytest.fixture(scope="session", autouse=True)
-def pg_test_database():
-    """把所有 PG 存储重定向到测试库，确保生产库 rag 不被测试写入。
-
-    LightRAG 的 ClientManager 是进程级单例：首个连接落哪个库，整个测试进程
-    都复用它。故必须在任何连接建立前覆盖 POSTGRES_DATABASE（session 级
-    autouse，先于所有测试执行）。建库失败时仅告警——碰 PG 的测试自然失败，
-    但绝不回退到生产库。
-    """
+def pytest_sessionstart(session):
+    """在任何测试连接建立前准备测试库；PG 不可达时快速降级。"""
+    global _PG_READY
     os.environ["POSTGRES_DATABASE"] = _TEST_PG_DATABASE
     try:
-        asyncio.run(_ensure_test_database())
+        asyncio.run(asyncio.wait_for(_ensure_test_database(), timeout=_PG_PROBE_TIMEOUT_SECONDS))
     except Exception as exc:  # noqa: BLE001 - PG 不可达时不应阻断非 PG 测试
+        _PG_READY = False
         warnings.warn(
-            f"无法准备测试库 {_TEST_PG_DATABASE}: {exc}；涉及 PG 的测试将失败",
+            f"无法准备测试库 {_TEST_PG_DATABASE}: {exc}；"
+            "标记为 pg 的测试将跳过，请先运行 .\\start_pg.ps1",
             stacklevel=1,
         )
-    yield
+    else:
+        _PG_READY = True
+
+
+def pytest_runtest_setup(item):
+    """PG 不可达时跳过显式标记的用例，避免 LightRAG 连接重试卡住整套测试。"""
+    if item.get_closest_marker("pg") and _PG_READY is not True:
+        pytest.skip("PostgreSQL 未就绪；运行 .\\start_pg.ps1 后重试")
 
 
 @pytest.fixture(autouse=True)

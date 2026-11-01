@@ -120,11 +120,13 @@ BREAKING CHANGE: 配置文件改为仅接受 v2 格式
 
 ## 本地门禁（提交前必跑）
 
-```bash
+```powershell
 # Python
 ruff check src/ tests/ pubmed-etl/ *.py
 ruff format --check src/ tests/ pubmed-etl/ *.py
-pytest tests/unit/ -q
+.\start_pg.ps1
+python -m pytest tests/unit/ -q --basetemp .scratch/pytest-unit
+# 仅在本轮启动了 PG 时停止：.\start_pg.ps1 -Stop
 
 # 前端（改动 web/ 时）
 cd web && npm run typecheck && npm run test && npm run build

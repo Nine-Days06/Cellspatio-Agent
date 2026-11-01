@@ -2,6 +2,8 @@
 
 import asyncio
 
+import pytest
+
 from src.skills.base import SkillBase, SkillContext
 from src.skills.manifest import SkillMetadata
 
@@ -91,6 +93,7 @@ def test_record_failure_is_swallowed():
     asyncio.run(skill.teardown(ctx))  # 不应抛异常
 
 
+@pytest.mark.pg
 def test_record_execution_with_real_kgmemory(tmp_path):
     """回归：asyncio.run 上下文中经 to_thread 调真实 ingest 不得触发嵌套 loop 错误。"""
     from src.control.kg_memory import KGMemory

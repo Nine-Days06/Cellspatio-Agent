@@ -4,6 +4,8 @@
 >
 > 本指南内容以代码实际行为为准。最后核对日期：2026-09-30（参考环境：Windows / Python 3.12.10 / R 4.6.1 / Streamlit 1.64.0）。
 
+> 受控单细胞 PCA 维度记录段落更新并核对于 2026-10-28（FastAPI / React）；其余历史章节未在本次重新核对。
+
 ## 目录
 
 1. [简介与适用人群](#1-简介与适用人群)
@@ -218,7 +220,7 @@ data/raw/
 | 类型 | 说明 | 触发示例 |
 |---|---|---|
 | `differential_expression` | bulk 差异表达（DESeq2） | 「对这些数据做差异表达分析」 |
-| `single_cell` | 单细胞聚类 / 注释（Seurat） | 「对数据做单细胞聚类」 |
+| `single_cell` | 固定的过滤前 RNA QC（Seurat/Matrix 读取） | 「对数据做单细胞 QC」 |
 | `spatial` | 空间转录组（Visium） | 「做空间转录组分析」 |
 
 **暂不支持**（智能体会明确告知，不会执行）：通路富集、独立火山图等其他分析类型。
@@ -245,22 +247,65 @@ data/raw/
 特殊情况：
 
 - **差异表达但没有输入数据** → 智能体提示「需提供数据文件，请先下载或指定输入文件」（请先走第 6 章下载数据）
-- **单细胞 / 空间分析没有输入数据** → 智能体生成一份**占位示例脚本**（输入路径为示例），供你审阅参考；直接确认会因示例输入不存在而失败，建议先准备数据
+- **单细胞分析没有输入数据** → 返回 `needs_input`，请提供 10x MTX 目录或原始 counts CSV；不会生成或执行占位脚本
+- **空间分析没有输入数据** → 智能体生成一份**占位示例脚本**（输入路径为示例），供你审阅参考；直接确认会因示例输入不存在而失败，建议先准备数据
+
+单细胞输入支持：
+
+- **10x MTX 目录**：`matrix.mtx`、`barcodes.tsv`、`features.tsv`（旧版可用两列 `genes.tsv`）；每个文件可独立使用 `.gz`，同一组件只能存在一个版本。基因 ID 与 barcode 必须唯一，gene symbol 可重复；多模态矩阵只分析 `Gene Expression`。
+- **counts CSV**：首列为唯一基因标识，其余列为唯一细胞标识，行为基因、列为细胞。
+- counts 必须为有限的非负整数，不能缺失或四舍五入。MatrixMarket 支持 `coordinate integer/real general`，`real` 声明也必须逐值为整数；非法输入在固定 QC 执行前阻断。
+- 暂不支持 H5/H5AD、Seurat 对象或 FASTQ。10x 读取保留稀疏矩阵；原输入不会被改写。
+
+单细胞入口只运行固定过滤前 QC，不再生成待确认的自由 R 脚本。统计全部 RNA barcode 的 `nCount_RNA`、`nFeature_RNA`、`percent.mt`，保留原 feature ID / symbol / 唯一读取名称映射。人类线粒体基因按原 symbol 的 `^MT-` 匹配；无法匹配或零 counts 的比例为 `NA`，附原因，不误记为零、不联网补映射。
+
+结果停在 `needs_confirmation` / `qc_review`，展示证据与图表，标明科学未审阅。新 QC 与会话关联成功后可手工填写阈值、生成排除预览并记录这一次过滤选择；记录操作不执行过滤。随后可独立授权“执行此已记录选择的过滤”，仍不标准化、聚类或注释。旧的单细胞脚本确认请求被拒绝；无可信关联的旧 QC 保持只读，需重新发起 QC 才能交互。QC 与固定过滤不调用 LLM 代码生成、自动修复、外部结果解释或共享 KG 写入，持久化证据不回灌模型。
+
+阈值起初为空，没有科学默认值：必填 RNA features 非负整数上下限及 0–100% 的 `percent.mt` 上限，可选 RNA counts 整数上下限。全部条件 AND、包含等号。预览显示预计保留/排除量及全部重叠原因，原因数不能直接相加；逐 barcode 标志保存在本地 `previews/<preview_id>/selection.csv`，不改变 counts 或 QC 文件。
+
+记录前须填写本地选择依据。编辑阈值禁用旧预览的批准；新预览使旧未批准版本失效，输入/QC/版本变化要求重新 QC 或预览。NA、零 counts 或零保留量阻止批准。批准事实、确切参数与依据在刷新后仍可读取，重复批准不产生重复消息。**记录选择不代表科学认可，也不是下游执行授权。**会话关联不是用户鉴权，本地 SQLite 原型不能直接公开部署。
+
+固定过滤执行前再次核对当前已批准预览、原输入/QC/版本哈希，并从 QC 逐 barcode 重算选择。只按已批准选择筛选细胞列，保留全部 RNA feature 行（包括全零行），保存 `data/analysis/sc_filter/<attempt_id>/filtered_counts.rds`、feature/barcode 映射、选择、固定脚本、日志、版本与元数据。输入与 QC 原件不覆盖；RDS 是内部稀疏对象，不是跨语言交付或完整复现包。CSV 读取阶段仍有密集内存开销。
+
+每个精确预览/绑定/过滤版本只执行一次，重复点击或刷新只读权威状态。运行中不能修改选择或删除会话；失败保留证据，不自动重跑，需要新的预览与批准。服务重启把未完成任务标为 `interrupted`，不会恢复执行；仅适用于本地单进程。成功停在 `filter_review`，技术完成但科学未复核；阶段完成不等于下游授权，归一化/PCA、聚类/UMAP 仍需分别明确授权，本片不提供注释。原件前后哈希不是不可变快照，仍可能无法发现运行中改动后又恢复的情况。
+
+过滤完成且父输入、QC、选择与产物身份仍有效时，页面另提供“归一化与 PCA · 独立授权”。读取状态或刷新不执行计算；须填写本地授权依据并独立点击执行。固定流程为 LogNormalize（scale factor 10,000）→ vst（最多 2,000 features）→ 仅变异特征 Scale（不回归）→ PCA（seed 42）。实际 PC 数为 `min(30, 细胞数 - 1, 可用特征数 - 1)`，至少需要 3 个细胞和 3 个可用特征；不足或退化失败，不放宽 QC。当前版本限定 R 4.6.1 / Seurat 5.6.0 / SeuratObject 5.4.0 / Matrix 1.7.5 / irlba 2.4.1，其他版本拒绝执行。
+
+PCA 保存对象、特征映射、数值证据与本地诊断图，不改写 counts 或父证据。同一父产物绑定与工具版本的运行、完成、失败或中断记录均不重复执行；阶段运行中不能修改该 run 的选择或删除会话。完成停在 `pca_review` / `unreviewed`，等待人工维度选择复核，不自动选择下游 dims；PCA 阶段本身不运行聚类、UMAP、marker 或注释。只有记录有效维度并再次明确授权后才可运行聚类/UMAP。授权不代表科学认可；逐细胞数据、授权依据和数值表不回灌外部 LLM 或共享 KG。Scale 为稠密数据，本片仅适用于受信本地单进程，不是生产资源隔离或任务队列。
+
+已完成且身份有效的 PCA 下提供“记录下游维度选择 · 不执行”：查看按 PC 顺序的标准差及既有诊断，手工填写 `k` 和本地依据，记录完整前缀 `[1, ..., k]`。表单初始为空，工程范围为 `1 <= k <= actual_pcs`，没有默认 15 或自动推荐。标准差不是全部输入的总方差百分比；肘部和 PC1/2 图不能单独证明科学选择合理。保存只追加本地事实，不运行 R、LLM、KG 或下游计算，科学状态仍未复核。
+
+刷新恢复当前有效记录和历史，不重发保存请求；修改维度或依据产生新记录。父预览、PCA 产物、记录版本或 run revision 变化时旧记录失效，历史仍可查看；恢复旧父选择也不会自动复活旧维度。依据只在本地复核控件显示，不进入聊天消息或模型历史。并发变更冲突需刷新后重新明确选择。
+
+当前维度记录有效且 `k >= 2` 时，completed PCA 下另提供“受控邻居图 / 聚类 / UMAP · 独立授权”。需填写本次作业的本地依据并单独执行；记录维度不等于授权。项目固定使用 20-NN Annoy、Louvain（resolution 0.5，seed 42）和二维 30-NN uwot（cosine，seed 42，单线程），要求所选 PCs 为连续前缀且每行范数有限非零、各列非退化。本片至少 31 细胞；不足时阻断，不缩短邻居数或放宽 QC。细胞数不超过 10,000 时 UMAP 500 epochs，否则 200 epochs。
+
+同一 PCA/维度/协议绑定只执行一次；运行中不能修改该 run 的选择、维度或删除会话。失败和中断保留证据且不自动重跑，重试须记录新的维度选择并再次明确授权。成功停在 `cluster_review` / `unreviewed`，展示固定协议、聚类数量、群大小和带编号的 UMAP 图；不自动运行 markers、不命名细胞类型、不给出科学结论。逐细胞嵌入与数值表、授权依据不进入聊天、外部 LLM 或共享 KG。R 单次执行仍受 300 秒上限；超时如实失败，不自动降参数。
+
+已完成且身份有效的聚类下提供“探索性聚类接受”：查看编号 UMAP、簇大小及限制，明确勾选并填写本地依据。保存只追加绑定此次聚类、协议、产物和 revision 的接受事实，不执行 R，也不代表专家认可。随后另填本次 marker 授权依据并单独点击执行；接受聚类不等于授权 marker。至少需要两簇，每簇及其余合并各不少于 3 细胞；否则阻断，不合并小簇。上游证据或最新接受记录变化时旧结果保留为失效历史，不展示可用候选和图。
+
+固定 marker 使用 RNA 已有 LogNormalize `data`、全部 RNA features、Seurat 5.6.0 + Presto 1.1.0 的全簇 Wilcoxon 快速路径：`max.cells.per.ident=Inf`、`min.pct=0.01`、`logfc.threshold=0.1`、`only.pos=FALSE`、seed 42。`return.thresh=0.01` 筛原始 p 值，表同时保存按全部 RNA 基因数 Bonferroni 校正的 p 值；不能把所有候选宣称为校正后显著。聚类与检验使用同一批细胞，结果只是探索性候选，不是独立生物学验证。版本/分支不符、部分检验失败、输入变化或超时均失败，不抽样、不更换后端、不自动重跑。
+
+成功停在 `marker_review` / `unreviewed`：页面显示每簇候选量（合法零候选不是失败）、每页最多 100 行的候选统计，以及每簇正向 top 5 去重后的点图。完整双向表、绘图数值、参数、脚本、版本、sessionInfo 和日志留在本地。刷新、断联恢复与重复授权只读状态；重启遗留任务标 interrupted，不恢复计算。运行中不能修改上游、重新接受聚类或删除会话。接受/授权依据只在本地控件与数据库，不进入聊天、外部 LLM 或共享 KG；本片不自动命名细胞类型，仍不提供多用户鉴权、任务队列或不可变输入快照。
 
 ### 7.3 失败自动修复
 
-脚本执行失败时，智能体自动携带报错信息让 LLM 改写脚本重试，**最多修复 2 次**（即同一任务最多执行 3 次）。修复过程无需你操作；全部失败则返回报错信息。R 脚本单次执行超时 300 秒。
+差异表达及空间脚本执行失败时，智能体自动携带报错信息让 LLM 改写脚本重试，**最多修复 2 次**（即同一任务最多执行 3 次）。单细胞 QC/过滤/PCA/聚类与 UMAP/marker 失败只保留证据，不自动重跑或修复。R 脚本单次执行超时仍为 300 秒，不是完整任务截止时间。
 
 ### 7.4 分析产物
 
-产物是**磁盘上的文件**（不是页面内嵌图表），路径在回复与「结果解读」中给出：
+产物写入磁盘；单细胞 QC 另在页面展示只读汇总与图表，本地路径不是下载链接：
 
-| 分析类型 | 产物文件（输出到输入文件同目录） |
+| 分析类型 | 产物文件与位置 |
 |---|---|
 | 差异表达 | `<输入名>.de_results.csv`（列：gene, log2FoldChange, lfcSE, stat, pvalue, padj） |
-| 单细胞 | `<输入名>.sc_clusters.csv`（细胞聚类 + UMAP 坐标）、`<输入名>.sc_markers.csv`（标记基因） |
+| 单细胞 QC | `data/analysis/sc_qc/<run_id>/` 内的 `cell_qc.csv`、`features.csv`、`summary.json`、`qc.png`、`script.R`、`versions.txt`、日志及 `metadata.json` |
+| 单细胞 PCA | `data/analysis/sc_pca/<attempt_id>/` 内的 `seurat_pca.rds`、`feature_mapping.csv`、`variable_features.csv`、`pca_embeddings.csv`、`pca_loadings.csv`、`pca_stdev.csv`、`pca_diagnostics.png`、固定脚本、参数、版本、日志及元数据；页面仅提供校验后的本地诊断图，不是任意文件下载接口 |
+| 单细胞聚类与 UMAP | `data/analysis/sc_clusters/<attempt_id>/` 内的 `seurat_clustered.rds`、`neighbors.rds`、`clusters.csv`、`umap_embeddings.csv`、`cluster_sizes.csv`、`umap_clusters.png`、`summary.json`、`metadata.json`、固定脚本、版本与日志；页面仅提供校验后的本地 UMAP 图 |
+| 单细胞 marker | `data/analysis/sc_markers/<attempt_id>/` 内的 `markers.csv`（原 feature ID/symbol 与双向统计）、`cluster_marker_summary.csv`、`marker_dotplot_data.csv`、`marker_dotplot.png`、`summary.json`、`metadata.json`、固定脚本、版本、sessionInfo 与日志；页面仅提供校验后的候选分页和点图，不是逐细胞数据或任意文件下载接口 |
 | 空间转录组 | `<输入名>.spatial_clusters.csv`、`<输入名>.spatial_plot.png`（输入为目录时文件名以 `.` 开头） |
-| 每次分析 | `output/capsules/<时间戳>/` 复现胶囊（原始问题、脚本、意图、元数据） |
+| 差异表达 / 空间分析 | `output/capsules/<时间戳>/` 复现胶囊（原始问题、脚本、意图、元数据） |
+
+每次 QC 使用独立输出目录，不覆盖原三件套或先前结果。元数据记录输入路径、大小、运行前后 SHA256、环境版本与状态；哈希一致性检查不是不可变输入快照，也不等于完整复现包。技术完成不等于科学验收。
 
 示例对话：
 
@@ -278,13 +323,23 @@ data/raw/
 
 ### 8.1 直接提问
 
-知识问答无需任何准备（前提：已配好 LLM 与 embedding）：
+输入框上方选「知识问答」再提问（前提：已配好 LLM 与 embedding）。该模式只检索一次知识库、生成一次带引用回答，**不读取会话历史、摘要、下载资产或 KG 记忆**：
 
 ```
-你:   TP53 在癌症中的作用是什么？
-你:   差异表达分析为什么用 DESeq2 而不是 TPM？
-智能体: （回答 + 下方列出「来源」引用条目）
+你:   Which markers identify exhausted T cells?
+智能体: （结论 + 每条论断的 [E1] 引用 + 来源 + 可展开的检索原文）
 ```
+
+- 每条论断必须引用本次检索到的证据编号；引用不存在的编号会被判为失败，不静默修补。
+- 来源只认 PMID 或 DOI；两者都解析不到的片段（含形状异常的检索结果）不会交给模型，`config.untraceable_chunks` 记录丢弃数。
+- 检索预算写在 `config`：`max_evidence`（默认 8 条）、`max_evidence_chars`（单条默认 4000 字）、`timeout_seconds`。
+- 检索显式关闭 LightRAG 共享缓存（`config.retrieval_cache="disabled"`），答案生成也不读缓存（`answer_cache="none"`）；生成上限 `answer_max_tokens`（默认 4000）。
+- `retrieval_calls`/`answer_llm_calls` 是服务层**发起次数**，不是实际 HTTP 次数：SDK 层遇限流等错误仍会重试，上限见 `answer_sdk_max_attempts`；整轮已超时则不再发起，计数保持 0。
+- 徽章固定标「未复核」：证据支持只代表检索片段支持，不代表已人工核实。回答包另存 `session_id` 与 `question_message_id` 便于回溯。
+- 论断必须带 `basis`：`fact` 表示证据直接陈述，`inference` 表示由证据推出的判断（界面分别显示「事实」「推断」）；缺失或取值非法整轮判失败。
+- 回答正文只允许 http(s) 链接，远程图片不自动加载（改为显示替代文本），避免第三方内容借回答正文加载。
+- 断连时该轮仍会落一条 `status="interrupted"` 的回答包，刷新后可见「已中断」；若断连发生在生成之后，已产出的回答与证据会保留，但状态仍记为中断。
+- `config` 另记 `lightrag_version`、`workspace`、`source_batch`（当前固定 `unknown`）、`retrieval_ms`、`generation_ms`；`keyword_llm_calls`/`embedding_calls` 因 LightRAG 不暴露真实值而固定为 `unknown`。
 
 ### 8.2 文献一键同步（pubmed-etl → 知识库）
 
@@ -417,7 +472,7 @@ python -m evals.run_eval --p3d
 知识库首次写入会把模型名锁定到 `knowledge_base/EMBEDDING_MODEL.json`。换模型需删除 `knowledge_base/` 下除该文件外的内容（或整个目录）后重建（`python rebuild_kb.py`）。
 
 **Q：为什么页面上看不到图表 / 表格？**
-分析产物以文件形式写到磁盘（第 7.4 节表格），按回复给出的 `output_file` 路径打开即可。页面内图表窗格是预留功能，当前版本不渲染。
+分析产物以文件形式写到磁盘（第 7.4 节表格）。单细胞 QC 会在页面展示汇总与图表；证据路径仅指向服务器本地文件，当前没有安全下载接口。
 
 **Q：选了 KEGG / UniProt 候选点「确认下载」报错？**
 预期行为——只有 GEO 提供文件下载。请在下拉框选择 `geo` 来源的候选。
@@ -462,3 +517,4 @@ python -m evals.run_eval --p3d
    - 已知限制的新增、修复或移除（第 14 章逐条核对）
 3. **事实优先**：内容以代码实际行为为准；写入指南的命令应实际运行验证（更新「最后核对日期」）。
 4. **保持结构**：更新后检查目录锚点与 README 跳转链接仍然有效。
+

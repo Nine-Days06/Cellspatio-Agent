@@ -2,6 +2,7 @@ import json
 import logging
 import os
 import re
+import threading
 from pathlib import Path
 from typing import Any
 
@@ -215,7 +216,14 @@ class LightRAGClient:
 
         # 延迟导入 LightRAG，避免立即依赖
         self._rag = None
+        # 问答关闭缓存期间需要独占开关，避免并发检索读到半开状态
+        self._cache_lock = threading.Lock()
         register_atexit(self.close)
+
+    @property
+    def workspace(self) -> str:
+        """PG 存储的 workspace，用于回答包记录实际检索范围。"""
+        return self._workspace
 
     @staticmethod
     def _normalize_ollama_host(host: str) -> str:
@@ -361,6 +369,32 @@ class LightRAGClient:
                 param=QueryParam(mode=mode, only_need_context=True),
             )
         )
+
+    def query_data(
+        self, question: str, mode: str = "mix", *, use_cache: bool = True
+    ) -> dict[str, Any]:
+        """结构化检索：返回 entities/relationships/chunks/references，不做答案生成。
+
+        `use_cache=False` 在调用期关闭 LightRAG 的问题/关键词/答案缓存
+        （问答链路要求本轮不复用他轮结果）；其余业务保持默认开启。
+        """
+        self._initialize_rag()
+        if not self._rag:
+            raise RuntimeError("LightRAG 未初始化")
+        from lightrag import QueryParam
+
+        def retrieve() -> dict[str, Any]:
+            return async_runtime.run(self._rag.aquery_data(question, param=QueryParam(mode=mode)))
+
+        if use_cache:
+            return retrieve()
+        with self._cache_lock:
+            previous = self._rag.enable_llm_cache
+            self._rag.enable_llm_cache = False
+            try:
+                return retrieve()
+            finally:
+                self._rag.enable_llm_cache = previous
 
     def insert_knowledge_graph(self, kg_data: dict[str, Any]):
         """插入知识图谱数据"""

@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import type { ChartItem } from '@/lib/types'
+import { AnalysisImage } from '@/components/AnalysisImage'
 
 /** Plotly figure：{data, layout} 对象形态或裸 trace 数组（JSON.parse 结果）。 */
 type Figure = { data?: unknown[]; layout?: Record<string, unknown> }
@@ -76,11 +77,10 @@ export function ChartBlock({ item }: { item: ChartItem }) {
 
   if (item.type === 'image') {
     return (
-      <img
-        data-testid="chart-image"
+      <AnalysisImage
+        testId="chart-image"
         src={toImageSrc(item.image_b64)}
         alt="分析图表"
-        className="max-w-full rounded-lg border border-border"
       />
     )
   }

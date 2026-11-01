@@ -86,6 +86,14 @@ class RScriptGenerator:
             "4. 结果写入 params 中的 output_file\n"
             "5. 用 cat() 打印关键统计（基因数、显著数、聚类数等）\n"
         )
+        input_code = (
+            self._single_cell_input_code(params) if analysis_type == "single_cell" else None
+        )
+        if input_code:
+            prompt += (
+                "6. 必须原样包含以下输入读取与校验代码，后续从 mat 创建 Seurat 对象；"
+                "不得替换读取方式、转成稠密矩阵或四舍五入 counts。\n" + input_code
+            )
         resp = self.llm_client.chat.completions.create(
             model=self.model,
             messages=[{"role": "user", "content": prompt}],
@@ -100,6 +108,9 @@ class RScriptGenerator:
             if lines and lines[-1].strip() == "```":
                 lines = lines[:-1]
             text = "\n".join(lines)
+        if input_code and input_code not in text:
+            logger.warning("LLM single-cell code omitted the validated input block; using template")
+            return None
         return text or None
 
     @staticmethod
@@ -351,29 +362,73 @@ if (plot_type == "volcano") {{
 cat("Saved to:", output_file, "\\n")
 '''
 
-    def _generate_single_cell_code(self, params: dict[str, Any]) -> str:
-        """Seurat 标准单细胞流程（回退模板）。
-
-        输入约定：表达矩阵 CSV（行为基因、列为细胞，整数 counts）。
-        """
-        input_file = params.get("input_file", "scrna.csv")
-        output_file = params.get("output_file", "sc_clusters.csv")
-        marker_file = params.get("marker_file", "sc_markers.csv")
-        resolution = params.get("resolution", 0.5)
-
-        return f'''#!/usr/bin/env Rscript
-# 单细胞分析（Seurat）
-input_file <- "{input_file}"
-output_file <- "{output_file}"
-marker_file <- "{marker_file}"
-
+    @staticmethod
+    def _single_cell_input_code(params: dict[str, Any]) -> str:
+        """模板与 LLM 共用 Seurat 输入块，稀疏 counts 仅检查存储值。"""
+        input_file = json.dumps(str(params.get("input_file", "scrna.csv")), ensure_ascii=False)
+        return f"""input_file <- {input_file}
 if (!requireNamespace("Seurat", quietly = TRUE)) {{
     stop("请先安装 Seurat")
 }}
 library(Seurat)
+if (dir.exists(input_file)) {{
+    pick_file <- function(names) {{
+        paths <- file.path(input_file, c(names, paste0(names, ".gz")))
+        paths <- paths[file.exists(paths) & !dir.exists(paths)]
+        if (length(paths) != 1) stop("10x 三件套缺失或有歧义")
+        paths[[1]]
+    }}
+    matrix_file <- pick_file("matrix.mtx")
+    barcode_file <- pick_file("barcodes.tsv")
+    feature_file <- pick_file(c("features.tsv", "genes.tsv"))
+    features <- read.delim(feature_file, header = FALSE, colClasses = "character",
+                           quote = "", comment.char = "")
+    legacy <- grepl("^genes\\\\.tsv", basename(feature_file))
+    if (ncol(features) != (if (legacy) 2 else 3)) stop("feature 列数不符")
+    rna <- if (legacy) rep(TRUE, nrow(features)) else features[[3]] == "Gene Expression"
+    if (!any(rna)) stop("10x 数据不包含 Gene Expression")
+    standard_v2 <- legacy && basename(feature_file) == "genes.tsv" &&
+                   basename(barcode_file) == "barcodes.tsv" && basename(matrix_file) == "matrix.mtx"
+    standard_v3 <- basename(feature_file) == "features.tsv.gz" &&
+                   basename(barcode_file) == "barcodes.tsv.gz" && basename(matrix_file) == "matrix.mtx.gz"
+    if (standard_v2 || standard_v3) {{
+        mat <- Read10X(data.dir = input_file, unique.features = TRUE)
+        if (is.list(mat)) mat <- mat[["Gene Expression"]]
+    }} else {{
+        mat <- ReadMtx(mtx = matrix_file, cells = barcode_file,
+                       features = feature_file, unique.features = TRUE)
+        mat <- mat[rna, , drop = FALSE]
+    }}
+}} else {{
+    mat <- as.matrix(read.csv(input_file, row.names = 1, check.names = FALSE))
+}}
+# 稀疏矩阵的隐式零合法，只检查存储值，避免整块展开。
+counts <- if (inherits(mat, "sparseMatrix")) mat@x else mat
+if (nrow(mat) == 0 || ncol(mat) == 0 || !is.numeric(counts) ||
+    any(!is.finite(counts)) || any(counts < 0) || any(counts != floor(counts))) {{
+    stop("输入必须是非空的原始 counts 矩阵：有限、非负整数，不能缺失或四舍五入")
+}}
+"""
 
-mat <- as.matrix(read.csv(input_file, row.names = 1, check.names = FALSE))
-mat <- round(mat)
+    def _generate_single_cell_code(self, params: dict[str, Any]) -> str:
+        """Seurat 标准单细胞流程（回退模板）。
+
+        输入约定：10x MTX 目录或 CSV（行为基因、列为细胞，整数 counts）。
+        """
+        output_file = json.dumps(
+            str(params.get("output_file", "sc_clusters.csv")), ensure_ascii=False
+        )
+        marker_file = json.dumps(
+            str(params.get("marker_file", "sc_markers.csv")), ensure_ascii=False
+        )
+        resolution = params.get("resolution", 0.5)
+
+        return f"""#!/usr/bin/env Rscript
+# 单细胞分析（Seurat）
+output_file <- {output_file}
+marker_file <- {marker_file}
+
+{self._single_cell_input_code(params)}
 obj <- CreateSeuratObject(counts = mat, min.cells = 3, min.features = 200)
 if (ncol(obj) < 10) {{
     stop("质控后细胞数 < 10，请检查输入矩阵")
@@ -414,7 +469,7 @@ write.csv(markers, marker_file, row.names = FALSE)
 cat("细胞数:", ncol(obj),
     "聚类数:", length(levels(obj$seurat_clusters)), "\\n")
 cat("cluster 表:", output_file, "marker 表:", marker_file, "\\n")
-'''
+"""
 
     def _generate_spatial_code(self, params: dict[str, Any]) -> str:
         """Seurat Visium 空间流程（回退模板）。
