@@ -1,4 +1,4 @@
-import { render, screen } from '@testing-library/react'
+import { fireEvent, render, screen } from '@testing-library/react'
 import { describe, expect, it } from 'vitest'
 import { MessageList, EMPTY_FALLBACK } from '@/components/MessageList'
 import type { KnowledgeQAResult, WireMessage } from '@/lib/types'
@@ -57,6 +57,17 @@ function message(data: KnowledgeQAResult): WireMessage {
 }
 
 describe('KnowledgeAnswer', () => {
+  it('opens the exact cited excerpt, focuses its summary and renders the answer only once', () => {
+    render(<MessageList messages={[message(qa())]} draft="" busy={false} tools={[]} notice={null} softWarn={false} />)
+    const citation = screen.getByRole('link', { name: /查看证据 E1/ })
+    const target = document.getElementById(citation.getAttribute('href')!.slice(1)) as HTMLDetailsElement
+    expect(target.open).toBe(false)
+    fireEvent.click(citation)
+    expect(target.open).toBe(true)
+    expect(target.querySelector('summary')).toHaveFocus()
+    expect(screen.getAllByText('该文献支持结论。')).toHaveLength(1)
+    expect(target.querySelector('details')?.open).toBe(false)
+  })
   it('shows outcome, citation, source link and unreviewed status', () => {
     render(<MessageList messages={[message(qa())]} draft="" busy={false} tools={[]} notice={null} softWarn={false} />)
 
@@ -130,7 +141,7 @@ describe('KnowledgeAnswer', () => {
       'https://doi.org/10.1038/s41586-024-00001-2',
     )
   })
-  it('labels inference claims and blocks non-http markdown links in the answer body', () => {
+  it('labels inference claims and blocks non-http markdown links in the answer body', async () => {
     const data = qa({
       answer:
         '[点我](javascript:alert(1)) 和 [文献](https://pubmed.ncbi.nlm.nih.gov/1/) ![插图](https://evil.example/i.png)',
@@ -139,12 +150,12 @@ describe('KnowledgeAnswer', () => {
     render(<MessageList messages={[message(data)]} draft="" busy={false} tools={[]} notice={null} softWarn={false} />)
 
     expect(screen.getByText('推断')).toBeInTheDocument()
-    expect(screen.queryByRole('link', { name: '点我' })).not.toBeInTheDocument()
-    expect(screen.queryByRole('img')).not.toBeInTheDocument()
-    expect(screen.getByRole('link', { name: '文献' })).toHaveAttribute(
+    expect(await screen.findByRole('link', { name: '文献' })).toHaveAttribute(
       'href',
       'https://pubmed.ncbi.nlm.nih.gov/1/',
     )
+    expect(screen.queryByRole('link', { name: '点我' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('img')).not.toBeInTheDocument()
   })
 
   it('renders an interrupted turn without unreviewed badge', () => {
@@ -161,6 +172,13 @@ describe('KnowledgeAnswer', () => {
     expect(screen.getByText('已中断')).toBeInTheDocument()
     expect(screen.getByRole('status')).toHaveTextContent('本轮已中断')
     expect(screen.queryByText('未复核')).not.toBeInTheDocument()
+  })
+
+  it('保留结构化回答，空消息正文不会把回答隐藏', () => {
+    const item = message(qa({ answer: '结构化回答仍可阅读' }))
+    item.content = ' '
+    render(<MessageList messages={[item]} draft="" busy={false} tools={[]} notice={null} softWarn={false} />)
+    expect(screen.getByText('结构化回答仍可阅读')).toBeInTheDocument()
   })
 })
 

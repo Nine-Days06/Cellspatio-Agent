@@ -5,14 +5,14 @@ import { QcReview } from '@/components/QcReview'
 export function QcEvidence({ results, sessionId, onRecorded }: { results: MessageResults; sessionId?: string; onRecorded?: () => void }) {
   const qc = results.qc
   return (
-    <section aria-label="过滤前 QC 证据" className="mt-3 space-y-3 border-t border-border pt-3 text-sm">
-      <h3 className="font-semibold">{qc ? '过滤前 QC · 等待科学审阅' : 'QC 未完成 · 本地证据已保留'}</h3>
+    <section aria-label="过滤前 QC 证据" className="analysis-record mt-5 space-y-4 border-t border-border pt-5">
+      <h3 className="text-xl font-semibold">{qc ? '过滤前 QC · 等待科学审阅' : 'QC 未完成 · 本地证据已保留'}</h3>
       <p className="text-muted-foreground">此阶段未执行过滤、聚类或注释。</p>
       {qc && <>
-        <p>全部 RNA barcode：{qc.cells.toLocaleString()} · RNA features：{qc.features.toLocaleString()}</p>
+        <dl className="qc-metrics flex flex-wrap gap-x-10 gap-y-4 border-y border-border py-4"><div><dt className="text-xs text-muted-foreground">全部 RNA barcode</dt><dd className="mt-1 text-2xl font-semibold tabular-nums">{qc.cells.toLocaleString()}</dd></div><div><dt className="text-xs text-muted-foreground">RNA features</dt><dd className="mt-1 text-2xl font-semibold tabular-nums">{qc.features.toLocaleString()}</dd></div></dl>
         {qc.warnings.map((warning) => <p key={warning} role="note" className="text-amber-700 dark:text-amber-400">{warning}</p>)}
-        <div className="overflow-x-auto">
-          <table className="w-full text-left text-xs">
+        <div className="overflow-x-auto" tabIndex={0} role="region" aria-label="过滤前指标汇总，可横向滚动">
+          <table className="w-full whitespace-nowrap text-left">
             <caption className="sr-only">过滤前指标汇总</caption>
             <thead><tr>{['指标', '有效数量', '最小', '中位数', '最大'].map((label) => <th key={label} scope="col" className="px-2 py-1">{label}</th>)}</tr></thead>
             <tbody>{Object.entries(qc.metrics).map(([name, metric]) => <tr key={name}>

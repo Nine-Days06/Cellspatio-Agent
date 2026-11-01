@@ -60,7 +60,7 @@ export function PcaDimensions({ sessionId, runId, filterAttemptId, attemptId, re
   const k = Number(nDims)
   const valid = /^\d+$/.test(nDims) && Number.isInteger(k) && k >= 1 && k <= (state?.evidence?.actual_pcs ?? 0)
   const available = !!state?.binding_sha256 && !busy && !disabled && state.blocked.length === 0
-  return <section aria-label="PCA 维度选择记录" className="space-y-3 rounded-lg border border-border p-3">
+  return <section aria-label="PCA 维度选择记录" className="analysis-stage space-y-3">
     <h5 className="font-medium">记录下游维度选择 · 不执行</h5>
     <p>仅支持手工前缀 1..k，无默认或自动推荐。实际 PCs 是证据范围，不是科学适用性保证。</p>
     <p className="text-xs text-muted-foreground">标准差不是总方差百分比；肘部和 PC1/2 图不足以单独证明选择合理。科学未复核，未授权下游执行。</p>
@@ -73,13 +73,15 @@ export function PcaDimensions({ sessionId, runId, filterAttemptId, attemptId, re
       <p>当前维度：[{state.current.dims.join(', ')}] · 已记录，科学未复核</p>
       <p className="whitespace-pre-wrap">依据：{state.current.reason}</p>
     </div> : <p role="status">暂无当前有效维度记录</p>}
+    <details open={!state?.current}><summary>填写或修改维度选择</summary>
     <label className="block space-y-1"><span>维度数 k（手工填写）</span><Input type="number" min={1} max={state?.evidence?.actual_pcs} step={1} value={nDims} disabled={!available} onChange={(event) => setNDims(event.target.value)} /></label>
     {valid && <p className="break-words">将记录：[{Array.from({ length: k }, (_, i) => i + 1).join(', ')}]</p>}
     <label className="block space-y-1"><span>维度选择依据（仅本地）</span><Textarea maxLength={2000} value={reason} disabled={!available} onChange={(event) => setReason(event.target.value)} /></label>
     <div className="flex flex-wrap gap-2">
       <Button type="button" disabled={!available || !valid || !reason.trim()} onClick={() => void record()}>记录选择（不执行）</Button>
-      <Button type="button" variant="outline" disabled={busy} onClick={() => void refresh()}>只读刷新维度记录</Button>
     </div>
+    </details>
+    <Button type="button" variant="outline" disabled={busy} onClick={() => void refresh()}>只读刷新维度记录</Button>
     {!!state?.history.length && <details><summary>人工记录历史（{state.history.length}）</summary>
       {state.history.map((review) => <div key={review.review_id} className="my-2 space-y-1 break-words">
         <p>[{review.dims.join(', ')}] · {review.created_at}</p>

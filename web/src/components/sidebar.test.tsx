@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { Sidebar } from '@/components/Sidebar'
 import { SoftWarnBanner } from '@/components/SoftWarnBanner'
@@ -62,6 +62,32 @@ beforeEach(() => {
 })
 
 describe('Sidebar', () => {
+  it('搜索只筛选本地会话，清空后保留原选中与全部列表', () => {
+    const { onSelected } = renderSidebar()
+    const search = screen.getByRole('searchbox', { name: '搜索会话' })
+    fireEvent.change(search, { target: { value: '肝癌' } })
+    expect(screen.getByRole('button', { name: /^肝癌项目/ })).toHaveAttribute('aria-current', 'true')
+    expect(screen.queryByRole('button', { name: /^新会话/ })).not.toBeInTheDocument()
+    fireEvent.change(search, { target: { value: '不存在' } })
+    expect(screen.getByRole('status')).toHaveTextContent('没有匹配的会话')
+    fireEvent.change(search, { target: { value: '' } })
+    expect(screen.getByRole('button', { name: /^新会话/ })).toBeInTheDocument()
+    expect(onSelected).not.toHaveBeenCalled()
+    expect(createSession).not.toHaveBeenCalled()
+    expect(deleteSession).not.toHaveBeenCalled()
+  })
+  it('移动会话导航选择后关闭，删除仍须独立二次确认', () => {
+    const { onSelected } = renderSidebar()
+    fireEvent.click(screen.getByRole('button', { name: '会话' }))
+    const drawer = screen.getByRole('dialog', { name: '会话导航' })
+    fireEvent.click(within(drawer).getByRole('button', { name: '删除 肝癌项目' }))
+    expect(screen.getByRole('dialog', { name: '确认删除会话' })).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: '取消' }))
+    expect(deleteSession).not.toHaveBeenCalled()
+    fireEvent.click(within(drawer).getByRole('button', { name: /^新会话/ }))
+    expect(onSelected).toHaveBeenCalledWith('s2')
+    expect(screen.queryByRole('dialog', { name: '会话导航' })).not.toBeInTheDocument()
+  })
   it('渲染会话列表并高亮当前会话', () => {
     renderSidebar()
     // 锚定正则：删除按钮 aria-label「删除 <标题>」也含标题，未锚定会命中 2 个
@@ -149,6 +175,7 @@ describe('Sidebar', () => {
     expect(screen.getByTestId('ollama-needs-model')).toHaveTextContent(
       '应用不会自动下载模型',
     )
+    expect(screen.getByTestId('ollama-needs-model')).toHaveClass('text-amber-800')
   })
 
   it('ollama 不可用（unavailable）显示红点', () => {

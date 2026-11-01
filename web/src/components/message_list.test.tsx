@@ -91,6 +91,33 @@ describe('空内容兜底（约束 1）', () => {
 })
 
 describe('流式与过程条', () => {
+  it('读历史时流式输出不抢滚动；回到最新后恢复跟随', () => {
+    const scrollIntoView = vi.fn()
+    Object.defineProperty(HTMLElement.prototype, 'scrollIntoView', { configurable: true, value: scrollIntoView })
+    const { rerender } = render(<MessageList {...baseProps} draft="开始" busy />)
+    const list = screen.getByTestId('message-list')
+    Object.defineProperties(list, {
+      scrollHeight: { configurable: true, value: 1000 },
+      clientHeight: { configurable: true, value: 300 },
+      scrollTop: { configurable: true, writable: true, value: 100 },
+    })
+    fireEvent.scroll(list)
+    scrollIntoView.mockClear()
+    rerender(<MessageList {...baseProps} draft="更新的内容" busy />)
+    expect(scrollIntoView).not.toHaveBeenCalled()
+    fireEvent.click(screen.getByRole('button', { name: '回到最新内容' }))
+    expect(scrollIntoView).toHaveBeenCalledTimes(1)
+    rerender(<MessageList {...baseProps} draft="继续更新" busy />)
+    expect(scrollIntoView).toHaveBeenCalledTimes(2)
+    delete (HTMLElement.prototype as Partial<HTMLElement>).scrollIntoView
+  })
+
+  it('起步提示只交给输入区，并携带相应模式', () => {
+    const onStarter = vi.fn()
+    render(<MessageList {...baseProps} onStarter={onStarter} />)
+    fireEvent.click(screen.getByRole('button', { name: /查阅文献证据/ }))
+    expect(onStarter).toHaveBeenCalledWith(expect.stringContaining('scRNA-seq'), 'knowledge_qa')
+  })
   it('draft 非空时渲染流式气泡', () => {
     render(<MessageList {...baseProps} draft="正在分析" busy />)
     expect(screen.getByText('正在分析')).toBeInTheDocument()
@@ -181,5 +208,14 @@ describe('Markdown 惰性渲染与代码块复制', () => {
 
     fireEvent.click(await screen.findByRole('button', { name: '复制' }))
     expect(writeText).toHaveBeenCalledWith('x <- 1')
+    expect(document.querySelector('code.hljs')).not.toBeNull()
+  })
+
+  it('剪贴板失败不假报已复制', async () => {
+    Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText: vi.fn().mockRejectedValue(new Error('denied')) } })
+    render(<MessageList {...baseProps} messages={[msg({ content: '```r\nx <- 1\n```' })]} />)
+    fireEvent.click(await screen.findByRole('button', { name: '复制' }))
+    expect(await screen.findByRole('status')).toHaveTextContent('无法复制')
+    expect(screen.queryByText('已复制')).not.toBeInTheDocument()
   })
 })

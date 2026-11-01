@@ -1,4 +1,5 @@
-import { useId } from 'react'
+import { useId, useRef } from 'react'
+import { MarkdownMessage } from '@/components/MarkdownMessage'
 import type { KnowledgeQAOutcome, KnowledgeQAResult } from '@/lib/types'
 import { cn } from '@/lib/utils'
 
@@ -20,14 +21,15 @@ function safeHttpUrl(url: string): string | undefined {
   }
 }
 
-/** 知识问答的证据补充区：正文由 MarkdownMessage 渲染，这里只放论断引用与原文。 */
-export function KnowledgeAnswer({ data }: { data: KnowledgeQAResult }) {
+/** 论断与来源并排阅读；引用展开确切原文，不执行新检索。 */
+export function KnowledgeAnswer({ data, text }: { data: KnowledgeQAResult; text?: string }) {
   const detailPrefix = useId()
+  const evidenceRefs = useRef(new Map<string, HTMLDetailsElement>())
   const outcome = data.outcome ? OUTCOME_LABEL[data.outcome] : null
 
   return (
-    <section aria-label="知识问答证据" className="mt-3 space-y-3 border-t border-border pt-3 text-sm">
-      <div className="flex flex-wrap items-center gap-2 text-xs">
+    <section aria-label="知识问答证据" className="knowledge-answer min-w-0 space-y-5 text-[15px] leading-7">
+      <div className="flex flex-wrap items-center gap-3 text-xs">
         <span
           className={cn(
             'rounded-full border px-2 py-0.5',
@@ -44,9 +46,9 @@ export function KnowledgeAnswer({ data }: { data: KnowledgeQAResult }) {
               ? '已中断'
               : outcome}
         </span>
-        {data.status !== 'interrupted' && <span className="text-muted-foreground">未复核</span>}
+        {data.status !== 'interrupted' && <span className="rounded-full bg-amber-50 px-2 py-0.5 text-[color:var(--review)]">未复核</span>}
         {data.evidence.length > 0 && (
-          <span className="text-muted-foreground">证据片段 {data.evidence.length} 条</span>
+          <a href={`#${detailPrefix}-excerpts`} className="inline-flex min-h-9 items-center text-primary underline underline-offset-4 max-md:min-h-11">证据片段 {data.evidence.length} 条</a>
         )}
       </div>
 
@@ -55,15 +57,17 @@ export function KnowledgeAnswer({ data }: { data: KnowledgeQAResult }) {
       ) : data.status === 'interrupted' ? (
         <p role="status" className="text-muted-foreground">{data.answer}</p>
       ) : (
-        <>
+        <div className="knowledge-grid">
+          <div className="min-w-0 space-y-6">
+          <MarkdownMessage text={text?.trim() ? text : data.answer} restrictExternalContent className="reading-prose" />
           {data.claims.length > 0 && (
-            <div>
-              <h4 className="mb-1 font-medium">主要论断</h4>
-              <ul className="space-y-1">
+            <div className="knowledge-claims">
+              <h4 className="mb-3 text-base font-semibold">主要论断</h4>
+              <ul className="divide-y divide-border">
                 {data.claims.map((claim) => (
-                  <li key={claim.claim_id} className="flex flex-wrap gap-1">
+                  <li key={claim.claim_id} className="py-3">
                     {claim.basis && (
-                      <span className="rounded bg-muted px-1 text-[10px] leading-5 text-muted-foreground">
+                      <span className="mr-2 rounded bg-muted px-1.5 py-0.5 text-xs text-muted-foreground">
                         {claim.basis === 'inference' ? '推断' : '事实'}
                       </span>
                     )}
@@ -75,8 +79,16 @@ export function KnowledgeAnswer({ data }: { data: KnowledgeQAResult }) {
                           <a
                             key={id}
                             href={`#${detailPrefix}-${id}`}
-                            className="ml-1 rounded border border-border px-1 text-xs hover:bg-muted"
+                            className="ml-2 inline-flex min-h-8 min-w-8 items-center justify-center rounded border border-border px-2 text-xs text-primary hover:bg-muted max-md:min-h-11 max-md:min-w-11"
                             aria-label={`查看证据 ${id}${target?.source_id ? `：${target.source_id}` : ''}`}
+                            onClick={(event) => {
+                              const detail = evidenceRefs.current.get(id)
+                              if (!detail) return
+                              event.preventDefault()
+                              detail.open = true
+                              detail.querySelector('summary')?.focus()
+                              detail.scrollIntoView?.({ block: 'nearest' })
+                            }}
                           >
                             {id}
                           </a>
@@ -91,7 +103,7 @@ export function KnowledgeAnswer({ data }: { data: KnowledgeQAResult }) {
 
           {data.clarifications.length > 0 && (
             <div>
-              <h4 className="mb-1 font-medium">需要补充</h4>
+              <h4 className="mb-2 font-semibold">需要补充</h4>
               <ul className="list-disc space-y-0.5 pl-5">
                 {data.clarifications.map((item) => <li key={item}>{item}</li>)}
               </ul>
@@ -99,31 +111,44 @@ export function KnowledgeAnswer({ data }: { data: KnowledgeQAResult }) {
           )}
 
           {data.limitations.length > 0 && (
-            <div>
-              <h4 className="mb-1 font-medium">限制</h4>
+            <div className="knowledge-limitations border-l-2 border-[color:var(--review)] bg-amber-50/50 py-3 pl-4 pr-3">
+              <h4 className="mb-2 font-semibold">限制</h4>
               <ul className="list-disc space-y-0.5 pl-5 text-muted-foreground">
                 {data.limitations.map((item) => <li key={item}>{item}</li>)}
               </ul>
             </div>
           )}
+          {data.evidence.length > 0 && (
+            <section id={`${detailPrefix}-excerpts`} aria-label="检索原文" className="evidence-excerpts space-y-2">
+              <h4 className="text-base font-semibold">查看检索原文</h4>
+              {data.evidence.map((item) => (
+                <details key={item.evidence_id} id={`${detailPrefix}-${item.evidence_id}`} className="border-b border-border py-3"
+                  ref={(element) => { if (element) evidenceRefs.current.set(item.evidence_id, element); else evidenceRefs.current.delete(item.evidence_id) }}>
+                  <summary className="cursor-pointer text-sm text-primary">{item.evidence_id} · {item.source_id}{item.title ? ` · ${item.title}` : ''}</summary>
+                  <p className="mt-3 whitespace-pre-wrap break-words text-sm leading-7">{item.content}</p>
+                  <details className="mt-3 text-xs text-muted-foreground"><summary>片段身份与校验</summary><p className="mt-2 break-all">片段 {item.chunk_id} · 路径 {item.file_path}</p><p className="break-all">SHA256 {item.content_sha256}</p></details>
+                </details>
+              ))}
+            </section>
+          )}
+          </div>
 
           {data.sources.length > 0 && (
-            <div>
-              <h4 className="mb-1 font-medium">来源</h4>
-              <ul className="space-y-1 text-xs">
+            <aside aria-label="回答来源" className="min-w-0 border-t border-border pt-4 min-[1101px]:border-t-0 min-[1101px]:border-l min-[1101px]:pl-5 min-[1101px]:pt-0">
+              <h4 className="mb-3 text-base font-semibold">来源 <span className="ml-1 text-xs font-normal text-muted-foreground">{data.sources.length} 篇</span></h4>
+              <ul className="divide-y divide-border text-sm">
                 {data.sources.map((source) => {
                   const href = safeHttpUrl(source.url)
                   const background = [source.species, source.tissue, source.technology]
                     .filter(Boolean)
                     .join(' · ')
                   return (
-                    <li key={source.source_id} className="flex flex-wrap gap-1">
-                      <span className="font-medium">{source.source_id}</span>
-                      {source.year && <span className="text-muted-foreground">{source.year}</span>}
-                      {source.title && <span>{source.title}</span>}
-                      {background && <span className="text-muted-foreground">[{background}]</span>}
+                    <li key={source.source_id} className="space-y-1 py-3">
+                      <p className="font-medium">{source.source_id} {source.year && <span className="ml-1 font-normal text-muted-foreground">{source.year}</span>}</p>
+                      {source.title && <p>{source.title}</p>}
+                      {background && <p className="text-xs text-muted-foreground">[{background}]</p>}
                       {href && (
-                        <a href={href} target="_blank" rel="noopener noreferrer" className="underline">
+                        <a href={href} target="_blank" rel="noopener noreferrer" className="inline-flex min-h-8 items-center text-primary underline underline-offset-4 max-md:min-h-11">
                           原文
                         </a>
                       )}
@@ -131,26 +156,9 @@ export function KnowledgeAnswer({ data }: { data: KnowledgeQAResult }) {
                   )
                 })}
               </ul>
-            </div>
+            </aside>
           )}
-
-          {data.evidence.length > 0 && (
-            <details>
-              <summary className="cursor-pointer text-xs">查看检索原文</summary>
-              <ol className="mt-2 space-y-2">
-                {data.evidence.map((item) => (
-                  <li key={item.evidence_id} id={`${detailPrefix}-${item.evidence_id}`}>
-                    <p className="text-xs font-medium">
-                      {item.evidence_id} · {item.source_id}
-                      {item.title ? ` · ${item.title}` : ''}
-                    </p>
-                    <p className="mt-0.5 whitespace-pre-wrap text-xs text-muted-foreground">{item.content}</p>
-                  </li>
-                ))}
-              </ol>
-            </details>
-          )}
-        </>
+        </div>
       )}
     </section>
   )

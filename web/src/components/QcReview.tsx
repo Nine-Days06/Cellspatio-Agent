@@ -133,12 +133,14 @@ export function QcReview({ sessionId, runId, onRecorded }: { sessionId: string; 
   const attempted = state?.attempts?.some((attempt) => attempt.preview_id === active?.preview_id) ?? false
   const canFilter = active?.status === 'approved' && unchanged && !busy && !running && !attempted && blocked.length === 0
   return (
-    <section aria-label="QC 阈值选择" className="space-y-3 rounded-lg border border-border p-3">
+    <section aria-label="QC 阈值选择" className="analysis-stage space-y-3">
       <h4 className="font-medium">阈值选择 · 记录与执行分开授权</h4>
       <p className="text-xs text-muted-foreground">所有条件 AND、边界包含等号。没有科学默认值；请自行审阅证据并填写依据。</p>
       {error && <p role="alert" className="text-destructive">{error}</p>}
       {filtering && <p role="status">过滤运行中；只保存细胞列选择，不执行下游分析。</p>}
       {state?.blocked.map((text) => <p role="alert" key={text}>{text}</p>)}
+      <details open={!state?.attempts?.some((a) => a.status === 'completed')}>
+      <summary>阈值与过滤选择</summary>
       <form onSubmit={preview} className="space-y-3">
         <div className="grid gap-3 sm:grid-cols-2">
           {fields.map(([name, label, required]) => <label key={name} className="space-y-1 text-xs">
@@ -154,7 +156,7 @@ export function QcReview({ sessionId, runId, onRecorded }: { sessionId: string; 
         <p className="text-xs text-muted-foreground">排除原因可重叠，不可直接相加。未实际过滤。</p>
         <ul className="text-xs">{Object.entries(active.summary.reason_counts).map(([name, count]) => <li key={name}>{reasonNames[name] ?? name}：{count.toLocaleString()}</li>)}</ul>
         {active.summary.blocked.map((text) => <p key={text} role="alert">{text}</p>)}
-        <code className="block break-all text-xs text-muted-foreground">预览 {active.preview_id} · 绑定 {active.binding_sha256}</code>
+        <details><summary>预览身份与绑定</summary><code className="block break-all text-xs text-muted-foreground">预览 {active.preview_id} · 绑定 {active.binding_sha256}</code></details>
         {!unchanged && <p role="status">阈值已编辑，请重新生成预览后批准。</p>}
         {active.status === 'pending' && <>
           <label className="block space-y-1"><span>选择依据（仅本地记录）</span><Textarea value={reason} maxLength={2000} disabled={busy || running} onChange={(event) => setReason(event.target.value)} /></label>
@@ -165,16 +167,19 @@ export function QcReview({ sessionId, runId, onRecorded }: { sessionId: string; 
           <Button type="button" disabled={!canFilter} onClick={() => void executeFilter(active.preview_id)}>执行此已记录选择的过滤</Button>
         </>}
       </section>}
+      </details>
       {(state?.attempts?.length ?? 0) > 0 && <section aria-label="过滤执行记录" className="space-y-2">
         <h4 className="font-medium">过滤执行 · 科学未复核</h4>
         {state!.attempts!.map((attempt) => <div key={attempt.attempt_id} className="space-y-1 text-xs">
           <p role="status">{({ running: '过滤运行中', completed: '过滤产物已保存，等待审阅', failed: '过滤失败，需要人工处理', interrupted: '过滤中断，需要新预览和批准' })[attempt.status]}</p>
-          <code className="block break-all">{attempt.attempt_id} · 预览 {attempt.preview_id}</code>
           {attempt.result?.cells !== undefined && <p>实际保留 {attempt.result.cells.toLocaleString()} 个 barcode · {attempt.result.features?.toLocaleString()} 个 RNA features</p>}
           {attempt.result?.error && <p role="alert">{attempt.result.error}</p>}
-          {attempt.result?.versions && <p>{attempt.result.versions.join(' / ')}</p>}
-          <p className="break-all">本地目录：{attempt.directory}</p>
-          {attempt.result?.artifacts && <ul>{Object.entries(attempt.result.artifacts).map(([name, artifact]) => <li key={name} className="break-all">{name} · {artifact.bytes.toLocaleString()} bytes · SHA256 {artifact.sha256}</li>)}</ul>}
+          <details><summary>过滤产物、版本与校验</summary>
+            <code className="block break-all">{attempt.attempt_id} · 预览 {attempt.preview_id}</code>
+            {attempt.result?.versions && <p>{attempt.result.versions.join(' / ')}</p>}
+            <p className="break-all">本地目录：{attempt.directory}</p>
+            {attempt.result?.artifacts && <ul>{Object.entries(attempt.result.artifacts).map(([name, artifact]) => <li key={name} className="break-all">{name} · {artifact.bytes.toLocaleString()} bytes · SHA256 {artifact.sha256}</li>)}</ul>}
+          </details>
           {attempt.status === 'completed' && <PcaReview sessionId={sessionId} runId={runId} filterAttemptId={attempt.attempt_id} revision={state!.revision}
             onRunning={(value) => setPcaRunning((ids) => value ? (ids.includes(attempt.attempt_id) ? ids : [...ids, attempt.attempt_id]) : (ids.includes(attempt.attempt_id) ? ids.filter((id) => id !== attempt.attempt_id) : ids))}
             onRecorded={pcaRecorded} />}

@@ -11,6 +11,7 @@
  */
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { useQueryClient } from '@tanstack/react-query'
+import { ArrowUp, Square } from 'lucide-react'
 import { ConfirmCard } from '@/components/ConfirmCard'
 import { MessageList } from '@/components/MessageList'
 import { Sidebar } from '@/components/Sidebar'
@@ -37,6 +38,13 @@ const DEFAULT_ENV: EnvStatus = {
 export function ChatPage() {
   // 输入区本地状态：draft 属于流式输出，输入框不共用
   const [input, setInput] = useState('')
+  const inputRef = useRef<HTMLTextAreaElement>(null)
+  useEffect(() => {
+    const field = inputRef.current
+    if (!field) return
+    field.style.height = 'auto'
+    field.style.height = `${Math.min(field.scrollHeight, 144)}px`
+  }, [input])
   /** 已请求停止（诚实文案）；busy 结束时由效果复位 */
   const [stopping, setStopping] = useState(false)
   /** 超 30s 无 store 事件（约束 3c） */
@@ -108,7 +116,7 @@ export function ChatPage() {
 
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') requestStop()
+      if (event.key === 'Escape' && !document.querySelector('[role="dialog"]')) requestStop()
     }
     window.addEventListener('keydown', onKeyDown)
     return () => window.removeEventListener('keydown', onKeyDown)
@@ -231,7 +239,7 @@ export function ChatPage() {
   const env = sidebarQuery.data?.env ?? DEFAULT_ENV
 
   return (
-    <div className="flex h-screen flex-col bg-background text-foreground sm:flex-row">
+    <div className="workspace flex h-dvh flex-col overflow-hidden bg-background text-foreground md:flex-row">
       <Sidebar
         sessions={sessions}
         activeId={sessionId}
@@ -243,7 +251,15 @@ export function ChatPage() {
         onDeleted={handleDeleted}
       />
       <main className="flex min-h-0 min-w-0 flex-1 flex-col">
+        <header className="workspace-header flex shrink-0 items-center justify-between gap-4 border-b border-border px-5 py-4 md:px-9">
+          <div className="min-w-0">
+            <h1 className="truncate text-lg font-semibold tracking-tight md:text-xl" title={sessions.find((s) => s.id === sessionId)?.title}>{sessions.find((s) => s.id === sessionId)?.title ?? '新会话'}</h1>
+            <p className="mt-1 text-xs text-muted-foreground">单细胞与时空组学分析记录{history.length > 0 && ` · ${history.length} 条记录`}</p>
+          </div>
+          <span className="flex shrink-0 items-center gap-2 text-xs text-muted-foreground"><span aria-hidden="true" className={`size-1.5 rounded-full ${busy ? 'bg-primary' : 'bg-muted-foreground/50'}`} />{busy ? '正在执行' : '等待输入'}</span>
+        </header>
         <MessageList
+          key={sessionId}
           onQcRecorded={() => { void queryClient.invalidateQueries({ queryKey: queryKeys.messages(sessionId ?? '') }) }}
           messages={history}
           draft={draft}
@@ -252,9 +268,13 @@ export function ChatPage() {
           notice={notice}
           softWarn={softWarn}
           onRetry={handleRetry}
+          onStarter={(prompt, nextMode) => { setInput(prompt); setMode(nextMode); inputRef.current?.focus() }}
         />
         {(scriptCard || dataCard) && (
-          <div className="border-t border-border px-4 py-3">
+          <div
+            data-testid="confirm-dock"
+            className="confirm-dock max-h-[35dvh] min-h-0 shrink overflow-y-auto border-t border-border bg-card px-5 py-3 md:px-9"
+          >
             <ConfirmCard
               scriptCard={scriptCard}
               dataCard={dataCard}
@@ -266,7 +286,8 @@ export function ChatPage() {
           </div>
         )}
         {/* 输入区：状态行只看 store.busy（约束 2），停止文案不承诺瞬时取消（约束 3） */}
-        <div className="border-t border-border p-3">
+        <div className="composer shrink-0 px-5 pb-3 pt-2 md:px-9">
+          <div className="mx-auto max-w-6xl">
           {busy && !stopping && (
             <p className="mb-1.5 text-xs text-muted-foreground">生成中…</p>
           )}
@@ -278,10 +299,11 @@ export function ChatPage() {
           {busy && slowHint && (
             <p className="mb-1.5 text-xs text-muted-foreground">仍在执行，可能耗时较久</p>
           )}
+          <div className="composer-shell rounded-xl border border-border bg-card px-3 pb-2 pt-2">
           <div
             role="radiogroup"
             aria-label="对话模式"
-            className="mb-2 inline-flex rounded-lg border border-border p-0.5"
+            className="mb-1 inline-flex gap-1"
           >
             {[
               { value: 'chat' as const, label: '智能对话' },
@@ -305,9 +327,9 @@ export function ChatPage() {
                     .item(next === 'chat' ? 0 : 1)
                     ?.focus()
                 }}
-                className={`rounded-md px-2.5 py-1 text-xs ${
+                className={`min-h-11 rounded-md px-3 py-2 text-sm ${
                   mode === item.value
-                    ? 'bg-primary text-primary-foreground'
+                    ? 'bg-accent font-medium text-accent-foreground'
                     : 'text-muted-foreground hover:bg-muted'
                 } disabled:opacity-50`}
               >
@@ -317,14 +339,15 @@ export function ChatPage() {
           </div>
           <div className="flex items-end gap-2">
             <textarea
+              ref={inputRef}
               aria-label="输入你的问题"
               placeholder={
                 mode === 'knowledge_qa'
                   ? '提出一个单细胞或空间组学问题，回答将附文献片段…'
-                  : '输入你的问题…'
+                  : '描述你的数据、样本或分析目标…'
               }
-              rows={2}
-              className="flex-1 resize-none rounded-lg border border-border bg-card p-2 text-sm outline-none focus-visible:ring-1 focus-visible:ring-ring"
+              rows={1}
+              className="composer-input min-h-12 min-w-0 flex-1 resize-none rounded-md bg-transparent px-2 py-3 text-base leading-6 focus-visible:outline-none"
               value={input}
               onChange={(e) => setInput(e.target.value)}
               onKeyDown={(e) => {
@@ -340,8 +363,9 @@ export function ChatPage() {
                 type="button"
                 onClick={requestStop}
                 disabled={stopping}
-                className="rounded-lg border border-border px-3 py-2 text-sm hover:bg-muted disabled:opacity-50"
+                className="min-h-11 rounded-lg border border-border px-4 py-2 text-sm hover:bg-muted disabled:opacity-50"
               >
+                <Square className="mr-1 inline size-3 fill-current" aria-hidden="true" />
                 停止
               </button>
             ) : (
@@ -349,11 +373,15 @@ export function ChatPage() {
                 type="button"
                 onClick={handleSend}
                 disabled={!input.trim()}
-                className="rounded-lg border border-border px-3 py-2 text-sm hover:bg-muted disabled:opacity-50"
+                className="min-h-11 rounded-lg bg-primary px-4 py-2 text-sm text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
               >
+                <ArrowUp className="mr-1 inline size-4" aria-hidden="true" />
                 发送
               </button>
             )}
+          </div>
+          </div>
+          <p className="composer-help mt-2 text-xs text-muted-foreground">{mode === 'knowledge_qa' ? '回答附论断与原文证据；结果仍需人工复核。' : 'Enter 发送，Shift + Enter 换行；分析须独立授权。'}</p>
           </div>
         </div>
       </main>
