@@ -8,7 +8,7 @@ export function SoftWarnBanner({ visible }: SoftWarnBannerProps) {
   return (
     <div
       role="status"
-      className="mb-2 rounded-lg border border-amber-500/40 bg-amber-500/10 px-3 py-1.5 text-xs text-amber-500"
+      className="mb-2 rounded-lg border border-amber-500/40 bg-amber-500/10 px-3 py-1.5 text-xs text-[color:var(--review)]"
     >
       上下文接近压缩阈值，较早的对话内容可能会被自动摘要。
     </div>
