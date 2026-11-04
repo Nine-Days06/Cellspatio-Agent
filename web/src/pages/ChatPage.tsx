@@ -15,6 +15,7 @@ import { ArrowUp, Square } from 'lucide-react'
 import { ConfirmCard } from '@/components/ConfirmCard'
 import { MessageList } from '@/components/MessageList'
 import { Sidebar } from '@/components/Sidebar'
+import { ThemeToggle } from '@/components/ThemeToggle'
 import { ApiError, confirmAction } from '@/lib/api'
 import { queryKeys, useMessages, useSessions, useSidebar } from '@/lib/queries'
 import type {
@@ -256,7 +257,10 @@ export function ChatPage() {
             <h1 className="truncate text-lg font-semibold tracking-tight md:text-xl" title={sessions.find((s) => s.id === sessionId)?.title}>{sessions.find((s) => s.id === sessionId)?.title ?? '新会话'}</h1>
             <p className="mt-1 text-xs text-muted-foreground">单细胞与时空组学分析记录{history.length > 0 && ` · ${history.length} 条记录`}</p>
           </div>
-          <span className="flex shrink-0 items-center gap-2 text-xs text-muted-foreground"><span aria-hidden="true" className={`size-1.5 rounded-full ${busy ? 'bg-primary' : 'bg-muted-foreground/50'}`} />{busy ? '正在执行' : '等待输入'}</span>
+          <div className="flex shrink-0 items-center gap-2">
+            <span className="flex items-center gap-2 text-xs text-muted-foreground"><span aria-hidden="true" className={`size-1.5 rounded-full ${busy ? 'bg-primary' : 'bg-muted-foreground/50'}`} />{busy ? '正在执行' : '等待输入'}</span>
+            <ThemeToggle />
+          </div>
         </header>
         <MessageList
           key={sessionId}

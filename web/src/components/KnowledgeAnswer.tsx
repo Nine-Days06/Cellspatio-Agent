@@ -36,7 +36,7 @@ export function KnowledgeAnswer({ data, text }: { data: KnowledgeQAResult; text?
             data.status === 'error'
               ? 'border-destructive/40 text-destructive'
               : data.status === 'interrupted'
-                ? 'border-amber-500/40 text-amber-700'
+                ? 'border-amber-500/40 text-[color:var(--review)]'
                 : 'border-border text-muted-foreground',
           )}
         >
@@ -46,7 +46,7 @@ export function KnowledgeAnswer({ data, text }: { data: KnowledgeQAResult; text?
               ? '已中断'
               : outcome}
         </span>
-        {data.status !== 'interrupted' && <span className="rounded-full bg-amber-50 px-2 py-0.5 text-[color:var(--review)]">未复核</span>}
+        {data.status !== 'interrupted' && <span className="rounded-full bg-[color:var(--review-surface)] px-2 py-0.5 text-[color:var(--review)]">未复核</span>}
         {data.evidence.length > 0 && (
           <a href={`#${detailPrefix}-excerpts`} className="inline-flex min-h-9 items-center text-primary underline underline-offset-4 max-md:min-h-11">证据片段 {data.evidence.length} 条</a>
         )}
@@ -111,7 +111,7 @@ export function KnowledgeAnswer({ data, text }: { data: KnowledgeQAResult; text?
           )}
 
           {data.limitations.length > 0 && (
-            <div className="knowledge-limitations border-l-2 border-[color:var(--review)] bg-amber-50/50 py-3 pl-4 pr-3">
+            <div className="knowledge-limitations border-l-2 border-[color:var(--review)] bg-[color:var(--review-surface)]/50 py-3 pl-4 pr-3">
               <h4 className="mb-2 font-semibold">限制</h4>
               <ul className="list-disc space-y-0.5 pl-5 text-muted-foreground">
                 {data.limitations.map((item) => <li key={item}>{item}</li>)}

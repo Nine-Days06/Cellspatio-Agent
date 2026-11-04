@@ -185,7 +185,7 @@ export function Sidebar({
         {env.ollama.state === 'needs_model' && (
           <div
             data-testid="ollama-needs-model"
-            className="mt-2 space-y-1 break-all text-amber-800"
+            className="mt-2 space-y-1 break-all text-[color:var(--review)]"
           >
             <p className="font-medium">应用不会自动下载模型</p>
             <p>{env.ollama.detail}</p>

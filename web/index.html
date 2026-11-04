@@ -4,6 +4,14 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>CellSpatio</title>
+    <script>
+      // 在首屏绘制前恢复选择，避免深色主题先闪过浅色页面。
+      try {
+        document.documentElement.classList.toggle('dark', localStorage.getItem('cellspatio-theme') === 'dark');
+      } catch {
+        // 存储不可用时保留默认浅色。
+      }
+    </script>
   </head>
   <body>
     <div id="root"></div>

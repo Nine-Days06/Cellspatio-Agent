@@ -175,7 +175,7 @@ describe('Sidebar', () => {
     expect(screen.getByTestId('ollama-needs-model')).toHaveTextContent(
       '应用不会自动下载模型',
     )
-    expect(screen.getByTestId('ollama-needs-model')).toHaveClass('text-amber-800')
+    expect(screen.getByTestId('ollama-needs-model')).toHaveClass('text-[color:var(--review)]')
   })
 
   it('ollama 不可用（unavailable）显示红点', () => {
