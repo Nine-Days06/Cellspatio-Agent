@@ -6,6 +6,7 @@
 @custom-variant dark (&:where(.dark, .dark *));
 
 :root {
+  color-scheme: light;
   --background: #f6f8fa;
   --foreground: #203543;
   --card: #ffffff;
@@ -26,30 +27,42 @@
   --input: #d5e0e6;
   --ring: #176b71;
   --review: #93651e;
+  --review-surface: #fffbeb;
+  --sidebar-start: #e7eef2;
+  --sidebar-end: #eef3f6;
+  --user-message: #e4eef1;
+  --user-message-border: #d8e6eb;
   --radius: 0.625rem;
   --workspace-gutter: clamp(1.25rem, 3vw, 2.25rem);
 }
 
 .dark {
-  --background: #0c0d10;
-  --foreground: #ececf1;
-  --card: #14151a;
-  --card-foreground: #ececf1;
-  --popover: #171923;
-  --popover-foreground: #ececf1;
-  --muted: #1c1e26;
-  --muted-foreground: #9aa0ae;
-  --primary: #4f7df9;
-  --primary-foreground: #ffffff;
-  --secondary: #22242e;
-  --secondary-foreground: #ececf1;
-  --accent: #22242e;
-  --accent-foreground: #ececf1;
-  --destructive: #ef4444;
+  color-scheme: dark;
+  --background: #13232d;
+  --foreground: #e4edf2;
+  --card: #1b2f3a;
+  --card-foreground: #e4edf2;
+  --popover: #1b2f3a;
+  --popover-foreground: #e4edf2;
+  --muted: #253e4a;
+  --muted-foreground: #a5bac6;
+  --primary: #81c9cc;
+  --primary-foreground: #102a32;
+  --secondary: #243d49;
+  --secondary-foreground: #e4edf2;
+  --accent: #25454f;
+  --accent-foreground: #9cdbdd;
+  --destructive: #ff9292;
   --destructive-foreground: #ffffff;
-  --border: #2a2d38;
-  --input: #2a2d38;
-  --ring: #4f7df9;
+  --border: #385361;
+  --input: #385361;
+  --ring: #81c9cc;
+  --review: #e4ba72;
+  --review-surface: #3a3020;
+  --sidebar-start: #182d38;
+  --sidebar-end: #1d3440;
+  --user-message: #25404c;
+  --user-message-border: #385763;
 }
 
 @theme inline {
@@ -90,11 +103,11 @@ body {
   font-family: "Geist Variable", "Microsoft YaHei", sans-serif;
 }
 
-.workspace { background-image: radial-gradient(ellipse at top right, #e8eff366, transparent 65%); }
-.workspace-sidebar { background: linear-gradient(165deg, #e7eef2 0%, #eef3f6 100%); }
-.workspace-header { background: #f6f8fae6; }
+.workspace { background-image: radial-gradient(ellipse at top right, color-mix(in srgb, var(--muted) 40%, transparent), transparent 65%); }
+.workspace-sidebar { background: linear-gradient(165deg, var(--sidebar-start) 0%, var(--sidebar-end) 100%); }
+.workspace-header { background: color-mix(in srgb, var(--background) 90%, transparent); }
 .session-selected { box-shadow: inset 3px 0 0 var(--primary); }
-.user-message { background: #e4eef1; border: 1px solid #d8e6eb; }
+.user-message { background: var(--user-message); border: 1px solid var(--user-message-border); }
 .record-scroll { scrollbar-gutter: stable; overscroll-behavior: contain; }
 .workspace-start { animation: workspace-arrive 350ms ease-out; }
 .starter-row { padding-inline: 0.5rem; }
@@ -130,7 +143,7 @@ body {
 .analysis-stage label:has(textarea) { margin-block: 1rem; }
 .analysis-stage label:has(input[type="checkbox"]) { padding-block: 0.75rem; }
 .analysis-stage input[type="checkbox"] { margin-top: 0.35rem; accent-color: var(--primary); width: 1rem; height: 1rem; }
-.analysis-stage > div > p[role="status"] { padding: 0.5rem 0.75rem; border-left: 2px solid var(--review); background: #93651e08; font-size: 0.875rem; }
+.analysis-stage > div > p[role="status"] { padding: 0.5rem 0.75rem; border-left: 2px solid var(--review); background: color-mix(in srgb, var(--review) 3%, transparent); font-size: 0.875rem; }
 .analysis-record :is(img, table, pre) { max-width: 100%; }
 .analysis-record img { background: white; border: 1px solid var(--border); border-radius: 8px; }
 .analysis-preview { max-height: 38rem; object-fit: contain; object-position: left; }
@@ -140,8 +153,8 @@ body {
 .analysis-record table { position: relative; font-variant-numeric: tabular-nums; font-size: 0.8125rem; }
 .analysis-record thead th { position: sticky; top: 0; z-index: 1; color: var(--muted-foreground); background: var(--muted); }
 .analysis-record tbody th { background: var(--card); }
-.analysis-record tbody tr:nth-child(even) { background: #e8eff333; }
-.analysis-record tbody tr:hover { background: #dcebed66; }
+.analysis-record tbody tr:nth-child(even) { background: color-mix(in srgb, var(--muted) 20%, transparent); }
+.analysis-record tbody tr:hover { background: color-mix(in srgb, var(--accent) 40%, transparent); }
 .analysis-record :is(th, td) { padding: 0.65rem 0.75rem; border-bottom: 1px solid var(--border); }
 .analysis-record :is(details, [role="region"]) { min-width: 0; }
 .analysis-record [role="region"] { border: 1px solid var(--border); border-radius: 0.5rem; overscroll-behavior: contain; }
