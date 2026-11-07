@@ -12,6 +12,7 @@ from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
+from src.api.auth import current_user
 from src.api.chat_service import run_turn, session_lock
 from src.api.events import make_event, sse_frame
 from src.ui.session_store import SessionStore
@@ -40,7 +41,7 @@ async def chat(body: ChatRequest, request: Request) -> StreamingResponse:
     """单请求即一个完整 SSE 流：事件顺序为 delta/tool_status/confirm_card/chart → done。"""
     agent = request.app.state.agent
     store = SessionStore()
-    if store.get_session(body.session_id) is None:
+    if store.get_session_for(body.session_id, current_user(request)["id"]) is None:
         raise HTTPException(status_code=404, detail="会话不存在")
 
     lock = session_lock(body.session_id)

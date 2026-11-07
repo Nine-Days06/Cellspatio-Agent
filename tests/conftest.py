@@ -57,6 +57,8 @@ async def _ensure_test_database() -> None:
 def pytest_sessionstart(session):
     """在任何测试连接建立前准备测试库；PG 不可达时快速降级。"""
     global _PG_READY
+    # 现有用例都按"已登录"写，默认关闭鉴权；test_auth.py 内显式打开。
+    os.environ.setdefault("CELLSPATIO_AUTH_DISABLED", "1")
     os.environ["POSTGRES_DATABASE"] = _TEST_PG_DATABASE
     try:
         asyncio.run(asyncio.wait_for(_ensure_test_database(), timeout=_PG_PROBE_TIMEOUT_SECONDS))

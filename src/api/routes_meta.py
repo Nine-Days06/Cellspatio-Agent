@@ -10,7 +10,7 @@ import shutil
 from pathlib import Path
 from typing import Any
 
-from fastapi import APIRouter, Request
+from fastapi import APIRouter, HTTPException, Request
 
 from src.api.chat_service import soft_warn_for
 from src.ui.session_store import SessionStore
@@ -87,12 +87,17 @@ def _env_status(agent: Any) -> dict[str, Any]:
     }
 
 
-def _soft_warn(session_id: str | None) -> bool:
+def _soft_warn(session_id: str | None, user_id: str) -> bool:
     """按会话当前上下文判断压缩软阈值；无会话或异常一律 False。"""
     if not session_id:
         return False
     try:
-        return soft_warn_for(SessionStore(), session_id)
+        store = SessionStore()
+        if store.get_session_for(session_id, user_id) is None:
+            raise HTTPException(status_code=404, detail="会话不存在")
+        return soft_warn_for(store, session_id)
+    except HTTPException:
+        raise
     except Exception as exc:  # noqa: BLE001 - 软警告探测失败按未触发处理
         logger.warning("soft warn probe failed: %s", exc)
         return False
@@ -102,8 +107,10 @@ def _soft_warn(session_id: str | None) -> bool:
 def sidebar(request: Request, session_id: str | None = None) -> dict[str, Any]:
     """侧边栏状态端点：kb_stats + env + soft_warn，任何探测失败都不抛错。"""
     agent = request.app.state.agent
+    from src.api.auth import current_user
+
     return {
         "kb_stats": _kb_stats(agent),
         "env": _env_status(agent),
-        "soft_warn": _soft_warn(session_id),
+        "soft_warn": _soft_warn(session_id, current_user(request)["id"]),
     }

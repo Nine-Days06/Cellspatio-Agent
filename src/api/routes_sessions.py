@@ -8,6 +8,7 @@ from typing import Any
 from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel
 
+from src.api.auth import current_user
 from src.api.chat_service import session_lock, soft_warn_for
 from src.api.events import wire_message
 from src.control.chat_messages import build_assistant_message
@@ -23,8 +24,8 @@ def _store() -> SessionStore:
     return SessionStore()
 
 
-def _require_session(store: SessionStore, session_id: str) -> dict[str, Any]:
-    session = store.get_session(session_id)
+def _require_session(store: SessionStore, session_id: str, request: Request) -> dict[str, Any]:
+    session = store.get_session_for(session_id, current_user(request)["id"])
     if session is None:
         raise HTTPException(status_code=404, detail="会话不存在")
     return session
@@ -37,22 +38,22 @@ class CreateSessionRequest(BaseModel):
 
 
 @router.get("/sessions")
-def list_sessions() -> dict[str, Any]:
-    return {"sessions": _store().list_sessions()}
+def list_sessions(request: Request) -> dict[str, Any]:
+    return {"sessions": _store().list_sessions(owner_id=current_user(request)["id"])}
 
 
 @router.post("/sessions")
-def create_session(body: CreateSessionRequest | None = None) -> dict[str, Any]:
+def create_session(request: Request, body: CreateSessionRequest | None = None) -> dict[str, Any]:
     store = _store()
     title = body.title if body and body.title else "新会话"
-    session_id = store.create_session(title)
+    session_id = store.create_session(title, owner_id=current_user(request)["id"])
     return {"session": store.get_session(session_id)}
 
 
 @router.delete("/sessions/{session_id}")
-def delete_session(session_id: str) -> dict[str, Any]:
+def delete_session(session_id: str, request: Request) -> dict[str, Any]:
     store = _store()
-    _require_session(store, session_id)
+    _require_session(store, session_id, request)
     # 生成中删除会让 worker 落库失败 → 与 chat/confirm 同一把非阻塞会话锁
     lock = session_lock(session_id)
     if not lock.acquire(blocking=False):
@@ -67,9 +68,9 @@ def delete_session(session_id: str) -> dict[str, Any]:
 
 
 @router.get("/sessions/{session_id}/messages")
-def list_messages(session_id: str, restore: int = 0) -> dict[str, Any]:
+def list_messages(session_id: str, request: Request, restore: int = 0) -> dict[str, Any]:
     store = _store()
-    session = _require_session(store, session_id)
+    session = _require_session(store, session_id, request)
     messages = store.get_messages(session_id)
     return {
         "session": session,
@@ -127,7 +128,7 @@ def confirm(body: ConfirmRequest, request: Request) -> dict[str, Any]:
     """
     agent = request.app.state.agent
     store = _store()
-    _require_session(store, body.session_id)
+    _require_session(store, body.session_id, request)
     lock = session_lock(body.session_id)
     if not lock.acquire(blocking=False):
         raise HTTPException(status_code=409, detail="该会话已有任务在进行")

@@ -28,6 +28,7 @@
 - **一键复现**：`python -m src.cli.replay <run_id>` 恢复 worktree、数据、环境、结果
 - **可扩展**：支持外部 API 集成和模块化扩展
 - **UI 层**：FastAPI + SSE 流式 + React 18 对话界面；页头支持浅色／深色切换，浏览器记住选择
+- **多用户认证**：账号密码登录（cookie 会话），会话按用户隔离，知识库全局共享（本分支 `multiuser-auth`）
 - **KG 记忆体系**：WorkflowRecorder → LightRAG 增量写入，自然语言查询历史运行/步骤/输出
 - **技能自固化**：执行→记忆→检索→优化闭环，同类任务自动获得最佳实践
 - **技能平台**：Manifest/Base/Registry/Loader 四件套，热重载毫秒级迭代

@@ -180,16 +180,16 @@ def test_sidebar_soft_warn_uses_session_context(monkeypatch):
     assert body["soft_warn"] is True
 
 
-def test_sidebar_soft_warn_false_for_unknown_session(monkeypatch):
+def test_sidebar_unknown_session_is_not_found(monkeypatch):
     agent = FakeAgent()
     agent.knowledge_client = StubKB()
     agent.r_executor = StubExecutor("Rscript-not-installed-on-this-machine")
     agent.config = {}
     monkeypatch.setattr("shutil.which", lambda name: None)
 
-    body = _client(agent).get("/api/sidebar?session_id=nope").json()
+    response = _client(agent).get("/api/sidebar?session_id=nope")
 
-    assert body["soft_warn"] is False
+    assert response.status_code == 404
 
 
 def test_main_module_targets_port_8600():

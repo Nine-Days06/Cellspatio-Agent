@@ -12,6 +12,7 @@ from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 from src.api import (
+    auth,
     routes_chat,
     routes_clusters,
     routes_markers,
@@ -57,7 +58,9 @@ def create_app(agent: Any) -> FastAPI:
         yield
 
     app = FastAPI(title="CellSpatio API", lifespan=lifespan)
+    auth.install_auth(app)
     app.state.agent = agent
+    app.include_router(auth.router)
     app.include_router(routes_sessions.router)
     app.include_router(routes_chat.router)
     app.include_router(routes_meta.router)
@@ -70,6 +73,10 @@ def create_app(agent: Any) -> FastAPI:
     if _WEB_DIST.is_dir():
         app.mount("/", StaticFiles(directory=_WEB_DIST, html=True))
     _warm_up_ollama()
+    try:
+        auth.ensure_admin()
+    except Exception as exc:  # noqa: BLE001 - 开户失败不阻断服务启动
+        logger.warning("admin bootstrap skipped: %s", exc)
     return app
 
 

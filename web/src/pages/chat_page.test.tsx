@@ -232,7 +232,7 @@ describe('ChatPage 输入区：键位 / 停止 / 错误提示（约束 3）', ()
     expect(useChatStore.getState().sessionId).toBe(sid)
     expect(fetchMock).toHaveBeenCalledWith(
       expect.stringContaining(`/sessions/${sid}/messages?restore=1`),
-      undefined,
+      expect.objectContaining({ credentials: 'same-origin' }),
     )
     expect(screen.getByText('初始问题')).toBeInTheDocument()
   })
@@ -584,7 +584,7 @@ describe('ChatPage 会话列表接线', () => {
     await waitFor(() =>
       expect(fetchMock).toHaveBeenCalledWith(
         expect.stringContaining(`/sessions/${sidB}/messages?restore=1`),
-        undefined,
+        expect.objectContaining({ credentials: 'same-origin' }),
       ),
     )
   })

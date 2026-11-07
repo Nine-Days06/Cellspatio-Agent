@@ -16,7 +16,8 @@ import { ConfirmCard } from '@/components/ConfirmCard'
 import { MessageList } from '@/components/MessageList'
 import { Sidebar } from '@/components/Sidebar'
 import { ThemeToggle } from '@/components/ThemeToggle'
-import { ApiError, confirmAction } from '@/lib/api'
+import { ApiError, confirmAction, logout } from '@/lib/api'
+import type { AuthUser } from '@/lib/api'
 import { queryKeys, useMessages, useSessions, useSidebar } from '@/lib/queries'
 import type {
   ChatMode,
@@ -36,7 +37,7 @@ const DEFAULT_ENV: EnvStatus = {
   ollama_start_mode: 'lazy',
 }
 
-export function ChatPage() {
+export function ChatPage({ user }: { user?: AuthUser }) {
   // 输入区本地状态：draft 属于流式输出，输入框不共用
   const [input, setInput] = useState('')
   const inputRef = useRef<HTMLTextAreaElement>(null)
@@ -259,6 +260,18 @@ export function ChatPage() {
           </div>
           <div className="flex shrink-0 items-center gap-2">
             <span className="flex items-center gap-2 text-xs text-muted-foreground"><span aria-hidden="true" className={`size-1.5 rounded-full ${busy ? 'bg-primary' : 'bg-muted-foreground/50'}`} />{busy ? '正在执行' : '等待输入'}</span>
+            {user && (
+              <>
+                <span className="text-xs text-muted-foreground">{user.display_name}</span>
+                <button
+                  type="button"
+                  onClick={() => { void logout().then(() => queryClient.invalidateQueries({ queryKey: ['me'] })) }}
+                  className="rounded-md border border-border px-2 py-1 text-xs text-muted-foreground hover:text-foreground"
+                >
+                  登出
+                </button>
+              </>
+            )}
             <ThemeToggle />
           </div>
         </header>

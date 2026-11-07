@@ -40,12 +40,31 @@ async function toApiError(response: Response): Promise<ApiError> {
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   let response: Response
   try {
-    response = await fetch(path, init)
+    response = await fetch(path, { credentials: 'same-origin', ...init })
   } catch (err) {
     throw new ApiError(0, err instanceof Error ? err.message : '网络请求失败')
   }
   if (!response.ok) throw await toApiError(response)
   return (await response.json()) as T
+}
+
+export type AuthUser = {
+  id: string | null
+  username: string
+  display_name: string
+  is_admin: boolean
+}
+
+export function fetchMe(): Promise<{ user: AuthUser }> {
+  return request('/api/auth/me')
+}
+
+export function login(username: string, password: string): Promise<{ user: AuthUser }> {
+  return request('/api/auth/login', jsonInit('POST', { username, password }))
+}
+
+export function logout(): Promise<{ ok: boolean }> {
+  return request('/api/auth/logout', jsonInit('POST'))
 }
 
 const jsonInit = (method: string, body?: unknown): RequestInit => ({

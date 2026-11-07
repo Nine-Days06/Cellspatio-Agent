@@ -19,8 +19,24 @@ logger = logging.getLogger(__name__)
 DEFAULT_DB_PATH = Path(".cellspatio") / "sessions.db"
 
 SCHEMA = """
+CREATE TABLE IF NOT EXISTS users (
+    id TEXT PRIMARY KEY,
+    username TEXT NOT NULL UNIQUE COLLATE NOCASE,
+    password_hash TEXT NOT NULL,
+    display_name TEXT NOT NULL DEFAULT '',
+    is_admin INTEGER NOT NULL DEFAULT 0,
+    disabled INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS auth_tokens (
+    token_hash TEXT PRIMARY KEY,
+    user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    created_at TEXT NOT NULL,
+    expires_at TEXT NOT NULL
+);
 CREATE TABLE IF NOT EXISTS sessions (
     id TEXT PRIMARY KEY,
+    owner_id TEXT REFERENCES users(id) ON DELETE SET NULL,
     title TEXT NOT NULL DEFAULT '新会话',
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL,
@@ -219,6 +235,14 @@ def _decode_results(text: str | None) -> dict[str, Any] | None:
     return payload
 
 
+def _migrate(conn: sqlite3.Connection) -> None:
+    """旧库补列：CREATE IF NOT EXISTS 不会给已存在的表加列。"""
+
+    columns = {row["name"] for row in conn.execute("PRAGMA table_info(sessions)")}
+    if "owner_id" not in columns:
+        conn.execute("ALTER TABLE sessions ADD COLUMN owner_id TEXT REFERENCES users(id)")
+
+
 class SessionStore:
     """会话/消息 CRUD。每次操作独立短连接，不做连接池。"""
 
@@ -235,27 +259,33 @@ class SessionStore:
             conn.execute("PRAGMA journal_mode=WAL")
             conn.execute("PRAGMA foreign_keys=ON")
             conn.executescript(SCHEMA)
+            _migrate(conn)
             yield conn
             conn.commit()
         finally:
             conn.close()
 
-    def create_session(self, title: str = "新会话") -> str:
+    def create_session(self, title: str = "新会话", owner_id: str | None = None) -> str:
         sid = uuid.uuid4().hex
         now = _now()
         with self._conn() as conn:
             conn.execute(
-                "INSERT INTO sessions (id, title, created_at, updated_at) VALUES (?, ?, ?, ?)",
-                (sid, title, now, now),
+                "INSERT INTO sessions (id, owner_id, title, created_at, updated_at) "
+                "VALUES (?, ?, ?, ?, ?)",
+                (sid, owner_id, title, now, now),
             )
         return sid
 
-    def list_sessions(self) -> list[dict[str, Any]]:
+    def list_sessions(self, owner_id: str | None = None) -> list[dict[str, Any]]:
+        """owner_id 为 None 时不按用户过滤（CLI/内部用）；路由必须显式传当前用户。"""
+        where = "" if owner_id is None else "WHERE s.owner_id = ?"
+        params: tuple[Any, ...] = () if owner_id is None else (owner_id,)
         with self._conn() as conn:
             rows = conn.execute(
                 "SELECT s.id, s.title, s.updated_at, "
                 "(SELECT COUNT(*) FROM messages m WHERE m.session_id = s.id) "
-                "AS message_count FROM sessions s ORDER BY s.updated_at DESC"
+                f"AS message_count FROM sessions s {where} ORDER BY s.updated_at DESC",
+                params,
             ).fetchall()
         return [dict(r) for r in rows]
 
@@ -267,6 +297,99 @@ class SessionStore:
         session = dict(row)
         session["downloaded_assets"] = _decode_downloaded(session["downloaded_assets"])
         return session
+
+    def get_session_for(self, session_id: str, owner_id: str | None) -> dict[str, Any] | None:
+        """归属不匹配按不存在处理（404），不泄露会话是否存在。"""
+        session = self.get_session(session_id)
+        if session is None or session.get("owner_id") != owner_id:
+            return None
+        return session
+
+    # ---- 用户与登录 token ----
+
+    def create_user(
+        self,
+        username: str,
+        password_hash: str,
+        display_name: str = "",
+        is_admin: bool = False,
+    ) -> str:
+        user_id = uuid.uuid4().hex
+        with self._conn() as conn:
+            conn.execute(
+                "INSERT INTO users (id, username, password_hash, display_name, is_admin, "
+                "created_at) VALUES (?, ?, ?, ?, ?, ?)",
+                (
+                    user_id,
+                    username.strip(),
+                    password_hash,
+                    display_name or username,
+                    int(is_admin),
+                    _now(),
+                ),
+            )
+        return user_id
+
+    def get_user_by_username(self, username: str) -> dict[str, Any] | None:
+        with self._conn() as conn:
+            row = conn.execute(
+                "SELECT * FROM users WHERE username = ? COLLATE NOCASE", (username.strip(),)
+            ).fetchone()
+        return dict(row) if row else None
+
+    def get_user(self, user_id: str) -> dict[str, Any] | None:
+        with self._conn() as conn:
+            row = conn.execute("SELECT * FROM users WHERE id = ?", (user_id,)).fetchone()
+        return dict(row) if row else None
+
+    def list_users(self) -> list[dict[str, Any]]:
+        with self._conn() as conn:
+            rows = conn.execute(
+                "SELECT id, username, display_name, is_admin, disabled, created_at "
+                "FROM users ORDER BY username"
+            ).fetchall()
+        return [dict(r) for r in rows]
+
+    def update_user_password(self, user_id: str, password_hash: str) -> None:
+        with self._conn() as conn:
+            conn.execute(
+                "UPDATE users SET password_hash = ? WHERE id = ?", (password_hash, user_id)
+            )
+
+    def create_token(self, token_hash: str, user_id: str, expires_at: str) -> None:
+        with self._conn() as conn:
+            conn.execute(
+                "INSERT INTO auth_tokens (token_hash, user_id, created_at, expires_at) "
+                "VALUES (?, ?, ?, ?)",
+                (token_hash, user_id, _now(), expires_at),
+            )
+
+    def get_user_by_token(self, token_hash: str) -> dict[str, Any] | None:
+        with self._conn() as conn:
+            row = conn.execute(
+                "SELECT u.* FROM auth_tokens t JOIN users u ON u.id = t.user_id "
+                "WHERE t.token_hash = ? AND t.expires_at > ? AND u.disabled = 0",
+                (token_hash, _now()),
+            ).fetchone()
+        return dict(row) if row else None
+
+    def delete_token(self, token_hash: str) -> None:
+        with self._conn() as conn:
+            conn.execute("DELETE FROM auth_tokens WHERE token_hash = ?", (token_hash,))
+
+    def delete_user_tokens(self, user_id: str, keep: str | None = None) -> None:
+        with self._conn() as conn:
+            if keep is None:
+                conn.execute("DELETE FROM auth_tokens WHERE user_id = ?", (user_id,))
+            else:
+                conn.execute(
+                    "DELETE FROM auth_tokens WHERE user_id = ? AND token_hash != ?",
+                    (user_id, keep),
+                )
+
+    def purge_expired_tokens(self) -> None:
+        with self._conn() as conn:
+            conn.execute("DELETE FROM auth_tokens WHERE expires_at <= ?", (_now(),))
 
     def delete_session(self, session_id: str) -> None:
         with self._conn() as conn:
