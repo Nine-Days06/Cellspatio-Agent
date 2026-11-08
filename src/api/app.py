@@ -77,7 +77,7 @@ def create_app(agent: Any) -> FastAPI:
     _warm_up_ollama()
     try:
         auth.ensure_admin()
-    except (HashingError, OSError, sqlite3.Error, RuntimeError, ValueError) as exc:
+    except (HashingError, OSError, sqlite3.Error) as exc:
         logger.error("admin bootstrap skipped: %s", exc)
     return app
 

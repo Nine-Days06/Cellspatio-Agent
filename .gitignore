@@ -72,3 +72,4 @@ web/dist/
 web/test-results/
 web/playwright-report/
 cellspatio-e2e/
+.e2e-runs/

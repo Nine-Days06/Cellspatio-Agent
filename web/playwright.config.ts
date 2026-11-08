@@ -1,5 +1,7 @@
 import { defineConfig } from '@playwright/test'
 
+const python = process.platform === 'win32' ? '.venv\\Scripts\\python.exe' : '.venv/bin/python'
+
 export default defineConfig({
   testDir: './e2e',
   timeout: 60_000,
@@ -8,7 +10,7 @@ export default defineConfig({
     trace: 'retain-on-failure',
   },
   webServer: {
-    command: '.venv\\Scripts\\python.exe web/e2e/serve.py',
+    command: `${python} web/e2e/serve.py`,
     cwd: '..',
     url: 'http://127.0.0.1:8620',
     reuseExistingServer: false,

@@ -19,6 +19,7 @@ import { ThemeToggle } from '@/components/ThemeToggle'
 import { ApiError, confirmAction, logout } from '@/lib/api'
 import type { AuthUser } from '@/lib/api'
 import { queryKeys, useMessages, useSessions, useSidebar } from '@/lib/queries'
+import { resetUserState } from '@/lib/resetUserState'
 import type {
   ChatMode,
   ConfirmRequestBody,
@@ -267,9 +268,7 @@ export function ChatPage({ user }: { user?: AuthUser }) {
                   type="button"
                   onClick={() => {
                     void logout().then(() => {
-                      queryClient.removeQueries({ predicate: (q) => q.queryKey[0] !== 'me' })
-                      useChatStore.getState().reset()
-                      void queryClient.invalidateQueries({ queryKey: ['me'] })
+                      void resetUserState(queryClient)
                     })
                   }}
                   className="rounded-md border border-border px-2 py-1 text-xs text-muted-foreground hover:text-foreground"

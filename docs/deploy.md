@@ -15,6 +15,9 @@ sudo systemctl enable --now cellspatio
 sudo nginx -t && sudo systemctl reload nginx
 ```
 
+`CELLSPATIO_COOKIE_SECURE=1` 与 `CELLSPATIO_SITE_URL` 必须成对配置：前者启用
+但后者为空时应用拒绝启动，因为 Origin 校验会随之关闭。
+
 升级旧库时，已有会话的 `owner_id` 为 `NULL`，会全部返回 404；需用
 `python -m src.cli.users list` 查到账号 ID 后，在默认 `.cellspatio/sessions.db`
 （或 `CELLSPATIO_SESSIONS_DB` 指向的库）手工执行：

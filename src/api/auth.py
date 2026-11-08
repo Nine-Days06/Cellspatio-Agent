@@ -132,10 +132,21 @@ def current_user(request: Request) -> dict[str, Any]:
 
 
 def validate_auth_config() -> None:
-    """HTTPS 站点必须启用 Secure cookie，避免会话 token 明文外传。"""
+    """校验站点 URL 与 Secure cookie 的配对，避免公网部署静默失去防护。
+
+    Secure cookie 意味着走 HTTPS 公网，此时必须配置站点 URL，
+    否则 Origin 校验被跳过，写请求可跨站伪造。显式关闭鉴权时跳过。
+    """
+    if _auth_disabled():
+        return
     site = os.environ.get("CELLSPATIO_SITE_URL", "").strip()
-    if site.lower().startswith("https://") and not _cookie_secure():
+    secure = _cookie_secure()
+    if site.lower().startswith("https://") and not secure:
         raise RuntimeError("CELLSPATIO_SITE_URL 为 HTTPS 时必须设置 CELLSPATIO_COOKIE_SECURE=1")
+    if secure and not site:
+        raise RuntimeError(
+            "启用 CELLSPATIO_COOKIE_SECURE 时必须设置 CELLSPATIO_SITE_URL，否则 Origin 校验关闭"
+        )
 
 
 router = APIRouter(prefix="/api/auth", tags=["auth"])
