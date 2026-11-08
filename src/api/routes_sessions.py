@@ -39,11 +39,13 @@ class CreateSessionRequest(BaseModel):
 
 @router.get("/sessions")
 def list_sessions(request: Request) -> dict[str, Any]:
+    """列出当前登录用户的会话。"""
     return {"sessions": _store().list_sessions(owner_id=current_user(request)["id"])}
 
 
 @router.post("/sessions")
 def create_session(request: Request, body: CreateSessionRequest | None = None) -> dict[str, Any]:
+    """为当前登录用户创建会话并返回它。"""
     store = _store()
     title = body.title if body and body.title else "新会话"
     session_id = store.create_session(title, owner_id=current_user(request)["id"])
@@ -52,6 +54,7 @@ def create_session(request: Request, body: CreateSessionRequest | None = None) -
 
 @router.delete("/sessions/{session_id}")
 def delete_session(session_id: str, request: Request) -> dict[str, Any]:
+    """删除当前用户拥有的会话；不存在或归属不符返回 404。"""
     store = _store()
     _require_session(store, session_id, request)
     # 生成中删除会让 worker 落库失败 → 与 chat/confirm 同一把非阻塞会话锁
@@ -69,6 +72,7 @@ def delete_session(session_id: str, request: Request) -> dict[str, Any]:
 
 @router.get("/sessions/{session_id}/messages")
 def list_messages(session_id: str, request: Request, restore: int = 0) -> dict[str, Any]:
+    """读取当前用户拥有的会话消息；不存在或归属不符返回 404。"""
     store = _store()
     session = _require_session(store, session_id, request)
     messages = store.get_messages(session_id)

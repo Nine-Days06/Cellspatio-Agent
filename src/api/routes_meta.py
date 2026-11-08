@@ -88,7 +88,7 @@ def _env_status(agent: Any) -> dict[str, Any]:
 
 
 def _soft_warn(session_id: str | None, user_id: str) -> bool:
-    """按会话当前上下文判断压缩软阈值；无会话或异常一律 False。"""
+    """无 session_id 返回 False；会话不属于当前用户抛 404；其余探测异常返回 False。"""
     if not session_id:
         return False
     try:
@@ -105,7 +105,7 @@ def _soft_warn(session_id: str | None, user_id: str) -> bool:
 
 @router.get("/sidebar")
 def sidebar(request: Request, session_id: str | None = None) -> dict[str, Any]:
-    """侧边栏状态端点：kb_stats + env + soft_warn，任何探测失败都不抛错。"""
+    """侧边栏状态端点：归属不符抛 404，其余探测失败不抛错。"""
     agent = request.app.state.agent
     from src.api.auth import current_user
 

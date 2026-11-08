@@ -44,6 +44,9 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   } catch (err) {
     throw new ApiError(0, err instanceof Error ? err.message : '网络请求失败')
   }
+  if (response.status === 401 && path !== '/api/auth/login') {
+    window.dispatchEvent(new Event('cellspatio:unauthorized'))
+  }
   if (!response.ok) throw await toApiError(response)
   return (await response.json()) as T
 }

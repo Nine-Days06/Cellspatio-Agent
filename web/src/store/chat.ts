@@ -57,6 +57,8 @@ interface ChatState {
   setScriptCard: (payload: ScriptCardPayload | null) => void
   setDataCard: (payload: DataCardPayload | null) => void
   setNotice: (notice: ChatNotice | null) => void
+  /** 跨用户切换：清空所有会话相关内容（含进行中的流） */
+  reset: () => void
   /** done 事件：把助手消息落进 history（约束 1：空内容照常记录） */
   finalizeTurn: (message: WireMessage) => void
   /** done / aborted / closed 的幂等收尾：关 busy、清过程条；error 不走这里 */
@@ -73,6 +75,8 @@ interface ChatState {
 let localSeq = 0
 /** 当前进行中的流；stop() 通过它 abort。 */
 let activeStream: AbortController | null = null
+/** 会话代际：reset 后旧 SSE 回调不得再写状态。 */
+let streamEpoch = 0
 
 export const useChatStore = create<ChatState>((set, get) => {
   /** SSE 事件分发：只推进状态；唯一允许关 busy 的分支是 error → failTurn（约束 2）。 */
@@ -199,6 +203,24 @@ export const useChatStore = create<ChatState>((set, get) => {
       set({ notice })
     },
 
+    reset() {
+      streamEpoch += 1
+      activeStream?.abort()
+      activeStream = null
+      set({
+        sessionId: null,
+        history: [],
+        draft: '',
+        busy: false,
+        tools: [],
+        notice: null,
+        charts: [],
+        scriptCard: null,
+        dataCard: null,
+        softWarn: false,
+      })
+    },
+
     finalizeTurn(message) {
       set((state) => {
         const hasCharts = (message.results?.charts?.length ?? 0) > 0
@@ -221,6 +243,7 @@ export const useChatStore = create<ChatState>((set, get) => {
     },
 
     async send(prompt, mode = 'chat') {
+      const epoch = streamEpoch
       const { sessionId, busy } = get()
       if (busy || !sessionId) return
 
@@ -233,13 +256,17 @@ export const useChatStore = create<ChatState>((set, get) => {
           prompt,
           mode,
           signal: controller.signal,
-          onEvent: dispatch,
+          onEvent: (event) => {
+            if (epoch === streamEpoch) dispatch(event)
+          },
           onEnd: (reason) => {
+            if (epoch !== streamEpoch) return
             // error 的收尾由 error 事件或 catch 完成，这里不覆盖其 notice（约束 2）
             if (reason !== 'error') get().endTurn(reason)
           },
         })
       } catch (err) {
+        if (epoch !== streamEpoch) return
         const text = err instanceof Error ? err.message : String(err)
         if (get().busy) {
           get().failTurn(text)

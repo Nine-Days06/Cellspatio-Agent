@@ -88,6 +88,19 @@ python -m src.api
 ```
 浏览器打开 `http://127.0.0.1:8600`
 
+### 多用户认证与部署
+
+开户（Windows）：`.venv\Scripts\python.exe -m src.cli.users create <username> [--admin]`
+开户（Linux）：`python -m src.cli.users create <username> [--admin]`
+
+公网部署必需环境变量：`CELLSPATIO_SITE_URL`、`CELLSPATIO_COOKIE_SECURE=1`。
+`CELLSPATIO_ADMIN_USER` / `CELLSPATIO_ADMIN_PASSWORD` 仅在首次空库启动时可选，
+用于 bootstrap 管理员账号。
+
+可选环境变量：`CELLSPATIO_SESSION_DAYS`（登录有效期，默认 7 天）。
+
+systemd 与 nginx 配置见 [部署说明](./docs/deploy.md)。
+
 ## 使用示例
 
 ### 数据获取（两段式：检索 → 确认 → 下载）

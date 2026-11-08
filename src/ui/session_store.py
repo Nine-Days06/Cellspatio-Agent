@@ -314,6 +314,7 @@ class SessionStore:
         display_name: str = "",
         is_admin: bool = False,
     ) -> str:
+        """创建用户并返回新用户 ID。"""
         user_id = uuid.uuid4().hex
         with self._conn() as conn:
             conn.execute(
@@ -331,18 +332,15 @@ class SessionStore:
         return user_id
 
     def get_user_by_username(self, username: str) -> dict[str, Any] | None:
+        """按用户名不区分大小写读取用户。"""
         with self._conn() as conn:
             row = conn.execute(
                 "SELECT * FROM users WHERE username = ? COLLATE NOCASE", (username.strip(),)
             ).fetchone()
         return dict(row) if row else None
 
-    def get_user(self, user_id: str) -> dict[str, Any] | None:
-        with self._conn() as conn:
-            row = conn.execute("SELECT * FROM users WHERE id = ?", (user_id,)).fetchone()
-        return dict(row) if row else None
-
     def list_users(self) -> list[dict[str, Any]]:
+        """按用户名排序列出用户。"""
         with self._conn() as conn:
             rows = conn.execute(
                 "SELECT id, username, display_name, is_admin, disabled, created_at "
@@ -351,12 +349,14 @@ class SessionStore:
         return [dict(r) for r in rows]
 
     def update_user_password(self, user_id: str, password_hash: str) -> None:
+        """更新指定用户的密码哈希。"""
         with self._conn() as conn:
             conn.execute(
                 "UPDATE users SET password_hash = ? WHERE id = ?", (password_hash, user_id)
             )
 
     def create_token(self, token_hash: str, user_id: str, expires_at: str) -> None:
+        """保存登录 token 的哈希与过期时间。"""
         with self._conn() as conn:
             conn.execute(
                 "INSERT INTO auth_tokens (token_hash, user_id, created_at, expires_at) "
@@ -365,6 +365,7 @@ class SessionStore:
             )
 
     def get_user_by_token(self, token_hash: str) -> dict[str, Any] | None:
+        """按未过期 token 读取启用中的用户。"""
         with self._conn() as conn:
             row = conn.execute(
                 "SELECT u.* FROM auth_tokens t JOIN users u ON u.id = t.user_id "
@@ -374,10 +375,12 @@ class SessionStore:
         return dict(row) if row else None
 
     def delete_token(self, token_hash: str) -> None:
+        """删除单个 token。"""
         with self._conn() as conn:
             conn.execute("DELETE FROM auth_tokens WHERE token_hash = ?", (token_hash,))
 
     def delete_user_tokens(self, user_id: str, keep: str | None = None) -> None:
+        """删除用户 token，可保留当前 token。"""
         with self._conn() as conn:
             if keep is None:
                 conn.execute("DELETE FROM auth_tokens WHERE user_id = ?", (user_id,))
@@ -386,10 +389,6 @@ class SessionStore:
                     "DELETE FROM auth_tokens WHERE user_id = ? AND token_hash != ?",
                     (user_id, keep),
                 )
-
-    def purge_expired_tokens(self) -> None:
-        with self._conn() as conn:
-            conn.execute("DELETE FROM auth_tokens WHERE expires_at <= ?", (_now(),))
 
     def delete_session(self, session_id: str) -> None:
         with self._conn() as conn:

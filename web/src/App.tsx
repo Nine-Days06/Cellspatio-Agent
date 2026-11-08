@@ -1,16 +1,29 @@
+import { useEffect, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { ApiError, fetchMe } from './lib/api'
 import { ChatPage } from './pages/ChatPage'
 import { LoginPage } from './pages/LoginPage'
 
 export default function App() {
-  const { data, error, isLoading } = useQuery({
+  const [expired, setExpired] = useState(false)
+  const { data, dataUpdatedAt, error, isLoading } = useQuery({
     queryKey: ['me'],
     queryFn: fetchMe,
     retry: false,
     refetchOnWindowFocus: false,
   })
 
+  useEffect(() => {
+    const handleUnauthorized = () => setExpired(true)
+    window.addEventListener('cellspatio:unauthorized', handleUnauthorized)
+    return () => window.removeEventListener('cellspatio:unauthorized', handleUnauthorized)
+  }, [])
+
+  useEffect(() => {
+    if (data) setExpired(false)
+  }, [data, dataUpdatedAt])
+
+  if (expired) return <LoginPage />
   if (isLoading) return <main className="min-h-screen bg-background" />
   if (error) {
     if (error instanceof ApiError && error.status === 401) return <LoginPage />

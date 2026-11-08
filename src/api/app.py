@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 import logging
+import sqlite3
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any
 
+from argon2.exceptions import HashingError
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
@@ -75,8 +77,8 @@ def create_app(agent: Any) -> FastAPI:
     _warm_up_ollama()
     try:
         auth.ensure_admin()
-    except Exception as exc:  # noqa: BLE001 - 开户失败不阻断服务启动
-        logger.warning("admin bootstrap skipped: %s", exc)
+    except (HashingError, OSError, sqlite3.Error, RuntimeError, ValueError) as exc:
+        logger.error("admin bootstrap skipped: %s", exc)
     return app
 
 

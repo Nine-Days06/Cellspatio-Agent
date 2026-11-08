@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import { confirmAction, createSession, deleteSession, fetchMessages, fetchSidebar, listSessions } from '@/lib/api'
+import { confirmAction, createSession, deleteSession, fetchMessages, fetchSidebar, listSessions, login } from '@/lib/api'
 
 function jsonResponse(status: number, body: unknown): Response {
   return new Response(JSON.stringify(body), {
@@ -125,6 +125,32 @@ describe('错误处理', () => {
       status: 500,
       message: '意外错误',
     })
+  })
+})
+
+describe('登录态失效事件', () => {
+  it('普通接口 401 派发 cellspatio:unauthorized 并照常抛 ApiError', async () => {
+    mockFetch(() => jsonResponse(401, { detail: '未登录' }))
+    const onUnauthorized = vi.fn()
+    window.addEventListener('cellspatio:unauthorized', onUnauthorized)
+    try {
+      await expect(fetchSidebar()).rejects.toMatchObject({ status: 401, message: '未登录' })
+      expect(onUnauthorized).toHaveBeenCalledTimes(1)
+    } finally {
+      window.removeEventListener('cellspatio:unauthorized', onUnauthorized)
+    }
+  })
+
+  it('登录接口 401 不派发事件（避免登录失败时重复跳转）', async () => {
+    mockFetch(() => jsonResponse(401, { detail: '用户名或密码错误' }))
+    const onUnauthorized = vi.fn()
+    window.addEventListener('cellspatio:unauthorized', onUnauthorized)
+    try {
+      await expect(login('alice', 'wrong')).rejects.toMatchObject({ status: 401 })
+      expect(onUnauthorized).not.toHaveBeenCalled()
+    } finally {
+      window.removeEventListener('cellspatio:unauthorized', onUnauthorized)
+    }
   })
 })
 

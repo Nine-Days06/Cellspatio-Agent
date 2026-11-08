@@ -4,7 +4,8 @@
 - 请求：POST /api/chat，body {"session_id": "...", "prompt": "...", "mode": "chat"|"knowledge_qa"}
 - 响应：text/event-stream，每帧一行 `data: {json}\n\n`
 - 事件 7 类：delta / tool_status / confirm_card / chart / compressed / done / error
-- 错误：404 / 409 / 422，body 均为 {"detail": "..."}
+- 错误：401 / 404 / 409 / 422，body 均为 {"detail": "..."}；401 会派发
+  `cellspatio:unauthorized` 事件供上层跳回登录页
 - 不能用 EventSource：它只支持 GET，无法带 POST body
 */
 
@@ -89,6 +90,9 @@ export async function streamChat(options: StreamChatOptions): Promise<void> {
 
   if (!response.ok) {
     const error = await toApiError(response)
+    if (response.status === 401) {
+      window.dispatchEvent(new Event('cellspatio:unauthorized'))
+    }
     finish('error')
     throw error
   }

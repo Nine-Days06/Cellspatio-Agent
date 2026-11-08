@@ -265,7 +265,13 @@ export function ChatPage({ user }: { user?: AuthUser }) {
                 <span className="text-xs text-muted-foreground">{user.display_name}</span>
                 <button
                   type="button"
-                  onClick={() => { void logout().then(() => queryClient.invalidateQueries({ queryKey: ['me'] })) }}
+                  onClick={() => {
+                    void logout().then(() => {
+                      queryClient.removeQueries({ predicate: (q) => q.queryKey[0] !== 'me' })
+                      useChatStore.getState().reset()
+                      void queryClient.invalidateQueries({ queryKey: ['me'] })
+                    })
+                  }}
                   className="rounded-md border border-border px-2 py-1 text-xs text-muted-foreground hover:text-foreground"
                 >
                   登出

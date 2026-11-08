@@ -397,6 +397,27 @@ describe('send：SSE 接线', () => {
     await pending
   })
 
+  it('reset 后旧 stream 事件不写 draft/history/notice', async () => {
+    const { ctl, release } = holdStream()
+    useChatStore.getState().setSession('s1', [])
+    const pending = useChatStore.getState().send('旧会话提问')
+
+    useChatStore.getState().reset()
+    ctl.onEvent?.({ type: 'delta', text: '迟到的草稿' })
+    ctl.onEvent?.({ type: 'done', message_id: 8, message: assistant({ id: 8 }) })
+    ctl.onEvent?.({ type: 'error', message: '迟到的错误' })
+    ctl.onEnd?.('done')
+
+    const s = useChatStore.getState()
+    expect(s.draft).toBe('')
+    expect(s.history).toEqual([])
+    expect(s.notice).toBeNull()
+    expect(s.busy).toBe(false)
+
+    release()
+    await pending
+  })
+
   it('分发接线：compressed→softWarn、chart→figure_json、confirm_card→脚本卡片', async () => {
     const scriptCard: ScriptCardPayload = {
       message_id: 3,

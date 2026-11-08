@@ -12,11 +12,12 @@ import re
 import secrets
 import threading
 import time
+from collections.abc import Awaitable, Callable
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from argon2 import PasswordHasher
-from argon2.exceptions import VerificationError, VerifyMismatchError
+from argon2.exceptions import InvalidHashError, VerificationError, VerifyMismatchError
 from fastapi import APIRouter, FastAPI, HTTPException, Request, Response
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
@@ -37,25 +38,30 @@ _LIMIT_MAX = 5
 
 
 def hash_password(password: str) -> str:
+    """生成 Argon2 密码哈希。"""
     return _hasher.hash(password)
 
 
 def verify_password(password_hash: str, password: str) -> bool:
+    """校验明文密码是否匹配 Argon2 哈希。"""
     try:
         return _hasher.verify(password_hash, password)
-    except (VerifyMismatchError, VerificationError):
+    except (InvalidHashError, VerifyMismatchError, VerificationError):
         return False
 
 
 def token_hash(token: str) -> str:
+    """把会话 token 转为仅用于存储的 SHA-256 摘要。"""
     return hashlib.sha256(token.encode()).hexdigest()
 
 
 def _cookie_secure() -> bool:
+    """读取 Secure cookie 开关。"""
     return os.environ.get("CELLSPATIO_COOKIE_SECURE", "0").strip().lower() in ("1", "true", "yes")
 
 
 def _session_days() -> int:
+    """读取登录有效期天数，非法值回退 7 天。"""
     try:
         return max(1, int(os.environ.get("CELLSPATIO_SESSION_DAYS", "7")))
     except ValueError:
@@ -63,10 +69,12 @@ def _session_days() -> int:
 
 
 def _auth_disabled() -> bool:
+    """读取仅供测试使用的鉴权关闭开关。"""
     return os.environ.get("CELLSPATIO_AUTH_DISABLED", "0").strip().lower() in ("1", "true", "yes")
 
 
 def _public_user(user: dict[str, Any]) -> dict[str, Any]:
+    """裁掉密码哈希等敏感字段，返回前端可见用户信息。"""
     return {
         "id": user["id"],
         "username": user["username"],
@@ -76,7 +84,10 @@ def _public_user(user: dict[str, Any]) -> dict[str, Any]:
 
 
 def _rate_limited(key: str) -> bool:
-    """shortcut: 内存限速，进程重启清零；长期防护交给反代 fail2ban。"""
+    """按 key 记录登录失败窗口，超限返回 True。
+
+    shortcut: 内存限速，进程重启清零；长期防护交给反代 fail2ban。
+    """
     now = time.monotonic()
     with _attempts_guard:
         hits = [t for t in _attempts.get(key, []) if now - t < _LIMIT_WINDOW]
@@ -89,24 +100,29 @@ def _rate_limited(key: str) -> bool:
 
 
 def _clear_attempts(key: str) -> None:
+    """登录成功后清空该 key 的失败记录。"""
     with _attempts_guard:
         _attempts.pop(key, None)
 
 
 def _client_ip(request: Request) -> str:
+    """优先取 nginx 覆盖写的 X-Real-IP，否则取 XFF 最后一段，缺失时回退连接地址。"""
+    real_ip = request.headers.get("x-real-ip")
+    if real_ip:
+        return real_ip.strip()
     forwarded = request.headers.get("x-forwarded-for")
     if forwarded:
-        return forwarded.split(",")[0].strip()
+        return forwarded.split(",")[-1].strip()
     return request.client.host if request.client else "unknown"
 
 
 def _check_origin(request: Request) -> None:
-    """反代后只认配置站点；未配置时跳过（本机开发）。"""
+    """配置站点后，写请求必须携带与站点一致的 Origin；未配置时跳过。"""
     site = os.environ.get("CELLSPATIO_SITE_URL", "").strip().rstrip("/")
     if not site or request.method in ("GET", "HEAD", "OPTIONS"):
         return
     origin = request.headers.get("origin", "").rstrip("/")
-    if origin and origin != site:
+    if origin != site:
         raise HTTPException(status_code=403, detail="跨站请求被拒绝")
 
 
@@ -115,28 +131,33 @@ def current_user(request: Request) -> dict[str, Any]:
     return request.state.user
 
 
-def require_admin(request: Request) -> dict[str, Any]:
-    user = current_user(request)
-    if not user.get("is_admin"):
-        raise HTTPException(status_code=403, detail="需要管理员权限")
-    return user
+def validate_auth_config() -> None:
+    """HTTPS 站点必须启用 Secure cookie，避免会话 token 明文外传。"""
+    site = os.environ.get("CELLSPATIO_SITE_URL", "").strip()
+    if site.lower().startswith("https://") and not _cookie_secure():
+        raise RuntimeError("CELLSPATIO_SITE_URL 为 HTTPS 时必须设置 CELLSPATIO_COOKIE_SECURE=1")
 
 
 router = APIRouter(prefix="/api/auth", tags=["auth"])
 
 
 class LoginRequest(BaseModel):
+    """登录请求体。"""
+
     username: str
     password: str
 
 
 class PasswordRequest(BaseModel):
+    """修改密码请求体。"""
+
     old_password: str
     new_password: str
 
 
 @router.post("/login")
 def login(body: LoginRequest, request: Request, response: Response) -> dict[str, Any]:
+    """校验账号密码，签发会话 token 并写入 cookie。"""
     store = SessionStore()
     key = f"{body.username.strip().lower()}|{_client_ip(request)}"
     if _rate_limited(key):
@@ -166,6 +187,7 @@ def login(body: LoginRequest, request: Request, response: Response) -> dict[str,
 
 @router.post("/logout")
 def logout(request: Request, response: Response) -> dict[str, Any]:
+    """删除当前会话 token 并清除 cookie。"""
     token = request.cookies.get(COOKIE_NAME)
     if token:
         SessionStore().delete_token(token_hash(token))
@@ -175,11 +197,13 @@ def logout(request: Request, response: Response) -> dict[str, Any]:
 
 @router.get("/me")
 def me(request: Request) -> dict[str, Any]:
+    """返回当前登录用户的安全字段。"""
     return {"user": _public_user(current_user(request))}
 
 
 @router.post("/password")
 def change_password(body: PasswordRequest, request: Request) -> dict[str, Any]:
+    """校验原密码后更新密码，并吊销其他登录 token。"""
     store = SessionStore()
     user = current_user(request)
     if not verify_password(user["password_hash"], body.old_password):
@@ -194,43 +218,43 @@ def change_password(body: PasswordRequest, request: Request) -> dict[str, Any]:
 
 def install_auth(app: FastAPI) -> None:
     """全局中间件：解析 cookie、拦截未登录 API、按路径校验会话归属。"""
+    validate_auth_config()
 
     @app.middleware("http")
-    async def auth_middleware(request: Request, call_next):
-        path = request.url.path
-        if not path.startswith("/api/"):
-            return await call_next(request)
-        if _auth_disabled():
-            request.state.user = {
-                # id=None：owner 落 NULL，避免 FK 要求 users 表里有匿名用户
-                "id": None,
-                "username": "anonymous",
-                "display_name": "anonymous",
-                "is_admin": True,
-            }
-            return await call_next(request)
-        if path in _PUBLIC_API:
-            try:
-                _check_origin(request)
-            except HTTPException as exc:
-                return JSONResponse(status_code=exc.status_code, content={"detail": exc.detail})
-            return await call_next(request)
-
+    async def auth_middleware(
+        request: Request, call_next: Callable[[Request], Awaitable[Response]]
+    ) -> Response:
+        """解析登录态并拦截未登录、越权与跨站写请求。"""
         try:
+            path = request.url.path
+            if not path.startswith("/api/"):
+                return await call_next(request)
+            if _auth_disabled():
+                request.state.user = {
+                    # id=None：owner 落 NULL，避免 FK 要求 users 表里有匿名用户
+                    "id": None,
+                    "username": "anonymous",
+                    "display_name": "anonymous",
+                    "is_admin": True,
+                }
+                return await call_next(request)
+
             _check_origin(request)
+            if path in _PUBLIC_API:
+                return await call_next(request)
+
+            token = request.cookies.get(COOKIE_NAME)
+            user = SessionStore().get_user_by_token(token_hash(token)) if token else None
+            if user is None:
+                return JSONResponse(status_code=401, content={"detail": "请先登录"})
+            request.state.user = user
+
+            match = _SESSION_RE.match(path)
+            if match and SessionStore().get_session_for(match.group(1), user["id"]) is None:
+                return JSONResponse(status_code=404, content={"detail": "会话不存在"})
+            return await call_next(request)
         except HTTPException as exc:
             return JSONResponse(status_code=exc.status_code, content={"detail": exc.detail})
-
-        token = request.cookies.get(COOKIE_NAME)
-        user = SessionStore().get_user_by_token(token_hash(token)) if token else None
-        if user is None:
-            return JSONResponse(status_code=401, content={"detail": "请先登录"})
-        request.state.user = user
-
-        match = _SESSION_RE.match(path)
-        if match and SessionStore().get_session_for(match.group(1), user["id"]) is None:
-            return JSONResponse(status_code=404, content={"detail": "会话不存在"})
-        return await call_next(request)
 
 
 def ensure_admin() -> None:

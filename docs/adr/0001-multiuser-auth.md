@@ -20,7 +20,7 @@
 
 ## 部署约束
 
-- 应用监听 `127.0.0.1:8600`，仅由 nginx/Caddy 转发；SSE 需 `proxy_buffering off`。
+- systemd/nginx 部署见 [部署说明](../deploy.md)。
 - 必设 `CELLSPATIO_COOKIE_SECURE=1` 与 `CELLSPATIO_SITE_URL=https://...`。
 - 首个管理员：`CELLSPATIO_ADMIN_USER` / `CELLSPATIO_ADMIN_PASSWORD`（仅在用户表为空时建）。
 - 登录限速是进程内内存实现，重启清零；长期防护交给反代 fail2ban。

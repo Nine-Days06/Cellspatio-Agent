@@ -168,6 +168,25 @@ describe('streamChat 帧解析', () => {
 })
 
 describe('streamChat 错误分支', () => {
+  it('/api/chat 401 派发未授权事件并抛 ApiError', async () => {
+    const c = capture()
+    const unauthorized = vi.fn()
+    window.addEventListener('cellspatio:unauthorized', unauthorized)
+    try {
+      vi.spyOn(globalThis, 'fetch').mockResolvedValue(jsonResponse(401, '请先登录'))
+
+      await expect(streamChat(options(c))).rejects.toMatchObject({
+        name: 'ApiError',
+        status: 401,
+        message: '请先登录',
+      })
+      expect(unauthorized).toHaveBeenCalledOnce()
+      expect(c.ends).toEqual(['error'])
+    } finally {
+      window.removeEventListener('cellspatio:unauthorized', unauthorized)
+    }
+  })
+
   it('409 抛 ApiError 并带后端 detail', async () => {
     const c = capture()
     vi.spyOn(globalThis, 'fetch').mockResolvedValue(

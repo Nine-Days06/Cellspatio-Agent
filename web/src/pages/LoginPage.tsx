@@ -2,6 +2,7 @@
 import { useState } from 'react'
 import { useQueryClient } from '@tanstack/react-query'
 import { ApiError, login } from '@/lib/api'
+import { useChatStore } from '@/store/chat'
 
 export function LoginPage() {
   const queryClient = useQueryClient()
@@ -17,6 +18,8 @@ export function LoginPage() {
     setError(null)
     try {
       await login(username.trim(), password)
+      queryClient.removeQueries({ predicate: (q) => q.queryKey[0] !== 'me' })
+      useChatStore.getState().reset()
       await queryClient.invalidateQueries({ queryKey: ['me'] })
     } catch (err) {
       setError(err instanceof ApiError ? err.message : '登录失败')

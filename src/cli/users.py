@@ -11,11 +11,13 @@ import argparse
 import getpass
 import sqlite3
 
+import src.config  # noqa: F401 - 触发 .env 加载，让 CELLSPATIO_SESSIONS_DB 生效
 from src.api.auth import hash_password
 from src.ui.session_store import SessionStore
 
 
 def _read_password(confirm: bool = True) -> str:
+    """交互读取并校验至少 8 位的密码。"""
     password = getpass.getpass("密码（至少 8 位）: ")
     if len(password) < 8:
         raise SystemExit("密码至少 8 位")
@@ -25,6 +27,7 @@ def _read_password(confirm: bool = True) -> str:
 
 
 def main(argv: list[str] | None = None) -> int:
+    """执行用户管理子命令。"""
     parser = argparse.ArgumentParser(description="CellSpatio 用户管理")
     sub = parser.add_subparsers(dest="command", required=True)
 
@@ -60,7 +63,9 @@ def main(argv: list[str] | None = None) -> int:
         for user in store.list_users():
             role = "admin" if user["is_admin"] else "user"
             state = "disabled" if user["disabled"] else "active"
-            print(f"{user['username']:<24} {role:<6} {state:<8} {user['display_name']}")
+            print(
+                f"{user['id']:<36} {user['username']:<24} {role:<6} {state:<8} {user['display_name']}"
+            )
         return 0
 
     user = store.get_user_by_username(args.username)
