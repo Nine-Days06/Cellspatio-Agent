@@ -7,7 +7,7 @@ from typing import Any
 import src.config  # noqa: F401
 from src.analysis.r_executor import RExecutor
 from src.analysis.visualization import Visualizer
-from src.config import get_current_llm
+from src.config import BASE_DIR, get_current_llm, is_local_mode
 from src.control.agent_runtime import AgentRuntime
 from src.control.intent_parser import IntentParser
 from src.control.kg_memory import KGMemory
@@ -60,17 +60,20 @@ class CellSpatioAgent:
         if not repo_root:
             repo_root = "."
 
-        # P3c 记忆闭环：真实 LLM/embedding 的 KGMemory，finish_run 时增量写入
-        try:
-            kg_llm_func, _ = build_llm_func()
-            self.kg_memory = KGMemory(
-                working_dir=Path(repo_root) / ".wrroc" / "kg_memory",
-                llm_model_func=kg_llm_func,
-                embedding_func=build_embedding_func(),
-            )
-        except Exception as e:  # noqa: BLE001 - LLM 配置缺失时记忆闭环降级为 mock
-            logger.warning("KGMemory real func init failed, fallback to mock: %s", e)
-            self.kg_memory = KGMemory(working_dir=Path(repo_root) / ".wrroc" / "kg_memory")
+        # P3c 记忆闭环：真实 LLM/embedding 的 KGMemory，finish_run 时增量写入。
+        # 本地客户端不带 PostgreSQL，跳过 KG 记忆；所有消费方都已允许 None。
+        self.kg_memory: KGMemory | None = None
+        if not is_local_mode():
+            try:
+                kg_llm_func, _ = build_llm_func()
+                self.kg_memory = KGMemory(
+                    working_dir=Path(repo_root) / ".wrroc" / "kg_memory",
+                    llm_model_func=kg_llm_func,
+                    embedding_func=build_embedding_func(),
+                )
+            except Exception as e:  # noqa: BLE001 - LLM 配置缺失时记忆闭环降级为 mock
+                logger.warning("KGMemory real func init failed, fallback to mock: %s", e)
+                self.kg_memory = KGMemory(working_dir=Path(repo_root) / ".wrroc" / "kg_memory")
 
         self.workflow_recorder = WorkflowRecorder(
             wrroc_base_dir=str(Path(repo_root) / ".wrroc"),
@@ -131,14 +134,20 @@ class CellSpatioAgent:
             code_repairer=self.code_repairer,
             require_script_confirmation=(os.environ.get("SCRIPT_REQUIRE_CONFIRM", "1") == "1"),
             workflow_recorder=self.workflow_recorder,
-            kg_query=KGQuery(
-                working_dir=Path(repo_root) / ".wrroc" / "kg_memory",
-                kg_memory=self.kg_memory,  # 复用同一记忆库实例
+            kg_query=(
+                KGQuery(
+                    working_dir=Path(repo_root) / ".wrroc" / "kg_memory",
+                    kg_memory=self.kg_memory,  # 复用同一记忆库实例
+                )
+                if self.kg_memory
+                else None
             ),
         )
 
+        # 技能随安装目录走；repo_root 在客户端模式下是数据目录，不能用来找代码
+        skills_dir = self.config.get("skills_dir") or BASE_DIR / "skills"
         # Phase 3 接线：技能平台装配（skills/ 下 5 个真实技能 → hint 提示 + route 生命周期）
-        self.skill_registry = SkillRegistry(skills_dir=Path(repo_root) / "skills")
+        self.skill_registry = SkillRegistry(skills_dir=Path(skills_dir))
         self.skill_loader = SkillLoader(self.skill_registry)
         self.modal_router = ModalRouter(
             registry=self.skill_registry,

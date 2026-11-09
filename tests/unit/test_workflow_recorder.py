@@ -181,6 +181,28 @@ def test_recorder_finish_run_returns_path():
     assert path.parent.name == run_id
 
 
+def test_finish_run_skips_snapshot_in_local_mode(tmp_path, monkeypatch):
+    """本地客户端没有 git 仓库，只落盘 WRROC、不建 worktree。"""
+    monkeypatch.setenv("CELLSPATIO_LOCAL", "1")
+    recorder = WorkflowRecorder(wrroc_base_dir=str(tmp_path / "wrroc"), repo_root=tmp_path)
+    run_id = recorder.start_execution(
+        intent={
+            "type": "analysis",
+            "analysis_type": "differential_expression",
+            "original_input": "test",
+        },
+        parameters={},
+        user_input="test",
+        context={},
+    )
+    recorder.record_step(
+        run_id, "step-1", "analysis", "run_analysis", {}, output={"status": "success"}
+    )
+    path = recorder.finish_run(run_id)
+    assert path.is_file()
+    assert not (tmp_path / "snapshots").exists()
+
+
 def test_recorder_export_json():
     """export_json 返回完整 JSON 字符串。"""
     recorder = WorkflowRecorder()

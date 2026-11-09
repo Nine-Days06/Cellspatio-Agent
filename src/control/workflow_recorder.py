@@ -15,6 +15,7 @@ import uuid
 from pathlib import Path
 from typing import Any
 
+from src.config import is_local_mode
 from src.control.kg_memory import KGMemory
 from src.control.wrroc_store import WRROCStore
 from src.schemas.workflow import (
@@ -184,11 +185,12 @@ class WorkflowRecorder:
         # QC 的逐细胞证据和路径只留本地，不触发 Git 快照或共享 KG。
         if exec_.intent.analysis_type == AnalysisType.SINGLE_CELL:
             return wf_path
-        # 自动创建 Git 快照
-        from src.control.snapshot_manager import SnapshotManager
+        # 本地客户端没有 git 仓库，跳过 worktree 快照
+        if not is_local_mode():
+            from src.control.snapshot_manager import SnapshotManager
 
-        mgr = SnapshotManager(self.repo_root)
-        mgr.create_snapshot(run.run_id, commit_msg=f"Snapshot for {run.run_id}")
+            mgr = SnapshotManager(self.repo_root)
+            mgr.create_snapshot(run.run_id, commit_msg=f"Snapshot for {run.run_id}")
         # 自动写入 LightRAG 知识图谱
         if self.kg_memory:
             self.kg_memory.ingest(exec_)

@@ -87,6 +87,19 @@ python -m src.api
 ```
 浏览器打开 `http://127.0.0.1:8600`
 
+### 便携客户端（免登录，数据在本地）
+
+```powershell
+.\client\build.ps1          # 瘦包：只打应用代码
+.\client\build.ps1 -Fat -RRuntime D:\R-4.6.1   # 胖包：内置 CPython + R/Seurat
+```
+
+产物在 `dist/client/`：`cellspatio-thin.zip` / `cellspatio-fat.zip`。
+
+- 数据放便携目录下的 `data/`（`CELLSPATIO_HOME` 可覆盖）。升级时把新包覆盖解压到同一目录即可，`data/` 不在包内、不会被覆盖；不要先删目录。瘦包与胖包要在同一目录运行、或共用同一 `CELLSPATIO_HOME`，才会共享数据。请解压到用户可写目录，不要放 Program Files。
+- 胖包解压后双击 `launch.cmd`，无需登录；瘦包先跑 `bootstrap.ps1` 装 Python 依赖并检查 R 4.6.x + Seurat/presto/uwot。
+- QC→markers 可离线；知识问答仍需 Ollama 或在线 LLM/embedding。
+
 ## 使用示例
 
 ### 数据获取（两段式：检索 → 确认 → 下载）
