@@ -99,6 +99,7 @@ python -m src.api
 - 数据放便携目录下的 `data/`（`CELLSPATIO_HOME` 可覆盖）。升级时把新包覆盖解压到同一目录即可，`data/` 不在包内、不会被覆盖；不要先删目录。瘦包与胖包要在同一目录运行、或共用同一 `CELLSPATIO_HOME`，才会共享数据。请解压到用户可写目录，不要放 Program Files。
 - 胖包解压后双击 `launch.cmd`，无需登录；瘦包先跑 `bootstrap.ps1` 装 Python 依赖并检查 R 4.6.x + Seurat/presto/uwot。
 - QC→markers 可离线；知识问答仍需 Ollama 或在线 LLM/embedding。
+- 无 LLM 时用页头「本地数据」输入 10x 目录或 counts CSV 的绝对路径，直接跑固定 QC；后续过滤、PCA、聚类与 marker 仍逐阶段人工授权。
 
 ## 使用示例
 

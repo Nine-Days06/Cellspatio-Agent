@@ -13,10 +13,11 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import { useQueryClient } from '@tanstack/react-query'
 import { ArrowUp, Square } from 'lucide-react'
 import { ConfirmCard } from '@/components/ConfirmCard'
+import { LocalInputDialog } from '@/components/LocalInputDialog'
 import { MessageList } from '@/components/MessageList'
 import { Sidebar } from '@/components/Sidebar'
 import { ThemeToggle } from '@/components/ThemeToggle'
-import { ApiError, confirmAction } from '@/lib/api'
+import { ApiError, confirmAction, createSession, registerLocalInput } from '@/lib/api'
 import { queryKeys, useMessages, useSessions, useSidebar } from '@/lib/queries'
 import type {
   ChatMode,
@@ -235,6 +236,27 @@ export function ChatPage() {
     [queryClient, sessionsQuery.data, setSession, switchTo],
   )
 
+  /** 本地输入：无会话时先建会话；QC 成功后靠消息失效刷新出证据与复核链。 */
+  const handleLocalInput = useCallback(
+    async (path: string) => {
+      let id = useChatStore.getState().sessionId
+      if (!id) {
+        const { session } = await createSession('本地 10x 数据')
+        id = session.id
+        handleCreated({
+          id: session.id,
+          title: session.title,
+          updated_at: session.updated_at,
+          message_count: 0,
+        })
+      }
+      await registerLocalInput(id, path)
+      void queryClient.invalidateQueries({ queryKey: queryKeys.messages(id) })
+      void queryClient.invalidateQueries({ queryKey: queryKeys.sessions() })
+    },
+    [handleCreated, queryClient],
+  )
+
   const sessions = sessionsQuery.data?.sessions ?? []
   const kbStats = sidebarQuery.data?.kb_stats ?? DEFAULT_KB
   const env = sidebarQuery.data?.env ?? DEFAULT_ENV
@@ -259,6 +281,7 @@ export function ChatPage() {
           </div>
           <div className="flex shrink-0 items-center gap-2">
             <span className="flex items-center gap-2 text-xs text-muted-foreground"><span aria-hidden="true" className={`size-1.5 rounded-full ${busy ? 'bg-primary' : 'bg-muted-foreground/50'}`} />{busy ? '正在执行' : '等待输入'}</span>
+            <LocalInputDialog onSubmit={handleLocalInput} />
             <ThemeToggle />
           </div>
         </header>

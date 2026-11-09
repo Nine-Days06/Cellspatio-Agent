@@ -2,10 +2,8 @@
 
 import sqlite3
 from concurrent.futures import ThreadPoolExecutor
-from pathlib import Path
 from threading import Barrier
 from types import SimpleNamespace
-from unittest.mock import Mock
 
 import pytest
 from fastapi.testclient import TestClient
@@ -22,7 +20,7 @@ from src.analysis.sc_qc import run_sc_qc
 from src.api.app import create_app
 from src.api.chat_service import run_turn
 from src.ui.session_store import SessionStore
-from tests.unit.fakes import FakeAgent, FakeRuntime
+from tests.unit.fakes import FakeAgent, FakeRuntime, fake_qc_executor
 
 PARAMS = {"n_feature_min": 1, "n_feature_max": 2, "percent_mt_max": 25}
 HEADER = b"barcode,nCount_RNA,nFeature_RNA,percent_mt,missing_reason\n"
@@ -35,18 +33,10 @@ def registered(tmp_path, monkeypatch):
     source.write_text("gene,c1,c2\nMT-X,1,1\nG1,0,3\n")
     root = tmp_path / "data/analysis/sc_qc"
 
-    def execute(script):
-        directory = Path(script).parent
-        (directory / "features.csv").write_text(
-            "feature_id,symbol,unique_name\nMT-X,MT-X,MT-X\nG1,G1,G1\n"
-        )
-        (directory / "cell_qc.csv").write_bytes(HEADER + b"c1,1,1,100,\nc2,4,2,25,\n")
-        (directory / "versions.txt").write_text("R 4.6.1\nSeurat 5.6.0\nMatrix 1.7.5\n")
-        (directory / "qc.png").write_bytes(b"\x89PNG\r\n\x1a\n")
-        return SimpleNamespace(returncode=0, stdout="ok", stderr="")
-
-    executor = Mock()
-    executor.execute_script.side_effect = execute
+    executor = fake_qc_executor(
+        "feature_id,symbol,unique_name\nMT-X,MT-X,MT-X\nG1,G1,G1\n",
+        HEADER + b"c1,1,1,100,\nc2,4,2,25,\n",
+    )
     result = run_sc_qc(str(source), executor, root)
     assert result["status"] == "needs_confirmation"
     agent = FakeAgent(runtime=FakeRuntime(default=result))

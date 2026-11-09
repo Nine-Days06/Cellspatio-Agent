@@ -91,6 +91,42 @@ def _persist_interrupted_qa(
     }
 
 
+def is_qc_stage(result: dict[str, Any]) -> bool:
+    """固定 QC 终态判定：对话与本地入口共用，避免两处条件漂移。"""
+    return result.get("stage") == "qc_review"
+
+
+def register_qc_result(
+    agent: Any, store: SessionStore, session_id: str, result: dict[str, Any]
+) -> dict[str, Any]:
+    """把成功的固定 QC 结果登记为可交互 run；失败转结构化 error。
+
+    对话入口与本地输入入口共用，确保两条路径的证据校验完全一致。
+    """
+    if not is_qc_stage(result) or result.get("status") != "needs_confirmation":
+        return result
+
+    from pathlib import Path
+
+    from src.analysis.qc_preview import register_evidence
+    from src.api.routes_qc import qc_root
+
+    try:
+        directory = Path(result["results"]["qc_artifacts"]["metadata.json"]).resolve().parent
+        evidence = register_evidence(directory, qc_root(agent))
+        store.register_qc_run(session_id, directory.name, str(directory), evidence)
+        result["results"]["qc_run_id"] = directory.name
+    except (OSError, ValueError, KeyError, TypeError, sqlite3.Error) as exc:
+        result = {
+            "status": "error",
+            "analysis_type": "single_cell",
+            "stage": "qc_review",
+            "message": f"QC 会话关联失败，不能预览或批准：{exc}",
+            "results": {"qc_artifacts": result.get("results", {}).get("qc_artifacts", {})},
+        }
+    return result
+
+
 def run_turn(
     agent: Any,
     store: SessionStore,
@@ -201,25 +237,7 @@ def run_turn(
         emit(make_event("done", message_id=last["id"], message=wire_message(last)))
         return result
 
-    if result.get("stage") == "qc_review" and result.get("status") == "needs_confirmation":
-        from pathlib import Path
-
-        from src.analysis.qc_preview import register_evidence
-        from src.api.routes_qc import qc_root
-
-        try:
-            directory = Path(result["results"]["qc_artifacts"]["metadata.json"]).resolve().parent
-            evidence = register_evidence(directory, qc_root(agent))
-            store.register_qc_run(session_id, directory.name, str(directory), evidence)
-            result["results"]["qc_run_id"] = directory.name
-        except (OSError, ValueError, KeyError, TypeError, sqlite3.Error) as exc:
-            result = {
-                "status": "error",
-                "analysis_type": "single_cell",
-                "stage": "qc_review",
-                "message": f"QC 会话关联失败，不能预览或批准：{exc}",
-                "results": {"qc_artifacts": result.get("results", {}).get("qc_artifacts", {})},
-            }
+    result = register_qc_result(agent, store, session_id, result)
 
     message = build_assistant_message(result)
     last = _persist(store, session_id, message["content"], results=result.get("results"))

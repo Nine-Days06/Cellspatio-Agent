@@ -13,6 +13,7 @@ import type {
   ClusterAcceptanceState,
   MarkerState,
   MarkerPage,
+  LocalInputResponse,
 } from '@/lib/types'
 
 /** 统一 HTTP 错误：message 直接用后端 detail（已是中文），UI 可直接展示。 */
@@ -64,6 +65,13 @@ export function createSession(title?: string): Promise<{ session: Session }> {
 
 export function deleteSession(sessionId: string): Promise<{ deleted: string }> {
   return request(`/api/sessions/${encodeURIComponent(sessionId)}`, jsonInit('DELETE'))
+}
+
+export function registerLocalInput(sessionId: string, path: string): Promise<LocalInputResponse> {
+  return request(
+    `/api/sessions/${encodeURIComponent(sessionId)}/local-input`,
+    jsonInit('POST', { path }),
+  )
 }
 
 /**

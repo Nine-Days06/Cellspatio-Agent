@@ -33,6 +33,7 @@ const fetchSidebarMock = vi.fn()
 const confirmActionMock = vi.fn()
 const createSessionMock = vi.fn()
 const deleteSessionMock = vi.fn()
+const registerLocalInputMock = vi.fn()
 const streamChatMock = vi.fn()
 const fetchMock = vi.fn()
 
@@ -45,6 +46,7 @@ vi.mock('@/lib/api', async (importOriginal) => {
     confirmAction: (...args: unknown[]) => confirmActionMock(...args),
     createSession: (...args: unknown[]) => createSessionMock(...args),
     deleteSession: (...args: unknown[]) => deleteSessionMock(...args),
+      registerLocalInput: (...args: unknown[]) => registerLocalInputMock(...args),
   }
 })
 
@@ -177,6 +179,7 @@ beforeEach(() => {
   confirmActionMock.mockReset()
   createSessionMock.mockReset()
   deleteSessionMock.mockReset()
+  registerLocalInputMock.mockReset()
   streamChatMock.mockReset()
   fetchMock.mockReset()
   // 默认挂起流：模拟「进行中不返回」的长任务，用于约束 2/3 断言
@@ -200,6 +203,60 @@ beforeEach(() => {
 afterEach(() => {
   vi.useRealTimers()
   vi.unstubAllGlobals()
+})
+
+describe('ChatPage 本地输入', () => {
+  it('把路径登记到当前会话并刷新消息', async () => {
+    const sid = nextSid()
+    await renderReady(sid, { messages: [] })
+    registerLocalInputMock.mockResolvedValue({
+      message: makeMsg(sid),
+      session: sessionFor(sid),
+      qc_run_id: 'qc-1',
+      status: 'needs_confirmation',
+    })
+    const messageFetches = () =>
+      fetchMock.mock.calls.filter(([url]) => String(url).includes(`/sessions/${sid}/messages`))
+        .length
+    const before = messageFetches()
+
+    fireEvent.click(screen.getByRole('button', { name: '本地数据' }))
+    const field = screen.getByLabelText('本地数据目录')
+    fireEvent.change(field, {
+      target: { value: 'D:/data/pbmc3k/hg19' },
+    })
+    await waitFor(() => expect(field).toHaveValue('D:/data/pbmc3k/hg19'))
+    const submit = screen.getByRole('button', { name: '开始 QC' })
+    expect(submit).toBeEnabled()
+    fireEvent.click(submit)
+
+    await waitFor(() =>
+      expect(registerLocalInputMock).toHaveBeenCalledWith(sid, 'D:/data/pbmc3k/hg19'),
+    )
+    await waitFor(() => expect(messageFetches()).toBeGreaterThan(before))
+  })
+
+  it('无会话时先创建会话再登记', async () => {
+    const empty = nextSid()
+    const created = nextSid()
+    await renderReady(empty, { messages: [], sessions: [] })
+    createSessionMock.mockResolvedValue({ session: sessionFor(created) })
+    registerLocalInputMock.mockResolvedValue({
+      message: makeMsg(created),
+      session: sessionFor(created),
+      qc_run_id: 'qc-2',
+      status: 'needs_confirmation',
+    })
+
+    fireEvent.click(screen.getByRole('button', { name: '本地数据' }))
+    const field = screen.getByLabelText('本地数据目录')
+    fireEvent.change(field, { target: { value: 'D:/data' } })
+    await waitFor(() => expect(field).toHaveValue('D:/data'))
+    fireEvent.click(screen.getByRole('button', { name: '开始 QC' }))
+
+    await waitFor(() => expect(createSessionMock).toHaveBeenCalledWith('本地 10x 数据'))
+    await waitFor(() => expect(registerLocalInputMock).toHaveBeenCalledWith(created, 'D:/data'))
+  })
 })
 
 describe('ChatPage 输入区：键位 / 停止 / 错误提示（约束 3）', () => {

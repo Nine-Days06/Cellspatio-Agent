@@ -14,6 +14,7 @@ from fastapi.staticfiles import StaticFiles
 from src.api import (
     routes_chat,
     routes_clusters,
+    routes_input,
     routes_markers,
     routes_meta,
     routes_pca,
@@ -61,6 +62,7 @@ def create_app(agent: Any) -> FastAPI:
     app.include_router(routes_sessions.router)
     app.include_router(routes_chat.router)
     app.include_router(routes_meta.router)
+    app.include_router(routes_input.router)
     app.include_router(routes_qc.router)
     app.include_router(routes_pca.router)
     app.include_router(routes_clusters.router)

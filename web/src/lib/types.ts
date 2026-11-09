@@ -17,6 +17,14 @@ export interface Session {
   downloaded_assets: DownloadedAsset[]
 }
 
+/** POST /api/sessions/{id}/local-input：登记本地输入并运行固定 QC。 */
+export interface LocalInputResponse {
+  message: WireMessage
+  session: Session
+  qc_run_id: string | null
+  status: 'needs_confirmation' | 'error'
+}
+
 /** 后端只保证它是 dict；前端只在需要时读 access_path / asset_id / source。 */
 export interface DownloadedAsset {
   asset_id?: string

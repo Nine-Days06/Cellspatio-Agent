@@ -1,4 +1,4 @@
-"""共享测试桩：FakeIntent、FakeGen、FakeExec 的统一定义。
+"""共享测试桩：FakeIntent、FakeGen、FakeExec 与固定 QC 证据执行器。
 
 合并原则：保留最完整实现，通过构造参数覆盖行为差异。
 若某测试需极特殊行为（如 FlakyExec 计数失败、写文件），
@@ -8,7 +8,10 @@
 from __future__ import annotations
 
 from collections.abc import Callable
+from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
+from unittest.mock import Mock
 
 
 class FakeIntent:
@@ -184,3 +187,24 @@ class FakeAgent:
     def confirm_and_download(self, source, asset_id, query=""):
         self.download_calls.append({"source": source, "asset_id": asset_id, "query": query})
         return self.download_result or {}
+
+
+QC_HEADER = b"barcode,nCount_RNA,nFeature_RNA,percent_mt,missing_reason\n"
+
+
+def fake_qc_executor(features_csv: str, cell_qc_csv: bytes) -> Mock:
+    """固定 QC 测试执行器：只写证据文件，不启动 R。"""
+
+    def execute(script):
+        directory = Path(script).parent
+        (directory / "features.csv").write_text(features_csv, encoding="utf-8")
+        (directory / "cell_qc.csv").write_bytes(cell_qc_csv)
+        (directory / "versions.txt").write_text(
+            "R 4.6.1\nSeurat 5.6.0\nMatrix 1.7.5\n", encoding="utf-8"
+        )
+        (directory / "qc.png").write_bytes(b"\x89PNG\r\n\x1a\n")
+        return SimpleNamespace(returncode=0, stdout="ok", stderr="")
+
+    executor = Mock()
+    executor.execute_script.side_effect = execute
+    return executor
