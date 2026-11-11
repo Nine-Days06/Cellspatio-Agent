@@ -26,7 +26,7 @@ from src.analysis.sc_markers import (
 from src.api.chat_service import session_lock
 from src.api.routes_clusters import EVIDENCE_ERRORS, require_cluster
 from src.api.routes_pca import PcaRequest, require_parent, require_pca
-from src.api.routes_qc import qc_root, require_run
+from src.api.routes_qc import require_run, run_qc_root
 from src.ui.session_store import SessionStore
 
 router = APIRouter(prefix="/api/sessions/{session_id}/qc/{run_id}/markers", tags=["markers"])
@@ -152,7 +152,7 @@ def get_markers(
         return view(
             run,
             _associated(run, filter_attempt_id, pca_attempt_id, cluster_attempt_id),
-            qc_root(request.app.state.agent),
+            run_qc_root(request.app.state.agent, run),
         )
     except sqlite3.Error as exc:
         logger.error("marker read failed: %s", type(exc).__name__)
@@ -178,10 +178,10 @@ def execute_markers(
 ) -> dict[str, Any]:
     """历史请求只返回历史；首次 CAS 认领后在事务外执行一次固定 R。"""
     store, lock, acquired = SessionStore(), session_lock(session_id), False
-    root = qc_root(request.app.state.agent)
     try:
         for pass_number in (0, 1):
             run = require_run(store, session_id, run_id)
+            root = run_qc_root(request.app.state.agent, run)
             cluster = _associated(run, filter_attempt_id, pca_attempt_id, cluster_attempt_id)
             if not any(
                 r["review_id"] == body.cluster_review_id
@@ -291,7 +291,7 @@ def diagnostic(
         )
         if not attempt or attempt["status"] != "completed":
             raise HTTPException(404, "marker 图未完成或不存在")
-        checked_completed_marker(run, attempt, qc_root(request.app.state.agent))
+        checked_completed_marker(run, attempt, run_qc_root(request.app.state.agent, run))
         path = Path(attempt["directory"]).resolve() / "marker_dotplot.png"
         data = path.read_bytes()
         if {"path": str(path), **_identity(data)} != attempt["result"]["artifacts"][path.name]:
@@ -331,7 +331,7 @@ def candidates(
         )
         if not attempt or attempt["status"] != "completed":
             raise HTTPException(404, "marker 候选未完成或不存在")
-        summary = checked_completed_marker(run, attempt, qc_root(request.app.state.agent))
+        summary = checked_completed_marker(run, attempt, run_qc_root(request.app.state.agent, run))
         path = Path(attempt["directory"]).resolve() / "markers.csv"
         data = path.read_bytes()
         if {"path": str(path), **_identity(data)} != attempt["result"]["artifacts"][path.name]:

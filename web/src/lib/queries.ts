@@ -1,9 +1,10 @@
 import { useQuery, type UseQueryResult } from '@tanstack/react-query'
-import { fetchMessages, fetchSidebar, listSessions } from '@/lib/api'
-import type { MessagesResponse, SessionSummary, SidebarResponse } from '@/lib/types'
+import { fetchMessages, fetchSidebar, listProjects, listSessions } from '@/lib/api'
+import type { MessagesResponse, Project, SessionSummary, SidebarResponse } from '@/lib/types'
 
 export const queryKeys = {
   sessions: () => ['sessions'] as const,
+  projects: () => ['projects'] as const,
   messages: (sessionId: string) => ['messages', sessionId] as const,
   sidebar: (sessionId?: string) => ['sidebar', sessionId ?? ''] as const,
 }
@@ -12,6 +13,14 @@ export function useSessions(): UseQueryResult<{ sessions: SessionSummary[] }> {
   return useQuery({
     queryKey: queryKeys.sessions(),
     queryFn: listSessions,
+    staleTime: 15_000,
+  })
+}
+
+export function useProjects(): UseQueryResult<{ projects: Project[] }> {
+  return useQuery({
+    queryKey: queryKeys.projects(),
+    queryFn: listProjects,
     staleTime: 15_000,
   })
 }

@@ -19,6 +19,15 @@ logger = logging.getLogger(__name__)
 DEFAULT_DB_PATH = Path(".cellspatio") / "sessions.db"
 
 SCHEMA = """
+CREATE TABLE IF NOT EXISTS projects (
+    id TEXT PRIMARY KEY,
+    label TEXT NOT NULL,
+    kind TEXT NOT NULL DEFAULT 'local',
+    root_path TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    archived_at TEXT
+);
 CREATE TABLE IF NOT EXISTS sessions (
     id TEXT PRIMARY KEY,
     title TEXT NOT NULL DEFAULT '新会话',
@@ -26,7 +35,10 @@ CREATE TABLE IF NOT EXISTS sessions (
     updated_at TEXT NOT NULL,
     summary TEXT,
     summary_upto INTEGER NOT NULL DEFAULT 0,
-    downloaded_assets TEXT NOT NULL DEFAULT '[]'
+    downloaded_assets TEXT NOT NULL DEFAULT '[]',
+    project_id TEXT REFERENCES projects(id) ON DELETE RESTRICT,
+    pinned INTEGER NOT NULL DEFAULT 0,
+    archived_at TEXT
 );
 CREATE TABLE IF NOT EXISTS messages (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -174,6 +186,21 @@ def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+def _migrate_schema(conn: sqlite3.Connection) -> None:
+    """旧库补列并建索引：CREATE TABLE IF NOT EXISTS 不会修改既有 sessions 表。"""
+    columns = {row[1] for row in conn.execute("PRAGMA table_info(sessions)").fetchall()}
+    additions = {
+        "project_id": "TEXT REFERENCES projects(id) ON DELETE RESTRICT",
+        "pinned": "INTEGER NOT NULL DEFAULT 0",
+        "archived_at": "TEXT",
+    }
+    for name, ddl in additions.items():
+        if name not in columns:
+            conn.execute(f"ALTER TABLE sessions ADD COLUMN {name} {ddl}")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_sessions_project ON sessions(project_id)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_sessions_updated ON sessions(updated_at)")
+
+
 def _encode_results(results: dict[str, Any] | None) -> str | None:
     """results → JSON；plotly Figure 内嵌 json，matplotlib Figure 转 PNG base64。"""
     if results is None:
@@ -235,29 +262,50 @@ class SessionStore:
             conn.execute("PRAGMA journal_mode=WAL")
             conn.execute("PRAGMA foreign_keys=ON")
             conn.executescript(SCHEMA)
+            _migrate_schema(conn)
             yield conn
             conn.commit()
         finally:
             conn.close()
 
-    def create_session(self, title: str = "新会话") -> str:
+    def create_session(self, title: str = "新会话", project_id: str | None = None) -> str:
+        if project_id is not None:
+            project = self.get_project(project_id)
+            if project is None:
+                raise ValueError("项目不存在")
+            if project["archived_at"]:
+                raise ValueError("项目已归档")
         sid = uuid.uuid4().hex
         now = _now()
         with self._conn() as conn:
             conn.execute(
-                "INSERT INTO sessions (id, title, created_at, updated_at) VALUES (?, ?, ?, ?)",
-                (sid, title, now, now),
+                "INSERT INTO sessions (id, title, created_at, updated_at, project_id) "
+                "VALUES (?, ?, ?, ?, ?)",
+                (sid, title, now, now, project_id),
             )
+            if project_id is not None:
+                conn.execute("UPDATE projects SET updated_at=? WHERE id=?", (now, project_id))
         return sid
 
-    def list_sessions(self) -> list[dict[str, Any]]:
+    def list_sessions(self, include_archived: bool = False) -> list[dict[str, Any]]:
+        where = (
+            ""
+            if include_archived
+            else "WHERE s.archived_at IS NULL AND (s.project_id IS NULL OR p.archived_at IS NULL)"
+        )
         with self._conn() as conn:
             rows = conn.execute(
-                "SELECT s.id, s.title, s.updated_at, "
+                "SELECT s.id, s.title, s.updated_at, s.project_id, s.pinned, "
+                "s.archived_at, p.label AS project_label, "
                 "(SELECT COUNT(*) FROM messages m WHERE m.session_id = s.id) "
-                "AS message_count FROM sessions s ORDER BY s.updated_at DESC"
+                f"AS message_count FROM sessions s LEFT JOIN projects p "
+                f"ON p.id = s.project_id {where} "
+                "ORDER BY s.pinned DESC, s.updated_at DESC"
             ).fetchall()
-        return [dict(r) for r in rows]
+        sessions = [dict(r) for r in rows]
+        for session in sessions:
+            session["pinned"] = bool(session["pinned"])
+        return sessions
 
     def get_session(self, session_id: str) -> dict[str, Any] | None:
         with self._conn() as conn:
@@ -266,7 +314,124 @@ class SessionStore:
             return None
         session = dict(row)
         session["downloaded_assets"] = _decode_downloaded(session["downloaded_assets"])
+        session["pinned"] = bool(session["pinned"])
         return session
+
+    def create_project(self, label: str, root_path: str | None = None, kind: str = "local") -> str:
+        """创建扁平项目；同名允许，靠 id 区分。"""
+        pid = uuid.uuid4().hex
+        now = _now()
+        with self._conn() as conn:
+            conn.execute(
+                "INSERT INTO projects (id, label, kind, root_path, created_at, updated_at) "
+                "VALUES (?, ?, ?, ?, ?, ?)",
+                (pid, label, kind, root_path, now, now),
+            )
+        return pid
+
+    def list_projects(self, include_archived: bool = False) -> list[dict[str, Any]]:
+        where = "" if include_archived else "WHERE p.archived_at IS NULL"
+        with self._conn() as conn:
+            rows = conn.execute(
+                "SELECT p.*, (SELECT COUNT(*) FROM sessions s "
+                "WHERE s.project_id = p.id AND s.archived_at IS NULL) AS session_count "
+                f"FROM projects p {where} ORDER BY p.updated_at DESC"
+            ).fetchall()
+        return [dict(r) for r in rows]
+
+    def get_project(self, project_id: str) -> dict[str, Any] | None:
+        with self._conn() as conn:
+            row = conn.execute(
+                "SELECT p.*, (SELECT COUNT(*) FROM sessions s "
+                "WHERE s.project_id = p.id AND s.archived_at IS NULL) AS session_count "
+                "FROM projects p WHERE p.id = ?",
+                (project_id,),
+            ).fetchone()
+        return dict(row) if row else None
+
+    def update_project(
+        self,
+        project_id: str,
+        label: str | None = None,
+        root_path: str | None = None,
+        clear_root_path: bool = False,
+        archived: bool | None = None,
+    ) -> None:
+        """None = 不更新；archived 显式切换归档时间。"""
+        sets, vals = [], []
+        if label is not None:
+            sets.append("label=?")
+            vals.append(label)
+        if root_path is not None or clear_root_path:
+            sets.append("root_path=?")
+            vals.append(root_path or None)
+        if archived is not None:
+            sets.append("archived_at=?")
+            vals.append(_now() if archived else None)
+        if not sets:
+            return
+        sets.append("updated_at=?")
+        vals.extend([_now(), project_id])
+        with self._conn() as conn:
+            cursor = conn.execute(f"UPDATE projects SET {', '.join(sets)} WHERE id=?", vals)
+            if cursor.rowcount == 0:
+                raise ValueError("项目不存在")
+
+    def delete_project(self, project_id: str) -> None:
+        """只删除空项目；非空项目须先移动或归档会话。"""
+        with self._conn() as conn:
+            row = conn.execute(
+                "SELECT COUNT(*) AS total FROM sessions WHERE project_id = ?",
+                (project_id,),
+            ).fetchone()
+            if row["total"]:
+                raise ValueError("项目仍有会话，不能删除")
+            cursor = conn.execute("DELETE FROM projects WHERE id = ?", (project_id,))
+            if cursor.rowcount == 0:
+                raise ValueError("项目不存在")
+
+    def move_session(self, session_id: str, project_id: str | None) -> None:
+        """移动到项目；None = 移回未归类。"""
+        if project_id is not None:
+            project = self.get_project(project_id)
+            if project is None:
+                raise ValueError("项目不存在")
+            if project["archived_at"]:
+                raise ValueError("项目已归档")
+        with self._conn() as conn:
+            previous = conn.execute(
+                "SELECT project_id FROM sessions WHERE id=?", (session_id,)
+            ).fetchone()
+            cursor = conn.execute(
+                "UPDATE sessions SET project_id=?, updated_at=? WHERE id=?",
+                (project_id, _now(), session_id),
+            )
+            if cursor.rowcount == 0:
+                raise ValueError("会话不存在")
+            for touched in {previous["project_id"], project_id} - {None}:
+                conn.execute("UPDATE projects SET updated_at=? WHERE id=?", (_now(), touched))
+
+    def set_session_pinned(self, session_id: str, pinned: bool) -> None:
+        with self._conn() as conn:
+            cursor = conn.execute(
+                "UPDATE sessions SET pinned=?, updated_at=? WHERE id=?",
+                (1 if pinned else 0, _now(), session_id),
+            )
+            if cursor.rowcount == 0:
+                raise ValueError("会话不存在")
+
+    def archive_session(self, session_id: str, archived: bool = True) -> None:
+        if archived:
+            running = self.running_stage(session_id)
+            if running:
+                raise ValueError(f"{running}运行中，不能归档会话")
+        with self._conn() as conn:
+            cursor = conn.execute(
+                "UPDATE sessions SET archived_at=?, updated_at=? WHERE id=?",
+                (_now() if archived else None, _now(), session_id),
+            )
+            if cursor.rowcount == 0:
+                raise ValueError("会话不存在")
 
     def delete_session(self, session_id: str) -> None:
         with self._conn() as conn:
@@ -297,6 +462,36 @@ class SessionStore:
                 raise ValueError("marker 运行中，不能删除会话")
             conn.execute("DELETE FROM messages WHERE session_id = ?", (session_id,))
             conn.execute("DELETE FROM sessions WHERE id = ?", (session_id,))
+
+    def running_stage(self, session_id: str) -> str | None:
+        """返回正在运行的受控阶段名；供删除/归档前预检。"""
+        checks = (
+            (
+                "过滤",
+                "SELECT 1 FROM sc_filter_attempts a JOIN qc_runs r USING(run_id) "
+                "WHERE r.session_id=? AND a.status='running'",
+            ),
+            (
+                "PCA",
+                "SELECT 1 FROM sc_pca_attempts a JOIN qc_runs r USING(run_id) "
+                "WHERE r.session_id=? AND a.status='running'",
+            ),
+            (
+                "聚类",
+                "SELECT 1 FROM sc_cluster_attempts a JOIN qc_runs r USING(run_id) "
+                "WHERE r.session_id=? AND a.status='running'",
+            ),
+            (
+                "marker",
+                "SELECT 1 FROM sc_marker_attempts a JOIN qc_runs r USING(run_id) "
+                "WHERE r.session_id=? AND a.status='running'",
+            ),
+        )
+        with self._conn() as conn:
+            for label, sql in checks:
+                if conn.execute(sql, (session_id,)).fetchone():
+                    return label
+        return None
 
     def append_message(
         self,
@@ -333,6 +528,13 @@ class SessionStore:
                     "UPDATE sessions SET title = ?, updated_at = ? WHERE id = ?",
                     (content[:20], now, session_id),
                 )
+            else:
+                conn.execute("UPDATE sessions SET updated_at = ? WHERE id = ?", (now, session_id))
+            conn.execute(
+                "UPDATE projects SET updated_at = ? "
+                "WHERE id = (SELECT project_id FROM sessions WHERE id = ?)",
+                (now, session_id),
+            )
 
     def register_qc_run(
         self, session_id: str, run_id: str, directory: str, evidence: dict[str, Any]
@@ -421,6 +623,14 @@ class SessionStore:
             for a in marker_attempts
         ]
         return run
+
+    def list_qc_runs(self, session_id: str) -> list[dict[str, Any]]:
+        """按创建顺序列出会话的 QC run（供导出/删除 CLI 枚举产物）。"""
+        with self._conn() as conn:
+            rows = conn.execute(
+                "SELECT * FROM qc_runs WHERE session_id=? ORDER BY rowid", (session_id,)
+            ).fetchall()
+        return [dict(row) for row in rows]
 
     def activate_qc_preview(
         self, session_id: str, run_id: str, revision: int, preview: dict[str, Any]
@@ -1535,3 +1745,27 @@ def _decode_downloaded(text: str | None) -> list:
     except json.JSONDecodeError:  # 容错：坏数据按空列表处理
         logger.warning("downloaded_assets JSON 解析失败，按空列表处理")
         return []
+
+
+def project_analysis_root(session_id: str | None, repo_root: str | Path) -> Path:
+    """新分析产物根：项目会话落 data/projects/<id>/analysis，其余沿用 data/analysis。"""
+    base = Path(repo_root) / "data"
+    if session_id:
+        session = SessionStore().get_session(session_id)
+        if session is None:
+            raise ValueError("会话不存在，不能确定分析产物根")
+        if session.get("project_id"):
+            return (base / "projects" / session["project_id"] / "analysis").resolve()
+    return (base / "analysis").resolve()
+
+
+def project_scoped_analysis_root(session_id: str | None, repo_root: str | Path) -> Path | None:
+    """仅项目会话返回项目分析根；未归类或无会话返回 None，保留旧输出位置。"""
+    if not session_id:
+        return None
+    session = SessionStore().get_session(session_id)
+    if session is None:
+        raise ValueError("会话不存在，不能确定分析产物根")
+    if not session.get("project_id"):
+        return None
+    return project_analysis_root(session_id, repo_root)

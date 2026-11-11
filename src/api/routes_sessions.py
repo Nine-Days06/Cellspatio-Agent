@@ -34,18 +34,48 @@ class CreateSessionRequest(BaseModel):
     """POST /api/sessions 请求体：title 缺省时由 store 生成时间戳标题。"""
 
     title: str | None = None
+    project_id: str | None = None
 
 
 @router.get("/sessions")
-def list_sessions() -> dict[str, Any]:
-    return {"sessions": _store().list_sessions()}
+def list_sessions(include_archived: bool = False) -> dict[str, Any]:
+    return {"sessions": _store().list_sessions(include_archived=include_archived)}
 
 
 @router.post("/sessions")
 def create_session(body: CreateSessionRequest | None = None) -> dict[str, Any]:
     store = _store()
     title = body.title if body and body.title else "新会话"
-    session_id = store.create_session(title)
+    try:
+        session_id = store.create_session(title, body.project_id if body else None)
+    except ValueError as exc:
+        status = 409 if "归档" in str(exc) else 404
+        raise HTTPException(status_code=status, detail=str(exc)) from exc
+    return {"session": store.get_session(session_id)}
+
+
+class UpdateSessionRequest(BaseModel):
+    """PATCH /api/sessions/{id}：project_id 显式传 null 表示移回未归类。"""
+
+    project_id: str | None = None
+    pinned: bool | None = None
+    archived: bool | None = None
+
+
+@router.patch("/sessions/{session_id}")
+def update_session(session_id: str, body: UpdateSessionRequest) -> dict[str, Any]:
+    store = _store()
+    _require_session(store, session_id)
+    try:
+        if "project_id" in body.model_fields_set:
+            store.move_session(session_id, body.project_id)
+        if body.pinned is not None:
+            store.set_session_pinned(session_id, body.pinned)
+        if body.archived is not None:
+            store.archive_session(session_id, body.archived)
+    except ValueError as exc:
+        status = 409 if "归档" in str(exc) else 404
+        raise HTTPException(status_code=status, detail=str(exc)) from exc
     return {"session": store.get_session(session_id)}
 
 

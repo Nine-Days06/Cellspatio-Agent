@@ -29,6 +29,7 @@ import { useChatStore } from '@/store/chat'
 // vi.mock 工厂会被提升到 import 之前：工厂体内只能以闭包延迟引用这些函数，
 // 测试体内则直接使用。工厂执行期（import 阶段）不读取变量，无 TDZ 风险。
 const listSessionsMock = vi.fn()
+const listProjectsMock = vi.fn()
 const fetchSidebarMock = vi.fn()
 const confirmActionMock = vi.fn()
 const createSessionMock = vi.fn()
@@ -42,6 +43,7 @@ vi.mock('@/lib/api', async (importOriginal) => {
   return {
     ...actual,
     listSessions: (...args: unknown[]) => listSessionsMock(...args),
+  listProjects: (...args: unknown[]) => listProjectsMock(...args),
     fetchSidebar: (...args: unknown[]) => fetchSidebarMock(...args),
     confirmAction: (...args: unknown[]) => confirmActionMock(...args),
     createSession: (...args: unknown[]) => createSessionMock(...args),
@@ -70,6 +72,9 @@ function sessionFor(sid: string): MessagesResponse['session'] {
     summary: null,
     summary_upto: 0,
     downloaded_assets: [],
+    project_id: null,
+    pinned: false,
+    archived_at: null,
   }
 }
 
@@ -122,7 +127,15 @@ function makeMsg(sid: string, overrides: Partial<WireMessage> = {}): WireMessage
 }
 
 function makeSummary(id: string, title = '测试会话'): SessionSummary {
-  return { id, title, updated_at: '2026-10-01T00:00:00Z', message_count: 0 }
+  return {
+    id,
+    title,
+    updated_at: '2026-10-01T00:00:00Z',
+    message_count: 0,
+    project_id: null,
+    pinned: false,
+    archived_at: null,
+  }
 }
 
 function pendingCard(overrides: Partial<ScriptCardPayload> = {}): ScriptCardPayload {
@@ -175,6 +188,7 @@ beforeEach(() => {
     softWarn: false,
   })
   listSessionsMock.mockReset()
+  listProjectsMock.mockReset()
   fetchSidebarMock.mockReset()
   confirmActionMock.mockReset()
   createSessionMock.mockReset()
@@ -185,6 +199,7 @@ beforeEach(() => {
   // 默认挂起流：模拟「进行中不返回」的长任务，用于约束 2/3 断言
   streamChatMock.mockImplementation(() => new Promise<void>(() => {}))
   listSessionsMock.mockResolvedValue({ sessions: [] })
+  listProjectsMock.mockResolvedValue({ projects: [] })
   fetchSidebarMock.mockResolvedValue({
     kb_stats: { initialized: true },
     env: {
@@ -254,7 +269,9 @@ describe('ChatPage 本地输入', () => {
     await waitFor(() => expect(field).toHaveValue('D:/data'))
     fireEvent.click(screen.getByRole('button', { name: '开始 QC' }))
 
-    await waitFor(() => expect(createSessionMock).toHaveBeenCalledWith('本地 10x 数据'))
+    await waitFor(() =>
+      expect(createSessionMock).toHaveBeenCalledWith('本地 10x 数据', null),
+    )
     await waitFor(() => expect(registerLocalInputMock).toHaveBeenCalledWith(created, 'D:/data'))
   })
 })
@@ -658,6 +675,9 @@ describe('ChatPage 会话列表接线', () => {
         summary: null,
         summary_upto: 0,
         downloaded_assets: [],
+        project_id: null,
+        pinned: false,
+        archived_at: null,
       },
     })
 

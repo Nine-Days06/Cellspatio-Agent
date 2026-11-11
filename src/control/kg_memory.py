@@ -43,6 +43,7 @@ class KGMemory:
         workspace: str | None = None,
         llm_model_func=None,
         embedding_func=None,
+        storage_backend: str = "pg",
     ):
         self.working_dir = Path(working_dir)
         self.working_dir.mkdir(parents=True, exist_ok=True)
@@ -68,7 +69,7 @@ class KGMemory:
             embedding_func=embedding_func,
             llm_model_func=llm_model_func,
             workspace=self._workspace,
-            **build_storage_kwargs(),
+            **build_storage_kwargs(storage_backend),
         )
         register_atexit(self.close)
         self._initialized = False
@@ -120,6 +121,12 @@ class KGMemory:
         param = QueryParam(mode="mix")
         result = async_runtime.run(self._rag.aquery(query, param=param))
         return [str(r) for r in result] if result else []
+
+    def query_text(self, query: str, mode: str = "mix") -> str:
+        """生成式查询；file/pg 后端共用同一调用。"""
+        self._ensure_initialized()
+        result = async_runtime.run(self._rag.aquery(query, param=QueryParam(mode=mode)))
+        return str(result) if result else "未找到相关信息。"
 
     def query_relations(self, entity: str) -> list[dict]:
         """关系查询：返回实体关系。"""

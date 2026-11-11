@@ -99,7 +99,25 @@ python -m src.api
 - 数据放便携目录下的 `data/`（`CELLSPATIO_HOME` 可覆盖）。升级时把新包覆盖解压到同一目录即可，`data/` 不在包内、不会被覆盖；不要先删目录。瘦包与胖包要在同一目录运行、或共用同一 `CELLSPATIO_HOME`，才会共享数据。请解压到用户可写目录，不要放 Program Files。
 - 胖包解压后双击 `launch.cmd`，无需登录；瘦包先跑 `bootstrap.ps1` 装 Python 依赖并检查 R 4.6.x + Seurat/presto/uwot。
 - QC→markers 可离线；知识问答仍需 Ollama 或在线 LLM/embedding。
+- 本地默认不写 KG 记忆；`CELLSPATIO_LOCAL_KG=1` 时用文件型 LightRAG，按项目独立目录落盘，不需要 PostgreSQL。
 - 无 LLM 时用页头「本地数据」输入 10x 目录或 counts CSV 的绝对路径，直接跑固定 QC；后续过滤、PCA、聚类与 marker 仍逐阶段人工授权。
+
+### 项目与记录管理
+
+- 侧栏按「置顶 → 项目 → 未归类」分组；项目内可新建会话，会话可移动、置顶、归档。归档项目默认隐藏其会话。
+- 新分析产物落 `<数据目录>/data/projects/<project_id>/analysis/...`；未归类会话仍落 `data/analysis/...`。旧 run 保持数据库记录的路径，不迁移。
+- 硬删除只走 CLI，不提供 HTTP/UI 删除项目入口：
+  ```powershell
+  python -m src.cli.records delete session <session_id> --dry-run
+  python -m src.cli.records delete session <session_id> --yes
+  python -m src.cli.records delete project <project_id> --cascade --dry-run
+  python -m src.cli.records delete project <project_id> --cascade --yes
+  ```
+- 导出会话/项目记录为 zip（清单含路径、大小、SHA256，不复制产物）：
+  ```powershell
+  python -m src.cli.records export session <session_id> --out record.zip
+  python -m src.cli.records export project <project_id> --redact --out project.zip
+  ```
 
 ## 使用示例
 

@@ -1,8 +1,16 @@
 """SessionStore CRUD 与结果序列化 roundtrip 测试。"""
 
 import base64
+import sqlite3
 
-from src.ui.session_store import SessionStore, _decode_results, _encode_results
+import pytest
+
+from src.ui.session_store import (
+    SessionStore,
+    _decode_results,
+    _encode_results,
+    project_analysis_root,
+)
 
 
 def test_create_and_list_sessions():
@@ -13,6 +21,104 @@ def test_create_and_list_sessions():
     assert sessions[0]["id"] == sid
     assert sessions[0]["title"] == "第一个会话"
     assert sessions[0]["message_count"] == 0
+
+
+def test_migrates_legacy_sessions_table(tmp_path):
+    """旧库只有原始 sessions 列时，打开后补 project_id/pinned/archived_at 且不丢数据。"""
+    db = tmp_path / "legacy.db"
+    conn = sqlite3.connect(db)
+    conn.executescript(
+        """
+        CREATE TABLE sessions (
+            id TEXT PRIMARY KEY,
+            title TEXT NOT NULL DEFAULT '新会话',
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            summary TEXT,
+            summary_upto INTEGER NOT NULL DEFAULT 0,
+            downloaded_assets TEXT NOT NULL DEFAULT '[]'
+        );
+        INSERT INTO sessions (id, title, created_at, updated_at)
+        VALUES ('old', '旧会话', '2026-01-01', '2026-01-01');
+        """
+    )
+    conn.commit()
+    conn.close()
+
+    store = SessionStore(db)
+    session = store.get_session("old")
+    assert session is not None
+    assert session["title"] == "旧会话"
+    assert session["project_id"] is None
+    assert session["pinned"] is False
+    assert session["archived_at"] is None
+
+
+def test_project_crud_and_session_grouping():
+    store = SessionStore()
+    pid = store.create_project("肝癌项目", "D:/data/liver")
+    sid = store.create_session("分析", project_id=pid)
+
+    project = store.list_projects()[0]
+    assert project["label"] == "肝癌项目"
+    assert project["root_path"] == "D:/data/liver"
+    assert project["session_count"] == 1
+    assert store.list_sessions()[0]["project_id"] == pid
+
+    store.set_session_pinned(sid, True)
+    assert store.list_sessions()[0]["pinned"] is True
+
+    store.archive_session(sid)
+    assert store.list_sessions() == []
+    archived = store.list_sessions(include_archived=True)[0]
+    assert archived["archived_at"] is not None
+    assert store.list_projects()[0]["session_count"] == 0
+
+    store.move_session(sid, None)
+    store.update_project(pid, archived=True)
+    assert store.list_projects() == []
+    assert store.list_projects(include_archived=True)[0]["archived_at"] is not None
+
+    store.update_project(pid, archived=False)
+    store.delete_project(pid)
+    assert store.get_project(pid) is None
+
+
+def test_delete_non_empty_project_is_blocked():
+    store = SessionStore()
+    pid = store.create_project("非空")
+    store.create_session("s", project_id=pid)
+    with pytest.raises(ValueError, match="项目仍有会话"):
+        store.delete_project(pid)
+
+
+def test_move_session_to_unknown_or_archived_project_rejected():
+    store = SessionStore()
+    sid = store.create_session("s")
+    with pytest.raises(ValueError, match="项目不存在"):
+        store.move_session(sid, "nope")
+
+    pid = store.create_project("已归档")
+    store.update_project(pid, archived=True)
+    with pytest.raises(ValueError, match="项目已归档"):
+        store.move_session(sid, pid)
+
+
+def test_archived_project_hides_its_sessions_and_rejects_new_ones():
+    store = SessionStore()
+    pid = store.create_project("归档项目")
+    sid = store.create_session("会话", project_id=pid)
+    store.update_project(pid, archived=True)
+
+    assert store.list_sessions() == []
+    assert store.list_sessions(include_archived=True)[0]["id"] == sid
+    with pytest.raises(ValueError, match="项目已归档"):
+        store.create_session("新会话", project_id=pid)
+
+
+def test_project_analysis_root_rejects_unknown_session(tmp_path):
+    with pytest.raises(ValueError, match="会话不存在"):
+        project_analysis_root("nope", tmp_path)
 
 
 def test_append_message_sets_title_from_first_user_message():

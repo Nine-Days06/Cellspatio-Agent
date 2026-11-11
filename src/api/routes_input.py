@@ -53,7 +53,7 @@ def register_local_input(
         result = agent.workflow_manager.run_analysis_for_agent(
             "single_cell",
             {"input_files": [str(source)]},
-            {"last_user_input": f"本地数据：{source}"},
+            {"last_user_input": f"本地数据：{source}", "session_id": session_id},
         )
         if not is_qc_stage(result):
             # 非法输入在 QC 之前返回，不落聊天消息，直接作为对话框错误。

@@ -1,10 +1,25 @@
 /** 与 src/api/* 实际响应逐字段对齐的线路类型。 */
 
+export interface Project {
+  id: string
+  label: string
+  kind: 'local'
+  root_path: string | null
+  created_at: string
+  updated_at: string
+  archived_at: string | null
+  session_count: number
+}
+
 export interface SessionSummary {
   id: string
   title: string
   updated_at: string
   message_count: number
+  project_id: string | null
+  project_label?: string | null
+  pinned: boolean
+  archived_at: string | null
 }
 
 export interface Session {
@@ -15,6 +30,9 @@ export interface Session {
   summary: string | null
   summary_upto: number
   downloaded_assets: DownloadedAsset[]
+  project_id: string | null
+  pinned: boolean
+  archived_at: string | null
 }
 
 /** POST /api/sessions/{id}/local-input：登记本地输入并运行固定 QC。 */

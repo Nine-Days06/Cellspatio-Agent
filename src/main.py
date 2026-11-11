@@ -7,10 +7,11 @@ from typing import Any
 import src.config  # noqa: F401
 from src.analysis.r_executor import RExecutor
 from src.analysis.visualization import Visualizer
-from src.config import BASE_DIR, get_current_llm, is_local_mode
+from src.config import BASE_DIR, env_flag, get_current_llm, is_local_mode
 from src.control.agent_runtime import AgentRuntime
 from src.control.intent_parser import IntentParser
 from src.control.kg_memory import KGMemory
+from src.control.kg_projects import ProjectKGMemory
 from src.control.kg_query import KGQuery
 from src.control.r_script_generator import RScriptGenerator
 from src.control.router import ModalRouter
@@ -63,6 +64,7 @@ class CellSpatioAgent:
         # P3c 记忆闭环：真实 LLM/embedding 的 KGMemory，finish_run 时增量写入。
         # 本地客户端不带 PostgreSQL，跳过 KG 记忆；所有消费方都已允许 None。
         self.kg_memory: KGMemory | None = None
+        self.local_kg: ProjectKGMemory | None = None
         if not is_local_mode():
             try:
                 kg_llm_func, _ = build_llm_func()
@@ -74,11 +76,22 @@ class CellSpatioAgent:
             except Exception as e:  # noqa: BLE001 - LLM 配置缺失时记忆闭环降级为 mock
                 logger.warning("KGMemory real func init failed, fallback to mock: %s", e)
                 self.kg_memory = KGMemory(working_dir=Path(repo_root) / ".wrroc" / "kg_memory")
+        elif env_flag("CELLSPATIO_LOCAL_KG"):
+            try:
+                kg_llm_func, _ = build_llm_func()
+                self.local_kg = ProjectKGMemory(
+                    Path(repo_root) / ".wrroc" / "kg_memory",
+                    llm_model_func=kg_llm_func,
+                    embedding_func=build_embedding_func(),
+                )
+            except Exception as e:  # noqa: BLE001 - 本地 KG 是可选增强，失败不阻断启动
+                logger.warning("local KG init failed, memory disabled: %s", e)
+                self.local_kg = None
 
         self.workflow_recorder = WorkflowRecorder(
             wrroc_base_dir=str(Path(repo_root) / ".wrroc"),
             repo_root=Path(repo_root),
-            kg_memory=self.kg_memory,
+            kg_memory=self.kg_memory or self.local_kg,
         )
 
         llm_cfg = self.config.get("llm", {})
@@ -120,6 +133,15 @@ class CellSpatioAgent:
 
         self.code_repairer = CodeRepairer(llm_client=llm_client, model=llm_model)
 
+        kg_query = None
+        if self.kg_memory:
+            kg_query = KGQuery(
+                working_dir=Path(repo_root) / ".wrroc" / "kg_memory",
+                kg_memory=self.kg_memory,  # 复用同一记忆库实例
+            )
+        elif self.local_kg:
+            kg_query = self.local_kg
+
         self.workflow_manager = WorkflowManager(
             intent_parser=self.intent_parser,
             knowledge_client=self.knowledge_client,
@@ -134,14 +156,7 @@ class CellSpatioAgent:
             code_repairer=self.code_repairer,
             require_script_confirmation=(os.environ.get("SCRIPT_REQUIRE_CONFIRM", "1") == "1"),
             workflow_recorder=self.workflow_recorder,
-            kg_query=(
-                KGQuery(
-                    working_dir=Path(repo_root) / ".wrroc" / "kg_memory",
-                    kg_memory=self.kg_memory,  # 复用同一记忆库实例
-                )
-                if self.kg_memory
-                else None
-            ),
+            kg_query=kg_query,
         )
 
         # 技能随安装目录走；repo_root 在客户端模式下是数据目录，不能用来找代码
@@ -203,6 +218,8 @@ class CellSpatioAgent:
         """释放后台资源（当前：KGMemory 事件循环）；幂等。"""
         if getattr(self, "kg_memory", None):
             self.kg_memory.close()
+        if getattr(self, "local_kg", None):
+            self.local_kg.close()
 
     def run(self, mode: str = "cli"):
         """运行智能体"""

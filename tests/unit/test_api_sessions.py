@@ -63,6 +63,37 @@ def test_create_session_without_body_uses_default_title(client):
     assert response.json()["session"]["title"] == "新会话"
 
 
+def test_create_session_in_project_and_patch_assignment(client):
+    pid = client.post("/api/projects", json={"label": "肝癌项目"}).json()["project"]["id"]
+    sid = client.post("/api/sessions", json={"project_id": pid}).json()["session"]["id"]
+
+    listed = client.get("/api/sessions").json()["sessions"]
+    assert listed[0]["project_id"] == pid
+    assert listed[0]["pinned"] is False
+
+    response = client.patch(f"/api/sessions/{sid}", json={"pinned": True, "project_id": None})
+    assert response.status_code == 200
+    assert response.json()["session"]["pinned"] is True
+    assert response.json()["session"]["project_id"] is None
+
+    client.patch(f"/api/sessions/{sid}", json={"archived": True})
+    assert client.get("/api/sessions").json()["sessions"] == []
+    assert client.get("/api/sessions?include_archived=1").json()["sessions"][0]["id"] == sid
+
+
+def test_create_session_with_unknown_project_returns_404(client):
+    response = client.post("/api/sessions", json={"project_id": "nope"})
+    assert response.status_code == 404
+
+
+def test_create_session_in_archived_project_returns_409(client):
+    pid = client.post("/api/projects", json={"label": "归档项目"}).json()["project"]["id"]
+    client.patch(f"/api/projects/{pid}", json={"archived": True})
+
+    response = client.post("/api/sessions", json={"project_id": pid})
+    assert response.status_code == 409
+
+
 def test_delete_session_removes_it(client):
     sid = client.post("/api/sessions", json={}).json()["session"]["id"]
 

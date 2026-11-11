@@ -8,6 +8,7 @@ from types import SimpleNamespace
 import pytest
 from fastapi.testclient import TestClient
 
+from src.analysis.qc_preview import register_evidence
 from src.analysis.sc_qc import run_sc_qc
 from src.api.app import create_app
 from src.api.chat_service import session_lock
@@ -163,3 +164,73 @@ def test_local_input_runs_tenx_directory_without_llm(tmp_path, monkeypatch):
     assert body["message"]["results"]["qc"]["cells"] == 2
     assert body["message"]["results"]["qc"]["features"] == 2
     assert body["message"]["results"]["qc_run_id"] == body["qc_run_id"]
+
+
+def test_project_session_writes_to_project_analysis_root(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    source = tmp_path / "counts.csv"
+    source.write_text("gene,c1,c2\nMT-X,1,1\nG1,0,3\n", encoding="utf-8")
+    executor = fake_qc_executor(
+        "feature_id,symbol,unique_name\nMT-X,MT-X,MT-X\nG1,G1,G1\n",
+        QC_HEADER + b"c1,1,1,100,\nc2,4,2,25,\n",
+    )
+    agent = FakeAgent()
+    agent.workflow_manager = WorkflowManager(
+        intent_parser=None,
+        knowledge_client=None,
+        r_executor=executor,
+        visualizer=None,
+    )
+    store = SessionStore()
+    pid = store.create_project("肝癌项目")
+    sid = store.create_session("项目会话", project_id=pid)
+    client = TestClient(create_app(agent))
+
+    response = client.post(f"/api/sessions/{sid}/local-input", json={"path": str(source)})
+
+    assert response.status_code == 200, response.text
+    run_id = response.json()["qc_run_id"]
+    expected = (tmp_path / "data" / "projects" / pid / "analysis" / "sc_qc" / run_id).resolve()
+    assert Path(store.get_qc_run(sid, run_id)["directory"]) == expected
+    assert client.get(f"/api/sessions/{sid}/qc/{run_id}").status_code == 200
+
+
+def test_legacy_run_stays_readable_after_session_moves_to_project(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    source = tmp_path / "counts.csv"
+    source.write_text("gene,c1,c2\nMT-X,1,1\nG1,0,3\n", encoding="utf-8")
+    executor = fake_qc_executor(
+        "feature_id,symbol,unique_name\nMT-X,MT-X,MT-X\nG1,G1,G1\n",
+        QC_HEADER + b"c1,1,1,100,\nc2,4,2,25,\n",
+    )
+    legacy_root = tmp_path / "data" / "analysis" / "sc_qc"
+    result = run_sc_qc(str(source), executor, legacy_root)
+    directory = Path(result["results"]["qc_artifacts"]["metadata.json"]).parent
+    evidence = register_evidence(directory, legacy_root)
+
+    store = SessionStore()
+    pid = store.create_project("后建项目")
+    sid = store.create_session("旧会话", project_id=pid)
+    store.register_qc_run(sid, directory.name, str(directory), evidence)
+
+    client = TestClient(create_app(FakeAgent()))
+    assert client.get(f"/api/sessions/{sid}/qc/{directory.name}").status_code == 200
+    preview = client.post(
+        f"/api/sessions/{sid}/qc/{directory.name}/preview",
+        json={"n_feature_min": 0, "n_feature_max": 100, "percent_mt_max": 100},
+    )
+    assert preview.status_code == 200, preview.text
+
+
+def test_qc_run_outside_allowed_roots_is_blocked(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    outside = tmp_path.parent / "outside-qc"
+    outside.mkdir(exist_ok=True)
+    store = SessionStore()
+    sid = store.create_session()
+    store.register_qc_run(sid, "run-x", str(outside), {"summary": {"cells": 1, "features": 1}})
+    client = TestClient(create_app(FakeAgent()))
+
+    body = client.get(f"/api/sessions/{sid}/qc/run-x").json()
+
+    assert any("QC 目录非法" in blocked for blocked in body["blocked"])

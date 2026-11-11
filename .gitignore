@@ -55,6 +55,7 @@ pubmed-etl/data/
 
 # 本地测试/验收/临时目录
 /.client-fat-data*/
+/.client-browser-accept/
 /.pytest-commit-gate/
 /.pytest_tmp/
 /client-smoke-home/
