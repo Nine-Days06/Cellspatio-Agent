@@ -1,0 +1,67 @@
+{
+  "schema_version": "cellspatio-evidence-card/1.0.0",
+  "card_id": "evc-example-qa",
+  "created_at": "2026-11-12T00:00:00+00:00",
+  "gate": "knowledge_qa_review",
+  "outcome": "accepted",
+  "subject": {
+    "session_id": "session-demo",
+    "run_id": "qa-demo",
+    "attempt_id": null,
+    "parent_attempt_id": null,
+    "binding_sha256": "5555555555555555555555555555555555555555555555555555555555555555",
+    "source_revision": 0
+  },
+  "method": {
+    "tool": "knowledge_qa",
+    "tool_version": "unknown",
+    "protocol": {
+      "record_version": "knowledge-qa-review/1.0.0"
+    },
+    "parameters": {
+      "max_evidence": 8
+    },
+    "environment": {
+      "untraceable_chunks": "0"
+    }
+  },
+  "observation": {
+    "outcome": "supported_answer",
+    "claims": 1,
+    "evidence": 2,
+    "sources": 1,
+    "question_sha256": "6666666666666666666666666666666666666666666666666666666666666666",
+    "question_chars": 42
+  },
+  "claim": {
+    "text": "TP53 在人类肿瘤中主要作为抑癌基因发挥作用。",
+    "basis": "inference",
+    "confidence": "medium"
+  },
+  "limitations": [
+    "结论受检索覆盖率限制。"
+  ],
+  "provenance": {
+    "inputs": [],
+    "artifacts": [],
+    "source_ids": [
+      "PMID:12345678"
+    ],
+    "software": []
+  },
+  "review": {
+    "status": "accepted",
+    "reviewer": "local-user",
+    "reason": "引用与结论一致",
+    "reviewed_at": "2026-11-12T00:00:00+00:00"
+  },
+  "license": {
+    "spdx": "CC-BY-4.0",
+    "attribution": "CellSpatio local user"
+  },
+  "privacy": {
+    "contains_raw_data": false,
+    "pii_scan": "passed",
+    "redactions": []
+  }
+}

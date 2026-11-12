@@ -122,6 +122,13 @@ python -m src.api
   python -m src.cli.records export session <session_id> --hash --out record.zip
   python -m src.cli.records export project <project_id> --redact --out project.zip
   ```
+- 证据卡（本地私有，只含聚合统计与哈希，不含 barcode/坐标/样本 ID/绝对路径）：
+  ```powershell
+  python -m src.cli.evidence export qc <session_id> <run_id>
+  python -m src.cli.evidence export cluster <session_id> <run_id>
+  python -m src.cli.evidence export qa <session_id> <answer_id>
+  python -m src.cli.evidence validate docs/examples/evidence-cards/qc.json
+  ```
 
 ## 使用示例
 
