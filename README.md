@@ -126,7 +126,12 @@ python -m src.api
   ```powershell
   python -m src.cli.evidence export qc <session_id> <run_id>
   python -m src.cli.evidence export cluster <session_id> <run_id>
+  python -m src.cli.evidence export pca <session_id> <run_id>
+  python -m src.cli.evidence export marker <session_id> <run_id>
   python -m src.cli.evidence export qa <session_id> <answer_id>
+  python -m src.cli.evidence review qc <session_id> <run_id> <preview_id> --reason "阈值过宽"
+  python -m src.cli.evidence review cluster <session_id> <run_id> <cluster_attempt_id> --reason "簇不稳定"
+  python -m src.cli.evidence review marker <session_id> <run_id> <marker_attempt_id> --decision accepted --reason "候选一致"
   python -m src.cli.evidence validate docs/examples/evidence-cards/qc.json
   ```
 - 公共证据最小闭环（独立 `<data>/public_evidence/`；预览 → 显式同意 → 隔离区 → 双签 → 检索 → 撤销）：

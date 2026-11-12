@@ -55,6 +55,10 @@ def review_view(run: dict[str, Any], cluster: dict[str, Any], root: Path) -> dic
         d for d in run["cluster_reviews"] if d["cluster_attempt_id"] == cluster["attempt_id"]
     ]
     latest = history[-1] if history else None
+    rejections = [
+        d for d in run["cluster_rejections"] if d["cluster_attempt_id"] == cluster["attempt_id"]
+    ]
+    latest_rejection = rejections[-1] if rejections else None
     current = (
         latest
         if (
@@ -67,6 +71,25 @@ def review_view(run: dict[str, Any], cluster: dict[str, Any], root: Path) -> dic
         )
         else None
     )
+
+    def decision_fact(record: dict[str, Any], decision: str) -> dict[str, Any]:
+        valid = not blocked and record["source_revision"] + 1 == run["revision"]
+        return {
+            "decision": decision,
+            "reason": record["reason"],
+            "created_at": record["created_at"],
+            "source_revision": record["source_revision"],
+            "invalidated_reason": None if valid else "来源或 revision 已变化；该事实仅作历史",
+        }
+
+    facts = []
+    if latest:
+        facts.append((latest["source_revision"], decision_fact(latest, "accepted")))
+    if latest_rejection:
+        facts.append(
+            (latest_rejection["source_revision"], decision_fact(latest_rejection, "rejected"))
+        )
+    latest_decision = max(facts, key=lambda item: item[0])[1] if facts else None
     return {
         "run_id": run["run_id"],
         "cluster_attempt_id": cluster["attempt_id"],
@@ -93,4 +116,5 @@ def review_view(run: dict[str, Any], cluster: dict[str, Any], root: Path) -> dic
             }
             for d in history
         ],
+        "latest_decision": latest_decision,
     }

@@ -370,6 +370,12 @@ class ClusterReviewRequest(routes_pca.PcaRequest):
         return value
 
 
+class ClusterRejectionRequest(routes_pca.PcaRequest):
+    """拒绝只绑当前证据与 revision，不接受分析参数。"""
+
+    revision: int = Field(strict=True, ge=0, le=2**63 - 1)
+
+
 @router.get("/{filter_attempt_id}/{pca_attempt_id}/{attempt_id}/review")
 def get_review(
     session_id: str,
@@ -447,3 +453,43 @@ def record_review(
         raise HTTPException(409, "聚类复核写入失败，请只读刷新") from exc
     except ValueError as exc:
         raise HTTPException(409, "聚类复核或父身份冲突，请只读刷新") from exc
+
+
+@router.post("/{filter_attempt_id}/{pca_attempt_id}/{attempt_id}/reject")
+def reject_review(
+    session_id: str,
+    run_id: str,
+    filter_attempt_id: str,
+    pca_attempt_id: str,
+    attempt_id: str,
+    body: ClusterRejectionRequest,
+    request: Request,
+) -> dict[str, Any]:
+    """追加拒绝事实；不改写接受历史，不授权 marker。"""
+    try:
+        store = SessionStore()
+        run = require_run(store, session_id, run_id)
+        require_parent(run, filter_attempt_id)
+        require_pca(run, filter_attempt_id, pca_attempt_id)
+        cluster = require_cluster(run, pca_attempt_id, attempt_id)
+        root = run_qc_root(request.app.state.agent, run)
+        state = review_view(run, cluster, root)
+        if not state["binding_sha256"] or state["binding_sha256"] != body.binding_sha256:
+            raise HTTPException(409, "聚类证据不可记录或已变化，请只读刷新")
+        store.record_sc_cluster_rejection(
+            session_id,
+            run,
+            cluster,
+            cluster["binding_sha256"],
+            CLUSTER_RECORD_VERSION,
+            body.revision,
+            body.reason,
+        )
+        return get_review(
+            session_id, run_id, filter_attempt_id, pca_attempt_id, attempt_id, request
+        )
+    except sqlite3.Error as exc:
+        logger.error("cluster rejection database write failed: %s", type(exc).__name__)
+        raise HTTPException(409, "聚类拒绝写入失败，请只读刷新") from exc
+    except ValueError as exc:
+        raise HTTPException(409, "聚类拒绝或父身份冲突，请只读刷新") from exc

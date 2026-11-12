@@ -157,6 +157,11 @@ def privacy_violations(card: EvidenceCard) -> list[str]:
     def walk(value: Any, prefix: str) -> None:
         if isinstance(value, dict):
             for key, item in value.items():
+                if key == "packages" and isinstance(item, dict):
+                    # 包名可能恰好是 Matrix 等禁止词；版本值仍需扫描。
+                    for name, version in item.items():
+                        walk(version, f"{prefix}.{key}.{name}")
+                    continue
                 if key.lower() in _FORBIDDEN_KEYS:
                     violations.append(f"{prefix}.{key} 是禁止字段")
                 walk(item, f"{prefix}.{key}")

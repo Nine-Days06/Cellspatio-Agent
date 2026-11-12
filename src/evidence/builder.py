@@ -9,6 +9,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from src.analysis.sc_pca import DIMENSION_RECORD_VERSION, dimension_binding
 from src.evidence.schema import (
     Artifact,
     Claim,
@@ -21,8 +22,6 @@ from src.evidence.schema import (
     validate_card,
 )
 from src.ui.session_store import SessionStore
-
-_OUTCOME_FROM_DECISION = {"accepted": "accepted", "rejected": "rejected"}
 
 
 def _now() -> str:
@@ -62,6 +61,19 @@ def _fingerprint_artifacts(rows: list[dict[str, Any]]) -> list[Artifact]:
     ]
 
 
+def _result_artifacts(result: dict[str, Any]) -> list[Artifact]:
+    """把 attempt 结果里的文件身份转成无路径的卡字段。"""
+    return [
+        Artifact(
+            name=str(name),
+            sha256=str(item["sha256"]),
+            bytes=int(item["bytes"]),
+        )
+        for name, item in (result.get("artifacts") or {}).items()
+        if item.get("sha256") is not None and item.get("bytes") is not None
+    ]
+
+
 def _run(store: SessionStore, session_id: str, run_id: str) -> dict[str, Any]:
     """取权威 run；缺失直接拒绝生成。"""
     run = store.get_qc_run(session_id, run_id)
@@ -83,12 +95,18 @@ def build_qc_card(
     *,
     license: License | None = None,
 ) -> EvidenceCard:
-    """QC 阈值批准卡：只含聚合统计、阈值与产物哈希。"""
+    """QC 阈值复核卡：只含聚合统计、阈值与产物哈希，支持拒绝。"""
     run = _run(store, session_id, run_id)
-    approved = [preview for preview in run["previews"] if preview["status"] == "approved"]
-    if not approved:
-        raise ValueError("QC 尚未人工批准，不能生成证据卡")
-    preview = approved[-1]
+    reviewed = [
+        preview for preview in run["previews"] if preview["status"] in ("approved", "rejected")
+    ]
+    if not reviewed:
+        raise ValueError("QC 尚未人工复核，不能生成证据卡")
+    preview = reviewed[-1]
+    outcome = "accepted" if preview["status"] == "approved" else "rejected"
+    reviewed_at = (
+        preview.get("approved_at") if outcome == "accepted" else preview.get("rejected_at")
+    )
     evidence = run["evidence"]
     summary = preview["summary"]
     directory = Path(run["directory"])
@@ -96,7 +114,7 @@ def build_qc_card(
         card_id=_new_card_id(),
         created_at=_now(),
         gate="qc_review",
-        outcome="accepted",
+        outcome=outcome,
         subject=Subject(
             session_id=session_id,
             run_id=run_id,
@@ -125,11 +143,16 @@ def build_qc_card(
             "reason_counts": summary["reason_counts"],
         },
         claim=Claim(
-            text=f"QC 阈值经人工批准：保留 {summary['kept']}/{summary['total']} 个细胞。",
+            text=(
+                f"QC 阈值经人工批准：保留 {summary['kept']}/{summary['total']} 个细胞。"
+                if outcome == "accepted"
+                else "QC 阈值预览未获批准；未执行过滤或下游分析。"
+            ),
             basis="fact",
             confidence="high",
         ),
-        limitations=list(evidence["warnings"]),
+        limitations=list(evidence["warnings"])
+        + ([] if outcome == "accepted" else ["该选择被拒绝，不用于下游分析。"]),
         provenance=Provenance(
             inputs=_fingerprint_artifacts(_qc_metadata(run).get("inputs_before") or []),
             artifacts=[
@@ -139,9 +162,10 @@ def build_qc_card(
             ],
         ),
         review=Review(
-            status="accepted",
+            status=outcome,
+            reviewer=preview.get("reviewer"),
             reason=preview.get("reason"),
-            reviewed_at=preview.get("approved_at"),
+            reviewed_at=reviewed_at,
         ),
         license=license or License(),
     )
@@ -156,16 +180,19 @@ def build_cluster_card(
     attempt_id: str | None = None,
     license: License | None = None,
 ) -> EvidenceCard:
-    """聚类接受卡：只含簇大小与版本，不含 barcode/UMAP 坐标。"""
+    """聚类复核卡：只含簇大小与版本，不含 barcode/UMAP 坐标，支持拒绝。"""
     run = _run(store, session_id, run_id)
-    reviews = [
-        review
-        for review in run["cluster_reviews"]
-        if attempt_id is None or review["cluster_attempt_id"] == attempt_id
+    facts = [{**review, "outcome": "accepted"} for review in run["cluster_reviews"]] + [
+        {**review, "outcome": "rejected"} for review in run.get("cluster_rejections", [])
     ]
-    if not reviews:
-        raise ValueError("聚类尚未人工接受，不能生成证据卡")
-    review = reviews[-1]
+    facts = [
+        fact for fact in facts if attempt_id is None or fact["cluster_attempt_id"] == attempt_id
+    ]
+    if not facts:
+        raise ValueError("聚类尚未人工复核，不能生成证据卡")
+    facts.sort(key=lambda fact: (fact["created_at"], fact.get("review_id", "")))
+    review = facts[-1]
+    outcome = review["outcome"]
     attempt = next(
         (
             item
@@ -181,7 +208,7 @@ def build_cluster_card(
         card_id=_new_card_id(),
         created_at=_now(),
         gate="cluster_review",
-        outcome="accepted",
+        outcome=outcome,
         subject=Subject(
             session_id=session_id,
             run_id=run_id,
@@ -205,24 +232,198 @@ def build_cluster_card(
             "seurat_threads": result.get("seurat_threads"),
         },
         claim=Claim(
-            text=f"人工接受 {result.get('clusters')} 个探索性聚类（dims={result.get('dims')}）。",
+            text=(
+                f"人工接受 {result.get('clusters')} 个探索性聚类（dims={result.get('dims')}）。"
+                if outcome == "accepted"
+                else "人工拒绝该探索性聚类结果；不用于下游分析。"
+            ),
             basis="fact",
             confidence="medium",
         ),
-        limitations=["聚类为探索性标签，不代表细胞类型注释。"],
-        provenance=Provenance(
-            artifacts=[
-                Artifact(
-                    name=str(name),
-                    sha256=str(item["sha256"]),
-                    bytes=int(item["bytes"]),
-                )
-                for name, item in (result.get("artifacts") or {}).items()
-                if item.get("sha256") is not None and item.get("bytes") is not None
-            ],
+        limitations=["聚类为探索性标签，不代表细胞类型注释。"]
+        + ([] if outcome == "accepted" else ["人工拒绝，结果不得用于下游分析。"]),
+        provenance=Provenance(artifacts=_result_artifacts(result)),
+        review=Review(
+            status=outcome,
+            reviewer=review.get("reviewer"),
+            reason=review.get("reason"),
+            reviewed_at=review.get("created_at"),
         ),
+        license=license or License(),
+    )
+    return validate_card(card)
+
+
+def build_pca_dimensions_card(
+    store: SessionStore,
+    session_id: str,
+    run_id: str,
+    *,
+    attempt_id: str | None = None,
+    license: License | None = None,
+) -> EvidenceCard:
+    """PCA 维度选择卡：绑定人工前缀与 PCA 产物身份，不含嵌入坐标。"""
+    run = _run(store, session_id, run_id)
+    reviews = [
+        review
+        for review in run["dimension_reviews"]
+        if attempt_id is None or review["pca_attempt_id"] == attempt_id
+    ]
+    if not reviews:
+        raise ValueError("PCA 尚未人工记录维度，不能生成证据卡")
+    review = reviews[-1]
+    attempt = next(
+        (item for item in run["pca_attempts"] if item["attempt_id"] == review["pca_attempt_id"]),
+        None,
+    )
+    if attempt is None or attempt["status"] != "completed" or not attempt.get("result"):
+        raise ValueError("PCA 结果缺失")
+    parent = next(
+        (item for item in run["attempts"] if item["attempt_id"] == attempt["filter_attempt_id"]),
+        None,
+    )
+    if parent is None:
+        raise ValueError("PCA 父过滤缺失")
+    result = attempt["result"]
+    binding = dimension_binding(
+        run,
+        parent,
+        attempt,
+        {"artifacts": result.get("artifacts") or {}},
+        DIMENSION_RECORD_VERSION,
+    )
+    if review["binding_sha256"] != binding or review["record_version"] != DIMENSION_RECORD_VERSION:
+        raise ValueError("维度记录与 PCA 身份不符")
+    dims = review["dims"]
+    card = EvidenceCard(
+        card_id=_new_card_id(),
+        created_at=_now(),
+        gate="pca_dimensions",
+        outcome="accepted",
+        subject=Subject(
+            session_id=session_id,
+            run_id=run_id,
+            attempt_id=attempt["attempt_id"],
+            parent_attempt_id=attempt["filter_attempt_id"],
+            binding_sha256=review["binding_sha256"],
+            source_revision=review["source_revision"],
+        ),
+        method=Method(
+            tool="sc_pca",
+            tool_version=attempt["tool_version"],
+            protocol=json.loads(attempt["protocol"]),
+            environment={"versions": "; ".join(result.get("versions") or [])},
+        ),
+        observation={
+            "cells": result.get("cells"),
+            "features": result.get("features"),
+            "selected_features": result.get("selected_features"),
+            "usable_features": result.get("usable_features"),
+            "actual_pcs": result.get("actual_pcs"),
+            "requested_pcs_max": result.get("requested_pcs_max"),
+            "pc_reduction_reason": result.get("pc_reduction_reason"),
+            "n_dims": len(dims),
+            "dims": dims,
+        },
+        claim=Claim(
+            text=(
+                f"人工选择前 {len(dims)} 个 PC（共计算 {result.get('actual_pcs')} 个），"
+                "用于下游聚类。"
+            ),
+            basis="fact",
+            confidence="medium",
+        ),
+        limitations=["维度选择为探索性记录，不代表科学认可。"],
+        provenance=Provenance(artifacts=_result_artifacts(result)),
         review=Review(
             status="accepted",
+            reason=review.get("reason"),
+            reviewed_at=review.get("created_at"),
+        ),
+        license=license or License(),
+    )
+    return validate_card(card)
+
+
+def build_marker_card(
+    store: SessionStore,
+    session_id: str,
+    run_id: str,
+    *,
+    attempt_id: str | None = None,
+    license: License | None = None,
+) -> EvidenceCard:
+    """marker 复核卡：只含聚合统计与候选总数，不含逐细胞表达。"""
+    run = _run(store, session_id, run_id)
+    reviews = [
+        review
+        for review in run.get("marker_reviews", [])
+        if attempt_id is None or review["marker_attempt_id"] == attempt_id
+    ]
+    if not reviews:
+        raise ValueError("marker 尚未人工复核，不能生成证据卡")
+    review = reviews[-1]
+    attempt = next(
+        (
+            item
+            for item in run["marker_attempts"]
+            if item["attempt_id"] == review["marker_attempt_id"]
+        ),
+        None,
+    )
+    if attempt is None or attempt["status"] != "completed" or not attempt.get("result"):
+        raise ValueError("marker 结果缺失")
+    if review["binding_sha256"] != attempt["binding_sha256"]:
+        raise ValueError("marker 复核与结果身份不符")
+    result = attempt["result"]
+    outcome = review["decision"]
+    card = EvidenceCard(
+        card_id=_new_card_id(),
+        created_at=_now(),
+        gate="marker_review",
+        outcome=outcome,
+        subject=Subject(
+            session_id=session_id,
+            run_id=run_id,
+            attempt_id=attempt["attempt_id"],
+            parent_attempt_id=attempt["cluster_attempt_id"],
+            binding_sha256=review["binding_sha256"],
+            source_revision=review["source_revision"],
+        ),
+        method=Method(
+            tool="sc_markers",
+            tool_version=attempt["tool_version"],
+            protocol=json.loads(attempt["protocol"]),
+            parameters={"backend": result.get("backend")},
+            environment={"versions": "; ".join(result.get("versions") or [])},
+        ),
+        observation={
+            "cells": result.get("cells"),
+            "features": result.get("features"),
+            "clusters": result.get("clusters"),
+            "marker_rows": result.get("marker_rows"),
+            "positive_rows": result.get("positive_rows"),
+            "negative_rows": result.get("negative_rows"),
+        },
+        claim=Claim(
+            text=(
+                f"人工接受 {result.get('marker_rows')} 行 marker 候选"
+                f"（{result.get('clusters')} 个探索性簇）。"
+                if outcome == "accepted"
+                else "人工拒绝 marker 结果；不用于下游分析。"
+            ),
+            basis="fact",
+            confidence="medium",
+        ),
+        limitations=[
+            "marker 仅为候选统计，不代表细胞类型注释。",
+            "marker 允许每簇至少 3 个细胞；卡内不披露簇级规模。",
+        ]
+        + ([] if outcome == "accepted" else ["人工拒绝，结果不得用于下游分析。"]),
+        provenance=Provenance(artifacts=_result_artifacts(result)),
+        review=Review(
+            status=outcome,
+            reviewer=review.get("reviewer"),
             reason=review.get("reason"),
             reviewed_at=review.get("created_at"),
         ),
@@ -266,7 +467,7 @@ def build_qa_card(
         card_id=_new_card_id(),
         created_at=_now(),
         gate="knowledge_qa_review",
-        outcome=_OUTCOME_FROM_DECISION[review["decision"]],
+        outcome=review["decision"],
         subject=Subject(
             session_id=session_id,
             run_id=answer_id,
@@ -302,7 +503,7 @@ def build_qa_card(
         limitations=list(package.get("limitations") or []),
         provenance=Provenance(source_ids=source_ids),
         review=Review(
-            status=_OUTCOME_FROM_DECISION[review["decision"]],
+            status=review["decision"],
             reviewer=review.get("reviewer"),
             reason=review.get("reason"),
             reviewed_at=review.get("created_at"),

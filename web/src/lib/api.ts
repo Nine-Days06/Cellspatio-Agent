@@ -163,6 +163,10 @@ export function approveQc(sessionId: string, runId: string, previewId: string, r
   return request(`${qcPath(sessionId, runId)}/approve`, jsonInit('POST', { preview_id: previewId, reason }))
 }
 
+export function rejectQc(sessionId: string, runId: string, previewId: string, reason: string): Promise<QcReviewState> {
+  return request(`${qcPath(sessionId, runId)}/reject`, jsonInit('POST', { preview_id: previewId, reason }))
+}
+
 export function filterQc(sessionId: string, runId: string, previewId: string): Promise<QcReviewState> {
   return request(`${qcPath(sessionId, runId)}/filter`, jsonInit('POST', { preview_id: previewId }))
 }
@@ -218,6 +222,10 @@ export function recordClusterAcceptance(source: MarkerSource, binding: string, r
   return request(acceptancePath(source), jsonInit('POST', { binding_sha256: binding, revision, accepted: true, reason }))
 }
 
+export function recordClusterRejection(source: MarkerSource, binding: string, revision: number, reason: string): Promise<ClusterAcceptanceState> {
+  return request(`${clusterPath(source.sessionId, source.runId, source.filterAttemptId, source.pcaAttemptId)}/${encodeURIComponent(source.clusterAttemptId)}/reject`, jsonInit('POST', { binding_sha256: binding, revision, reason }))
+}
+
 export function fetchMarkers(source: MarkerSource): Promise<MarkerState> {
   return request(markerPath(source))
 }
@@ -232,4 +240,8 @@ export function markerDiagnosticPath(source: MarkerSource, attemptId: string): s
 
 export function fetchMarkerCandidates(source: MarkerSource, attemptId: string, offset: number): Promise<MarkerPage> {
   return request(`${markerPath(source)}/${encodeURIComponent(attemptId)}/candidates?offset=${offset}&limit=100`)
+}
+
+export function reviewMarkers(source: MarkerSource, attemptId: string, decision: 'accepted' | 'rejected', revision: number, reason: string): Promise<MarkerState> {
+  return request(`${markerPath(source)}/${encodeURIComponent(attemptId)}/review`, jsonInit('POST', { decision, revision, reason }))
 }

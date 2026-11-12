@@ -167,9 +167,11 @@ export interface QcPreview {
   preview_id: string
   params: Omit<QcThresholds, 'percent_mt_max'> & { percent_mt_max: string }
   summary: { total: number; kept: number; excluded: number; excluded_percent: number; reason_counts: Record<string, number>; blocked: string[]; filtered: false }
-  status: 'pending' | 'approved'
+  status: 'pending' | 'approved' | 'rejected'
   binding_sha256: string
   approved_at: string | null
+  rejected_at?: string | null
+  reviewer?: string | null
   reason: string | null
 }
 
@@ -223,6 +225,15 @@ export interface ClusterAcceptanceState {
   blocked: string[]
   current: ClusterAcceptance | null
   history: ClusterAcceptance[]
+  latest_decision: ReviewFact | null
+}
+
+export interface ReviewFact {
+  decision: 'accepted' | 'rejected'
+  reason: string
+  created_at: string
+  source_revision: number
+  invalidated_reason: string | null
 }
 
 export interface MarkerCandidate {
@@ -258,6 +269,7 @@ export interface MarkerState {
     status: FilterAttempt['status']
     invalidated_reason: string | null
     error: string | null
+    review: ReviewFact | null
     result: {
       cells: number; features: number; clusters: number; marker_rows: number
       positive_rows: number; negative_rows: number; versions: string[]
