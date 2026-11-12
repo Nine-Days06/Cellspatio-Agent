@@ -26,7 +26,7 @@ from src.analysis.sc_marker_reviews import CLUSTER_RECORD_VERSION, review_view
 from src.api import routes_pca
 from src.api.chat_service import session_lock
 from src.api.routes_pca import dimension_view, require_parent, require_pca
-from src.api.routes_qc import qc_root, require_run
+from src.api.routes_qc import require_run, run_qc_root
 from src.ui.session_store import SessionStore
 
 router = APIRouter(prefix="/api/sessions/{session_id}/qc/{run_id}/clusters", tags=["clusters"])
@@ -162,7 +162,7 @@ def get_clusters(
             run,
             require_parent(run, filter_attempt_id),
             require_pca(run, filter_attempt_id, pca_attempt_id),
-            qc_root(request.app.state.agent),
+            run_qc_root(request.app.state.agent, run),
         )
     except sqlite3.Error as exc:
         logger.error("cluster state database read failed: %s", type(exc).__name__)
@@ -193,7 +193,7 @@ def execute_clusters(
         run = require_run(store, session_id, run_id)
         parent = require_parent(run, filter_attempt_id)
         pca = require_pca(run, filter_attempt_id, pca_attempt_id)
-        root = qc_root(request.app.state.agent)
+        root = run_qc_root(request.app.state.agent, run)
         reviews = [d for d in run["dimension_reviews"] if d["pca_attempt_id"] == pca_attempt_id]
         if not any(d["review_id"] == body.dimension_review_id for d in reviews):
             raise HTTPException(404, "维度记录关联不存在")
@@ -323,7 +323,10 @@ def diagnostic(
         if attempt is None or attempt["status"] != "completed":
             raise HTTPException(404, "聚类图未完成或不存在")
         checked_completed_cluster(
-            run, attempt, qc_root(request.app.state.agent), routes_pca.DIMENSION_RECORD_VERSION
+            run,
+            attempt,
+            run_qc_root(request.app.state.agent, run),
+            routes_pca.DIMENSION_RECORD_VERSION,
         )
         path = Path(attempt["directory"]).resolve() / "umap_clusters.png"
         data = path.read_bytes()
@@ -382,7 +385,9 @@ def get_review(
         require_parent(run, filter_attempt_id)
         require_pca(run, filter_attempt_id, pca_attempt_id)
         return review_view(
-            run, require_cluster(run, pca_attempt_id, attempt_id), qc_root(request.app.state.agent)
+            run,
+            require_cluster(run, pca_attempt_id, attempt_id),
+            run_qc_root(request.app.state.agent, run),
         )
     except sqlite3.Error as exc:
         logger.error("cluster review database read failed: %s", type(exc).__name__)
@@ -406,7 +411,7 @@ def record_review(
         require_parent(run, filter_attempt_id)
         require_pca(run, filter_attempt_id, pca_attempt_id)
         cluster = require_cluster(run, pca_attempt_id, attempt_id)
-        root = qc_root(request.app.state.agent)
+        root = run_qc_root(request.app.state.agent, run)
         previous = next(
             (
                 d

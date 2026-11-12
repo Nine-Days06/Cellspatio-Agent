@@ -1049,7 +1049,7 @@ def test_query_memory_for_agent_returns_memory_response():
     from src.control.workflow_manager import WorkflowManager
 
     class StubKGQuery:
-        def query(self, question, mode="hybrid"):
+        def query(self, question, mode="hybrid", *, context=None):
             assert question == "上次差异表达用的什么参数"
             return "run-abc123 使用 DESeq2，FDR=0.05"
 

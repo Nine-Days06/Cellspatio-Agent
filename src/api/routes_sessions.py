@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+from pathlib import Path
 from typing import Any
 
 from fastapi import APIRouter, HTTPException, Request
@@ -12,6 +13,7 @@ from src.api.chat_service import session_lock, soft_warn_for
 from src.api.events import wire_message
 from src.control.chat_messages import build_assistant_message
 from src.ui.session_store import SessionStore
+from src.ui.usage import session_usage
 
 logger = logging.getLogger(__name__)
 
@@ -34,18 +36,67 @@ class CreateSessionRequest(BaseModel):
     """POST /api/sessions 请求体：title 缺省时由 store 生成时间戳标题。"""
 
     title: str | None = None
+    project_id: str | None = None
 
 
 @router.get("/sessions")
-def list_sessions() -> dict[str, Any]:
-    return {"sessions": _store().list_sessions()}
+def list_sessions(include_archived: bool = False) -> dict[str, Any]:
+    return {"sessions": _store().list_sessions(include_archived=include_archived)}
 
 
 @router.post("/sessions")
 def create_session(body: CreateSessionRequest | None = None) -> dict[str, Any]:
+    """新建会话；显式 project_id 时归入该项目，否则保持未归类。"""
     store = _store()
     title = body.title if body and body.title else "新会话"
-    session_id = store.create_session(title)
+    try:
+        session_id = store.create_session(title, body.project_id if body else None)
+    except ValueError as exc:
+        status = 409 if "归档" in str(exc) else 404
+        raise HTTPException(status_code=status, detail=str(exc)) from exc
+    return {"session": store.get_session(session_id)}
+
+
+@router.get("/sessions/{session_id}/usage")
+def get_session_usage(session_id: str) -> dict[str, Any]:
+    """返回会话产物、.wrroc 与 snapshots 的只读占用汇总。"""
+    try:
+        return session_usage(_store(), session_id, Path.cwd())
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
+class UpdateSessionRequest(BaseModel):
+    """PATCH /api/sessions/{id}：project_id 显式传 null 表示移回未归类。"""
+
+    project_id: str | None = None
+    pinned: bool | None = None
+    archived: bool | None = None
+
+
+@router.patch("/sessions/{session_id}")
+def update_session(session_id: str, body: UpdateSessionRequest) -> dict[str, Any]:
+    """更新归属/置顶/归档；归档前先拿会话锁，避免误藏运行中的对话。"""
+    store = _store()
+    _require_session(store, session_id)
+    lock = None
+    if body.archived:
+        lock = session_lock(session_id)
+        if not lock.acquire(blocking=False):
+            raise HTTPException(status_code=409, detail="该会话已有任务在进行")
+    try:
+        if "project_id" in body.model_fields_set:
+            store.move_session(session_id, body.project_id)
+        if body.pinned is not None:
+            store.set_session_pinned(session_id, body.pinned)
+        if body.archived is not None:
+            store.archive_session(session_id, body.archived)
+    except ValueError as exc:
+        status = 409 if "归档" in str(exc) else 404
+        raise HTTPException(status_code=status, detail=str(exc)) from exc
+    finally:
+        if lock is not None:
+            lock.release()
     return {"session": store.get_session(session_id)}
 
 

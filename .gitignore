@@ -53,6 +53,21 @@ pubmed-etl/data/
 .ruff_cache/
 .pytest_cache/
 
+# 本地测试/验收/临时目录
+/.client-fat-data*/
+/.client-browser-accept/
+/.pytest-commit-gate/
+/.pytest_tmp/
+/client-smoke-home/
+/pytest-of-*/
+/cellspatio-e2e-*/
+/cellspatio-e2e/
+/.e2e-runs/
+/data-gym-cache/
+/tmp*/
+/web/.vitest/
+/run_kb_ingest.cmd
+
 # 分析输出
 output/
 

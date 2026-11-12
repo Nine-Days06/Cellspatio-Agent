@@ -13,6 +13,9 @@ import type {
   ClusterAcceptanceState,
   MarkerState,
   MarkerPage,
+  LocalInputResponse,
+  Project,
+  UsageSummary,
 } from '@/lib/types'
 
 /** 统一 HTTP 错误：message 直接用后端 detail（已是中文），UI 可直接展示。 */
@@ -54,16 +57,68 @@ const jsonInit = (method: string, body?: unknown): RequestInit => ({
   ...(body === undefined ? {} : { body: JSON.stringify(body) }),
 })
 
-export function listSessions(): Promise<{ sessions: SessionSummary[] }> {
-  return request('/api/sessions', { method: 'GET' })
+const archivedQuery = (includeArchived: boolean) =>
+  includeArchived ? '?include_archived=1' : ''
+
+export function listSessions(includeArchived = false): Promise<{ sessions: SessionSummary[] }> {
+  return request(`/api/sessions${archivedQuery(includeArchived)}`, { method: 'GET' })
 }
 
-export function createSession(title?: string): Promise<{ session: Session }> {
-  return request('/api/sessions', jsonInit('POST', title ? { title } : {}))
+export function createSession(title?: string, projectId?: string | null): Promise<{ session: Session }> {
+  const body: Record<string, unknown> = {}
+  if (title) body.title = title
+  if (projectId !== undefined) body.project_id = projectId
+  return request('/api/sessions', jsonInit('POST', body))
 }
 
 export function deleteSession(sessionId: string): Promise<{ deleted: string }> {
   return request(`/api/sessions/${encodeURIComponent(sessionId)}`, jsonInit('DELETE'))
+}
+
+export interface UpdateSessionBody {
+  project_id?: string | null
+  pinned?: boolean
+  archived?: boolean
+}
+
+export function updateSession(sessionId: string, body: UpdateSessionBody): Promise<{ session: Session }> {
+  return request(`/api/sessions/${encodeURIComponent(sessionId)}`, jsonInit('PATCH', body))
+}
+
+export function fetchSessionUsage(sessionId: string): Promise<UsageSummary> {
+  return request(`/api/sessions/${encodeURIComponent(sessionId)}/usage`)
+}
+
+export function listProjects(includeArchived = false): Promise<{ projects: Project[] }> {
+  return request(`/api/projects${archivedQuery(includeArchived)}`, { method: 'GET' })
+}
+
+export function createProject(
+  label: string | null,
+  rootPath?: string | null,
+): Promise<{ project: Project }> {
+  return request('/api/projects', jsonInit('POST', { label, root_path: rootPath || null }))
+}
+
+export interface UpdateProjectBody {
+  label?: string
+  root_path?: string | null
+  archived?: boolean
+}
+
+export function updateProject(projectId: string, body: UpdateProjectBody): Promise<{ project: Project }> {
+  return request(`/api/projects/${encodeURIComponent(projectId)}`, jsonInit('PATCH', body))
+}
+
+export function fetchProjectUsage(projectId: string): Promise<UsageSummary> {
+  return request(`/api/projects/${encodeURIComponent(projectId)}/usage`)
+}
+
+export function registerLocalInput(sessionId: string, path: string): Promise<LocalInputResponse> {
+  return request(
+    `/api/sessions/${encodeURIComponent(sessionId)}/local-input`,
+    jsonInit('POST', { path }),
+  )
 }
 
 /**

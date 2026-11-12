@@ -9,6 +9,17 @@ load_dotenv()
 # ── 项目路径 ──────────────────────────────────────────────────
 BASE_DIR = Path(__file__).parent.parent
 
+
+def env_flag(name: str) -> bool:
+    """读取布尔环境变量：1/true/yes/on 为真。"""
+    return os.environ.get(name, "0").strip().lower() in ("1", "true", "yes", "on")
+
+
+def is_local_mode() -> bool:
+    """本地客户端模式：跳过登录，以及依赖 PostgreSQL 的记忆/快照。"""
+    return env_flag("CELLSPATIO_LOCAL")
+
+
 # ── LLM 供应商配置 ──────────────────────────────────────────
 # 快捷切换：修改 AGENT_LLM_PROVIDER 即可切换供应商
 # 向后兼容：若未设置 AGENT_LLM_PROVIDER，仍读取 LLM_PROVIDER

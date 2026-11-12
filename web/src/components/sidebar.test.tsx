@@ -3,14 +3,26 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { Sidebar } from '@/components/Sidebar'
 import { SoftWarnBanner } from '@/components/SoftWarnBanner'
 import { ApiError } from '@/lib/api'
-import type { EnvStatus, KbStats, SessionSummary } from '@/lib/types'
+import type { EnvStatus, KbStats, Project, SessionSummary } from '@/lib/types'
 
 const deleteSession = vi.fn()
 const createSession = vi.fn()
+const createProject = vi.fn()
+const deleteProject = vi.fn()
+const updateProject = vi.fn()
+const updateSession = vi.fn()
+const fetchSessionUsage = vi.fn()
+const fetchProjectUsage = vi.fn()
 
 vi.mock('@/lib/api', () => ({
   deleteSession: (...args: unknown[]) => deleteSession(...args),
   createSession: (...args: unknown[]) => createSession(...args),
+  createProject: (...args: unknown[]) => createProject(...args),
+  deleteProject: (...args: unknown[]) => deleteProject(...args),
+  updateProject: (...args: unknown[]) => updateProject(...args),
+  updateSession: (...args: unknown[]) => updateSession(...args),
+  fetchSessionUsage: (...args: unknown[]) => fetchSessionUsage(...args),
+  fetchProjectUsage: (...args: unknown[]) => fetchProjectUsage(...args),
   ApiError: class ApiError extends Error {
     status: number
     constructor(status: number, message: string) {
@@ -22,8 +34,24 @@ vi.mock('@/lib/api', () => ({
 }))
 
 const sessions: SessionSummary[] = [
-  { id: 's1', title: '肝癌项目', updated_at: '2026-09-30T00:00:00', message_count: 3 },
-  { id: 's2', title: '新会话', updated_at: '2026-09-29T00:00:00', message_count: 0 },
+  {
+    id: 's1',
+    title: '肝癌项目',
+    updated_at: '2026-09-30T00:00:00',
+    message_count: 3,
+    project_id: null,
+    pinned: false,
+    archived_at: null,
+  },
+  {
+    id: 's2',
+    title: '新会话',
+    updated_at: '2026-09-29T00:00:00',
+    message_count: 0,
+    project_id: null,
+    pinned: false,
+    archived_at: null,
+  },
 ]
 
 const healthyEnv: EnvStatus = {
@@ -35,6 +63,19 @@ const healthyEnv: EnvStatus = {
 }
 
 const healthyKb: KbStats = { initialized: true }
+
+const projects: Project[] = [
+  {
+    id: 'p1',
+    label: '肝项目组',
+    kind: 'local',
+    root_path: null,
+    created_at: '2026-09-30T00:00:00',
+    updated_at: '2026-09-30T00:00:00',
+    archived_at: null,
+    session_count: 1,
+  },
+]
 
 function renderSidebar(overrides: Partial<Parameters<typeof Sidebar>[0]> = {}) {
   const onSelected = vi.fn()
@@ -58,6 +99,12 @@ function renderSidebar(overrides: Partial<Parameters<typeof Sidebar>[0]> = {}) {
 beforeEach(() => {
   deleteSession.mockReset()
   createSession.mockReset()
+  createProject.mockReset()
+  deleteProject.mockReset()
+  updateProject.mockReset()
+  updateSession.mockReset()
+  fetchSessionUsage.mockReset()
+  fetchProjectUsage.mockReset()
   vi.restoreAllMocks()
 })
 
@@ -200,6 +247,151 @@ describe('Sidebar', () => {
     // 只读展示：不得出现按钮/开关，避免用户误以为点一下就能改
     expect(screen.queryByRole('button', { name: /启动模式|随程序启动/ })).toBeNull()
   })
+})
+
+it('按项目分组渲染会话，项目头可新建会话', () => {
+  createSession.mockResolvedValue({
+    session: {
+      id: 's3',
+      title: '新会话',
+      created_at: '2026-10-01T00:00:00',
+      updated_at: '2026-10-01T00:00:00',
+      summary: null,
+      summary_upto: 0,
+      downloaded_assets: [],
+      project_id: 'p1',
+      pinned: false,
+      archived_at: null,
+    },
+  })
+  const { onCreated } = renderSidebar({
+    projects,
+    sessions: [{ ...sessions[0], project_id: 'p1' }],
+  })
+  expect(screen.getByRole('button', { name: /^肝项目组/ })).toHaveAttribute('aria-expanded', 'true')
+  fireEvent.click(screen.getByRole('button', { name: '在 肝项目组 新建会话' }))
+  return waitFor(() => {
+    expect(createSession).toHaveBeenCalledWith(undefined, 'p1')
+    expect(onCreated).toHaveBeenCalledWith(expect.objectContaining({ id: 's3', project_id: 'p1' }))
+  })
+})
+
+it('新建项目：填名后调用 createProject 并刷新', async () => {
+  createProject.mockResolvedValue({ project: projects[0] })
+  const onChanged = vi.fn()
+  renderSidebar({ projects: [], sessions: [], onChanged })
+  fireEvent.click(screen.getByRole('button', { name: '新建项目' }))
+  fireEvent.change(screen.getByLabelText('新项目名'), { target: { value: ' 肝项目组 ' } })
+  fireEvent.click(screen.getByRole('button', { name: '创建项目' }))
+  await waitFor(() => expect(createProject).toHaveBeenCalledWith('肝项目组', null))
+  await waitFor(() => expect(onChanged).toHaveBeenCalled())
+})
+
+it('会话菜单可移动与归档', async () => {
+  updateSession.mockResolvedValue({ session: {} })
+  const onChanged = vi.fn()
+  const onArchived = vi.fn()
+  renderSidebar({ projects, onChanged, onArchived })
+  fireEvent.click(screen.getByRole('button', { name: '更多 新会话' }))
+  fireEvent.change(screen.getByLabelText('移动到项目'), { target: { value: 'p1' } })
+  fireEvent.click(screen.getByRole('button', { name: '移动' }))
+  await waitFor(() => expect(updateSession).toHaveBeenCalledWith('s2', { project_id: 'p1' }))
+  await waitFor(() => expect(onChanged).toHaveBeenCalled())
+
+  fireEvent.click(screen.getByRole('button', { name: '更多 新会话' }))
+  fireEvent.click(screen.getByRole('button', { name: '归档会话' }))
+  await waitFor(() => expect(onArchived).toHaveBeenCalledWith('s2'))
+})
+
+it('显示已归档后置灰展示归档项目与会话，并可恢复', async () => {
+  updateProject.mockResolvedValue({ project: projects[0] })
+  updateSession.mockResolvedValue({ session: {} })
+  const onChanged = vi.fn()
+  renderSidebar({
+    projects: [{ ...projects[0], archived_at: '2026-10-01T00:00:00' }],
+    sessions: [
+      { ...sessions[0], archived_at: '2026-10-02T00:00:00' },
+      sessions[1],
+    ],
+    onChanged,
+  })
+
+  expect(screen.queryByRole('region', { name: '已归档' })).not.toBeInTheDocument()
+  fireEvent.click(screen.getByRole('button', { name: '显示已归档' }))
+
+  const region = screen.getByRole('region', { name: '已归档' })
+  expect(within(region).getByText('肝项目组')).toBeInTheDocument()
+  expect(within(region).getByText('肝癌项目')).toBeInTheDocument()
+
+  fireEvent.click(within(region).getByRole('button', { name: '恢复项目 肝项目组' }))
+  await waitFor(() =>
+    expect(updateProject).toHaveBeenCalledWith('p1', { archived: false }),
+  )
+  await waitFor(() => expect(onChanged).toHaveBeenCalled())
+
+  fireEvent.click(within(region).getByRole('button', { name: '恢复会话 肝癌项目' }))
+  await waitFor(() =>
+    expect(updateSession).toHaveBeenCalledWith('s1', { archived: false }),
+  )
+})
+
+it('归档项目下的会话整组隐藏，不进入活动列表', () => {
+  renderSidebar({
+    projects: [{ ...projects[0], archived_at: '2026-10-01T00:00:00' }],
+    sessions: [{ ...sessions[0], project_id: 'p1' }, sessions[1]],
+  })
+  expect(screen.queryByRole('button', { name: /^肝癌项目/ })).not.toBeInTheDocument()
+  expect(screen.queryByRole('button', { name: /^肝项目组/ })).not.toBeInTheDocument()
+  expect(screen.getByRole('button', { name: /^新会话/ })).toBeInTheDocument()
+})
+
+it('搜索态下打开已归档仍可找到归档项', () => {
+  renderSidebar({
+    sessions: [{ ...sessions[0], archived_at: '2026-10-02T00:00:00' }, sessions[1]],
+  })
+  fireEvent.change(screen.getByRole('searchbox', { name: '搜索会话' }), {
+    target: { value: '肝癌' },
+  })
+  expect(screen.queryByRole('region', { name: '已归档' })).not.toBeInTheDocument()
+
+  fireEvent.click(screen.getByRole('button', { name: '显示已归档' }))
+  const region = screen.getByRole('region', { name: '已归档' })
+  expect(within(region).getByText('肝癌项目')).toBeInTheDocument()
+  expect(within(region).getByRole('button', { name: '恢复会话 肝癌项目' })).toBeInTheDocument()
+})
+
+it('会话对话框显示只读占用汇总', async () => {
+  fetchSessionUsage.mockResolvedValue({
+    scope: 'session',
+    target_id: 's2',
+    bytes: 2048,
+    files: 3,
+  })
+  renderSidebar({ projects })
+
+  fireEvent.click(screen.getByRole('button', { name: '更多 新会话' }))
+  await waitFor(() =>
+    expect(screen.getByTestId('session-usage')).toHaveTextContent(
+      '占用：2.0 KB · 3 个文件',
+    ),
+  )
+})
+
+it('项目对话框显示只读占用汇总', async () => {
+  fetchProjectUsage.mockResolvedValue({
+    scope: 'project',
+    target_id: 'p1',
+    bytes: 1024,
+    files: 1,
+  })
+  renderSidebar({ projects })
+
+  fireEvent.click(screen.getByRole('button', { name: '项目操作 肝项目组' }))
+  await waitFor(() =>
+    expect(screen.getByTestId('project-usage')).toHaveTextContent(
+      '占用：1.0 KB · 1 个文件',
+    ),
+  )
 })
 
 describe('SoftWarnBanner', () => {
