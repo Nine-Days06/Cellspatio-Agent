@@ -42,6 +42,15 @@ def test_create_project_rejects_blank_label(client):
     assert client.post("/api/projects", json={"label": "   "}).status_code == 422
 
 
+def test_project_usage_returns_readonly_summary(client):
+    pid = client.post("/api/projects", json={"label": "项目"}).json()["project"]["id"]
+
+    usage = client.get(f"/api/projects/{pid}/usage").json()
+    assert usage["scope"] == "project"
+    assert usage["bytes"] == 0
+    assert client.get("/api/projects/nope/usage").status_code == 404
+
+
 def test_delete_project_is_cli_only(client):
     pid = client.post("/api/projects", json={"label": "非空"}).json()["project"]["id"]
     client.post("/api/sessions", json={"project_id": pid})

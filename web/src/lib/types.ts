@@ -35,6 +35,14 @@ export interface Session {
   archived_at: string | null
 }
 
+/** GET /api/{sessions|projects}/{id}/usage：产物 + .wrroc + snapshots 的只读汇总。 */
+export interface UsageSummary {
+  scope: 'session' | 'project'
+  target_id: string
+  bytes: number
+  files: number
+}
+
 /** POST /api/sessions/{id}/local-input：登记本地输入并运行固定 QC。 */
 export interface LocalInputResponse {
   message: WireMessage

@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useRef, useState } from 'react'
 import {
   Archive,
   ChevronDown,
@@ -17,10 +17,12 @@ import {
   createProject,
   createSession,
   deleteSession,
+  fetchProjectUsage,
+  fetchSessionUsage,
   updateProject,
   updateSession,
 } from '@/lib/api'
-import type { EnvStatus, KbStats, Project, SessionSummary } from '@/lib/types'
+import type { EnvStatus, KbStats, Project, SessionSummary, UsageSummary } from '@/lib/types'
 import { collectArchivedProjectIds, isActiveSession } from '@/lib/sessions'
 import { Button } from '@/components/ui/button'
 import {
@@ -62,6 +64,18 @@ function errorMessage(err: unknown, fallback: string): string {
   return err instanceof ApiError ? err.message : fallback
 }
 
+function formatBytes(bytes: number): string {
+  if (bytes < 1024) return `${bytes} B`
+  const units = ['KB', 'MB', 'GB', 'TB']
+  let value = bytes / 1024
+  let index = 0
+  while (value >= 1024 && index < units.length - 1) {
+    value /= 1024
+    index += 1
+  }
+  return `${value.toFixed(1)} ${units[index]}`
+}
+
 export function Sidebar({
   sessions,
   projects = [],
@@ -91,6 +105,10 @@ export function Sidebar({
   const [editRoot, setEditRoot] = useState('')
   const [moveTarget, setMoveTarget] = useState('')
   const [showArchived, setShowArchived] = useState(false)
+  const [usage, setUsage] = useState<UsageSummary | null>(null)
+  const [usageLoading, setUsageLoading] = useState(false)
+  const [usageError, setUsageError] = useState<string | null>(null)
+  const usageRequest = useRef(0)
 
   const archivedProjectIds = collectArchivedProjectIds(projects)
   const query = search.trim().toLocaleLowerCase()
@@ -179,11 +197,39 @@ export function Sidebar({
     }
   }
 
+  async function loadUsage(scope: 'session' | 'project', id: string) {
+    const request = ++usageRequest.current
+    setUsage(null)
+    setUsageError(null)
+    setUsageLoading(true)
+    try {
+      const summary =
+        scope === 'session'
+          ? await fetchSessionUsage(id)
+          : await fetchProjectUsage(id)
+      if (request !== usageRequest.current) return
+      setUsage(summary)
+    } catch (err) {
+      if (request !== usageRequest.current) return
+      setUsageError(errorMessage(err, '统计占用失败'))
+    } finally {
+      if (request === usageRequest.current) setUsageLoading(false)
+    }
+  }
+
+  function usageLine() {
+    if (usageLoading) return '正在统计占用…'
+    if (usageError) return usageError
+    if (!usage) return null
+    return `占用：${formatBytes(usage.bytes)} · ${usage.files.toLocaleString()} 个文件`
+  }
+
   function openProject(project: Project) {
     setPendingProject(project)
     setEditLabel(project.label)
     setEditRoot(project.root_path ?? '')
     setActionError(null)
+    void loadUsage('project', project.id)
   }
 
   async function handleSaveProject() {
@@ -225,6 +271,7 @@ export function Sidebar({
     setPendingSession(session)
     setMoveTarget(session.project_id ?? '')
     setActionError(null)
+    void loadUsage('session', session.id)
   }
 
   async function togglePinned() {
@@ -587,6 +634,9 @@ export function Sidebar({
           <DialogTitle>会话操作</DialogTitle>
           <DialogDescription>{pendingSession?.title}</DialogDescription>
         </DialogHeader>
+        <p className="text-xs text-muted-foreground" data-testid="session-usage">
+          {usageLine()}
+        </p>
         <div className="flex flex-col gap-3">
           <Button variant="outline" className="justify-start" onClick={() => void togglePinned()}>
             {pendingSession?.pinned ? (
@@ -635,6 +685,9 @@ export function Sidebar({
           <DialogTitle>项目设置</DialogTitle>
           <DialogDescription>{pendingProject?.label}</DialogDescription>
         </DialogHeader>
+        <p className="text-xs text-muted-foreground" data-testid="project-usage">
+          {usageLine()}
+        </p>
         <div className="flex flex-col gap-3">
           <label className="flex flex-col gap-1 text-xs text-muted-foreground">
             项目名

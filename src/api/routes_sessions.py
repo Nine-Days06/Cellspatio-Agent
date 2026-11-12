@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+from pathlib import Path
 from typing import Any
 
 from fastapi import APIRouter, HTTPException, Request
@@ -12,6 +13,7 @@ from src.api.chat_service import session_lock, soft_warn_for
 from src.api.events import wire_message
 from src.control.chat_messages import build_assistant_message
 from src.ui.session_store import SessionStore
+from src.ui.usage import session_usage
 
 logger = logging.getLogger(__name__)
 
@@ -52,6 +54,15 @@ def create_session(body: CreateSessionRequest | None = None) -> dict[str, Any]:
         status = 409 if "归档" in str(exc) else 404
         raise HTTPException(status_code=status, detail=str(exc)) from exc
     return {"session": store.get_session(session_id)}
+
+
+@router.get("/sessions/{session_id}/usage")
+def get_session_usage(session_id: str) -> dict[str, Any]:
+    """返回会话产物、.wrroc 与 snapshots 的只读占用汇总。"""
+    try:
+        return session_usage(_store(), session_id, Path.cwd())
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
 
 
 class UpdateSessionRequest(BaseModel):

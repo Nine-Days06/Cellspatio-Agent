@@ -15,6 +15,7 @@ import type {
   MarkerPage,
   LocalInputResponse,
   Project,
+  UsageSummary,
 } from '@/lib/types'
 
 /** 统一 HTTP 错误：message 直接用后端 detail（已是中文），UI 可直接展示。 */
@@ -84,6 +85,10 @@ export function updateSession(sessionId: string, body: UpdateSessionBody): Promi
   return request(`/api/sessions/${encodeURIComponent(sessionId)}`, jsonInit('PATCH', body))
 }
 
+export function fetchSessionUsage(sessionId: string): Promise<UsageSummary> {
+  return request(`/api/sessions/${encodeURIComponent(sessionId)}/usage`)
+}
+
 export function listProjects(includeArchived = false): Promise<{ projects: Project[] }> {
   return request(`/api/projects${archivedQuery(includeArchived)}`, { method: 'GET' })
 }
@@ -100,6 +105,10 @@ export interface UpdateProjectBody {
 
 export function updateProject(projectId: string, body: UpdateProjectBody): Promise<{ project: Project }> {
   return request(`/api/projects/${encodeURIComponent(projectId)}`, jsonInit('PATCH', body))
+}
+
+export function fetchProjectUsage(projectId: string): Promise<UsageSummary> {
+  return request(`/api/projects/${encodeURIComponent(projectId)}/usage`)
 }
 
 export function registerLocalInput(sessionId: string, path: string): Promise<LocalInputResponse> {

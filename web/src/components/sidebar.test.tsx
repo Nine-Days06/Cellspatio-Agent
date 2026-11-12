@@ -11,6 +11,8 @@ const createProject = vi.fn()
 const deleteProject = vi.fn()
 const updateProject = vi.fn()
 const updateSession = vi.fn()
+const fetchSessionUsage = vi.fn()
+const fetchProjectUsage = vi.fn()
 
 vi.mock('@/lib/api', () => ({
   deleteSession: (...args: unknown[]) => deleteSession(...args),
@@ -19,6 +21,8 @@ vi.mock('@/lib/api', () => ({
   deleteProject: (...args: unknown[]) => deleteProject(...args),
   updateProject: (...args: unknown[]) => updateProject(...args),
   updateSession: (...args: unknown[]) => updateSession(...args),
+  fetchSessionUsage: (...args: unknown[]) => fetchSessionUsage(...args),
+  fetchProjectUsage: (...args: unknown[]) => fetchProjectUsage(...args),
   ApiError: class ApiError extends Error {
     status: number
     constructor(status: number, message: string) {
@@ -99,6 +103,8 @@ beforeEach(() => {
   deleteProject.mockReset()
   updateProject.mockReset()
   updateSession.mockReset()
+  fetchSessionUsage.mockReset()
+  fetchProjectUsage.mockReset()
   vi.restoreAllMocks()
 })
 
@@ -352,6 +358,40 @@ it('搜索态下打开已归档仍可找到归档项', () => {
   const region = screen.getByRole('region', { name: '已归档' })
   expect(within(region).getByText('肝癌项目')).toBeInTheDocument()
   expect(within(region).getByRole('button', { name: '恢复会话 肝癌项目' })).toBeInTheDocument()
+})
+
+it('会话对话框显示只读占用汇总', async () => {
+  fetchSessionUsage.mockResolvedValue({
+    scope: 'session',
+    target_id: 's2',
+    bytes: 2048,
+    files: 3,
+  })
+  renderSidebar({ projects })
+
+  fireEvent.click(screen.getByRole('button', { name: '更多 新会话' }))
+  await waitFor(() =>
+    expect(screen.getByTestId('session-usage')).toHaveTextContent(
+      '占用：2.0 KB · 3 个文件',
+    ),
+  )
+})
+
+it('项目对话框显示只读占用汇总', async () => {
+  fetchProjectUsage.mockResolvedValue({
+    scope: 'project',
+    target_id: 'p1',
+    bytes: 1024,
+    files: 1,
+  })
+  renderSidebar({ projects })
+
+  fireEvent.click(screen.getByRole('button', { name: '项目操作 肝项目组' }))
+  await waitFor(() =>
+    expect(screen.getByTestId('project-usage')).toHaveTextContent(
+      '占用：1.0 KB · 1 个文件',
+    ),
+  )
 })
 
 describe('SoftWarnBanner', () => {

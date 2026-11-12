@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Any
 
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
 from src.ui.session_store import SessionStore
+from src.ui.usage import project_usage
 
 router = APIRouter(prefix="/api", tags=["projects"])
 
@@ -40,6 +42,15 @@ def create_project(body: ProjectCreateRequest) -> dict[str, Any]:
     store = _store()
     project_id = store.create_project(label, root_path=(body.root_path or None))
     return {"project": store.get_project(project_id)}
+
+
+@router.get("/projects/{project_id}/usage")
+def get_project_usage(project_id: str) -> dict[str, Any]:
+    """返回项目目录、会话产物与 kg_memory 的只读占用汇总。"""
+    try:
+        return project_usage(_store(), project_id, Path.cwd())
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
 
 
 @router.patch("/projects/{project_id}")

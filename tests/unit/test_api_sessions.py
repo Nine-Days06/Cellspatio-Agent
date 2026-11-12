@@ -89,6 +89,16 @@ def test_create_session_with_unknown_project_returns_404(client):
     assert response.status_code == 404
 
 
+def test_session_usage_returns_readonly_summary(client):
+    sid = client.post("/api/sessions", json={}).json()["session"]["id"]
+
+    usage = client.get(f"/api/sessions/{sid}/usage").json()
+    assert usage["scope"] == "session"
+    assert usage["target_id"] == sid
+    assert usage["bytes"] == 0
+    assert client.get("/api/sessions/nope/usage").status_code == 404
+
+
 def test_create_session_in_archived_project_returns_409(client):
     pid = client.post("/api/projects", json={"label": "归档项目"}).json()["project"]["id"]
     client.patch(f"/api/projects/{pid}", json={"archived": True})

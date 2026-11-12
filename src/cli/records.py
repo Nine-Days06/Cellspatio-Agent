@@ -21,6 +21,21 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from src.ui.record_files import (
+    resolve_dir as _resolve_dir,
+)
+from src.ui.record_files import (
+    run_dirs as _run_dirs,
+)
+from src.ui.record_files import (
+    safe_target as _safe_target,
+)
+from src.ui.record_files import (
+    session_runs as _session_runs,
+)
+from src.ui.record_files import (
+    wrroc_runs as _wrroc_runs,
+)
 from src.ui.session_store import SessionStore
 
 SCHEMA_VERSION = "cellspatio-record/1.0.0"
@@ -33,7 +48,6 @@ _PATH_KEYS = {
     "path",
     "root_path",
 }
-_PROTECTED_NAMES = {".cellspatio", ".wrroc", "snapshots", "data"}
 
 
 def _now() -> str:
@@ -89,63 +103,6 @@ def _sha256(path: Path) -> str:
         for chunk in iter(lambda: handle.read(1024 * 1024), b""):
             digest.update(chunk)
     return digest.hexdigest()
-
-
-def _session_runs(store: SessionStore, session_id: str) -> list[dict[str, Any]]:
-    runs = []
-    for row in store.list_qc_runs(session_id):
-        run = store.get_qc_run(session_id, row["run_id"])
-        if run is not None:
-            runs.append(run)
-    return runs
-
-
-def _wrroc_runs(root: Path, session_id: str) -> list[tuple[str, dict[str, Any]]]:
-    """枚举 .wrroc 下属于该会话的运行记录；坏文件跳过。"""
-    base = root / ".wrroc"
-    if not base.is_dir():
-        return []
-    runs = []
-    for wf_file in sorted(base.glob("*/workflow.json")):
-        try:
-            data = json.loads(wf_file.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError):
-            continue
-        context = ((data.get("input") or {}).get("context") or {}) or (
-            (data.get("meta") or {}).get("context") or {}
-        )
-        if context.get("session_id") == session_id:
-            runs.append((wf_file.parent.name, data))
-    return runs
-
-
-def _run_dirs(run: dict[str, Any]) -> list[tuple[str, str]]:
-    pairs = []
-    if run.get("directory"):
-        pairs.append(("qc", str(run["directory"])))
-    for key, stage in (
-        ("attempts", "filter"),
-        ("pca_attempts", "pca"),
-        ("cluster_attempts", "cluster"),
-        ("marker_attempts", "marker"),
-    ):
-        for attempt in run.get(key) or []:
-            if attempt.get("directory"):
-                pairs.append((stage, str(attempt["directory"])))
-    return pairs
-
-
-def _resolve_dir(value: str, root: Path) -> Path:
-    path = Path(value)
-    return (path if path.is_absolute() else root / path).resolve()
-
-
-def _safe_target(value: str | Path, root: Path) -> Path | None:
-    """只允许 root 内的普通产物路径；拒绝 root 本身、共享根与逃逸路径。"""
-    path = _resolve_dir(str(value), root)
-    if path == root or any(path == root / name for name in _PROTECTED_NAMES):
-        return None
-    return path if path.is_relative_to(root) else None
 
 
 def _artifact_rows(
