@@ -23,6 +23,7 @@ from src.evidence.schema import SCHEMA_VERSION, EvidenceCard, validate_card
 
 SUBMISSION_SCHEMA_VERSION = "cellspatio-evidence-submission/1.0.0"
 CONSENT_TEXT_VERSION = "public-evidence-consent/1"
+CONSENT_TEXT = "我确认仅上传证据卡的聚合字段，不含原始矩阵、barcode、坐标、样本级 ID 或绝对路径。"
 
 ROLE_CONTRIBUTOR = "contributor"
 ROLE_DOMAIN = "domain_reviewer"
@@ -134,7 +135,7 @@ def _clean(value: Any) -> str:
     return str(value or "").strip()
 
 
-def _admission_problems(card: EvidenceCard) -> list[str]:
+def admission_problems(card: EvidenceCard) -> list[str]:
     """票据 17 的 B 级准入清单；返回全部不满足项。"""
     problems: list[str] = []
     if card.outcome != STATE_ACCEPTED:
@@ -320,7 +321,7 @@ class GovernanceStore:
             validate_card(env.card)
         except ValueError as exc:
             raise ValueError(f"证据卡校验失败：{exc}") from exc
-        problems = _admission_problems(env.card)
+        problems = admission_problems(env.card)
         if problems:
             raise ValueError("准入失败：" + "；".join(problems))
         if env.card.schema_version != SCHEMA_VERSION:

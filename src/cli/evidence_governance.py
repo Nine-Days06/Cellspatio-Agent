@@ -1,5 +1,7 @@
 """CLI: 公共证据治理假服务器（票据 17）。
 
+python -m src.cli.evidence_governance preview card.json --actor a --out preview.json
+python -m src.cli.evidence_governance contribute preview.json --consent
 python -m src.cli.evidence_governance submit envelope.json
 python -m src.cli.evidence_governance review <evidence_id> --actor a --role domain_reviewer \\
     --action domain_pass --check method_complete=true ...
@@ -17,6 +19,7 @@ import sqlite3
 from pathlib import Path
 from typing import Any
 
+from src.evidence.contribution import build_envelope, preview_card
 from src.evidence.governance import (
     ACTION_COMPLIANCE_NEEDS_CHANGES,
     ACTION_COMPLIANCE_PASS,
@@ -30,6 +33,7 @@ from src.evidence.governance import (
     GovernanceStore,
     SubmissionEnvelope,
 )
+from src.evidence.schema import EvidenceCard
 
 
 def _store(root: str | None) -> GovernanceStore:
@@ -63,6 +67,15 @@ def main(argv: list[str] | None = None) -> int:
 
     submit_parser = subparsers.add_parser("submit")
     submit_parser.add_argument("envelope")
+
+    preview_parser = subparsers.add_parser("preview")
+    preview_parser.add_argument("card")
+    preview_parser.add_argument("--actor", required=True)
+    preview_parser.add_argument("--out", default=None)
+
+    contribute_parser = subparsers.add_parser("contribute")
+    contribute_parser.add_argument("preview")
+    contribute_parser.add_argument("--consent", action="store_true")
 
     review_parser = subparsers.add_parser("review")
     review_parser.add_argument("evidence_id")
@@ -111,6 +124,17 @@ def main(argv: list[str] | None = None) -> int:
         store = _store(args.root)
         if args.command == "submit":
             result: Any = store.submit(_load_envelope(args.envelope))
+        elif args.command == "preview":
+            card = EvidenceCard.model_validate_json(Path(args.card).read_text(encoding="utf-8"))
+            result = preview_card(card, contributor_id=args.actor)
+            if args.out:
+                Path(args.out).write_text(
+                    json.dumps(result, ensure_ascii=False, indent=2), encoding="utf-8"
+                )
+        elif args.command == "contribute":
+            preview = json.loads(Path(args.preview).read_text(encoding="utf-8"))
+            envelope = build_envelope(preview, consent=args.consent)
+            result = store.submit(envelope)
         elif args.command == "review":
             result = store.review(
                 args.evidence_id,
