@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import tempfile
 from pathlib import Path
 from typing import Any
 
@@ -67,6 +68,17 @@ def resolve_dir(value: str, root: Path) -> Path:
     """把相对路径解析到 root 下。"""
     path = Path(value)
     return (path if path.is_absolute() else root / path).resolve()
+
+
+def writable_dir(path: Path) -> bool:
+    """写探针校验目录可写（Windows ACL 下 os.access 不可靠）；探针文件立即删除。"""
+    if not path.is_dir():
+        return False
+    try:
+        with tempfile.NamedTemporaryFile(dir=path, prefix=".cellspatio-probe-", delete=True):
+            return True
+    except OSError:
+        return False
 
 
 def safe_target(value: str | Path, root: Path) -> Path | None:

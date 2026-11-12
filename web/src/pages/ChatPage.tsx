@@ -305,7 +305,10 @@ export function ChatPage() {
           </div>
           <div className="flex shrink-0 items-center gap-2">
             <span className="flex items-center gap-2 text-xs text-muted-foreground"><span aria-hidden="true" className={`size-1.5 rounded-full ${busy ? 'bg-primary' : 'bg-muted-foreground/50'}`} />{busy ? '正在执行' : '等待输入'}</span>
-            <LocalInputDialog onSubmit={handleLocalInput} />
+            <LocalInputDialog
+              onSubmit={handleLocalInput}
+              defaultPath={currentProject?.root_path ?? ''}
+            />
             <ThemeToggle />
           </div>
         </header>

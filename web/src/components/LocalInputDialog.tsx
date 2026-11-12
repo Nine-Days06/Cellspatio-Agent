@@ -1,4 +1,4 @@
-import { useState, type FormEvent } from 'react'
+import { useRef, useState, type FormEvent } from 'react'
 import { FolderOpen } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -15,11 +15,19 @@ import {
 import { ApiError } from '@/lib/api'
 
 /** 本地 10x 目录登记：不经过 LLM，QC 成功后由消息区接管后续人工 gate。 */
-export function LocalInputDialog({ onSubmit }: { onSubmit: (path: string) => Promise<void> }) {
+export function LocalInputDialog({
+  onSubmit,
+  defaultPath = '',
+}: {
+  onSubmit: (path: string) => Promise<void>
+  /** 项目工作目录：对话框首次打开时预填，用户可改写 */
+  defaultPath?: string
+}) {
   const [open, setOpen] = useState(false)
   const [path, setPath] = useState('')
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const lastDefault = useRef(defaultPath)
 
   async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault()
@@ -42,6 +50,12 @@ export function LocalInputDialog({ onSubmit }: { onSubmit: (path: string) => Pro
       open={open}
       onOpenChange={(next) => {
         if (busy) return
+        if (next) {
+          setPath((current) =>
+            !current || current === lastDefault.current ? defaultPath : current,
+          )
+          lastDefault.current = defaultPath
+        }
         setOpen(next)
         setError(null)
       }}

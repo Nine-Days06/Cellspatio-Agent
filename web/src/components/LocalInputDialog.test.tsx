@@ -8,6 +8,27 @@ function openDialog() {
 }
 
 describe('LocalInputDialog', () => {
+  it('用项目工作目录预填输入框', () => {
+    render(<LocalInputDialog onSubmit={vi.fn()} defaultPath="D:/data/project" />)
+
+    openDialog()
+
+    expect(screen.getByLabelText('本地数据目录')).toHaveValue('D:/data/project')
+  })
+
+  it('切换项目后重新打开会刷新预填路径', () => {
+    const { rerender } = render(
+      <LocalInputDialog onSubmit={vi.fn()} defaultPath="D:/data/a" />,
+    )
+    openDialog()
+    expect(screen.getByLabelText('本地数据目录')).toHaveValue('D:/data/a')
+    fireEvent.click(screen.getByRole('button', { name: '取消' }))
+
+    rerender(<LocalInputDialog onSubmit={vi.fn()} defaultPath="D:/data/b" />)
+    openDialog()
+    expect(screen.getByLabelText('本地数据目录')).toHaveValue('D:/data/b')
+  })
+
   it('提交去空格后的路径并在成功后关闭', async () => {
     const onSubmit = vi.fn().mockResolvedValue(undefined)
     render(<LocalInputDialog onSubmit={onSubmit} />)

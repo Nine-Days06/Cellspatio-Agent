@@ -8,6 +8,7 @@ from typing import Any
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
+from src.ui.record_files import writable_dir
 from src.ui.session_store import SessionStore
 from src.ui.usage import project_usage
 
@@ -29,6 +30,26 @@ class ProjectUpdateRequest(BaseModel):
     archived: bool | None = None
 
 
+def _validated_root_path(value: str | None) -> str | None:
+    """工作目录必须是绝对路径、已存在、是目录且可写；不自动创建或改动用户目录。"""
+    if value is None or not value.strip():
+        return None
+    raw = Path(value.strip()).expanduser()
+    if not raw.is_absolute():
+        raise HTTPException(status_code=422, detail="工作目录必须是绝对路径")
+    path = raw.resolve()
+    if not path.is_dir():
+        raise HTTPException(status_code=422, detail=f"工作目录不存在或不是目录：{path}")
+    internal = [
+        Path.cwd().resolve() / name for name in ("data", ".wrroc", "snapshots", ".cellspatio")
+    ]
+    if any(path == parent or path.is_relative_to(parent) for parent in internal):
+        raise HTTPException(status_code=422, detail=f"工作目录不能位于应用数据目录内：{path}")
+    if not writable_dir(path):
+        raise HTTPException(status_code=422, detail=f"工作目录不可写：{path}")
+    return str(path)
+
+
 @router.get("/projects")
 def list_projects(include_archived: bool = False) -> dict[str, Any]:
     return {"projects": _store().list_projects(include_archived=include_archived)}
@@ -40,7 +61,7 @@ def create_project(body: ProjectCreateRequest) -> dict[str, Any]:
     if not label:
         raise HTTPException(status_code=422, detail="项目名不能为空")
     store = _store()
-    project_id = store.create_project(label, root_path=(body.root_path or None))
+    project_id = store.create_project(label, root_path=_validated_root_path(body.root_path))
     return {"project": store.get_project(project_id)}
 
 
@@ -60,12 +81,15 @@ def update_project(project_id: str, body: ProjectUpdateRequest) -> dict[str, Any
         raise HTTPException(status_code=404, detail="项目不存在")
     if body.label is not None and not body.label.strip():
         raise HTTPException(status_code=422, detail="项目名不能为空")
+    root_path = (
+        _validated_root_path(body.root_path) if "root_path" in body.model_fields_set else None
+    )
     try:
         store.update_project(
             project_id,
             label=body.label.strip() if body.label is not None else None,
-            root_path=body.root_path,
-            clear_root_path="root_path" in body.model_fields_set and body.root_path is None,
+            root_path=root_path,
+            clear_root_path="root_path" in body.model_fields_set and root_path is None,
             archived=body.archived,
         )
     except ValueError as exc:

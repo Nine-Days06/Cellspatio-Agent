@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import csv
+import io
 import json
 import zipfile
 from pathlib import Path
@@ -219,3 +221,58 @@ def test_main_root_reads_target_database(root, monkeypatch):
     monkeypatch.chdir(elsewhere)
 
     assert records.main(["delete", "session", sid, "--root", str(root), "--dry-run"]) == 0
+
+
+def test_export_hashes_only_when_requested(store, root):
+    sid, _ = _seed_session(store, root)
+
+    records.export_records("session", sid, out=root / "nohash.zip", store=store, root=root)
+    with zipfile.ZipFile(root / "nohash.zip") as archive:
+        plain = json.loads(archive.read("record.json"))
+        rows = list(csv.DictReader(io.StringIO(archive.read("artifacts.csv").decode("utf-8"))))
+    assert rows and all(row["sha256"] == "" for row in rows)
+    assert all(artifact["sha256"] == "" for artifact in plain["artifacts"])
+
+    result = records.export_records(
+        "session", sid, out=root / "hash.zip", hash_files=True, store=store, root=root
+    )
+    assert result["hashed"] is True
+    with zipfile.ZipFile(root / "hash.zip") as archive:
+        hashed = json.loads(archive.read("record.json"))
+    assert all(len(artifact["sha256"]) == 64 for artifact in hashed["artifacts"])
+
+
+def test_export_defaults_to_project_root_path(store, root):
+    workdir = root / "workspace"
+    workdir.mkdir()
+    pid = store.create_project("项目", root_path=str(workdir))
+    sid, _ = _seed_session(store, root)
+    store.move_session(sid, pid)
+
+    records.export_records("project", pid, store=store, root=root)
+    records.export_records("session", sid, store=store, root=root)
+
+    assert (workdir / f"records-{pid}.zip").is_file()
+    assert (workdir / f"records-{sid}.zip").is_file()
+
+
+def test_export_falls_back_when_project_root_path_missing(store, root):
+    pid = store.create_project("项目", root_path=str(root / "gone"))
+
+    records.export_records("project", pid, store=store, root=root)
+
+    assert (root / f"records-{pid}.zip").is_file()
+
+
+def test_main_export_hash_flag(store, root, monkeypatch):
+    sid, _ = _seed_session(store, root)
+    monkeypatch.chdir(root)
+
+    out = root / "hashed.zip"
+    assert (
+        records.main(["export", "session", sid, "--root", str(root), "--out", str(out), "--hash"])
+        == 0
+    )
+    with zipfile.ZipFile(out) as archive:
+        record = json.loads(archive.read("record.json"))
+    assert all(len(artifact["sha256"]) == 64 for artifact in record["artifacts"])

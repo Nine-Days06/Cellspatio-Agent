@@ -5,6 +5,7 @@ from __future__ import annotations
 import pytest
 from fastapi.testclient import TestClient
 
+from src.api import routes_projects
 from src.api.app import create_app
 from tests.unit.fakes import FakeAgent
 
@@ -14,8 +15,10 @@ def client():
     return TestClient(create_app(FakeAgent()))
 
 
-def test_project_crud(client):
-    created = client.post("/api/projects", json={"label": "肝癌项目", "root_path": "D:/data/liver"})
+def test_project_crud(client, tmp_path):
+    workdir = tmp_path / "liver"
+    workdir.mkdir()
+    created = client.post("/api/projects", json={"label": "肝癌项目", "root_path": str(workdir)})
     assert created.status_code == 200
     project = created.json()["project"]
     assert project["label"] == "肝癌项目"
@@ -40,6 +43,51 @@ def test_project_crud(client):
 
 def test_create_project_rejects_blank_label(client):
     assert client.post("/api/projects", json={"label": "   "}).status_code == 422
+
+
+def test_project_root_path_must_exist_and_be_dir(client, tmp_path):
+    assert (
+        client.post("/api/projects", json={"label": "相对", "root_path": "data/liver"}).status_code
+        == 422
+    )
+
+    missing = tmp_path / "missing"
+    assert (
+        client.post("/api/projects", json={"label": "缺失", "root_path": str(missing)}).status_code
+        == 422
+    )
+
+    file_path = tmp_path / "file.txt"
+    file_path.write_text("x", encoding="utf-8")
+    assert (
+        client.post(
+            "/api/projects", json={"label": "文件", "root_path": str(file_path)}
+        ).status_code
+        == 422
+    )
+
+    pid = client.post("/api/projects", json={"label": "项目"}).json()["project"]["id"]
+    assert client.patch(f"/api/projects/{pid}", json={"root_path": str(missing)}).status_code == 422
+
+
+def test_project_root_path_must_be_writable(client, tmp_path, monkeypatch):
+    workdir = tmp_path / "locked"
+    workdir.mkdir()
+    monkeypatch.setattr(routes_projects, "writable_dir", lambda _path: False)
+
+    response = client.post("/api/projects", json={"label": "不可写", "root_path": str(workdir)})
+    assert response.status_code == 422
+    assert "不可写" in response.json()["detail"]
+
+
+def test_project_root_path_rejects_internal_data_dirs(client, tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    internal = tmp_path / "data" / "workspace"
+    internal.mkdir(parents=True)
+
+    response = client.post("/api/projects", json={"label": "内部目录", "root_path": str(internal)})
+    assert response.status_code == 422
+    assert "应用数据目录" in response.json()["detail"]
 
 
 def test_project_usage_returns_readonly_summary(client):

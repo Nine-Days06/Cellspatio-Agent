@@ -22,23 +22,16 @@ from pathlib import Path
 from typing import Any
 
 from src.ui.record_files import (
-    resolve_dir as _resolve_dir,
-)
-from src.ui.record_files import (
-    run_dirs as _run_dirs,
-)
-from src.ui.record_files import (
-    safe_target as _safe_target,
-)
-from src.ui.record_files import (
-    session_runs as _session_runs,
-)
-from src.ui.record_files import (
-    wrroc_runs as _wrroc_runs,
+    resolve_dir,
+    run_dirs,
+    safe_target,
+    session_runs,
+    writable_dir,
+    wrroc_runs,
 )
 from src.ui.session_store import SessionStore
 
-SCHEMA_VERSION = "cellspatio-record/1.0.0"
+SCHEMA_VERSION = "cellspatio-record/1.1.0"
 _PATH_RE = re.compile(r'(?:[A-Za-z]:[\\/][^\s"\'<>]*|/(?:Users|home|data|mnt|tmp)/[^\s"\'<>]*)')
 _PATH_KEYS = {
     "access_path",
@@ -106,12 +99,16 @@ def _sha256(path: Path) -> str:
 
 
 def _artifact_rows(
-    runs: list[dict[str, Any]], session_id: str, root: Path, redact: bool
+    runs: list[dict[str, Any]],
+    session_id: str,
+    root: Path,
+    redact: bool,
+    hash_files: bool,
 ) -> list[dict[str, Any]]:
     rows = []
     seen: set[Path] = set()
-    for stage, directory in ((stage, dir) for run in runs for stage, dir in _run_dirs(run)):
-        path = _resolve_dir(directory, root)
+    for stage, directory in ((stage, dir) for run in runs for stage, dir in run_dirs(run)):
+        path = resolve_dir(directory, root)
         if path in seen or not path.is_dir():
             continue
         seen.add(path)
@@ -129,7 +126,7 @@ def _artifact_rows(
                     "stage": stage,
                     "path": record_path,
                     "bytes": file_path.stat().st_size,
-                    "sha256": _sha256(file_path),
+                    "sha256": _sha256(file_path) if hash_files else "",
                 }
             )
     return rows
@@ -140,9 +137,10 @@ def _session_record(
     session: dict[str, Any],
     root: Path,
     redact: bool,
+    hash_files: bool,
 ) -> tuple[dict[str, Any], list[dict[str, Any]]]:
     session = store.get_session(session["id"]) or session
-    runs = _session_runs(store, session["id"])
+    runs = session_runs(store, session["id"])
     messages = []
     for message in store.get_messages(session["id"]):
         messages.append(
@@ -156,14 +154,14 @@ def _session_record(
                 "pending_script": message["pending_script"],
             }
         )
-    artifacts = _artifact_rows(runs, session["id"], root, redact)
+    artifacts = _artifact_rows(runs, session["id"], root, redact, hash_files)
     record = {
         "schema_version": SCHEMA_VERSION,
         "exported_at": _now(),
         "session": session,
         "messages": messages,
         "qc_runs": runs,
-        "workflow_runs": [data for _, data in _wrroc_runs(root, session["id"])],
+        "workflow_runs": [data for _, data in wrroc_runs(root, session["id"])],
         "artifacts": artifacts,
     }
     record = _json_safe(record, redact)
@@ -232,12 +230,30 @@ def _write_zip(path: Path, files: dict[str, str]) -> None:
             archive.writestr(name, content)
 
 
+def _default_export_dir(store: SessionStore, scope: str, target_id: str, base: Path) -> Path:
+    """项目工作目录可用时作为导出默认目录，否则回退数据根。"""
+    if scope == "project":
+        project = store.get_project(target_id)
+    else:
+        session = store.get_session(target_id)
+        project = (
+            store.get_project(session["project_id"]) if session and session["project_id"] else None
+        )
+    root_path = (project or {}).get("root_path")
+    if root_path:
+        path = Path(root_path)
+        if writable_dir(path):
+            return path
+    return base
+
+
 def export_records(
     scope: str,
     target_id: str,
     out: str | Path | None = None,
     *,
     redact: bool = False,
+    hash_files: bool = False,
     store: SessionStore | None = None,
     root: str | Path | None = None,
 ) -> dict[str, Any]:
@@ -251,7 +267,7 @@ def export_records(
         session = store.get_session(target_id)
         if session is None:
             raise ValueError("会话不存在")
-        record, artifacts = _session_record(store, session, base, redact)
+        record, artifacts = _session_record(store, session, base, redact, hash_files)
         files = {
             "record.json": json.dumps(record, ensure_ascii=False, indent=2),
             "record.md": _session_markdown(record),
@@ -288,7 +304,7 @@ def export_records(
         }
         artifacts = []
         for session in sessions:
-            record, session_artifacts = _session_record(store, session, base, redact)
+            record, session_artifacts = _session_record(store, session, base, redact, hash_files)
             files[f"sessions/{session['id']}/record.json"] = json.dumps(
                 record, ensure_ascii=False, indent=2
             )
@@ -298,7 +314,10 @@ def export_records(
     else:
         raise ValueError("scope 必须是 session 或 project")
 
-    target = Path(out) if out else base / f"records-{target_id}.zip"
+    if out:
+        target = Path(out)
+    else:
+        target = _default_export_dir(store, scope, target_id, base) / (f"records-{target_id}.zip")
     target = target if target.is_absolute() else base / target
     _write_zip(target, files)
     return {
@@ -307,6 +326,7 @@ def export_records(
         "target_id": target_id,
         "out": str(target),
         "redacted": redact,
+        "hashed": hash_files,
         "files": len(files),
         "artifacts": len(artifacts),
     }
@@ -339,22 +359,22 @@ def _delete_plan(
         running = store.running_stage(session["id"])
         if running:
             raise ValueError(f"{running}运行中，不能删除会话 {session['id']}")
-        for run in _session_runs(store, session["id"]):
-            for _, directory in _run_dirs(run):
-                path = _safe_target(directory, root)
+        for run in session_runs(store, session["id"]):
+            for _, directory in run_dirs(run):
+                path = safe_target(directory, root)
                 if path is None:
-                    skipped.append(str(_resolve_dir(directory, root)))
+                    skipped.append(str(resolve_dir(directory, root)))
                 else:
                     paths.append(path)
             for name in (".wrroc", "snapshots"):
-                candidate = _safe_target(root / name / str(run["run_id"]), root)
+                candidate = safe_target(root / name / str(run["run_id"]), root)
                 if candidate is None:
                     skipped.append(str(root / name / str(run["run_id"])))
                 else:
                     paths.append(candidate)
-        for run_id, _ in _wrroc_runs(root, session["id"]):
+        for run_id, _ in wrroc_runs(root, session["id"]):
             for name in (".wrroc", "snapshots"):
-                candidate = _safe_target(root / name / run_id, root)
+                candidate = safe_target(root / name / run_id, root)
                 if candidate is None:
                     skipped.append(str(root / name / run_id))
                 else:
@@ -364,7 +384,7 @@ def _delete_plan(
             root / "data" / "projects" / target_id,
             root / ".wrroc" / "kg_memory" / target_id,
         ):
-            path = _safe_target(candidate, root)
+            path = safe_target(candidate, root)
             if path is None:
                 skipped.append(str(candidate))
             else:
@@ -467,6 +487,9 @@ def main(argv: list[str] | None = None) -> int:
         if name == "export":
             command.add_argument("--out", default=None)
             command.add_argument("--redact", action="store_true")
+            command.add_argument(
+                "--hash", action="store_true", help="逐文件计算 SHA256（默认只记路径与大小）"
+            )
         else:
             command.add_argument("--dry-run", action="store_true")
             command.add_argument("--cascade", action="store_true")
@@ -480,6 +503,7 @@ def main(argv: list[str] | None = None) -> int:
                 args.target_id,
                 out=args.out,
                 redact=args.redact,
+                hash_files=args.hash,
                 root=args.root,
             )
         else:

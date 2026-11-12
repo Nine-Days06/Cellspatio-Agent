@@ -106,6 +106,7 @@ python -m src.api
 
 - 侧栏按「置顶 → 项目 → 未归类」分组；项目内可新建会话，会话可移动、置顶、归档。归档项目默认隐藏其会话；点侧栏「显示已归档」可置灰查看归档项目/会话并恢复（运行中的会话或项目拒绝归档）。
 - 会话/项目的「更多」菜单里显示只读占用汇总（分析产物 + `.wrroc/<run_id>` + `snapshots/<run_id>`；项目另加 `data/projects/<id>` 与 `.wrroc/kg_memory/<id>`），只统计不清理。
+- 项目工作目录保存时校验必须是绝对路径、存在、是目录、可写，且不能位于应用数据目录（`data/`、`.wrroc/`、`snapshots/`、`.cellspatio/`）内；本地数据对话框用它预填输入框，`records export` 未给 `--out` 时默认写到该目录（不可用时回退数据根）。
 - 新分析产物落 `<数据目录>/data/projects/<project_id>/analysis/...`；未归类会话仍落 `data/analysis/...`。旧 run 保持数据库记录的路径，不迁移。
 - 硬删除只走 CLI，不提供 HTTP/UI 删除项目入口：
   ```powershell
@@ -114,9 +115,10 @@ python -m src.api
   python -m src.cli.records delete project <project_id> --cascade --dry-run
   python -m src.cli.records delete project <project_id> --cascade --yes
   ```
-- 导出会话/项目记录为 zip（清单含路径、大小、SHA256，不复制产物）：
+- 导出会话/项目记录为 zip（清单含路径与大小；加 `--hash` 才逐文件计算 SHA256，不复制产物）：
   ```powershell
   python -m src.cli.records export session <session_id> --out record.zip
+  python -m src.cli.records export session <session_id> --hash --out record.zip
   python -m src.cli.records export project <project_id> --redact --out project.zip
   ```
 
