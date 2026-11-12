@@ -3,7 +3,7 @@ import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Textarea } from '@/components/ui/textarea'
 import { PcaReview } from '@/components/PcaReview'
-import { approveQc, fetchQc, filterQc, previewQc } from '@/lib/api'
+import { approveQc, fetchQc, filterQc, previewQc, rejectQc } from '@/lib/api'
 import type { QcReviewState, QcThresholds } from '@/lib/types'
 
 const fields = [
@@ -130,6 +130,7 @@ export function QcReview({ sessionId, runId, onRecorded }: { sessionId: string; 
   const unchanged = previewValues === JSON.stringify(values)
   const blocked = [...(state?.blocked ?? []), ...(active?.summary.blocked ?? [])]
   const canApprove = active?.status === 'pending' && unchanged && !busy && !running && blocked.length === 0 && reason.trim().length > 0
+  const canReject = active?.status === 'pending' && !busy && !running && reason.trim().length > 0
   const attempted = state?.attempts?.some((attempt) => attempt.preview_id === active?.preview_id) ?? false
   const canFilter = active?.status === 'approved' && unchanged && !busy && !running && !attempted && blocked.length === 0
   return (
@@ -159,9 +160,13 @@ export function QcReview({ sessionId, runId, onRecorded }: { sessionId: string; 
         <details><summary>预览身份与绑定</summary><code className="block break-all text-xs text-muted-foreground">预览 {active.preview_id} · 绑定 {active.binding_sha256}</code></details>
         {!unchanged && <p role="status">阈值已编辑，请重新生成预览后批准。</p>}
         {active.status === 'pending' && <>
-          <label className="block space-y-1"><span>选择依据（仅本地记录）</span><Textarea value={reason} maxLength={2000} disabled={busy || running} onChange={(event) => setReason(event.target.value)} /></label>
-          <Button type="button" disabled={!canApprove} onClick={() => void perform(() => approveQc(sessionId, runId, active.preview_id, reason.trim()), true)}>记录此过滤选择</Button>
+          <label className="block space-y-1"><span>选择依据 / 拒绝原因（仅本地记录）</span><Textarea value={reason} maxLength={2000} disabled={busy || running} onChange={(event) => setReason(event.target.value)} /></label>
+          <div className="flex flex-wrap gap-2">
+            <Button type="button" disabled={!canApprove} onClick={() => void perform(() => approveQc(sessionId, runId, active.preview_id, reason.trim()), true)}>记录此过滤选择</Button>
+            <Button type="button" variant="outline" disabled={!canReject} onClick={() => void perform(() => rejectQc(sessionId, runId, active.preview_id, reason.trim()), true)}>拒绝此预览</Button>
+          </div>
         </>}
+        {active.status === 'rejected' && <p role="status">此预览已拒绝；未执行过滤或下游分析。{active.reason && ` 原因：${active.reason}`}</p>}
         {active.status === 'approved' && <>
           <p className="text-xs">独立执行只筛选细胞列并保存内部稀疏 RDS；不归一化、聚类或注释。失败不会自动重跑。</p>
           <Button type="button" disabled={!canFilter} onClick={() => void executeFilter(active.preview_id)}>执行此已记录选择的过滤</Button>

@@ -142,6 +142,26 @@ def approve_qc(
     return view(approved)
 
 
+class RejectionRequest(BaseModel):
+    """拒绝只携带当前预览身份与本地理由，不执行过滤。"""
+
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+    preview_id: str = Field(min_length=1, max_length=64)
+    reason: str = Field(min_length=1, max_length=2000)
+
+
+@router.post("/{run_id}/reject")
+def reject_qc(session_id: str, run_id: str, body: RejectionRequest) -> dict[str, Any]:
+    """记录当前待批准预览的拒绝；已批准预览与已执行 run 不可拒绝。"""
+    store = SessionStore()
+    require_run(store, session_id, run_id)
+    try:
+        run = store.record_qc_rejection(session_id, run_id, body.preview_id, body.reason)
+    except (sqlite3.OperationalError, ValueError) as exc:
+        raise HTTPException(409, str(exc)) from exc
+    return view(run)
+
+
 class FilterRequest(BaseModel):
     """独立执行授权只携带预览身份，不接受路径或脚本。"""
 

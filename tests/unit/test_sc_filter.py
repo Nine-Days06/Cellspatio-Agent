@@ -77,6 +77,34 @@ def test_filter_once_exact_binding_and_stage_only(ready):
     assert client.get(url).json()["attempts"][0]["status"] == "completed"
 
 
+def test_qc_rejection_is_idempotent_and_blocks_approval(registered):
+    """拒绝只记录当前待批准预览，重发幂等，已拒绝不能批准。"""
+    store, sid, rid, root, source, client = registered
+    url = f"/api/sessions/{sid}/qc/{rid}"
+    state = client.post(url + "/preview", json=PARAMS).json()
+    pid = state["active_preview"]["preview_id"]
+    body = {"preview_id": pid, "reason": "阈值过宽"}
+    response = client.post(url + "/reject", json=body)
+    assert response.status_code == 200, response.text
+    rejected = response.json()
+    assert rejected["active_preview"]["status"] == "rejected"
+    assert rejected["active_preview"]["reason"] == "阈值过宽"
+    assert rejected["revision"] == state["revision"] + 1
+    assert client.post(url + "/reject", json=body).json() == rejected
+    assert client.post(url + "/reject", json={**body, "reason": "另一原因"}).status_code == 409
+    assert (
+        client.post(url + "/approve", json={"preview_id": pid, "reason": "批准"}).status_code == 409
+    )
+
+
+def test_approved_preview_cannot_be_rejected(ready):
+    """已批准预览保持历史，拒绝请求不改写既有选择。"""
+    store, sid, rid, root, source, client, url, pid, executor = ready
+    response = client.post(url + "/reject", json={"preview_id": pid, "reason": "反悔"})
+    assert response.status_code == 409
+    assert client.get(url).json()["approvals"][0]["status"] == "approved"
+
+
 @pytest.mark.parametrize("mutation", ["input", "qc", "selection", "new_preview", "unapproved"])
 def test_changed_or_unapproved_selection_never_runs(ready, mutation):
     store, sid, rid, root, source, client, url, pid, executor = ready

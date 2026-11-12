@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { Button } from '@/components/ui/button'
 import { Textarea } from '@/components/ui/textarea'
-import { executeMarkers, fetchClusterAcceptance, fetchMarkerCandidates, fetchMarkers, markerDiagnosticPath, recordClusterAcceptance } from '@/lib/api'
+import { executeMarkers, fetchClusterAcceptance, fetchMarkerCandidates, fetchMarkers, markerDiagnosticPath, recordClusterAcceptance, recordClusterRejection, reviewMarkers } from '@/lib/api'
 import type { ClusterAcceptanceState, MarkerPage, MarkerState } from '@/lib/types'
 import { AnalysisImage } from '@/components/AnalysisImage'
 
@@ -49,6 +49,7 @@ export function MarkerReview({ sessionId, runId, filterAttemptId, pcaAttemptId, 
   const [accepted, setAccepted] = useState(false)
   const [reviewReason, setReviewReason] = useState('')
   const [reason, setReason] = useState('')
+  const [markerReasons, setMarkerReasons] = useState<Record<string, string>>({})
   const [busy, setBusy] = useState(true)
   const [executing, setExecuting] = useState(false)
   const [error, setError] = useState('')
@@ -59,7 +60,7 @@ export function MarkerReview({ sessionId, runId, filterAttemptId, pcaAttemptId, 
 
   useEffect(() => {
     const ticket = ++generation.current
-    setReview(null); setState(null); setAccepted(false); setReviewReason(''); setReason(''); setError(''); setBusy(true); setExecuting(false)
+    setReview(null); setState(null); setAccepted(false); setReviewReason(''); setReason(''); setMarkerReasons({}); setError(''); setBusy(true); setExecuting(false)
     Promise.all([fetchClusterAcceptance({ sessionId, runId, filterAttemptId, pcaAttemptId, clusterAttemptId }), fetchMarkers({ sessionId, runId, filterAttemptId, pcaAttemptId, clusterAttemptId })])
       .then(([nextReview, next]) => { if (ticket === generation.current) { setReview(nextReview); setState(next) } })
       .catch((err: Error) => { if (ticket === generation.current) setError(err.message) })
@@ -97,7 +98,7 @@ export function MarkerReview({ sessionId, runId, filterAttemptId, pcaAttemptId, 
 
   async function refresh() {
     const ticket = ++generation.current
-    setBusy(true); setError(''); setReview(null); setState(null); setAccepted(false); setReviewReason(''); setReason('')
+    setBusy(true); setError(''); setReview(null); setState(null); setAccepted(false); setReviewReason(''); setReason(''); setMarkerReasons({})
     try {
       const [nextReview, next] = await Promise.all([fetchClusterAcceptance(source), fetchMarkers(source)])
       if (ticket === generation.current) { setReview(nextReview); setState(next) }
@@ -105,8 +106,12 @@ export function MarkerReview({ sessionId, runId, filterAttemptId, pcaAttemptId, 
     finally { if (ticket === generation.current) setBusy(false) }
   }
 
-  async function submit(kind: 'accept' | 'execute') {
-    if (kind === 'accept' ? !review?.binding_sha256 || !accepted || !reviewReason.trim() : !state?.binding_sha256 || !state.review || !reason.trim()) return
+  async function submit(kind: 'accept' | 'reject' | 'execute') {
+    if (kind === 'accept') {
+      if (!review?.binding_sha256 || !accepted || !reviewReason.trim()) return
+    } else if (kind === 'reject') {
+      if (!review?.binding_sha256 || !reviewReason.trim()) return
+    } else if (!state?.binding_sha256 || !state.review || !reason.trim()) return
     const ticket = ++generation.current
     setBusy(true); setError(''); setExecuting(kind === 'execute')
     try {
@@ -114,6 +119,13 @@ export function MarkerReview({ sessionId, runId, filterAttemptId, pcaAttemptId, 
         const nextReview = await recordClusterAcceptance(source, review.binding_sha256, review.revision, reviewReason.trim())
         if (ticket !== generation.current) return
         setReview(nextReview); setAccepted(false); setReviewReason('')
+        const next = await fetchMarkers(source)
+        if (ticket !== generation.current) return
+        setState(next)
+      } else if (kind === 'reject' && review?.binding_sha256) {
+        const nextReview = await recordClusterRejection(source, review.binding_sha256, review.revision, reviewReason.trim())
+        if (ticket !== generation.current) return
+        setReview(nextReview); setReviewReason('')
         const next = await fetchMarkers(source)
         if (ticket !== generation.current) return
         setState(next)
@@ -133,7 +145,29 @@ export function MarkerReview({ sessionId, runId, filterAttemptId, pcaAttemptId, 
     } finally { if (ticket === generation.current) { setBusy(false); setExecuting(false) } }
   }
 
+  async function submitMarkerReview(attemptId: string, decision: 'accepted' | 'rejected') {
+    const reviewReasonText = markerReasons[attemptId]?.trim()
+    if (!state || !reviewReasonText) return
+    const ticket = ++generation.current
+    setBusy(true); setError('')
+    try {
+      const next = await reviewMarkers(source, attemptId, decision, state.revision, reviewReasonText)
+      if (ticket !== generation.current) return
+      setState(next)
+      setMarkerReasons((previous) => ({ ...previous, [attemptId]: '' }))
+      callbacks.current.onRecorded?.()
+    } catch (err) {
+      if (ticket !== generation.current) return
+      setError(err instanceof Error ? err.message : '复核请求失败；请只读刷新')
+      try {
+        const next = await fetchMarkers(source)
+        if (ticket === generation.current) setState(next)
+      } catch { if (ticket === generation.current) setState(null) }
+    } finally { if (ticket === generation.current) setBusy(false) }
+  }
+
   const canAccept = !!review?.binding_sha256 && !review.current && !review.blocked.length && !busy && !running && !disabled
+  const canRejectCluster = !!review?.binding_sha256 && !review.blocked.length && !busy && !running && !disabled
   const attempted = state?.attempts.some((a) => a.binding_sha256 === state.binding_sha256) ?? false
   const canExecute = !!state?.binding_sha256 && !!state.review && !state.blocked.length && !attempted && !busy && !running && !disabled
   return <section aria-label="聚类接受与 marker 独立授权" className="analysis-stage space-y-3">
@@ -143,8 +177,12 @@ export function MarkerReview({ sessionId, runId, filterAttemptId, pcaAttemptId, 
     {review?.blocked.map((text) => <p role="alert" key={text}>{text}</p>)}
     <details open={!review?.current}><summary>探索性聚类接受记录</summary>
     <label className="flex items-start gap-2"><input type="checkbox" checked={accepted} disabled={!canAccept} onChange={(event) => setAccepted(event.target.checked)} /><span>我接受当前探索性聚类继续寻找候选 marker（不是科学认可）</span></label>
-    <label className="block space-y-1"><span>探索性聚类接受依据（仅本地）</span><Textarea maxLength={2000} disabled={!canAccept} value={reviewReason} onChange={(event) => setReviewReason(event.target.value)} /></label>
-    <Button disabled={!canAccept || !accepted || !reviewReason.trim()} onClick={() => void submit('accept')}>仅保存探索性聚类接受</Button>
+    <label className="block space-y-1"><span>探索性聚类接受依据 / 拒绝原因（仅本地）</span><Textarea maxLength={2000} disabled={!canRejectCluster} value={reviewReason} onChange={(event) => setReviewReason(event.target.value)} /></label>
+    <div className="flex flex-wrap gap-2">
+      <Button disabled={!canAccept || !accepted || !reviewReason.trim()} onClick={() => void submit('accept')}>仅保存探索性聚类接受</Button>
+      <Button variant="outline" disabled={!canRejectCluster || !reviewReason.trim()} onClick={() => void submit('reject')}>拒绝此聚类</Button>
+    </div>
+    {review?.latest_decision?.decision === 'rejected' && <p role="status">最新记录：已拒绝 · {review.latest_decision.reason}{review.latest_decision.invalidated_reason ? ` · ${review.latest_decision.invalidated_reason}` : ''}</p>}
     {!!review?.history.length && <details><summary>本地聚类接受历史（不进入对话或知识库）</summary>{review.history.map((r) => <div className="break-words py-1" key={r.review_id}><p>{r.reason}</p><p className="text-xs">{r.created_at} · {r.invalidated_reason ?? '当前新授权依据'}</p></div>)}</details>}
     </details>
     {review?.current && <p role="status">已记录探索性接受；marker 仍需独立授权。</p>}
@@ -168,6 +206,15 @@ export function MarkerReview({ sessionId, runId, filterAttemptId, pcaAttemptId, 
         <details><summary>marker 执行身份与版本</summary><code className="block break-all text-xs">{a.attempt_id}</code><p className="break-all text-xs">{a.result.versions.join(' / ')}</p></details>
         <AnalysisImage src={markerDiagnosticPath(source, a.attempt_id)} alt="未复核正向 marker 候选点图：面积为表达比例，颜色为平均归一化表达的 log1p；不是细胞类型注释" />
         <MarkerTable key={`${sessionId}:${runId}:${clusterAttemptId}:${a.attempt_id}`} source={source} attemptId={a.attempt_id} />
+        <div className="space-y-1 border-t border-border pt-2">
+          <p className="text-xs">marker 结果复核（仅本地事实，不改变科学状态）</p>
+          {a.review && <p className="text-xs">最新：{a.review.decision === 'accepted' ? '接受' : '拒绝'} · {a.review.reason}{a.review.invalidated_reason ? ` · ${a.review.invalidated_reason}` : ''}</p>}
+          <label className="block space-y-1"><span>marker 复核理由（仅本地）</span><Textarea maxLength={2000} disabled={busy || running || disabled} value={markerReasons[a.attempt_id] ?? ''} onChange={(event) => setMarkerReasons((previous) => ({ ...previous, [a.attempt_id]: event.target.value }))} /></label>
+          <div className="flex flex-wrap gap-2">
+            <Button disabled={busy || running || disabled || !markerReasons[a.attempt_id]?.trim()} onClick={() => void submitMarkerReview(a.attempt_id, 'accepted')}>记录 marker 接受</Button>
+            <Button variant="outline" disabled={busy || running || disabled || !markerReasons[a.attempt_id]?.trim()} onClick={() => void submitMarkerReview(a.attempt_id, 'rejected')}>记录 marker 拒绝</Button>
+          </div>
+        </div>
       </>}
     </div>)}
   </section>
