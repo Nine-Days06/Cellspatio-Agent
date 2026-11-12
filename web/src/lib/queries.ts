@@ -12,7 +12,7 @@ export const queryKeys = {
 export function useSessions(): UseQueryResult<{ sessions: SessionSummary[] }> {
   return useQuery({
     queryKey: queryKeys.sessions(),
-    queryFn: listSessions,
+    queryFn: () => listSessions(true),
     staleTime: 15_000,
   })
 }
@@ -20,7 +20,7 @@ export function useSessions(): UseQueryResult<{ sessions: SessionSummary[] }> {
 export function useProjects(): UseQueryResult<{ projects: Project[] }> {
   return useQuery({
     queryKey: queryKeys.projects(),
-    queryFn: listProjects,
+    queryFn: () => listProjects(true),
     staleTime: 15_000,
   })
 }

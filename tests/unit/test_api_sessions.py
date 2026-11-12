@@ -80,6 +80,9 @@ def test_create_session_in_project_and_patch_assignment(client):
     assert client.get("/api/sessions").json()["sessions"] == []
     assert client.get("/api/sessions?include_archived=1").json()["sessions"][0]["id"] == sid
 
+    client.patch(f"/api/sessions/{sid}", json={"archived": False})
+    assert client.get("/api/sessions").json()["sessions"][0]["id"] == sid
+
 
 def test_create_session_with_unknown_project_returns_404(client):
     response = client.post("/api/sessions", json={"project_id": "nope"})

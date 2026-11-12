@@ -56,8 +56,9 @@ const jsonInit = (method: string, body?: unknown): RequestInit => ({
   ...(body === undefined ? {} : { body: JSON.stringify(body) }),
 })
 
-export function listSessions(): Promise<{ sessions: SessionSummary[] }> {
-  return request('/api/sessions', { method: 'GET' })
+export function listSessions(includeArchived = false): Promise<{ sessions: SessionSummary[] }> {
+  const query = includeArchived ? '?include_archived=1' : ''
+  return request(`/api/sessions${query}`, { method: 'GET' })
 }
 
 export function createSession(title?: string, projectId?: string | null): Promise<{ session: Session }> {
@@ -81,8 +82,9 @@ export function updateSession(sessionId: string, body: UpdateSessionBody): Promi
   return request(`/api/sessions/${encodeURIComponent(sessionId)}`, jsonInit('PATCH', body))
 }
 
-export function listProjects(): Promise<{ projects: Project[] }> {
-  return request('/api/projects', { method: 'GET' })
+export function listProjects(includeArchived = false): Promise<{ projects: Project[] }> {
+  const query = includeArchived ? '?include_archived=1' : ''
+  return request(`/api/projects${query}`, { method: 'GET' })
 }
 
 export function createProject(label: string, rootPath?: string | null): Promise<{ project: Project }> {

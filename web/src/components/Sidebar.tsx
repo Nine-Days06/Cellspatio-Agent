@@ -89,17 +89,34 @@ export function Sidebar({
   const [editLabel, setEditLabel] = useState('')
   const [editRoot, setEditRoot] = useState('')
   const [moveTarget, setMoveTarget] = useState('')
+  const [showArchived, setShowArchived] = useState(false)
 
+  const archivedProjectIds = new Set(
+    projects.filter((project) => project.archived_at).map((project) => project.id),
+  )
   const query = search.trim().toLocaleLowerCase()
   const visibleSessions = sessions.filter((session) =>
     session.title.toLocaleLowerCase().includes(query),
   )
-  const pinnedSessions = visibleSessions.filter((session) => session.pinned)
-  const ungroupedSessions = visibleSessions.filter(
+  // 项目归档时整组隐藏；单体归档只影响该会话
+  const activeSessions = visibleSessions.filter(
+    (session) =>
+      !session.archived_at &&
+      !(session.project_id && archivedProjectIds.has(session.project_id)),
+  )
+  const archivedSessions = visibleSessions.filter(
+    (session) =>
+      Boolean(session.archived_at) &&
+      !(session.project_id && archivedProjectIds.has(session.project_id)),
+  )
+  const activeProjects = projects.filter((project) => !project.archived_at)
+  const archivedProjects = projects.filter((project) => project.archived_at)
+  const pinnedSessions = activeSessions.filter((session) => session.pinned)
+  const ungroupedSessions = activeSessions.filter(
     (session) => !session.pinned && !session.project_id,
   )
   const projectSessions = (projectId: string) =>
-    visibleSessions.filter(
+    activeSessions.filter(
       (session) => !session.pinned && session.project_id === projectId,
     )
 
@@ -248,6 +265,26 @@ export function Sidebar({
     }
   }
 
+  async function restoreSession(session: SessionSummary) {
+    setActionError(null)
+    try {
+      await updateSession(session.id, { archived: false })
+      onChanged?.()
+    } catch (err) {
+      setActionError(errorMessage(err, '恢复会话失败'))
+    }
+  }
+
+  async function restoreProject(project: Project) {
+    setActionError(null)
+    try {
+      await updateProject(project.id, { archived: false })
+      onChanged?.()
+    } catch (err) {
+      setActionError(errorMessage(err, '恢复项目失败'))
+    }
+  }
+
   function renderSession(session: SessionSummary) {
     return (
       <li key={session.id} className="group flex items-center gap-1">
@@ -337,26 +374,35 @@ export function Sidebar({
             className="min-h-11 min-w-0 w-full bg-transparent text-sm outline-none focus-visible:outline-none"
           />
         </label>
+        <button
+          type="button"
+          aria-pressed={showArchived}
+          onClick={() => setShowArchived((value) => !value)}
+          className="mt-2 flex min-h-9 w-full items-center gap-2 rounded-lg px-3 text-xs text-muted-foreground hover:bg-card/60"
+        >
+          <Archive className="size-4" aria-hidden="true" />
+          {showArchived ? '隐藏已归档' : '显示已归档'}
+        </button>
       </div>
 
       {createError && <p className="px-3 py-2 text-xs text-destructive">{createError}</p>}
 
       <nav className="min-h-0 flex-1 overflow-y-auto px-3 pb-3" aria-label="会话列表">
         <p className="px-3 pb-2 text-xs text-muted-foreground">
-          {searchMode ? `搜索结果 ${visibleSessions.length}` : `会话记录 ${sessions.length}`}
+          {searchMode ? `搜索结果 ${activeSessions.length}` : `会话记录 ${activeSessions.length}`}
         </p>
         {loading && <p className="px-2 py-1 text-xs text-muted-foreground">加载中…</p>}
-        {!loading && sessions.length === 0 && projects.length === 0 && (
+        {!loading && activeSessions.length === 0 && activeProjects.length === 0 && (
           <p className="px-2 py-1 text-xs text-muted-foreground">暂无会话</p>
         )}
-        {!loading && searchMode && visibleSessions.length === 0 && (
+        {!loading && searchMode && activeSessions.length === 0 && (
           <p role="status" className="px-3 py-4 text-sm text-muted-foreground">
             没有匹配的会话，试试其他关键词。
           </p>
         )}
 
         {searchMode && (
-          <ul className="flex flex-col gap-1">{visibleSessions.map(renderSession)}</ul>
+          <ul className="flex flex-col gap-1">{activeSessions.map(renderSession)}</ul>
         )}
 
         {!searchMode && pinnedSessions.length > 0 && (
@@ -367,7 +413,7 @@ export function Sidebar({
         )}
 
         {!searchMode &&
-          projects.map((project) => {
+          activeProjects.map((project) => {
             const items = projectSessions(project.id)
             const collapsed = collapsedProjects.has(project.id)
             return (
@@ -419,6 +465,50 @@ export function Sidebar({
           <section aria-label="未归类会话" className="mb-2">
             <p className="px-3 py-1 text-xs font-medium text-muted-foreground">未归类</p>
             <ul className="flex flex-col gap-1">{ungroupedSessions.map(renderSession)}</ul>
+          </section>
+        )}
+
+        {!searchMode && showArchived && (
+          <section aria-label="已归档" className="mb-2">
+            <p className="px-3 py-1 text-xs font-medium text-muted-foreground">已归档</p>
+            <ul className="flex flex-col gap-1">
+              {archivedProjects.map((project) => (
+                <li key={project.id} className="flex items-center gap-1">
+                  <span className="flex min-h-11 min-w-0 flex-1 items-center gap-1 rounded-lg px-2 text-sm text-muted-foreground">
+                    <Archive className="size-4 shrink-0" aria-hidden="true" />
+                    <span className="truncate">{project.label}</span>
+                    <span className="ml-auto text-xs">{project.session_count}</span>
+                  </span>
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    aria-label={`恢复项目 ${project.label}`}
+                    onClick={() => void restoreProject(project)}
+                  >
+                    恢复
+                  </Button>
+                </li>
+              ))}
+              {archivedSessions.map((session) => (
+                <li key={session.id} className="flex items-center gap-1">
+                  <span className="flex min-h-11 min-w-0 flex-1 items-center rounded-lg px-3 text-sm text-muted-foreground">
+                    <span className="line-clamp-2 break-words">{session.title}</span>
+                  </span>
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    aria-label={`恢复会话 ${session.title}`}
+                    onClick={() => void restoreSession(session)}
+                  >
+                    恢复
+                  </Button>
+                </li>
+              ))}
+              {archivedProjects.length === 0 && archivedSessions.length === 0 && (
+                <li className="px-3 py-1 text-xs text-muted-foreground">暂无归档记录</li>
+              )}
+              {actionError && <li className="px-3 py-1 text-xs text-destructive">{actionError}</li>}
+            </ul>
           </section>
         )}
       </nav>

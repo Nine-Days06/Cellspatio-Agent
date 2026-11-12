@@ -297,6 +297,48 @@ it('会话菜单可移动与归档', async () => {
   await waitFor(() => expect(onArchived).toHaveBeenCalledWith('s2'))
 })
 
+it('显示已归档后置灰展示归档项目与会话，并可恢复', async () => {
+  updateProject.mockResolvedValue({ project: projects[0] })
+  updateSession.mockResolvedValue({ session: {} })
+  const onChanged = vi.fn()
+  renderSidebar({
+    projects: [{ ...projects[0], archived_at: '2026-10-01T00:00:00' }],
+    sessions: [
+      { ...sessions[0], archived_at: '2026-10-02T00:00:00' },
+      sessions[1],
+    ],
+    onChanged,
+  })
+
+  expect(screen.queryByRole('region', { name: '已归档' })).not.toBeInTheDocument()
+  fireEvent.click(screen.getByRole('button', { name: '显示已归档' }))
+
+  const region = screen.getByRole('region', { name: '已归档' })
+  expect(within(region).getByText('肝项目组')).toBeInTheDocument()
+  expect(within(region).getByText('肝癌项目')).toBeInTheDocument()
+
+  fireEvent.click(within(region).getByRole('button', { name: '恢复项目 肝项目组' }))
+  await waitFor(() =>
+    expect(updateProject).toHaveBeenCalledWith('p1', { archived: false }),
+  )
+  await waitFor(() => expect(onChanged).toHaveBeenCalled())
+
+  fireEvent.click(within(region).getByRole('button', { name: '恢复会话 肝癌项目' }))
+  await waitFor(() =>
+    expect(updateSession).toHaveBeenCalledWith('s1', { archived: false }),
+  )
+})
+
+it('归档项目下的会话整组隐藏，不进入活动列表', () => {
+  renderSidebar({
+    projects: [{ ...projects[0], archived_at: '2026-10-01T00:00:00' }],
+    sessions: [{ ...sessions[0], project_id: 'p1' }, sessions[1]],
+  })
+  expect(screen.queryByRole('button', { name: /^肝癌项目/ })).not.toBeInTheDocument()
+  expect(screen.queryByRole('button', { name: /^肝项目组/ })).not.toBeInTheDocument()
+  expect(screen.getByRole('button', { name: /^新会话/ })).toBeInTheDocument()
+})
+
 describe('SoftWarnBanner', () => {
   it('soft_warn 为 true 时显示提醒', () => {
     render(<SoftWarnBanner visible />)

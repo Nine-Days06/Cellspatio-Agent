@@ -37,6 +37,16 @@ const DEFAULT_ENV: EnvStatus = {
   ollama_start_mode: 'lazy',
 }
 
+function isActiveSession(
+  session: SessionSummary,
+  archivedProjectIds: Set<string>,
+): boolean {
+  return (
+    !session.archived_at &&
+    !(session.project_id && archivedProjectIds.has(session.project_id))
+  )
+}
+
 export function ChatPage() {
   // 输入区本地状态：draft 属于流式输出，输入框不共用
   const [input, setInput] = useState('')
@@ -84,11 +94,18 @@ export function ChatPage() {
   const autoSelectedRef = useRef(false)
   useEffect(() => {
     if (autoSelectedRef.current) return
-    const first = sessionsQuery.data?.sessions[0]
+    const archived = new Set(
+      (projectsQuery.data?.projects ?? [])
+        .filter((project) => project.archived_at)
+        .map((project) => project.id),
+    )
+    const first = sessionsQuery.data?.sessions.find((session) =>
+      isActiveSession(session, archived),
+    )
     if (!first) return
     autoSelectedRef.current = true
     if (!useChatStore.getState().sessionId) setSession(first.id, [])
-  }, [sessionsQuery.data, setSession])
+  }, [sessionsQuery.data, projectsQuery.data, setSession])
 
   // ② 历史拉取成功 → hydrate：history + soft_warn + 恢复的 pending 脚本卡。
   //    顶层 pending_script 是 restore 的权威结果（后端先取 messages 后置 expired，
@@ -234,7 +251,14 @@ export function ChatPage() {
       refreshNavigation()
       const state = useChatStore.getState()
       if (state.sessionId !== id) return
-      const remaining = (sessionsQuery.data?.sessions ?? []).filter((s) => s.id !== id)
+      const archived = new Set(
+        (projectsQuery.data?.projects ?? [])
+          .filter((project) => project.archived_at)
+          .map((project) => project.id),
+      )
+      const remaining = (sessionsQuery.data?.sessions ?? []).filter(
+        (session) => session.id !== id && isActiveSession(session, archived),
+      )
       if (remaining[0]) {
         switchTo(remaining[0].id)
         return
@@ -243,7 +267,7 @@ export function ChatPage() {
       setSession('', [])
       useChatStore.setState({ sessionId: null })
     },
-    [refreshNavigation, sessionsQuery.data, setSession, switchTo],
+    [refreshNavigation, sessionsQuery.data, projectsQuery.data, setSession, switchTo],
   )
 
   /** 本地输入：无会话时先建会话；QC 成功后靠消息失效刷新出证据与复核链。 */
