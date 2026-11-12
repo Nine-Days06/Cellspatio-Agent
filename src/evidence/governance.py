@@ -130,6 +130,11 @@ def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+def public_evidence_dir(data_root: str | Path) -> Path:
+    """公共库固定落在数据根下的 `public_evidence/`。"""
+    return Path(data_root).resolve() / "public_evidence"
+
+
 def _clean(value: Any) -> str:
     """去掉首尾空白后返回字符串。"""
     return str(value or "").strip()
@@ -636,3 +641,23 @@ class GovernanceStore:
             }
             for row in rows
         ]
+
+    def review_queue(self, *, viewer_actor: str, viewer_role: str) -> list[dict[str, Any]]:
+        """复核队列：返回待审且本角色尚未签署、本人也未审过的全文。"""
+        if viewer_role not in (ROLE_DOMAIN, ROLE_COMPLIANCE):
+            raise ValueError("只有复核者可查看审核队列")
+        if not _clean(viewer_actor):
+            raise ValueError("审核队列需要 actor_id")
+        pass_action = ACTION_DOMAIN_PASS if viewer_role == ROLE_DOMAIN else ACTION_COMPLIANCE_PASS
+        with self._conn() as conn:
+            superseded = self._superseded_map(conn)
+            rows = conn.execute(
+                "SELECT * FROM submissions s WHERE status=? AND contributor_id<>? "
+                "AND NOT EXISTS (SELECT 1 FROM events e WHERE e.submission_id=s.submission_id "
+                "AND (e.actor_id=? OR e.action=?)) ORDER BY submitted_at, submission_id",
+                (STATE_PENDING, viewer_actor, viewer_actor, pass_action),
+            ).fetchall()
+            return [
+                {**self._summary(row, superseded), "card": json.loads(row["card_json"])}
+                for row in rows
+            ]

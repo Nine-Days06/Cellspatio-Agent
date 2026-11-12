@@ -46,7 +46,13 @@ def _payload_sha256(preview: dict[str, Any]) -> str:
     return _sha256(json.dumps(body, ensure_ascii=False, sort_keys=True))
 
 
-def preview_card(card: EvidenceCard, *, contributor_id: str) -> dict[str, Any]:
+def preview_card(
+    card: EvidenceCard,
+    *,
+    contributor_id: str,
+    supersedes: list[str] | None = None,
+    revises_submission_id: str | None = None,
+) -> dict[str, Any]:
     """生成完整贡献预览；隐私不合格直接拒绝，准入问题只标记不阻断。"""
     validate_card(card)
     if not contributor_id.strip():
@@ -68,8 +74,8 @@ def preview_card(card: EvidenceCard, *, contributor_id: str) -> dict[str, Any]:
                 "schema_version": SUBMISSION_SCHEMA_VERSION,
                 "contributor_id": contributor_id,
                 "target_library": "public",
-                "supersedes": [],
-                "revises_submission_id": None,
+                "supersedes": list(supersedes or []),
+                "revises_submission_id": revises_submission_id,
                 "donor_count": None,
                 "independent_replications": 0,
                 "consent": False,
@@ -94,10 +100,14 @@ def build_envelope(preview: dict[str, Any], *, consent: bool) -> SubmissionEnvel
         raise ValueError("预览未通过隐私校验")
     if _payload_sha256(preview) != preview.get("preview_sha256"):
         raise ValueError("预览内容已被修改，请重新生成预览")
-    will_send = preview.get("will_send") or {}
-    card = EvidenceCard.model_validate(will_send.get("card") or {})
+    will_send = preview.get("will_send")
+    if not isinstance(will_send, dict):
+        raise ValueError("预览缺少 will_send")
+    submission = will_send.get("submission")
+    card_payload = will_send.get("card")
+    if not isinstance(submission, dict) or not isinstance(card_payload, dict):
+        raise ValueError("预览缺少 submission 或 card")
+    card = EvidenceCard.model_validate(card_payload)
     if _sha256(card.model_dump_json()) != preview.get("card_sha256"):
         raise ValueError("预览中的证据卡已被修改")
-    return SubmissionEnvelope.model_validate(
-        {**will_send["submission"], "card": card, "consent": True}
-    )
+    return SubmissionEnvelope.model_validate({**submission, "card": card, "consent": True})
