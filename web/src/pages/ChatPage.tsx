@@ -314,7 +314,10 @@ export function ChatPage() {
         </header>
         <MessageList
           key={sessionId}
-          onQcRecorded={() => { void queryClient.invalidateQueries({ queryKey: queryKeys.messages(sessionId ?? '') }) }}
+          onQcRecorded={() => {
+            void queryClient.invalidateQueries({ queryKey: queryKeys.messages(sessionId ?? '') })
+            void queryClient.invalidateQueries({ queryKey: queryKeys.sessions() })
+          }}
           messages={history}
           draft={draft}
           busy={busy}

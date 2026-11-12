@@ -162,7 +162,9 @@ def privacy_violations(card: EvidenceCard) -> list[str]:
                     for name, version in item.items():
                         walk(version, f"{prefix}.{key}.{name}")
                     continue
-                if key.lower() in _FORBIDDEN_KEYS:
+                # 聚类协议里的 umap 是方法参数名，不是嵌入坐标。
+                is_protocol_umap = key.lower() == "umap" and prefix == "card.method.protocol"
+                if key.lower() in _FORBIDDEN_KEYS and not is_protocol_umap:
                     violations.append(f"{prefix}.{key} 是禁止字段")
                 walk(item, f"{prefix}.{key}")
         elif isinstance(value, list):

@@ -53,6 +53,22 @@ def test_privacy_rejects_forbidden_keys():
         validate_card(card)
 
 
+def test_privacy_allows_method_metadata_keys():
+    card = _card()
+    card.method.protocol["umap"] = {"neighbors": 30}
+    assert validate_card(card) is card
+
+    card = _card()
+    card.method.parameters["barcode"] = ["AAACCTG"]
+    with pytest.raises(ValueError, match="禁止字段"):
+        validate_card(card)
+
+    card = _card()
+    card.observation["umap"] = {"neighbors": 30}
+    with pytest.raises(ValueError, match="禁止字段"):
+        validate_card(card)
+
+
 def test_privacy_rejects_absolute_paths():
     card = _card()
     card.claim.text = r"读取 D:\secret\matrix.mtx"
@@ -129,13 +145,15 @@ def test_build_qc_card_drops_input_paths(tmp_path):
         "revision": 2,
         "evidence": {
             "tool_version": "sc-qc/1",
-            "cells": 10,
-            "features": 5,
-            "zero_count_cells": 0,
-            "mt_symbol_resolved": True,
-            "warnings": [],
-            "versions": ["R 4.6", "Seurat 5", "Matrix 1"],
-            "metrics": {},
+            "summary": {
+                "cells": 10,
+                "features": 5,
+                "zero_count_cells": 0,
+                "mt_symbol_resolved": True,
+                "warnings": [],
+                "versions": ["R 4.6", "Seurat 5", "Matrix 1"],
+                "metrics": {},
+            },
         },
         "previews": [
             {
@@ -258,13 +276,15 @@ def test_build_qc_rejected_card(tmp_path):
         "revision": 3,
         "evidence": {
             "tool_version": "sc-qc/1",
-            "cells": 10,
-            "features": 5,
-            "zero_count_cells": 0,
-            "mt_symbol_resolved": True,
-            "warnings": [],
-            "versions": ["R 4.6"],
-            "metrics": {},
+            "summary": {
+                "cells": 10,
+                "features": 5,
+                "zero_count_cells": 0,
+                "mt_symbol_resolved": True,
+                "warnings": [],
+                "versions": ["R 4.6"],
+                "metrics": {},
+            },
         },
         "previews": [
             {

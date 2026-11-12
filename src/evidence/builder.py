@@ -108,7 +108,9 @@ def build_qc_card(
         preview.get("approved_at") if outcome == "accepted" else preview.get("rejected_at")
     )
     evidence = run["evidence"]
-    summary = preview["summary"]
+    # run["evidence"] 由 metadata + summary 组成；逐细胞汇总在 summary 下。
+    qc_evidence = evidence["summary"]
+    preview_summary = preview["summary"]
     directory = Path(run["directory"])
     card = EvidenceCard(
         card_id=_new_card_id(),
@@ -126,32 +128,32 @@ def build_qc_card(
             tool_version=evidence["tool_version"],
             parameters=preview["params"],
             environment={
-                "versions": "; ".join(evidence["versions"]),
+                "versions": "; ".join(qc_evidence["versions"]),
                 "threshold_schema": preview["schema"],
                 "preview_tool_version": preview["tool_version"],
             },
         ),
         observation={
-            "cells": evidence["cells"],
-            "features": evidence["features"],
-            "zero_count_cells": evidence["zero_count_cells"],
-            "mt_symbol_resolved": evidence["mt_symbol_resolved"],
-            "metrics": evidence["metrics"],
-            "kept": summary["kept"],
-            "excluded": summary["excluded"],
-            "excluded_percent": summary["excluded_percent"],
-            "reason_counts": summary["reason_counts"],
+            "cells": qc_evidence["cells"],
+            "features": qc_evidence["features"],
+            "zero_count_cells": qc_evidence["zero_count_cells"],
+            "mt_symbol_resolved": qc_evidence["mt_symbol_resolved"],
+            "metrics": qc_evidence["metrics"],
+            "kept": preview_summary["kept"],
+            "excluded": preview_summary["excluded"],
+            "excluded_percent": preview_summary["excluded_percent"],
+            "reason_counts": preview_summary["reason_counts"],
         },
         claim=Claim(
             text=(
-                f"QC 阈值经人工批准：保留 {summary['kept']}/{summary['total']} 个细胞。"
+                f"QC 阈值经人工批准：保留 {preview_summary['kept']}/{preview_summary['total']} 个细胞。"
                 if outcome == "accepted"
                 else "QC 阈值预览未获批准；未执行过滤或下游分析。"
             ),
             basis="fact",
             confidence="high",
         ),
-        limitations=list(evidence["warnings"])
+        limitations=list(qc_evidence["warnings"])
         + ([] if outcome == "accepted" else ["该选择被拒绝，不用于下游分析。"]),
         provenance=Provenance(
             inputs=_fingerprint_artifacts(_qc_metadata(run).get("inputs_before") or []),
