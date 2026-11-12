@@ -129,6 +129,13 @@ python -m src.api
   python -m src.cli.evidence export qa <session_id> <answer_id>
   python -m src.cli.evidence validate docs/examples/evidence-cards/qc.json
   ```
+- 公共证据治理假服务器（独立 `<data>/public_evidence/`，双签后仅 accepted 可检索）：
+  ```powershell
+  python -m src.cli.evidence_governance submit envelope.json
+  python -m src.cli.evidence_governance review <evidence_id> --actor dora --role domain_reviewer --action domain_pass --check method_complete=true --check claim_matches_observation=true --check limitations_present=true
+  python -m src.cli.evidence_governance search --query QC
+  python -m src.cli.evidence_governance withdraw <evidence_id> --actor alice --role contributor --reason "发现方法错误"
+  ```
 
 ## 使用示例
 
