@@ -58,5 +58,6 @@ def update_project(project_id: str, body: ProjectUpdateRequest) -> dict[str, Any
             archived=body.archived,
         )
     except ValueError as exc:
-        raise HTTPException(status_code=404, detail=str(exc)) from exc
+        status = 409 if "运行中" in str(exc) else 404
+        raise HTTPException(status_code=status, detail=str(exc)) from exc
     return {"project": store.get_project(project_id)}

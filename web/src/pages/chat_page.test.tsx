@@ -311,6 +311,19 @@ describe('ChatPage 输入区：键位 / 停止 / 错误提示（约束 3）', ()
     expect(screen.getByText('初始问题')).toBeInTheDocument()
   })
 
+  it('自动选中跳过已归档会话', async () => {
+    const archivedSid = nextSid()
+    const activeSid = nextSid()
+    await renderReady(activeSid, {
+      sessions: [
+        { ...makeSummary(archivedSid, '归档会话'), archived_at: '2026-10-01T00:00:00Z' },
+        makeSummary(activeSid, '活动会话'),
+      ],
+    })
+
+    expect(useChatStore.getState().sessionId).toBe(activeSid)
+  })
+
   it('Enter 发送（清空输入、进入生成态），Shift+Enter 与空输入不发送', async () => {
     const sid = nextSid()
     await renderReady(sid)

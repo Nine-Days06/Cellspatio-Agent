@@ -339,6 +339,21 @@ it('归档项目下的会话整组隐藏，不进入活动列表', () => {
   expect(screen.getByRole('button', { name: /^新会话/ })).toBeInTheDocument()
 })
 
+it('搜索态下打开已归档仍可找到归档项', () => {
+  renderSidebar({
+    sessions: [{ ...sessions[0], archived_at: '2026-10-02T00:00:00' }, sessions[1]],
+  })
+  fireEvent.change(screen.getByRole('searchbox', { name: '搜索会话' }), {
+    target: { value: '肝癌' },
+  })
+  expect(screen.queryByRole('region', { name: '已归档' })).not.toBeInTheDocument()
+
+  fireEvent.click(screen.getByRole('button', { name: '显示已归档' }))
+  const region = screen.getByRole('region', { name: '已归档' })
+  expect(within(region).getByText('肝癌项目')).toBeInTheDocument()
+  expect(within(region).getByRole('button', { name: '恢复会话 肝癌项目' })).toBeInTheDocument()
+})
+
 describe('SoftWarnBanner', () => {
   it('soft_warn 为 true 时显示提醒', () => {
     render(<SoftWarnBanner visible />)

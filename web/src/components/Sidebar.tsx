@@ -21,6 +21,7 @@ import {
   updateSession,
 } from '@/lib/api'
 import type { EnvStatus, KbStats, Project, SessionSummary } from '@/lib/types'
+import { collectArchivedProjectIds, isActiveSession } from '@/lib/sessions'
 import { Button } from '@/components/ui/button'
 import {
   Dialog,
@@ -91,18 +92,13 @@ export function Sidebar({
   const [moveTarget, setMoveTarget] = useState('')
   const [showArchived, setShowArchived] = useState(false)
 
-  const archivedProjectIds = new Set(
-    projects.filter((project) => project.archived_at).map((project) => project.id),
-  )
+  const archivedProjectIds = collectArchivedProjectIds(projects)
   const query = search.trim().toLocaleLowerCase()
   const visibleSessions = sessions.filter((session) =>
     session.title.toLocaleLowerCase().includes(query),
   )
-  // 项目归档时整组隐藏；单体归档只影响该会话
-  const activeSessions = visibleSessions.filter(
-    (session) =>
-      !session.archived_at &&
-      !(session.project_id && archivedProjectIds.has(session.project_id)),
+  const activeSessions = visibleSessions.filter((session) =>
+    isActiveSession(session, archivedProjectIds),
   )
   const archivedSessions = visibleSessions.filter(
     (session) =>
@@ -110,7 +106,11 @@ export function Sidebar({
       !(session.project_id && archivedProjectIds.has(session.project_id)),
   )
   const activeProjects = projects.filter((project) => !project.archived_at)
-  const archivedProjects = projects.filter((project) => project.archived_at)
+  const archivedProjects = projects.filter(
+    (project) =>
+      project.archived_at &&
+      (!query || project.label.toLocaleLowerCase().includes(query)),
+  )
   const pinnedSessions = activeSessions.filter((session) => session.pinned)
   const ungroupedSessions = activeSessions.filter(
     (session) => !session.pinned && !session.project_id,
@@ -376,7 +376,6 @@ export function Sidebar({
         </label>
         <button
           type="button"
-          aria-pressed={showArchived}
           onClick={() => setShowArchived((value) => !value)}
           className="mt-2 flex min-h-9 w-full items-center gap-2 rounded-lg px-3 text-xs text-muted-foreground hover:bg-card/60"
         >
@@ -468,7 +467,7 @@ export function Sidebar({
           </section>
         )}
 
-        {!searchMode && showArchived && (
+        {showArchived && (
           <section aria-label="已归档" className="mb-2">
             <p className="px-3 py-1 text-xs font-medium text-muted-foreground">已归档</p>
             <ul className="flex flex-col gap-1">

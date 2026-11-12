@@ -56,9 +56,11 @@ const jsonInit = (method: string, body?: unknown): RequestInit => ({
   ...(body === undefined ? {} : { body: JSON.stringify(body) }),
 })
 
+const archivedQuery = (includeArchived: boolean) =>
+  includeArchived ? '?include_archived=1' : ''
+
 export function listSessions(includeArchived = false): Promise<{ sessions: SessionSummary[] }> {
-  const query = includeArchived ? '?include_archived=1' : ''
-  return request(`/api/sessions${query}`, { method: 'GET' })
+  return request(`/api/sessions${archivedQuery(includeArchived)}`, { method: 'GET' })
 }
 
 export function createSession(title?: string, projectId?: string | null): Promise<{ session: Session }> {
@@ -83,8 +85,7 @@ export function updateSession(sessionId: string, body: UpdateSessionBody): Promi
 }
 
 export function listProjects(includeArchived = false): Promise<{ projects: Project[] }> {
-  const query = includeArchived ? '?include_archived=1' : ''
-  return request(`/api/projects${query}`, { method: 'GET' })
+  return request(`/api/projects${archivedQuery(includeArchived)}`, { method: 'GET' })
 }
 
 export function createProject(label: string, rootPath?: string | null): Promise<{ project: Project }> {

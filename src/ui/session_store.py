@@ -358,6 +358,16 @@ class SessionStore:
         archived: bool | None = None,
     ) -> None:
         """None = 不更新；archived 显式切换归档时间。"""
+        if archived:
+            with self._conn() as conn:
+                rows = conn.execute(
+                    "SELECT id FROM sessions WHERE project_id=? AND archived_at IS NULL",
+                    (project_id,),
+                ).fetchall()
+            for row in rows:
+                running = self.running_stage(row["id"])
+                if running:
+                    raise ValueError(f"{running}运行中，不能归档项目")
         sets, vals = [], []
         if label is not None:
             sets.append("label=?")

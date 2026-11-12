@@ -19,6 +19,7 @@ import { Sidebar } from '@/components/Sidebar'
 import { ThemeToggle } from '@/components/ThemeToggle'
 import { ApiError, confirmAction, createSession, registerLocalInput } from '@/lib/api'
 import { queryKeys, useMessages, useProjects, useSessions, useSidebar } from '@/lib/queries'
+import { collectArchivedProjectIds, isActiveSession } from '@/lib/sessions'
 import type {
   ChatMode,
   ConfirmRequestBody,
@@ -35,16 +36,6 @@ const DEFAULT_ENV: EnvStatus = {
   kb_ok: false,
   ollama: { state: 'unavailable', managed: false, detail: '' },
   ollama_start_mode: 'lazy',
-}
-
-function isActiveSession(
-  session: SessionSummary,
-  archivedProjectIds: Set<string>,
-): boolean {
-  return (
-    !session.archived_at &&
-    !(session.project_id && archivedProjectIds.has(session.project_id))
-  )
 }
 
 export function ChatPage() {
@@ -94,11 +85,9 @@ export function ChatPage() {
   const autoSelectedRef = useRef(false)
   useEffect(() => {
     if (autoSelectedRef.current) return
-    const archived = new Set(
-      (projectsQuery.data?.projects ?? [])
-        .filter((project) => project.archived_at)
-        .map((project) => project.id),
-    )
+    // 项目未返回前无法判断哪些会话属于归档项目，等下一次 effect
+    if (!projectsQuery.data) return
+    const archived = collectArchivedProjectIds(projectsQuery.data.projects)
     const first = sessionsQuery.data?.sessions.find((session) =>
       isActiveSession(session, archived),
     )
@@ -251,11 +240,7 @@ export function ChatPage() {
       refreshNavigation()
       const state = useChatStore.getState()
       if (state.sessionId !== id) return
-      const archived = new Set(
-        (projectsQuery.data?.projects ?? [])
-          .filter((project) => project.archived_at)
-          .map((project) => project.id),
-      )
+      const archived = collectArchivedProjectIds(projectsQuery.data?.projects ?? [])
       const remaining = (sessionsQuery.data?.sessions ?? []).filter(
         (session) => session.id !== id && isActiveSession(session, archived),
       )

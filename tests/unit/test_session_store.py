@@ -116,6 +116,16 @@ def test_archived_project_hides_its_sessions_and_rejects_new_ones():
         store.create_session("新会话", project_id=pid)
 
 
+def test_archive_project_rejects_running_session(monkeypatch):
+    store = SessionStore()
+    pid = store.create_project("运行中项目")
+    store.create_session("会话", project_id=pid)
+    monkeypatch.setattr(store, "running_stage", lambda _sid: "PCA")
+
+    with pytest.raises(ValueError, match="运行中"):
+        store.update_project(pid, archived=True)
+
+
 def test_project_analysis_root_rejects_unknown_session(tmp_path):
     with pytest.raises(ValueError, match="会话不存在"):
         project_analysis_root("nope", tmp_path)
