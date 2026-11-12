@@ -129,6 +129,15 @@ python -m src.api
   python -m src.cli.evidence export qa <session_id> <answer_id>
   python -m src.cli.evidence validate docs/examples/evidence-cards/qc.json
   ```
+- 公共证据最小闭环（独立 `<data>/public_evidence/`；预览 → 显式同意 → 隔离区 → 双签 → 检索 → 撤销）：
+  ```powershell
+  python -m src.cli.evidence_governance preview docs/examples/evidence-cards/qc.json --actor alice --out preview.json
+  python -m src.cli.evidence_governance contribute preview.json --consent
+  python -m src.cli.evidence_governance review <evidence_id> --actor dora --role domain_reviewer --action domain_pass --check method_complete=true --check claim_matches_observation=true --check limitations_present=true
+  python -m src.cli.evidence_governance review <evidence_id> --actor carl --role compliance_reviewer --action compliance_pass --check privacy_scan_passed=true --check license_and_attribution_present=true --check no_raw_data=true --check small_sample_ok=true
+  python -m src.cli.evidence_governance search --query QC
+  python -m src.cli.evidence_governance withdraw <evidence_id> --actor alice --role contributor --reason "发现方法错误"
+  ```
 
 ## 使用示例
 
