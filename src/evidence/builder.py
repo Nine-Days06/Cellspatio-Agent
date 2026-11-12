@@ -53,7 +53,9 @@ def _fingerprint_artifacts(rows: list[dict[str, Any]]) -> list[Artifact]:
     """把 metadata 里的输入指纹转成无路径的卡字段。"""
     return [
         Artifact(
-            name=Path(str(row["path"])).name, sha256=str(row["sha256"]), bytes=int(row["bytes"])
+            name=str(row["path"]).replace("\\", "/").rsplit("/", 1)[-1],
+            sha256=str(row["sha256"]),
+            bytes=int(row["bytes"]),
         )
         for row in rows
         if row.get("path") and row.get("sha256") and row.get("bytes") is not None
