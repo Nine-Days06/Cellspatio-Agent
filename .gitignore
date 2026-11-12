@@ -44,6 +44,7 @@ knowledge_base_methods/
 .wrroc/
 .superpowers/
 .cellspatio/
+public_evidence/
 
 # pubmed-etl 运行时数据（数据库、XML、PDF、输出）
 pubmed-etl/data/

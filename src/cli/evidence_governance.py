@@ -14,7 +14,9 @@ python -m src.cli.evidence_governance events <evidence_id>
 from __future__ import annotations
 
 import argparse
+import getpass
 import json
+import os
 import sqlite3
 from pathlib import Path
 from typing import Any
@@ -32,14 +34,16 @@ from src.evidence.governance import (
     ROLE_DOMAIN,
     GovernanceStore,
     SubmissionEnvelope,
+    public_evidence_dir,
 )
+from src.evidence.public_client import PublicEvidenceClient
 from src.evidence.schema import EvidenceCard
 
 
 def _store(root: str | None) -> GovernanceStore:
     """`--root` 是数据根；公共库固定在其下的 `public_evidence/`。"""
     base = Path(root or Path.cwd()).resolve()
-    return GovernanceStore(base / "public_evidence")
+    return GovernanceStore(public_evidence_dir(base))
 
 
 def _parse_checks(items: list[str]) -> dict[str, bool]:
@@ -72,6 +76,8 @@ def main(argv: list[str] | None = None) -> int:
     preview_parser.add_argument("card")
     preview_parser.add_argument("--actor", required=True)
     preview_parser.add_argument("--out", default=None)
+    preview_parser.add_argument("--supersedes", action="append", default=[])
+    preview_parser.add_argument("--revises-id", default=None)
 
     contribute_parser = subparsers.add_parser("contribute")
     contribute_parser.add_argument("preview")
@@ -119,14 +125,55 @@ def main(argv: list[str] | None = None) -> int:
     events_parser = subparsers.add_parser("events")
     events_parser.add_argument("evidence_id")
 
+    login_parser = subparsers.add_parser("login", help="登录公共证据服务并打印 token")
+    login_parser.add_argument("--server", required=True)
+    login_parser.add_argument("--username", required=True)
+
+    upload_parser = subparsers.add_parser("upload", help="把预览上传到公共证据服务")
+    upload_parser.add_argument("preview")
+    upload_parser.add_argument("--server", required=True)
+    upload_parser.add_argument("--token", default=os.environ.get("CELLSPATIO_EVIDENCE_TOKEN", ""))
+    upload_parser.add_argument("--consent", action="store_true")
+
+    remote_search_parser = subparsers.add_parser("remote-search", help="远程检索公共证据")
+    remote_search_parser.add_argument("--server", required=True)
+    remote_search_parser.add_argument("--query", default="")
+    remote_search_parser.add_argument("--gate", default=None)
+
+    citation_parser = subparsers.add_parser("citation", help="读取公共证据引用条目")
+    citation_parser.add_argument("evidence_id")
+    citation_parser.add_argument("--server", required=True)
+
     args = parser.parse_args(argv)
     try:
+        if args.command in ("login", "upload", "remote-search", "citation"):
+            client = PublicEvidenceClient(args.server, token=getattr(args, "token", None))
+            try:
+                if args.command == "login":
+                    result = client.login(args.username, getpass.getpass("密码: "))
+                elif args.command == "upload":
+                    preview = json.loads(Path(args.preview).read_text(encoding="utf-8"))
+                    result = client.upload(preview, consent=args.consent)
+                elif args.command == "remote-search":
+                    result = client.search(args.query, args.gate)
+                else:
+                    result = client.citation(args.evidence_id)
+            finally:
+                client.close()
+            print(json.dumps(result, ensure_ascii=False, indent=2))
+            return 0
+
         store = _store(args.root)
         if args.command == "submit":
             result: Any = store.submit(_load_envelope(args.envelope))
         elif args.command == "preview":
             card = EvidenceCard.model_validate_json(Path(args.card).read_text(encoding="utf-8"))
-            result = preview_card(card, contributor_id=args.actor)
+            result = preview_card(
+                card,
+                contributor_id=args.actor,
+                supersedes=args.supersedes,
+                revises_submission_id=args.revises_id,
+            )
             if args.out:
                 Path(args.out).write_text(
                     json.dumps(result, ensure_ascii=False, indent=2), encoding="utf-8"

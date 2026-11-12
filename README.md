@@ -144,6 +144,16 @@ python -m src.api
   python -m src.cli.evidence_governance withdraw <evidence_id> --actor alice --role contributor --reason "发现方法错误"
   ```
 
+- 公共证据 HTTP 服务（独立进程；账号与证据库都在 `<data>/public_evidence/`）：
+  ```powershell
+  python -m src.cli.evidence_accounts --root data create alice --role contributor
+  python -m src.public_api --root data          # 默认 127.0.0.1:8700
+  python -m src.cli.evidence_governance login --server http://127.0.0.1:8700 --username alice
+  python -m src.cli.evidence_governance upload preview.json --server http://127.0.0.1:8700 --token <token> --consent
+  python -m src.cli.evidence_governance remote-search --server http://127.0.0.1:8700 --query QC
+  python -m src.cli.evidence_governance citation <evidence_id> --server http://127.0.0.1:8700
+  ```
+
 ## 使用示例
 
 ### 数据获取（两段式：检索 → 确认 → 下载）
