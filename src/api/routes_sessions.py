@@ -46,6 +46,7 @@ def list_sessions(include_archived: bool = False) -> dict[str, Any]:
 
 @router.post("/sessions")
 def create_session(body: CreateSessionRequest | None = None) -> dict[str, Any]:
+    """新建会话；显式 project_id 时归入该项目，否则保持未归类。"""
     store = _store()
     title = body.title if body and body.title else "新会话"
     try:
@@ -75,8 +76,14 @@ class UpdateSessionRequest(BaseModel):
 
 @router.patch("/sessions/{session_id}")
 def update_session(session_id: str, body: UpdateSessionRequest) -> dict[str, Any]:
+    """更新归属/置顶/归档；归档前先拿会话锁，避免误藏运行中的对话。"""
     store = _store()
     _require_session(store, session_id)
+    lock = None
+    if body.archived:
+        lock = session_lock(session_id)
+        if not lock.acquire(blocking=False):
+            raise HTTPException(status_code=409, detail="该会话已有任务在进行")
     try:
         if "project_id" in body.model_fields_set:
             store.move_session(session_id, body.project_id)
@@ -87,6 +94,9 @@ def update_session(session_id: str, body: UpdateSessionRequest) -> dict[str, Any
     except ValueError as exc:
         status = 409 if "归档" in str(exc) else 404
         raise HTTPException(status_code=status, detail=str(exc)) from exc
+    finally:
+        if lock is not None:
+            lock.release()
     return {"session": store.get_session(session_id)}
 
 

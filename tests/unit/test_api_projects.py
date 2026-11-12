@@ -45,6 +45,17 @@ def test_create_project_rejects_blank_label(client):
     assert client.post("/api/projects", json={"label": "   "}).status_code == 422
 
 
+def test_create_project_derives_label_from_root_path(client, tmp_path):
+    workdir = tmp_path / "liver"
+    workdir.mkdir()
+
+    response = client.post("/api/projects", json={"root_path": str(workdir)})
+
+    assert response.status_code == 200
+    assert response.json()["project"]["label"] == "liver"
+    assert client.post("/api/projects", json={}).status_code == 422
+
+
 def test_project_root_path_must_exist_and_be_dir(client, tmp_path):
     assert (
         client.post("/api/projects", json={"label": "相对", "root_path": "data/liver"}).status_code

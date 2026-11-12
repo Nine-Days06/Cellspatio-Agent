@@ -107,6 +107,27 @@ def test_create_session_in_archived_project_returns_409(client):
     assert response.status_code == 409
 
 
+def test_archive_session_rejects_while_chat_running(client):
+    sid = client.post("/api/sessions", json={}).json()["session"]["id"]
+    lock = session_lock(sid)
+    lock.acquire()
+    try:
+        assert client.patch(f"/api/sessions/{sid}", json={"archived": True}).status_code == 409
+    finally:
+        lock.release()
+
+
+def test_archive_project_rejects_while_session_running(client):
+    pid = client.post("/api/projects", json={"label": "运行项目"}).json()["project"]["id"]
+    sid = client.post("/api/sessions", json={"project_id": pid}).json()["session"]["id"]
+    lock = session_lock(sid)
+    lock.acquire()
+    try:
+        assert client.patch(f"/api/projects/{pid}", json={"archived": True}).status_code == 409
+    finally:
+        lock.release()
+
+
 def test_delete_session_removes_it(client):
     sid = client.post("/api/sessions", json={}).json()["session"]["id"]
 

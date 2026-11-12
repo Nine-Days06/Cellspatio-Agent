@@ -92,6 +92,24 @@ def test_export_project_nests_sessions(store, root):
     assert project["session_ids"] == [sid]
 
 
+def test_export_project_includes_unregistered_analysis_artifacts(store, root):
+    pid = store.create_project("时空项目")
+    sid, _ = _seed_session(store, root)
+    store.move_session(sid, pid)
+    de_file = root / "data" / "projects" / pid / "analysis" / "de" / "result.csv"
+    de_file.parent.mkdir(parents=True)
+    de_file.write_text("gene,logfc\nTP53,1\n", encoding="utf-8")
+
+    records.export_records("project", pid, out=root / "project.zip", store=store, root=root)
+
+    with zipfile.ZipFile(root / "project.zip") as archive:
+        rows = list(csv.DictReader(io.StringIO(archive.read("artifacts.csv").decode("utf-8"))))
+    relative = str(Path("data") / "projects" / pid / "analysis" / "de" / "result.csv")
+    assert {"stage": "de", "path": relative} in [
+        {"stage": r["stage"], "path": r["path"]} for r in rows
+    ]
+
+
 def test_export_and_delete_include_non_qc_wrroc(store, root):
     sid = store.create_session()
     wf_dir = root / ".wrroc" / "run-de"
@@ -182,15 +200,30 @@ def test_delete_rejects_paths_outside_root(store, root):
 def test_delete_file_failure_keeps_db(store, root, monkeypatch):
     sid, _ = _seed_session(store, root)
 
-    def fail(path):
+    def fail(_self, _target):
         raise OSError("locked")
 
-    monkeypatch.setattr(records.shutil, "rmtree", fail)
+    monkeypatch.setattr(Path, "rename", fail)
     result = records.delete_records("session", sid, store=store, root=root)
 
     assert result["status"] == "files-failed"
     assert result["verified"] is False
     assert store.get_session(sid) is not None
+
+
+def test_delete_rolls_back_files_when_db_fails(store, root, monkeypatch):
+    sid, run_dir = _seed_session(store, root)
+
+    def fail(_session_id):
+        raise ValueError("db down")
+
+    monkeypatch.setattr(store, "delete_session", fail)
+    result = records.delete_records("session", sid, store=store, root=root)
+
+    assert result["status"] == "db-failed"
+    assert result["restore_failures"] == []
+    assert run_dir.is_dir()
+    assert (root / ".wrroc" / "run-1").is_dir()
 
 
 def test_project_dry_run_reports_requires_cascade(store, root):

@@ -93,7 +93,10 @@ export function listProjects(includeArchived = false): Promise<{ projects: Proje
   return request(`/api/projects${archivedQuery(includeArchived)}`, { method: 'GET' })
 }
 
-export function createProject(label: string, rootPath?: string | null): Promise<{ project: Project }> {
+export function createProject(
+  label: string | null,
+  rootPath?: string | null,
+): Promise<{ project: Project }> {
   return request('/api/projects', jsonInit('POST', { label, root_path: rootPath || null }))
 }
 

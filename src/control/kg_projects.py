@@ -16,7 +16,13 @@ logger = logging.getLogger(__name__)
 class ProjectKGMemory:
     """每项目独立 working_dir；未归类会话落 unclassified，默认不跨项目查询。"""
 
-    def __init__(self, root: Path | str, llm_model_func=None, embedding_func=None):
+    def __init__(
+        self,
+        root: Path | str,
+        llm_model_func: Any = None,
+        embedding_func: Any = None,
+    ):
+        """保存根目录与可选的 LLM/embedding 函数；记忆实例按需懒建。"""
         self.root = Path(root)
         self._llm_model_func = llm_model_func
         self._embedding_func = embedding_func
@@ -25,10 +31,12 @@ class ProjectKGMemory:
 
     @staticmethod
     def _session_id(execution: Any) -> str | None:
+        """从 workflow execution 的 context 取 session_id。"""
         context = (getattr(execution, "meta", None) or {}).get("context") or {}
         return context.get("session_id")
 
     def _key(self, session_id: str | None) -> str:
+        """会话所属项目 id；未归类会话落 unclassified。"""
         session = SessionStore().get_session(session_id) if session_id else None
         return (session or {}).get("project_id") or "unclassified"
 

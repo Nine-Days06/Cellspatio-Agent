@@ -8,6 +8,7 @@ from typing import Any
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
+from src.api.chat_service import session_lock
 from src.ui.record_files import writable_dir
 from src.ui.session_store import SessionStore
 from src.ui.usage import project_usage
@@ -16,11 +17,14 @@ router = APIRouter(prefix="/api", tags=["projects"])
 
 
 def _store() -> SessionStore:
+    """每次新建短连接存储，与其它路由同策略。"""
     return SessionStore()
 
 
 class ProjectCreateRequest(BaseModel):
-    label: str
+    """POST /api/projects 请求体；label 缺省时取工作目录名。"""
+
+    label: str | None = None
     root_path: str | None = None
 
 
@@ -52,16 +56,23 @@ def _validated_root_path(value: str | None) -> str | None:
 
 @router.get("/projects")
 def list_projects(include_archived: bool = False) -> dict[str, Any]:
+    """列出项目；默认隐藏已归档。"""
     return {"projects": _store().list_projects(include_archived=include_archived)}
 
 
 @router.post("/projects")
 def create_project(body: ProjectCreateRequest) -> dict[str, Any]:
-    label = body.label.strip()
+    """新建项目；标签可省略，缺省取工作目录名。"""
+    label = (body.label or "").strip()
+    root_path = _validated_root_path(body.root_path)
     if not label:
-        raise HTTPException(status_code=422, detail="项目名不能为空")
+        if root_path is None:
+            raise HTTPException(status_code=422, detail="项目名不能为空")
+        label = Path(root_path).name
+        if not label:
+            raise HTTPException(status_code=422, detail="无法从工作目录推导项目名，请填写项目名")
     store = _store()
-    project_id = store.create_project(label, root_path=_validated_root_path(body.root_path))
+    project_id = store.create_project(label, root_path=root_path)
     return {"project": store.get_project(project_id)}
 
 
@@ -76,6 +87,7 @@ def get_project_usage(project_id: str) -> dict[str, Any]:
 
 @router.patch("/projects/{project_id}")
 def update_project(project_id: str, body: ProjectUpdateRequest) -> dict[str, Any]:
+    """更新项目；归档前先拿项目下所有会话锁，运行中拒绝。"""
     store = _store()
     if store.get_project(project_id) is None:
         raise HTTPException(status_code=404, detail="项目不存在")
@@ -84,6 +96,20 @@ def update_project(project_id: str, body: ProjectUpdateRequest) -> dict[str, Any
     root_path = (
         _validated_root_path(body.root_path) if "root_path" in body.model_fields_set else None
     )
+    locks = []
+    if body.archived:
+        sessions = [
+            session
+            for session in store.list_sessions(include_archived=False)
+            if session["project_id"] == project_id
+        ]
+        for session in sessions:
+            lock = session_lock(session["id"])
+            if not lock.acquire(blocking=False):
+                for held in locks:
+                    held.release()
+                raise HTTPException(status_code=409, detail="项目内有会话正在运行")
+            locks.append(lock)
     try:
         store.update_project(
             project_id,
@@ -95,4 +121,7 @@ def update_project(project_id: str, body: ProjectUpdateRequest) -> dict[str, Any
     except ValueError as exc:
         status = 409 if "运行中" in str(exc) else 404
         raise HTTPException(status_code=status, detail=str(exc)) from exc
+    finally:
+        for held in locks:
+            held.release()
     return {"project": store.get_project(project_id)}

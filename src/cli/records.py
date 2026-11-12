@@ -44,14 +44,17 @@ _PATH_KEYS = {
 
 
 def _now() -> str:
+    """当前 UTC 时间（ISO 8601）。"""
     return datetime.now(timezone.utc).isoformat()
 
 
 def _redact_text(text: str) -> str:
+    """把文本中的绝对路径替换为占位符。"""
     return _PATH_RE.sub("<redacted-path>", text)
 
 
 def _json_safe(value: Any, redact: bool) -> Any:
+    """递归脱敏字符串并保证值可 JSON 序列化。"""
     if isinstance(value, dict):
         return {key: _json_safe(item, redact) for key, item in value.items()}
     if isinstance(value, (list, tuple)):
@@ -64,6 +67,7 @@ def _json_safe(value: Any, redact: bool) -> Any:
 
 
 def _redact_record_paths(value: Any) -> Any:
+    """按已知路径字段名递归脱敏记录中的路径。"""
     if isinstance(value, dict):
         return {
             key: (
@@ -79,6 +83,7 @@ def _redact_record_paths(value: Any) -> Any:
 
 
 def _strip_charts(results: Any) -> Any:
+    """导出时只保留图表类型，避免把大体积绘图数据写进记录。"""
     if not isinstance(results, dict):
         return results
     safe = dict(results)
@@ -91,11 +96,35 @@ def _strip_charts(results: Any) -> Any:
 
 
 def _sha256(path: Path) -> str:
+    """流式计算文件 SHA256。"""
     digest = hashlib.sha256()
     with path.open("rb") as handle:
         for chunk in iter(lambda: handle.read(1024 * 1024), b""):
             digest.update(chunk)
     return digest.hexdigest()
+
+
+def _file_row(
+    file_path: Path,
+    session_id: str,
+    stage: str,
+    root: Path,
+    redact: bool,
+    hash_files: bool,
+) -> dict[str, Any]:
+    """构造一行产物清单；redact 时路径脱敏。"""
+    record_path = (
+        "<redacted-path>"
+        if redact
+        else str(file_path.relative_to(root) if file_path.is_relative_to(root) else file_path)
+    )
+    return {
+        "session_id": session_id,
+        "stage": stage,
+        "path": record_path,
+        "bytes": file_path.stat().st_size,
+        "sha256": _sha256(file_path) if hash_files else "",
+    }
 
 
 def _artifact_rows(
@@ -105,6 +134,7 @@ def _artifact_rows(
     redact: bool,
     hash_files: bool,
 ) -> list[dict[str, Any]]:
+    """枚举已登记 run 目录下的全部文件。"""
     rows = []
     seen: set[Path] = set()
     for stage, directory in ((stage, dir) for run in runs for stage, dir in run_dirs(run)):
@@ -113,22 +143,38 @@ def _artifact_rows(
             continue
         seen.add(path)
         for file_path in sorted(item for item in path.rglob("*") if item.is_file()):
-            record_path = (
-                "<redacted-path>"
-                if redact
-                else str(
-                    file_path.relative_to(root) if file_path.is_relative_to(root) else file_path
-                )
-            )
-            rows.append(
-                {
-                    "session_id": session_id,
-                    "stage": stage,
-                    "path": record_path,
-                    "bytes": file_path.stat().st_size,
-                    "sha256": _sha256(file_path) if hash_files else "",
-                }
-            )
+            rows.append(_file_row(file_path, session_id, stage, root, redact, hash_files))
+    return rows
+
+
+def _project_extra_rows(
+    store: SessionStore,
+    sessions: list[dict[str, Any]],
+    project_id: str,
+    root: Path,
+    redact: bool,
+    hash_files: bool,
+) -> list[dict[str, Any]]:
+    """补录项目目录下未登记 run 的产物（如 de/spatial）。"""
+    project_dir = safe_target(root / "data" / "projects" / project_id, root)
+    if project_dir is None or not project_dir.is_dir():
+        return []
+    covered = [
+        resolve_dir(directory, root)
+        for session in sessions
+        for run in session_runs(store, session["id"])
+        for _, directory in run_dirs(run)
+    ]
+    rows = []
+    for file_path in sorted(item for item in project_dir.rglob("*") if item.is_file()):
+        if any(file_path.is_relative_to(path) for path in covered):
+            continue
+        parts = file_path.relative_to(project_dir).parts
+        if len(parts) > 2 and parts[0] == "analysis":
+            stage = parts[1]
+        else:
+            stage = parts[0] if len(parts) > 1 else "project"
+        rows.append(_file_row(file_path, "", stage, root, redact, hash_files))
     return rows
 
 
@@ -139,6 +185,7 @@ def _session_record(
     redact: bool,
     hash_files: bool,
 ) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+    """装配单个会话的导出记录与产物清单。"""
     session = store.get_session(session["id"]) or session
     runs = session_runs(store, session["id"])
     messages = []
@@ -171,6 +218,7 @@ def _session_record(
 
 
 def _session_markdown(record: dict[str, Any]) -> str:
+    """把会话记录渲染成可脱机阅读的 Markdown。"""
     session = record["session"]
     lines = [
         f"# 会话 {session['id']} — {session['title']}",
@@ -216,6 +264,7 @@ def _session_markdown(record: dict[str, Any]) -> str:
 
 
 def _artifacts_csv(rows: list[dict[str, Any]]) -> str:
+    """产物清单 CSV。"""
     buffer = io.StringIO()
     writer = csv.DictWriter(buffer, fieldnames=["session_id", "stage", "path", "bytes", "sha256"])
     writer.writeheader()
@@ -224,6 +273,7 @@ def _artifacts_csv(rows: list[dict[str, Any]]) -> str:
 
 
 def _write_zip(path: Path, files: dict[str, str]) -> None:
+    """把内存中的文本文件写成 zip。"""
     path.parent.mkdir(parents=True, exist_ok=True)
     with zipfile.ZipFile(path, "w", compression=zipfile.ZIP_DEFLATED) as archive:
         for name, content in files.items():
@@ -310,6 +360,7 @@ def export_records(
             )
             files[f"sessions/{session['id']}/record.md"] = _session_markdown(record)
             artifacts.extend(session_artifacts)
+        artifacts.extend(_project_extra_rows(store, sessions, target_id, base, redact, hash_files))
         files["artifacts.csv"] = _artifacts_csv(artifacts)
     else:
         raise ValueError("scope 必须是 session 或 project")
@@ -335,6 +386,7 @@ def export_records(
 def _delete_plan(
     scope: str, target_id: str, store: SessionStore, root: Path
 ) -> tuple[list[dict[str, Any]], dict[str, Any] | None, list[Path], list[str]]:
+    """列出待删会话、项目、产物路径与越界跳过项。"""
     project = None
     if scope == "session":
         session = store.get_session(target_id)
@@ -395,7 +447,46 @@ def _delete_plan(
         if path not in seen:
             seen.add(path)
             unique_paths.append(path)
-    return sessions, project, unique_paths, skipped
+    return sessions, project, _outermost(unique_paths), skipped
+
+
+def _outermost(paths: list[Path]) -> list[Path]:
+    """去掉被其他待删目录包含的子路径，避免重复移动。"""
+    result: list[Path] = []
+    for path in sorted(paths, key=lambda item: len(item.parts)):
+        if all(not path.is_relative_to(parent) for parent in result):
+            result.append(path)
+    return result
+
+
+def _restore_paths(moves: list[tuple[Path, Path]]) -> list[str]:
+    """把暂存路径移回原位；返回未能回滚的路径。"""
+    failed = []
+    for original, staged in reversed(moves):
+        try:
+            original.parent.mkdir(parents=True, exist_ok=True)
+            staged.rename(original)
+        except OSError:
+            failed.append(str(staged))
+    return failed
+
+
+def _stage_paths(paths: list[Path], root: Path) -> tuple[Path, list[tuple[Path, Path]]]:
+    """把待删路径原子移入 .trash，DB 删除成功后才真正丢弃。"""
+    trash = root / ".trash" / f"delete-{datetime.now(timezone.utc).strftime('%Y%m%d%H%M%S%f')}"
+    moves: list[tuple[Path, Path]] = []
+    try:
+        for path in paths:
+            if not path.exists():
+                continue
+            target = trash / path.relative_to(root)
+            target.parent.mkdir(parents=True, exist_ok=True)
+            path.rename(target)
+            moves.append((path, target))
+    except OSError:
+        _restore_paths(moves)
+        raise
+    return trash, moves
 
 
 def delete_records(
@@ -434,20 +525,13 @@ def delete_records(
     if skipped:
         raise ValueError("有产物在数据根之外，未删除任何记录: " + "; ".join(skipped))
 
-    failures = []
-    for path in paths:
-        try:
-            if path.is_dir():
-                shutil.rmtree(path)
-            elif path.exists():
-                path.unlink()
-        except OSError as exc:
-            failures.append({"path": str(path), "error": str(exc)})
-    if failures:
+    try:
+        trash, moves = _stage_paths(paths, base) if paths else (None, [])
+    except OSError as exc:
         return {
             "status": "files-failed",
             **plan,
-            "file_failures": failures,
+            "file_failures": [{"path": str(exc.filename or ""), "error": str(exc)}],
             "verified": False,
         }
 
@@ -457,7 +541,16 @@ def delete_records(
         if project is not None:
             store.delete_project(target_id)
     except (OSError, sqlite3.Error, ValueError) as exc:
-        return {"status": "db-failed", "error": str(exc), **plan, "verified": False}
+        return {
+            "status": "db-failed",
+            "error": str(exc),
+            **plan,
+            "restore_failures": _restore_paths(moves),
+            "verified": False,
+        }
+
+    if trash is not None:
+        shutil.rmtree(trash, ignore_errors=True)
 
     remaining_sessions = [
         session["id"] for session in sessions if store.get_session(session["id"]) is not None
@@ -476,6 +569,7 @@ def delete_records(
 
 
 def main(argv: list[str] | None = None) -> int:
+    """解析参数并执行 export/delete；返回进程退出码。"""
     parser = argparse.ArgumentParser(description="导出或删除 CellSpatio 项目/会话记录")
     subparsers = parser.add_subparsers(dest="command", required=True)
 

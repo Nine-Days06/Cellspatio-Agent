@@ -182,12 +182,12 @@ export function Sidebar({
 
   async function handleCreateProject() {
     setActionError(null)
-    if (!projectLabel.trim()) {
+    if (!projectLabel.trim() && !projectRoot.trim()) {
       setActionError('项目名不能为空')
       return
     }
     try {
-      await createProject(projectLabel.trim(), projectRoot.trim() || null)
+      await createProject(projectLabel.trim() || null, projectRoot.trim() || null)
       setNewProjectOpen(false)
       setProjectLabel('')
       setProjectRoot('')

@@ -330,6 +330,7 @@ class SessionStore:
         return pid
 
     def list_projects(self, include_archived: bool = False) -> list[dict[str, Any]]:
+        """列出项目及未归档会话数；默认隐藏已归档。"""
         where = "" if include_archived else "WHERE p.archived_at IS NULL"
         with self._conn() as conn:
             rows = conn.execute(
@@ -340,6 +341,7 @@ class SessionStore:
         return [dict(r) for r in rows]
 
     def get_project(self, project_id: str) -> dict[str, Any] | None:
+        """按 id 取项目（含未归档会话数）；不存在返回 None。"""
         with self._conn() as conn:
             row = conn.execute(
                 "SELECT p.*, (SELECT COUNT(*) FROM sessions s "
@@ -422,6 +424,7 @@ class SessionStore:
                 conn.execute("UPDATE projects SET updated_at=? WHERE id=?", (_now(), touched))
 
     def set_session_pinned(self, session_id: str, pinned: bool) -> None:
+        """设置会话置顶状态。"""
         with self._conn() as conn:
             cursor = conn.execute(
                 "UPDATE sessions SET pinned=?, updated_at=? WHERE id=?",
@@ -431,6 +434,7 @@ class SessionStore:
                 raise ValueError("会话不存在")
 
     def archive_session(self, session_id: str, archived: bool = True) -> None:
+        """归档或恢复会话；运行中的受控阶段拒绝归档。"""
         if archived:
             running = self.running_stage(session_id)
             if running:
@@ -444,32 +448,12 @@ class SessionStore:
                 raise ValueError("会话不存在")
 
     def delete_session(self, session_id: str) -> None:
+        """删除会话及其消息；运行中的受控阶段拒绝删除。"""
+        running = self.running_stage(session_id)
+        if running:
+            raise ValueError(f"{running}运行中，不能删除会话")
         with self._conn() as conn:
             conn.execute("BEGIN IMMEDIATE")
-            if conn.execute(
-                "SELECT 1 FROM sc_filter_attempts a JOIN qc_runs r USING(run_id) "
-                "WHERE r.session_id = ? AND a.status = 'running'",
-                (session_id,),
-            ).fetchone():
-                raise ValueError("过滤运行中，不能删除会话")
-            if conn.execute(
-                "SELECT 1 FROM sc_pca_attempts a JOIN qc_runs r USING(run_id) "
-                "WHERE r.session_id = ? AND a.status = 'running'",
-                (session_id,),
-            ).fetchone():
-                raise ValueError("PCA 运行中，不能删除会话")
-            if conn.execute(
-                "SELECT 1 FROM sc_cluster_attempts a JOIN qc_runs r USING(run_id) "
-                "WHERE r.session_id = ? AND a.status = 'running'",
-                (session_id,),
-            ).fetchone():
-                raise ValueError("聚类运行中，不能删除会话")
-            if conn.execute(
-                "SELECT 1 FROM sc_marker_attempts a JOIN qc_runs r USING(run_id) "
-                "WHERE r.session_id = ? AND a.status = 'running'",
-                (session_id,),
-            ).fetchone():
-                raise ValueError("marker 运行中，不能删除会话")
             conn.execute("DELETE FROM messages WHERE session_id = ?", (session_id,))
             conn.execute("DELETE FROM sessions WHERE id = ?", (session_id,))
 

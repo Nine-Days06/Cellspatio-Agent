@@ -9,7 +9,7 @@ from typing import Any
 
 from src.ui.session_store import SessionStore
 
-_PROTECTED_NAMES = {".cellspatio", ".wrroc", "snapshots", "data"}
+_PROTECTED_NAMES = {".cellspatio", ".trash", ".wrroc", "snapshots", "data"}
 
 
 def session_runs(store: SessionStore, session_id: str) -> list[dict[str, Any]]:
