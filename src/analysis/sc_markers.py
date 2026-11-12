@@ -20,6 +20,7 @@ from src.analysis.sc_pca import DIMENSION_RECORD_VERSION, _records
 from src.analysis.sc_qc import _fingerprints
 
 MARKER_TOOL_VERSION = "1.0.1"
+MARKER_REVIEW_VERSION = "sc-marker-review/1.0.0"
 PROTOCOL = {
     "schema": "sc-markers/1.0.0",
     "backend": "Seurat-FindAllMarkers-Presto-full",
