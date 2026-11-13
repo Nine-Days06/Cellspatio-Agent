@@ -194,6 +194,18 @@ button.danger {
   align-items: start;
 }
 
+.tabs {
+  display: flex;
+  gap: 0.5rem;
+  margin-bottom: 1rem;
+}
+
+.tabs button[aria-current="true"] {
+  border-color: var(--primary);
+  background: var(--accent);
+  color: var(--primary);
+}
+
 .queue-panel {
   position: sticky;
   top: 1rem;
@@ -265,6 +277,29 @@ button.danger {
   font-size: 0.75rem;
 }
 
+.mine-actions {
+  display: flex;
+  gap: 0.4rem;
+  margin-top: 0.4rem;
+}
+
+.mine-reason {
+  color: var(--review);
+  font-size: 0.8rem;
+}
+
+input[type="file"] {
+  padding: 0.55rem;
+  border-style: dashed;
+  background: var(--background);
+}
+
+.problems {
+  margin: 0;
+  padding-left: 1.15rem;
+  color: var(--destructive);
+}
+
 .empty {
   margin: 2rem 0;
   color: var(--muted-foreground);
@@ -282,6 +317,13 @@ button.danger {
   background: var(--card);
   border: 1px solid var(--border);
   border-radius: var(--radius);
+}
+
+.preview {
+  display: grid;
+  gap: 1.25rem;
+  padding-top: 1rem;
+  border-top: 1px solid var(--border);
 }
 
 .card-head {
@@ -497,6 +539,12 @@ textarea {
 
   .workspace {
     grid-template-columns: minmax(0, 1fr);
+  }
+
+  #contribute-view {
+    display: flex;
+    flex-direction: column-reverse;
+    gap: 1rem;
   }
 
   .queue-panel {

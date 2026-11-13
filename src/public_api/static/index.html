@@ -3,14 +3,14 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>CellSpatio 证据复核</title>
+    <title>CellSpatio 公共证据</title>
     <link rel="stylesheet" href="./review.css" />
   </head>
   <body>
     <header class="topbar">
       <div class="brand">
         <span class="brand-name">CellSpatio</span>
-        <span class="brand-sub">公共证据复核</span>
+        <span class="brand-sub">公共证据</span>
       </div>
       <div id="session" class="session hidden">
         <span id="who" class="who"></span>
@@ -21,8 +21,8 @@
     <main class="shell">
       <section id="login-view" class="login-view hidden">
         <form id="login-form" class="login-card">
-          <h1>复核者登录</h1>
-          <p class="muted">使用公共服务账号登录，查看待审证据卡。</p>
+          <h1>登录</h1>
+          <p class="muted">使用公共服务账号登录，复核证据或贡献自己的证据卡。</p>
           <label>
             <span>用户名</span>
             <input id="username" name="username" autocomplete="username" required />
@@ -42,13 +42,33 @@
         </form>
       </section>
 
+      <nav id="view-tabs" class="tabs hidden">
+        <button type="button" data-view="review">复核队列</button>
+        <button type="button" data-view="contribute">我的贡献</button>
+      </nav>
+
       <section id="workspace" class="workspace hidden">
         <aside class="queue-panel">
           <h2>待审队列 <span id="queue-count" class="count"></span></h2>
-          <p id="role-note" class="note hidden"></p>
           <ul id="queue-list" class="queue-list"></ul>
         </aside>
         <section id="detail" class="detail"></section>
+      </section>
+
+      <section id="contribute-view" class="workspace hidden">
+        <aside class="queue-panel">
+          <h2>我的提交 <span id="mine-count" class="count"></span></h2>
+          <ul id="mine-list" class="queue-list"></ul>
+          <form id="withdraw-form" class="review-form hidden">
+            <p id="withdraw-target" class="muted"></p>
+            <textarea id="withdraw-reason" placeholder="撤回原因"></textarea>
+            <div class="actions">
+              <button type="button" id="withdraw-confirm" class="danger">确认撤回</button>
+              <button type="button" id="withdraw-cancel">取消</button>
+            </div>
+          </form>
+        </aside>
+        <section id="contribute-detail" class="detail"></section>
       </section>
     </main>
 

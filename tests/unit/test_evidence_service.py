@@ -443,7 +443,8 @@ def test_review_ui_is_served_and_checklists_come_from_governance(app, client: Te
     """复核页可访问；清单端点需登录且与治理层常量一致。"""
     page = client.get("/review/")
     assert page.status_code == 200
-    assert "复核者登录" in page.text
+    assert "公共证据" in page.text
+    assert "登录" in page.text
     assert client.get("/review/review.js").status_code == 200
 
     assert client.get("/api/public/evidence/checklists").status_code == 401
@@ -460,3 +461,122 @@ def test_review_ui_is_served_and_checklists_come_from_governance(app, client: Te
         "/api/public/evidence/queue", headers=_headers(_login(client, "ui-domain"))
     ).json()
     assert queue["role"] == ROLE_DOMAIN
+
+
+def test_contributor_browser_preview_mine_and_withdraw(app, client: TestClient):
+    """贡献者预览 → 上传 → 看状态/原因 → 修订 → 撤回。"""
+    contributor = _account(app, "web-contributor", (ROLE_CONTRIBUTOR,))
+    _account(app, "web-contributor-2", (ROLE_CONTRIBUTOR,))
+    _account(app, "web-domain", (ROLE_DOMAIN,))
+    _account(app, "web-compliance", (ROLE_COMPLIANCE,))
+    token = _login(client, "web-contributor")
+    domain_token = _login(client, "web-domain")
+    compliance_token = _login(client, "web-compliance")
+
+    card = _card("evc-web-1").model_dump(mode="json")
+    previewed = client.post(
+        "/api/public/evidence/preview", json={"card": card}, headers=_headers(token)
+    )
+    assert previewed.status_code == 200, previewed.text
+    preview = previewed.json()
+    assert preview["will_send"]["submission"]["contributor_id"] == contributor
+    assert preview["admission"]["status"] == "passed"
+    assert preview["not_sent"]
+    assert (
+        client.post(
+            "/api/public/evidence/preview",
+            json={"card": card},
+            headers=_headers(domain_token),
+        ).status_code
+        == 403
+    )
+
+    tampered = {**preview, "privacy": "failed"}
+    assert (
+        client.post(
+            "/api/public/evidence/submissions",
+            json={"preview": tampered, "consent": True},
+            headers=_headers(token),
+        ).status_code
+        == 400
+    )
+    uploaded = client.post(
+        "/api/public/evidence/submissions",
+        json={"preview": preview, "consent": True},
+        headers=_headers(token),
+    )
+    assert uploaded.status_code == 200, uploaded.text
+    evidence_id = uploaded.json()["evidence_id"]
+
+    mine = client.get("/api/public/evidence/mine", headers=_headers(token)).json()["submissions"]
+    assert [item["evidence_id"] for item in mine] == [evidence_id]
+    assert mine[0]["status"] == "pending"
+    assert mine[0]["latest_reason"] is None
+    still_pending = client.post(
+        "/api/public/evidence/preview",
+        json={
+            "card": _card("evc-web-1a").model_dump(mode="json"),
+            "revises_submission_id": evidence_id,
+        },
+        headers=_headers(token),
+    )
+    assert still_pending.status_code == 409
+
+    changed = client.post(
+        f"/api/public/evidence/submissions/{evidence_id}/review",
+        json={"action": ACTION_DOMAIN_NEEDS_CHANGES, "reason": "补充限制"},
+        headers=_headers(domain_token),
+    )
+    assert changed.status_code == 200
+    mine = client.get("/api/public/evidence/mine", headers=_headers(token)).json()["submissions"]
+    assert mine[0]["latest_reason"] == "补充限制"
+    other = client.post(
+        "/api/public/evidence/preview",
+        json={
+            "card": _card("evc-web-1c").model_dump(mode="json"),
+            "revises_submission_id": evidence_id,
+        },
+        headers=_headers(_login(client, "web-contributor-2")),
+    )
+    assert other.status_code == 409
+
+    revised = client.post(
+        "/api/public/evidence/preview",
+        json={
+            "card": _card("evc-web-1b").model_dump(mode="json"),
+            "revises_submission_id": evidence_id,
+        },
+        headers=_headers(token),
+    )
+    assert revised.status_code == 200, revised.text
+    assert revised.json()["will_send"]["submission"]["revises_submission_id"] == evidence_id
+    resubmitted = client.post(
+        "/api/public/evidence/submissions",
+        json={"preview": revised.json(), "consent": True},
+        headers=_headers(token),
+    )
+    assert resubmitted.status_code == 200, resubmitted.text
+    revised_id = resubmitted.json()["evidence_id"]
+    assert (
+        client.post(
+            f"/api/public/evidence/submissions/{revised_id}/review",
+            json={"action": ACTION_DOMAIN_PASS, "checklist": _checks(DOMAIN_CHECKLIST)},
+            headers=_headers(domain_token),
+        ).json()["status"]
+        == "pending"
+    )
+    assert (
+        client.post(
+            f"/api/public/evidence/submissions/{revised_id}/review",
+            json={"action": ACTION_COMPLIANCE_PASS, "checklist": _checks(COMPLIANCE_CHECKLIST)},
+            headers=_headers(compliance_token),
+        ).json()["status"]
+        == "accepted"
+    )
+    withdrawn = client.post(
+        f"/api/public/evidence/submissions/{revised_id}/withdraw",
+        json={"reason": "作者撤回"},
+        headers=_headers(token),
+    )
+    assert withdrawn.status_code == 200
+    assert withdrawn.json()["status"] == "withdrawn"
