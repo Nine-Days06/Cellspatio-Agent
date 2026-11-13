@@ -29,10 +29,12 @@ import { useChatStore } from '@/store/chat'
 // vi.mock 工厂会被提升到 import 之前：工厂体内只能以闭包延迟引用这些函数，
 // 测试体内则直接使用。工厂执行期（import 阶段）不读取变量，无 TDZ 风险。
 const listSessionsMock = vi.fn()
+const listProjectsMock = vi.fn()
 const fetchSidebarMock = vi.fn()
 const confirmActionMock = vi.fn()
 const createSessionMock = vi.fn()
 const deleteSessionMock = vi.fn()
+const registerLocalInputMock = vi.fn()
 const streamChatMock = vi.fn()
 const fetchMock = vi.fn()
 
@@ -41,10 +43,12 @@ vi.mock('@/lib/api', async (importOriginal) => {
   return {
     ...actual,
     listSessions: (...args: unknown[]) => listSessionsMock(...args),
+  listProjects: (...args: unknown[]) => listProjectsMock(...args),
     fetchSidebar: (...args: unknown[]) => fetchSidebarMock(...args),
     confirmAction: (...args: unknown[]) => confirmActionMock(...args),
     createSession: (...args: unknown[]) => createSessionMock(...args),
     deleteSession: (...args: unknown[]) => deleteSessionMock(...args),
+      registerLocalInput: (...args: unknown[]) => registerLocalInputMock(...args),
   }
 })
 
@@ -68,6 +72,9 @@ function sessionFor(sid: string): MessagesResponse['session'] {
     summary: null,
     summary_upto: 0,
     downloaded_assets: [],
+    project_id: null,
+    pinned: false,
+    archived_at: null,
   }
 }
 
@@ -120,7 +127,15 @@ function makeMsg(sid: string, overrides: Partial<WireMessage> = {}): WireMessage
 }
 
 function makeSummary(id: string, title = '测试会话'): SessionSummary {
-  return { id, title, updated_at: '2026-10-01T00:00:00Z', message_count: 0 }
+  return {
+    id,
+    title,
+    updated_at: '2026-10-01T00:00:00Z',
+    message_count: 0,
+    project_id: null,
+    pinned: false,
+    archived_at: null,
+  }
 }
 
 function pendingCard(overrides: Partial<ScriptCardPayload> = {}): ScriptCardPayload {
@@ -173,15 +188,18 @@ beforeEach(() => {
     softWarn: false,
   })
   listSessionsMock.mockReset()
+  listProjectsMock.mockReset()
   fetchSidebarMock.mockReset()
   confirmActionMock.mockReset()
   createSessionMock.mockReset()
   deleteSessionMock.mockReset()
+  registerLocalInputMock.mockReset()
   streamChatMock.mockReset()
   fetchMock.mockReset()
   // 默认挂起流：模拟「进行中不返回」的长任务，用于约束 2/3 断言
   streamChatMock.mockImplementation(() => new Promise<void>(() => {}))
   listSessionsMock.mockResolvedValue({ sessions: [] })
+  listProjectsMock.mockResolvedValue({ projects: [] })
   fetchSidebarMock.mockResolvedValue({
     kb_stats: { initialized: true },
     env: {
@@ -200,6 +218,62 @@ beforeEach(() => {
 afterEach(() => {
   vi.useRealTimers()
   vi.unstubAllGlobals()
+})
+
+describe('ChatPage 本地输入', () => {
+  it('把路径登记到当前会话并刷新消息', async () => {
+    const sid = nextSid()
+    await renderReady(sid, { messages: [] })
+    registerLocalInputMock.mockResolvedValue({
+      message: makeMsg(sid),
+      session: sessionFor(sid),
+      qc_run_id: 'qc-1',
+      status: 'needs_confirmation',
+    })
+    const messageFetches = () =>
+      fetchMock.mock.calls.filter(([url]) => String(url).includes(`/sessions/${sid}/messages`))
+        .length
+    const before = messageFetches()
+
+    fireEvent.click(screen.getByRole('button', { name: '本地数据' }))
+    const field = screen.getByLabelText('本地数据目录')
+    fireEvent.change(field, {
+      target: { value: 'D:/data/pbmc3k/hg19' },
+    })
+    await waitFor(() => expect(field).toHaveValue('D:/data/pbmc3k/hg19'))
+    const submit = screen.getByRole('button', { name: '开始 QC' })
+    expect(submit).toBeEnabled()
+    fireEvent.click(submit)
+
+    await waitFor(() =>
+      expect(registerLocalInputMock).toHaveBeenCalledWith(sid, 'D:/data/pbmc3k/hg19'),
+    )
+    await waitFor(() => expect(messageFetches()).toBeGreaterThan(before))
+  })
+
+  it('无会话时先创建会话再登记', async () => {
+    const empty = nextSid()
+    const created = nextSid()
+    await renderReady(empty, { messages: [], sessions: [] })
+    createSessionMock.mockResolvedValue({ session: sessionFor(created) })
+    registerLocalInputMock.mockResolvedValue({
+      message: makeMsg(created),
+      session: sessionFor(created),
+      qc_run_id: 'qc-2',
+      status: 'needs_confirmation',
+    })
+
+    fireEvent.click(screen.getByRole('button', { name: '本地数据' }))
+    const field = screen.getByLabelText('本地数据目录')
+    fireEvent.change(field, { target: { value: 'D:/data' } })
+    await waitFor(() => expect(field).toHaveValue('D:/data'))
+    fireEvent.click(screen.getByRole('button', { name: '开始 QC' }))
+
+    await waitFor(() =>
+      expect(createSessionMock).toHaveBeenCalledWith('本地 10x 数据', null),
+    )
+    await waitFor(() => expect(registerLocalInputMock).toHaveBeenCalledWith(created, 'D:/data'))
+  })
 })
 
 describe('ChatPage 输入区：键位 / 停止 / 错误提示（约束 3）', () => {
@@ -235,6 +309,19 @@ describe('ChatPage 输入区：键位 / 停止 / 错误提示（约束 3）', ()
       undefined,
     )
     expect(screen.getByText('初始问题')).toBeInTheDocument()
+  })
+
+  it('自动选中跳过已归档会话', async () => {
+    const archivedSid = nextSid()
+    const activeSid = nextSid()
+    await renderReady(activeSid, {
+      sessions: [
+        { ...makeSummary(archivedSid, '归档会话'), archived_at: '2026-10-01T00:00:00Z' },
+        makeSummary(activeSid, '活动会话'),
+      ],
+    })
+
+    expect(useChatStore.getState().sessionId).toBe(activeSid)
   })
 
   it('Enter 发送（清空输入、进入生成态），Shift+Enter 与空输入不发送', async () => {
@@ -601,6 +688,9 @@ describe('ChatPage 会话列表接线', () => {
         summary: null,
         summary_upto: 0,
         downloaded_assets: [],
+        project_id: null,
+        pinned: false,
+        archived_at: null,
       },
     })
 

@@ -2,6 +2,7 @@
 
 端口 8600（避开开发期暂存的 Streamlit 8501）。前端构建产物存在时由
 create_app 挂载在 / ，因此本入口在计划 2 之前同样可用（仅 API）。
+客户端模式由 client/launch.ps1 设置 CELLSPATIO_LOCAL=1，并固定只监听 loopback。
 """
 
 from __future__ import annotations

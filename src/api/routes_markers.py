@@ -7,15 +7,16 @@ import logging
 import sqlite3
 import uuid
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 from fastapi import APIRouter, HTTPException, Query, Request, Response
-from pydantic import Field
+from pydantic import BaseModel, ConfigDict, Field
 
 from src.analysis.qc_preview import _identity
 from src.analysis.sc_marker_reviews import review_view
 from src.analysis.sc_markers import (
     MARKER_FIELDS,
+    MARKER_REVIEW_VERSION,
     MARKER_TOOL_VERSION,
     PROTOCOL,
     checked_completed_marker,
@@ -26,7 +27,7 @@ from src.analysis.sc_markers import (
 from src.api.chat_service import session_lock
 from src.api.routes_clusters import EVIDENCE_ERRORS, require_cluster
 from src.api.routes_pca import PcaRequest, require_parent, require_pca
-from src.api.routes_qc import qc_root, require_run
+from src.api.routes_qc import require_run, run_qc_root
 from src.ui.session_store import SessionStore
 
 router = APIRouter(prefix="/api/sessions/{session_id}/qc/{run_id}/markers", tags=["markers"])
@@ -109,6 +110,22 @@ def view(run: dict[str, Any], cluster: dict[str, Any], root: Path) -> dict[str, 
                 "error": "执行失败，本地证据保留；不会自动重跑"
                 if a["status"] == "failed"
                 else None,
+                "review": next(
+                    (
+                        {
+                            "decision": d["decision"],
+                            "reason": d["reason"],
+                            "created_at": d["created_at"],
+                            "source_revision": d["source_revision"],
+                            "invalidated_reason": None
+                            if d["source_revision"] + 1 == run["revision"]
+                            else "记录已失效；请刷新后重新复核",
+                        }
+                        for d in reversed(run["marker_reviews"])
+                        if d["marker_attempt_id"] == a["attempt_id"]
+                    ),
+                    None,
+                ),
             }
         )
     return {
@@ -152,7 +169,7 @@ def get_markers(
         return view(
             run,
             _associated(run, filter_attempt_id, pca_attempt_id, cluster_attempt_id),
-            qc_root(request.app.state.agent),
+            run_qc_root(request.app.state.agent, run),
         )
     except sqlite3.Error as exc:
         logger.error("marker read failed: %s", type(exc).__name__)
@@ -178,10 +195,10 @@ def execute_markers(
 ) -> dict[str, Any]:
     """历史请求只返回历史；首次 CAS 认领后在事务外执行一次固定 R。"""
     store, lock, acquired = SessionStore(), session_lock(session_id), False
-    root = qc_root(request.app.state.agent)
     try:
         for pass_number in (0, 1):
             run = require_run(store, session_id, run_id)
+            root = run_qc_root(request.app.state.agent, run)
             cluster = _associated(run, filter_attempt_id, pca_attempt_id, cluster_attempt_id)
             if not any(
                 r["review_id"] == body.cluster_review_id
@@ -291,7 +308,7 @@ def diagnostic(
         )
         if not attempt or attempt["status"] != "completed":
             raise HTTPException(404, "marker 图未完成或不存在")
-        checked_completed_marker(run, attempt, qc_root(request.app.state.agent))
+        checked_completed_marker(run, attempt, run_qc_root(request.app.state.agent, run))
         path = Path(attempt["directory"]).resolve() / "marker_dotplot.png"
         data = path.read_bytes()
         if {"path": str(path), **_identity(data)} != attempt["result"]["artifacts"][path.name]:
@@ -331,7 +348,7 @@ def candidates(
         )
         if not attempt or attempt["status"] != "completed":
             raise HTTPException(404, "marker 候选未完成或不存在")
-        summary = checked_completed_marker(run, attempt, qc_root(request.app.state.agent))
+        summary = checked_completed_marker(run, attempt, run_qc_root(request.app.state.agent, run))
         path = Path(attempt["directory"]).resolve() / "markers.csv"
         data = path.read_bytes()
         if {"path": str(path), **_identity(data)} != attempt["result"]["artifacts"][path.name]:
@@ -356,3 +373,56 @@ def candidates(
         raise HTTPException(409, "marker 状态读取失败") from exc
     except EVIDENCE_ERRORS as exc:
         raise HTTPException(409, "marker 候选或来源身份变化；请检查本地证据") from exc
+
+
+class MarkerReviewRequest(BaseModel):
+    """marker 复核只落本地事实，不触发重跑或注释。"""
+
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+    decision: Literal["accepted", "rejected"]
+    revision: int = Field(strict=True, ge=0, le=2**63 - 1)
+    reason: str = Field(min_length=1, max_length=2000)
+
+
+@router.post("/{filter_attempt_id}/{pca_attempt_id}/{cluster_attempt_id}/{attempt_id}/review")
+def review_markers(
+    session_id: str,
+    run_id: str,
+    filter_attempt_id: str,
+    pca_attempt_id: str,
+    cluster_attempt_id: str,
+    attempt_id: str,
+    body: MarkerReviewRequest,
+    request: Request,
+) -> dict[str, Any]:
+    """记录 marker 接受/拒绝；同 revision 幂等，内容或证据冲突返回 409。"""
+    try:
+        store = SessionStore()
+        run = require_run(store, session_id, run_id)
+        cluster = _associated(run, filter_attempt_id, pca_attempt_id, cluster_attempt_id)
+        attempt = next(
+            (
+                a
+                for a in run["marker_attempts"]
+                if a["attempt_id"] == attempt_id and a["cluster_attempt_id"] == cluster_attempt_id
+            ),
+            None,
+        )
+        if attempt is None:
+            raise HTTPException(404, "marker 关联不存在")
+        store.record_sc_marker_review(
+            session_id,
+            attempt_id,
+            body.decision,
+            body.reason,
+            "local-user",
+            MARKER_REVIEW_VERSION,
+            revision=body.revision,
+        )
+        current = require_run(store, session_id, run_id)
+        return view(current, cluster, run_qc_root(request.app.state.agent, current))
+    except sqlite3.Error as exc:
+        logger.error("marker review database write failed: %s", type(exc).__name__)
+        raise HTTPException(409, "marker 复核写入失败，请只读刷新") from exc
+    except ValueError as exc:
+        raise HTTPException(409, str(exc)) from exc

@@ -1,0 +1,78 @@
+{
+  "schema_version": "cellspatio-evidence-card/1.0.0",
+  "card_id": "evc-example-qc",
+  "created_at": "2026-11-12T00:00:00+00:00",
+  "gate": "qc_review",
+  "outcome": "accepted",
+  "subject": {
+    "session_id": "session-demo",
+    "run_id": "qc-demo",
+    "attempt_id": null,
+    "parent_attempt_id": null,
+    "binding_sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+    "source_revision": 1
+  },
+  "method": {
+    "tool": "sc_qc",
+    "tool_version": "sc-qc/1.0.0",
+    "protocol": {},
+    "parameters": {
+      "min_features": 200,
+      "max_mt_percent": 20
+    },
+    "environment": {
+      "versions": "R 4.6.1; Seurat 5.6.0; Matrix 1.6-5"
+    }
+  },
+  "observation": {
+    "cells": 2700,
+    "features": 13714,
+    "zero_count_cells": 0,
+    "mt_symbol_resolved": true,
+    "kept": 2699,
+    "excluded": 1,
+    "excluded_percent": 0.037,
+    "reason_counts": {
+      "min_features": 1
+    }
+  },
+  "claim": {
+    "text": "QC 阈值经人工批准：保留 2699/2700 个细胞。",
+    "basis": "fact",
+    "confidence": "high"
+  },
+  "limitations": [],
+  "provenance": {
+    "inputs": [
+      {
+        "name": "matrix.mtx",
+        "sha256": "1111111111111111111111111111111111111111111111111111111111111111",
+        "bytes": 7880000
+      }
+    ],
+    "artifacts": [
+      {
+        "name": "summary.json",
+        "sha256": "2222222222222222222222222222222222222222222222222222222222222222",
+        "bytes": 1024
+      }
+    ],
+    "source_ids": [],
+    "software": []
+  },
+  "review": {
+    "status": "accepted",
+    "reviewer": "local-user",
+    "reason": "阈值符合组织与测序深度预期",
+    "reviewed_at": "2026-11-12T00:00:00+00:00"
+  },
+  "license": {
+    "spdx": "CC-BY-4.0",
+    "attribution": "CellSpatio local user"
+  },
+  "privacy": {
+    "contains_raw_data": false,
+    "pii_scan": "passed",
+    "redactions": []
+  }
+}

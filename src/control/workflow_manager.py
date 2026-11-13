@@ -13,6 +13,7 @@ from pathlib import Path
 from typing import Any
 
 from src.data.tenx import validate_tenx
+from src.ui.session_store import project_analysis_root, project_scoped_analysis_root
 
 logger = logging.getLogger(__name__)
 
@@ -271,6 +272,11 @@ class WorkflowManager:
         ctx = self.methods_kb.query_context(question)
         return ctx or None
 
+    def _project_output_root(self, context: dict[str, Any]) -> Path | None:
+        """项目会话的产物根；未归类会话返回 None，沿用旧输出位置。"""
+        repo = Path(self.workflow_recorder.repo_root) if self.workflow_recorder else Path.cwd()
+        return project_scoped_analysis_root(context.get("session_id"), repo)
+
     @staticmethod
     def _de_output_stats(output_file: str) -> dict[str, Any]:
         """读取 DE 输出 CSV，统计总基因数与 padj<0.05 显著数；失败返回 0/0"""
@@ -335,7 +341,13 @@ class WorkflowManager:
                 )
             return result
 
-        output_file = str(Path(input_file).with_suffix(".de_results.csv"))
+        project_root = self._project_output_root(context)
+        if project_root is None:
+            output_file = str(Path(input_file).with_suffix(".de_results.csv"))
+        else:
+            output_dir = project_root / "de"
+            output_dir.mkdir(parents=True, exist_ok=True)
+            output_file = str(output_dir / f"{run_id or 'de'}.de_results.csv")
         method_context = self._method_context_for("differential_expression", params)
         code = self.r_script_generator.generate_code(
             "differential_expression",
@@ -413,7 +425,8 @@ class WorkflowManager:
         from src.analysis.sc_qc import run_sc_qc
 
         root = Path(self.workflow_recorder.repo_root) if self.workflow_recorder else Path.cwd()
-        return run_sc_qc(input_file, self.r_executor, root / "data" / "analysis" / "sc_qc", run_id)
+        analysis_root = project_analysis_root(context.get("session_id"), root)
+        return run_sc_qc(input_file, self.r_executor, analysis_root / "sc_qc", run_id)
 
     def _execute_spatial_analysis(
         self, params: dict[str, Any], context: dict[str, Any], run_id: str | None = None
@@ -461,14 +474,24 @@ class WorkflowManager:
                 )
             return result
 
-        base = Path(input_file)
-        if base.is_dir():
+        project_root = self._project_output_root(context)
+        if project_root is not None:
+            output_dir = project_root / "spatial"
+            output_dir.mkdir(parents=True, exist_ok=True)
+            run_params = {
+                "input_file": input_file,
+                "output_file": str(output_dir / f"{run_id or 'spatial'}.spatial_clusters.csv"),
+                "plot_file": str(output_dir / f"{run_id or 'spatial'}.spatial_plot.png"),
+            }
+        elif Path(input_file).is_dir():
+            base = Path(input_file)
             run_params = {
                 "input_file": input_file,
                 "output_file": str(base / ".spatial_clusters.csv"),
                 "plot_file": str(base / ".spatial_plot.png"),
             }
         else:
+            base = Path(input_file)
             run_params = {
                 "input_file": input_file,
                 "output_file": str(base.with_suffix(".spatial_clusters.csv")),
@@ -1104,7 +1127,7 @@ class WorkflowManager:
                 "message": "运行记忆库未启用（kg_query 未注入）。",
             }
         try:
-            answer = self.kg_query.query(query)
+            answer = self.kg_query.query(query, context=context)
             return {"status": "success", "type": "memory_response", "response": answer}
         except Exception as e:  # noqa: BLE001 - 记忆查询失败降级为 error 终态
             return {

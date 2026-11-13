@@ -26,7 +26,7 @@ from src.analysis.sc_marker_reviews import CLUSTER_RECORD_VERSION, review_view
 from src.api import routes_pca
 from src.api.chat_service import session_lock
 from src.api.routes_pca import dimension_view, require_parent, require_pca
-from src.api.routes_qc import qc_root, require_run
+from src.api.routes_qc import require_run, run_qc_root
 from src.ui.session_store import SessionStore
 
 router = APIRouter(prefix="/api/sessions/{session_id}/qc/{run_id}/clusters", tags=["clusters"])
@@ -162,7 +162,7 @@ def get_clusters(
             run,
             require_parent(run, filter_attempt_id),
             require_pca(run, filter_attempt_id, pca_attempt_id),
-            qc_root(request.app.state.agent),
+            run_qc_root(request.app.state.agent, run),
         )
     except sqlite3.Error as exc:
         logger.error("cluster state database read failed: %s", type(exc).__name__)
@@ -193,7 +193,7 @@ def execute_clusters(
         run = require_run(store, session_id, run_id)
         parent = require_parent(run, filter_attempt_id)
         pca = require_pca(run, filter_attempt_id, pca_attempt_id)
-        root = qc_root(request.app.state.agent)
+        root = run_qc_root(request.app.state.agent, run)
         reviews = [d for d in run["dimension_reviews"] if d["pca_attempt_id"] == pca_attempt_id]
         if not any(d["review_id"] == body.dimension_review_id for d in reviews):
             raise HTTPException(404, "维度记录关联不存在")
@@ -323,7 +323,10 @@ def diagnostic(
         if attempt is None or attempt["status"] != "completed":
             raise HTTPException(404, "聚类图未完成或不存在")
         checked_completed_cluster(
-            run, attempt, qc_root(request.app.state.agent), routes_pca.DIMENSION_RECORD_VERSION
+            run,
+            attempt,
+            run_qc_root(request.app.state.agent, run),
+            routes_pca.DIMENSION_RECORD_VERSION,
         )
         path = Path(attempt["directory"]).resolve() / "umap_clusters.png"
         data = path.read_bytes()
@@ -367,6 +370,12 @@ class ClusterReviewRequest(routes_pca.PcaRequest):
         return value
 
 
+class ClusterRejectionRequest(routes_pca.PcaRequest):
+    """拒绝只绑当前证据与 revision，不接受分析参数。"""
+
+    revision: int = Field(strict=True, ge=0, le=2**63 - 1)
+
+
 @router.get("/{filter_attempt_id}/{pca_attempt_id}/{attempt_id}/review")
 def get_review(
     session_id: str,
@@ -382,7 +391,9 @@ def get_review(
         require_parent(run, filter_attempt_id)
         require_pca(run, filter_attempt_id, pca_attempt_id)
         return review_view(
-            run, require_cluster(run, pca_attempt_id, attempt_id), qc_root(request.app.state.agent)
+            run,
+            require_cluster(run, pca_attempt_id, attempt_id),
+            run_qc_root(request.app.state.agent, run),
         )
     except sqlite3.Error as exc:
         logger.error("cluster review database read failed: %s", type(exc).__name__)
@@ -406,7 +417,7 @@ def record_review(
         require_parent(run, filter_attempt_id)
         require_pca(run, filter_attempt_id, pca_attempt_id)
         cluster = require_cluster(run, pca_attempt_id, attempt_id)
-        root = qc_root(request.app.state.agent)
+        root = run_qc_root(request.app.state.agent, run)
         previous = next(
             (
                 d
@@ -442,3 +453,43 @@ def record_review(
         raise HTTPException(409, "聚类复核写入失败，请只读刷新") from exc
     except ValueError as exc:
         raise HTTPException(409, "聚类复核或父身份冲突，请只读刷新") from exc
+
+
+@router.post("/{filter_attempt_id}/{pca_attempt_id}/{attempt_id}/reject")
+def reject_review(
+    session_id: str,
+    run_id: str,
+    filter_attempt_id: str,
+    pca_attempt_id: str,
+    attempt_id: str,
+    body: ClusterRejectionRequest,
+    request: Request,
+) -> dict[str, Any]:
+    """追加拒绝事实；不改写接受历史，不授权 marker。"""
+    try:
+        store = SessionStore()
+        run = require_run(store, session_id, run_id)
+        require_parent(run, filter_attempt_id)
+        require_pca(run, filter_attempt_id, pca_attempt_id)
+        cluster = require_cluster(run, pca_attempt_id, attempt_id)
+        root = run_qc_root(request.app.state.agent, run)
+        state = review_view(run, cluster, root)
+        if not state["binding_sha256"] or state["binding_sha256"] != body.binding_sha256:
+            raise HTTPException(409, "聚类证据不可记录或已变化，请只读刷新")
+        store.record_sc_cluster_rejection(
+            session_id,
+            run,
+            cluster,
+            cluster["binding_sha256"],
+            CLUSTER_RECORD_VERSION,
+            body.revision,
+            body.reason,
+        )
+        return get_review(
+            session_id, run_id, filter_attempt_id, pca_attempt_id, attempt_id, request
+        )
+    except sqlite3.Error as exc:
+        logger.error("cluster rejection database write failed: %s", type(exc).__name__)
+        raise HTTPException(409, "聚类拒绝写入失败，请只读刷新") from exc
+    except ValueError as exc:
+        raise HTTPException(409, "聚类拒绝或父身份冲突，请只读刷新") from exc

@@ -5,6 +5,7 @@ from unittest.mock import Mock
 import pytest
 
 from src.control.workflow_manager import WorkflowManager
+from src.ui.session_store import SessionStore
 from tests.unit.fakes import FakeExec, FakeGen, FakeIntent
 
 
@@ -165,6 +166,39 @@ def test_spatial_routes(tmp_path):
     assert gen.last["type"] == "spatial"
     assert gen.last["params"]["output_file"].endswith(".spatial_clusters.csv")
     assert gen.last["params"]["plot_file"].endswith(".spatial_plot.png")
+
+
+def test_project_de_and_spatial_outputs_under_project_root(tmp_path):
+    store = SessionStore()
+    pid = store.create_project("项目")
+    sid = store.create_session("会话", project_id=pid)
+    source = tmp_path / "counts.csv"
+    source.write_text("gene,c1,c2\nG1,1,2\n", encoding="utf-8")
+    context = {"downloaded_assets": [{"access_path": str(source)}], "session_id": sid}
+
+    wm, gen = _wm(FakeIntent(), require=False)
+    wm.workflow_recorder = Mock(repo_root=tmp_path)
+    result = wm._execute_de_analysis({}, context, "run-de")
+
+    assert result["status"] == "success"
+    assert gen.last["params"]["output_file"] == str(
+        tmp_path / "data" / "projects" / pid / "analysis" / "de" / "run-de.de_results.csv"
+    )
+
+    wm, gen = _wm(FakeIntent(), require=False)
+    wm.workflow_recorder = Mock(repo_root=tmp_path)
+    result = wm._execute_spatial_analysis({}, context, "run-spatial")
+
+    assert result["status"] == "success"
+    assert gen.last["params"]["output_file"] == str(
+        tmp_path
+        / "data"
+        / "projects"
+        / pid
+        / "analysis"
+        / "spatial"
+        / "run-spatial.spatial_clusters.csv"
+    )
 
 
 def test_execute_confirmed_script_still_accepts_spatial():

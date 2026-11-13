@@ -1,0 +1,24 @@
+[Unit]
+Description=CellSpatio Public Evidence API
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=cellspatio
+Group=cellspatio
+WorkingDirectory=/opt/cellspatio
+EnvironmentFile=/etc/cellspatio/public-api.env
+# 数据根由 EnvironmentFile 提供；不要在这里再传 --root，否则会覆盖 env。
+ExecStart=/opt/cellspatio/.venv/bin/python -m src.public_api
+Restart=on-failure
+RestartSec=5
+UMask=027
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/srv/cellspatio/data
+
+[Install]
+WantedBy=multi-user.target

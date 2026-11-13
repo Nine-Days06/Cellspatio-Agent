@@ -13,6 +13,7 @@ import pytest
 
 from src.analysis import sc_markers
 from src.analysis.r_executor import RExecutorError
+from src.evidence.builder import build_marker_card
 from src.ui import session_store
 from tests.unit.test_qc_preview import PARAMS
 from tests.unit.test_sc_cluster import dimensions_ready as _dimensions_ready
@@ -587,3 +588,66 @@ def test_terminal_message_failure_rolls_back_and_restart_never_resumes(marker_re
     assert len(d.store.get_messages(d.sid)) == before + 1
     assert d.client.post(d.marker_path + "/execute", json=d.marker_body).json() == state
     d.executor.execute_script.assert_called_once()
+
+
+def test_cluster_rejection_is_local_and_survives_refresh(reviewed_source):
+    """拒绝不改写接受历史，不授权 marker，刷新后仍显示最新拒绝事实。"""
+    d = reviewed_source
+    state = d.client.get(d.review_path).json()
+    reject_path = f"{d.path}/{d.cid}/reject"
+    body = {
+        "binding_sha256": state["binding_sha256"],
+        "revision": state["revision"],
+        "reason": "簇结构不稳",
+    }
+    response = d.client.post(reject_path, json=body)
+    assert response.status_code == 200, response.text
+    saved = response.json()
+    assert saved["latest_decision"]["decision"] == "rejected"
+    assert saved["latest_decision"]["reason"] == "簇结构不稳"
+    assert saved["revision"] == state["revision"] + 1
+    assert d.client.get(d.review_path).json() == saved
+    assert d.client.post(reject_path, json={**body, "revision": saved["revision"]}).json() == saved
+    assert d.client.post(reject_path, json={**body, "reason": "不同"}).status_code == 409
+    assert not d.store.get_qc_run(d.sid, d.rid)["marker_attempts"]
+    d.executor.execute_script.assert_not_called()
+
+
+def test_marker_review_records_accept_reject_and_rejects_stale_revision(marker_ready):
+    """marker 复核可接受/拒绝并保留最新事实，旧 revision 不能改写。"""
+    d = marker_ready
+    d.executor.execute_script.side_effect = marker_outputs
+    state = d.client.get(d.marker_path).json()
+    body = {
+        "binding_sha256": state["binding_sha256"],
+        "cluster_review_id": state["review"]["review_id"],
+        "revision": state["revision"],
+        "reason": "私有 marker 授权依据",
+    }
+    completed = d.client.post(d.marker_path + "/execute", json=body).json()
+    attempt_id = completed["attempts"][0]["attempt_id"]
+    review_path = f"{d.marker_path}/{attempt_id}/review"
+    rejected_body = {
+        "decision": "rejected",
+        "revision": completed["revision"],
+        "reason": "候选不足",
+    }
+    response = d.client.post(review_path, json=rejected_body)
+    assert response.status_code == 200, response.text
+    rejected = response.json()
+    assert rejected["attempts"][0]["review"]["decision"] == "rejected"
+    assert rejected["attempts"][0]["review"]["reason"] == "候选不足"
+    assert rejected["revision"] == completed["revision"] + 1
+    assert build_marker_card(d.store, d.sid, d.rid).outcome == "rejected"
+    assert d.client.get(d.marker_path).json() == rejected
+    assert (
+        d.client.post(review_path, json={**rejected_body, "revision": rejected["revision"]}).json()
+        == rejected
+    )
+    assert d.client.post(review_path, json={**rejected_body, "reason": "不同"}).status_code == 409
+    accepted_body = {"decision": "accepted", "revision": rejected["revision"], "reason": "复核通过"}
+    accepted = d.client.post(review_path, json=accepted_body)
+    assert accepted.status_code == 200, accepted.text
+    assert accepted.json()["attempts"][0]["review"]["decision"] == "accepted"
+    stale = {**accepted_body, "revision": completed["revision"]}
+    assert d.client.post(review_path, json=stale).status_code == 409

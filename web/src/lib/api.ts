@@ -13,6 +13,9 @@ import type {
   ClusterAcceptanceState,
   MarkerState,
   MarkerPage,
+  LocalInputResponse,
+  Project,
+  UsageSummary,
 } from '@/lib/types'
 
 /** 统一 HTTP 错误：message 直接用后端 detail（已是中文），UI 可直接展示。 */
@@ -54,16 +57,68 @@ const jsonInit = (method: string, body?: unknown): RequestInit => ({
   ...(body === undefined ? {} : { body: JSON.stringify(body) }),
 })
 
-export function listSessions(): Promise<{ sessions: SessionSummary[] }> {
-  return request('/api/sessions', { method: 'GET' })
+const archivedQuery = (includeArchived: boolean) =>
+  includeArchived ? '?include_archived=1' : ''
+
+export function listSessions(includeArchived = false): Promise<{ sessions: SessionSummary[] }> {
+  return request(`/api/sessions${archivedQuery(includeArchived)}`, { method: 'GET' })
 }
 
-export function createSession(title?: string): Promise<{ session: Session }> {
-  return request('/api/sessions', jsonInit('POST', title ? { title } : {}))
+export function createSession(title?: string, projectId?: string | null): Promise<{ session: Session }> {
+  const body: Record<string, unknown> = {}
+  if (title) body.title = title
+  if (projectId !== undefined) body.project_id = projectId
+  return request('/api/sessions', jsonInit('POST', body))
 }
 
 export function deleteSession(sessionId: string): Promise<{ deleted: string }> {
   return request(`/api/sessions/${encodeURIComponent(sessionId)}`, jsonInit('DELETE'))
+}
+
+export interface UpdateSessionBody {
+  project_id?: string | null
+  pinned?: boolean
+  archived?: boolean
+}
+
+export function updateSession(sessionId: string, body: UpdateSessionBody): Promise<{ session: Session }> {
+  return request(`/api/sessions/${encodeURIComponent(sessionId)}`, jsonInit('PATCH', body))
+}
+
+export function fetchSessionUsage(sessionId: string): Promise<UsageSummary> {
+  return request(`/api/sessions/${encodeURIComponent(sessionId)}/usage`)
+}
+
+export function listProjects(includeArchived = false): Promise<{ projects: Project[] }> {
+  return request(`/api/projects${archivedQuery(includeArchived)}`, { method: 'GET' })
+}
+
+export function createProject(
+  label: string | null,
+  rootPath?: string | null,
+): Promise<{ project: Project }> {
+  return request('/api/projects', jsonInit('POST', { label, root_path: rootPath || null }))
+}
+
+export interface UpdateProjectBody {
+  label?: string
+  root_path?: string | null
+  archived?: boolean
+}
+
+export function updateProject(projectId: string, body: UpdateProjectBody): Promise<{ project: Project }> {
+  return request(`/api/projects/${encodeURIComponent(projectId)}`, jsonInit('PATCH', body))
+}
+
+export function fetchProjectUsage(projectId: string): Promise<UsageSummary> {
+  return request(`/api/projects/${encodeURIComponent(projectId)}/usage`)
+}
+
+export function registerLocalInput(sessionId: string, path: string): Promise<LocalInputResponse> {
+  return request(
+    `/api/sessions/${encodeURIComponent(sessionId)}/local-input`,
+    jsonInit('POST', { path }),
+  )
 }
 
 /**
@@ -106,6 +161,10 @@ export function previewQc(sessionId: string, runId: string, params: QcThresholds
 
 export function approveQc(sessionId: string, runId: string, previewId: string, reason: string): Promise<QcReviewState> {
   return request(`${qcPath(sessionId, runId)}/approve`, jsonInit('POST', { preview_id: previewId, reason }))
+}
+
+export function rejectQc(sessionId: string, runId: string, previewId: string, reason: string): Promise<QcReviewState> {
+  return request(`${qcPath(sessionId, runId)}/reject`, jsonInit('POST', { preview_id: previewId, reason }))
 }
 
 export function filterQc(sessionId: string, runId: string, previewId: string): Promise<QcReviewState> {
@@ -163,6 +222,10 @@ export function recordClusterAcceptance(source: MarkerSource, binding: string, r
   return request(acceptancePath(source), jsonInit('POST', { binding_sha256: binding, revision, accepted: true, reason }))
 }
 
+export function recordClusterRejection(source: MarkerSource, binding: string, revision: number, reason: string): Promise<ClusterAcceptanceState> {
+  return request(`${clusterPath(source.sessionId, source.runId, source.filterAttemptId, source.pcaAttemptId)}/${encodeURIComponent(source.clusterAttemptId)}/reject`, jsonInit('POST', { binding_sha256: binding, revision, reason }))
+}
+
 export function fetchMarkers(source: MarkerSource): Promise<MarkerState> {
   return request(markerPath(source))
 }
@@ -177,4 +240,8 @@ export function markerDiagnosticPath(source: MarkerSource, attemptId: string): s
 
 export function fetchMarkerCandidates(source: MarkerSource, attemptId: string, offset: number): Promise<MarkerPage> {
   return request(`${markerPath(source)}/${encodeURIComponent(attemptId)}/candidates?offset=${offset}&limit=100`)
+}
+
+export function reviewMarkers(source: MarkerSource, attemptId: string, decision: 'accepted' | 'rejected', revision: number, reason: string): Promise<MarkerState> {
+  return request(`${markerPath(source)}/${encodeURIComponent(attemptId)}/review`, jsonInit('POST', { decision, revision, reason }))
 }

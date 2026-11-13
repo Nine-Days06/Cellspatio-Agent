@@ -87,6 +87,78 @@ python -m src.api
 ```
 浏览器打开 `http://127.0.0.1:8600`
 
+### 便携客户端（免登录，数据在本地）
+
+```powershell
+.\client\build.ps1          # 瘦包：只打应用代码
+.\client\build.ps1 -Fat -RRuntime D:\R-4.6.1   # 胖包：内置 CPython + R/Seurat
+```
+
+产物在 `dist/client/`：`cellspatio-thin.zip` / `cellspatio-fat.zip`。
+
+- 数据放便携目录下的 `data/`（`CELLSPATIO_HOME` 可覆盖）。升级时把新包覆盖解压到同一目录即可，`data/` 不在包内、不会被覆盖；不要先删目录。瘦包与胖包要在同一目录运行、或共用同一 `CELLSPATIO_HOME`，才会共享数据。请解压到用户可写目录，不要放 Program Files。
+- 胖包解压后双击 `launch.cmd`，无需登录；瘦包先跑 `bootstrap.ps1` 装 Python 依赖并检查 R 4.6.x + Seurat/presto/uwot。
+- QC→markers 可离线；知识问答仍需 Ollama 或在线 LLM/embedding。
+- 本地默认不写 KG 记忆；`CELLSPATIO_LOCAL_KG=1` 时用文件型 LightRAG，按项目独立目录落盘，不需要 PostgreSQL。
+- 无 LLM 时用页头「本地数据」输入 10x 目录或 counts CSV 的绝对路径，直接跑固定 QC；后续过滤、PCA、聚类与 marker 仍逐阶段人工授权。
+
+### 项目与记录管理
+
+- 侧栏按「置顶 → 项目 → 未归类」分组；项目内可新建会话，会话可移动、置顶、归档。归档项目默认隐藏其会话；点侧栏「显示已归档」可置灰查看归档项目/会话并恢复（运行中的会话或项目拒绝归档）。
+- 新建项目可只填工作目录，项目名默认取文件夹名，之后可改；只填项目名时工作目录为空。
+- 会话/项目的「更多」菜单里显示只读占用汇总（分析产物 + `.wrroc/<run_id>` + `snapshots/<run_id>`；项目另加 `data/projects/<id>` 与 `.wrroc/kg_memory/<id>`），只统计不清理。
+- 项目工作目录保存时校验必须是绝对路径、存在、是目录、可写，且不能位于应用数据目录（`data/`、`.wrroc/`、`snapshots/`、`.cellspatio/`）内；本地数据对话框用它预填输入框，`records export` 未给 `--out` 时默认写到该目录（不可用时回退数据根）。
+- 新分析产物落 `<数据目录>/data/projects/<project_id>/analysis/...`；未归类会话仍落 `data/analysis/...`。旧 run 保持数据库记录的路径，不迁移。
+- 硬删除只走 CLI，不提供 HTTP/UI 删除项目入口：
+  ```powershell
+  python -m src.cli.records delete session <session_id> --dry-run
+  python -m src.cli.records delete session <session_id> --yes
+  python -m src.cli.records delete project <project_id> --cascade --dry-run
+  python -m src.cli.records delete project <project_id> --cascade --yes
+  ```
+- 导出会话/项目记录为 zip（清单含路径与大小；加 `--hash` 才逐文件计算 SHA256，不复制产物）：
+  ```powershell
+  python -m src.cli.records export session <session_id> --out record.zip
+  python -m src.cli.records export session <session_id> --hash --out record.zip
+  python -m src.cli.records export project <project_id> --redact --out project.zip
+  ```
+- 证据卡（本地私有，只含聚合统计与哈希，不含 barcode/坐标/样本 ID/绝对路径）：
+  ```powershell
+  python -m src.cli.evidence export qc <session_id> <run_id>
+  python -m src.cli.evidence export cluster <session_id> <run_id>
+  python -m src.cli.evidence export pca <session_id> <run_id>
+  python -m src.cli.evidence export marker <session_id> <run_id>
+  python -m src.cli.evidence export qa <session_id> <answer_id>
+  python -m src.cli.evidence review qc <session_id> <run_id> <preview_id> --reason "阈值过宽"
+  python -m src.cli.evidence review cluster <session_id> <run_id> <cluster_attempt_id> --reason "簇不稳定"
+  python -m src.cli.evidence review marker <session_id> <run_id> <marker_attempt_id> --decision accepted --reason "候选一致"
+  python -m src.cli.evidence validate docs/examples/evidence-cards/qc.json
+  ```
+- 公共证据最小闭环（独立 `<data>/public_evidence/`；预览 → 显式同意 → 隔离区 → 双签 → 检索 → 撤销）：
+  ```powershell
+  python -m src.cli.evidence_governance preview docs/examples/evidence-cards/qc.json --actor alice --out preview.json
+  python -m src.cli.evidence_governance contribute preview.json --consent
+  python -m src.cli.evidence_governance review <evidence_id> --actor dora --role domain_reviewer --action domain_pass --check method_complete=true --check claim_matches_observation=true --check limitations_present=true
+  python -m src.cli.evidence_governance review <evidence_id> --actor carl --role compliance_reviewer --action compliance_pass --check privacy_scan_passed=true --check license_and_attribution_present=true --check no_raw_data=true --check small_sample_ok=true
+  python -m src.cli.evidence_governance search --query QC
+  python -m src.cli.evidence_governance withdraw <evidence_id> --actor alice --role contributor --reason "发现方法错误"
+  ```
+
+- 公共证据 HTTP 服务（独立进程；账号与证据库都在 `<data>/public_evidence/`）：
+  ```powershell
+  python -m src.cli.evidence_accounts --root data create alice --role contributor
+  python -m src.public_api --root data          # 默认 127.0.0.1:8700
+  python -m src.cli.evidence_governance login --server http://127.0.0.1:8700 --username alice
+  python -m src.cli.evidence_governance upload preview.json --server http://127.0.0.1:8700 --token <token> --consent
+  python -m src.cli.evidence_governance remote-search --server http://127.0.0.1:8700 --query QC
+  python -m src.cli.evidence_governance citation <evidence_id> --server http://127.0.0.1:8700
+  ```
+  浏览器视图：`http://127.0.0.1:8700/review/`（与 API 同进程）。复核者看队列、读卡、
+  勾清单、给结论；贡献者选择本地证据卡 JSON → 预览 → 显式同意 → 上传，并在“我的提交”
+  查看原因、修订或撤回。只上传证据卡聚合字段，原始数据不出本机。
+- 部署（反向代理、TLS、请求体上限、账号开户、备份/恢复、审计导出）：见
+  [docs/deploy.md](docs/deploy.md)。
+
 ## 使用示例
 
 ### 数据获取（两段式：检索 → 确认 → 下载）
@@ -192,6 +264,7 @@ cellspatio-agent/
 │   ├── src/lib/        # API/SSE 客户端与类型
 │   ├── src/store/      # 状态（zustand chat store）
 │   └── dist/           # 构建产物（npm run build，由 FastAPI 挂到 /）
+├── client/              # 便携客户端（launch/bootstrap/build；瘦包与胖包）
 ├── pubmed-etl/          # 独立文献批量下载与清洗工具（单细胞+时空方向）
 ├── tests/               # 测试
 ├── docs/                # 文档

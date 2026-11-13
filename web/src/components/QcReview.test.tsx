@@ -1,10 +1,10 @@
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { QcReview } from '@/components/QcReview'
-import { approveQc, fetchQc, filterQc, previewQc } from '@/lib/api'
+import { approveQc, fetchQc, filterQc, previewQc, rejectQc } from '@/lib/api'
 import type { QcReviewState } from '@/lib/types'
 
-vi.mock('@/lib/api', () => ({ fetchQc: vi.fn(), previewQc: vi.fn(), approveQc: vi.fn(), filterQc: vi.fn() }))
+vi.mock('@/lib/api', () => ({ fetchQc: vi.fn(), previewQc: vi.fn(), approveQc: vi.fn(), filterQc: vi.fn(), rejectQc: vi.fn() }))
 vi.mock('@/components/PcaReview', () => ({ PcaReview: () => <div>PCA 独立授权</div> }))
 const initial: QcReviewState = {
   run_id: 'r1', revision: 0, qc: {} as QcReviewState['qc'], active_preview: null, approvals: [], blocked: [],
@@ -41,7 +41,7 @@ describe('QC review', () => {
     render(<QcReview sessionId="s1" runId="r1" />)
     await screen.findByRole('region', { name: '排除预览' })
     expect(screen.getByLabelText('RNA features 下限')).toBeDisabled()
-    expect(screen.getByLabelText('选择依据（仅本地记录）')).toBeDisabled()
+    expect(screen.getByLabelText('选择依据 / 拒绝原因（仅本地记录）')).toBeDisabled()
     expect(screen.getByRole('button', { name: '生成排除预览' })).toBeDisabled()
     expect(screen.getByRole('button', { name: '记录此过滤选择' })).toBeDisabled()
   })
@@ -54,7 +54,7 @@ describe('QC review', () => {
     expect(screen.getByText(/原因可重叠/)).toBeInTheDocument()
     const button = screen.getByRole('button', { name: '记录此过滤选择' })
     expect(button).toBeDisabled()
-    fireEvent.change(screen.getByLabelText('选择依据（仅本地记录）'), { target: { value: '科学选择依据' } })
+    fireEvent.change(screen.getByLabelText('选择依据 / 拒绝原因（仅本地记录）'), { target: { value: '科学选择依据' } })
     expect(button).toBeEnabled()
     fireEvent.change(screen.getByLabelText('RNA features 上限'), { target: { value: '3' } })
     expect(button).toBeDisabled()
@@ -82,7 +82,7 @@ describe('QC review', () => {
     expect(previewQc).not.toHaveBeenCalled()
     vi.mocked(previewQc).mockResolvedValue({ ...preview, active_preview: { ...preview.active_preview!, summary: { ...preview.active_preview!.summary, blocked: ['NA 不能批准'] } } })
     await enterPreview()
-    fireEvent.change(screen.getByLabelText('选择依据（仅本地记录）'), { target: { value: 'review' } })
+    fireEvent.change(screen.getByLabelText('选择依据 / 拒绝原因（仅本地记录）'), { target: { value: 'review' } })
     expect(screen.getByRole('button', { name: '记录此过滤选择' })).toBeDisabled()
     vi.mocked(previewQc).mockRejectedValue(new Error('证据变化，请重新 QC'))
     fireEvent.click(screen.getByRole('button', { name: '生成排除预览' }))
@@ -105,7 +105,7 @@ describe('QC review', () => {
     vi.mocked(fetchQc).mockResolvedValueOnce(preview)
     const view = render(<QcReview sessionId="s1" runId="r1" />)
     await screen.findByRole('region', { name: '排除预览' })
-    fireEvent.change(screen.getByLabelText('选择依据（仅本地记录）'), { target: { value: 'old reason' } })
+    fireEvent.change(screen.getByLabelText('选择依据 / 拒绝原因（仅本地记录）'), { target: { value: 'old reason' } })
     vi.mocked(fetchQc).mockReturnValueOnce(new Promise(() => {}))
     view.rerender(<QcReview sessionId="s2" runId="r2" />)
     expect(screen.queryByRole('region', { name: '排除预览' })).not.toBeInTheDocument()
@@ -143,5 +143,21 @@ describe('QC review', () => {
     await screen.findByText('过滤中断，需要新预览和批准')
     expect(screen.getByRole('button', { name: '执行此已记录选择的过滤' })).toBeDisabled()
     expect(filterQc).not.toHaveBeenCalled()
+  })
+
+  it('records an explicit rejection and keeps it after refresh', async () => {
+    const rejected: QcReviewState = {
+      ...preview, revision: 2,
+      active_preview: { ...preview.active_preview!, status: 'rejected', reason: '阈值过宽', rejected_at: 'now' },
+    }
+    vi.mocked(rejectQc).mockResolvedValue(rejected)
+    const recorded = vi.fn()
+    render(<QcReview sessionId="s1" runId="r1" onRecorded={recorded} />)
+    await enterPreview()
+    fireEvent.change(screen.getByLabelText('选择依据 / 拒绝原因（仅本地记录）'), { target: { value: '阈值过宽' } })
+    fireEvent.click(screen.getByRole('button', { name: '拒绝此预览' }))
+    await screen.findByText(/此预览已拒绝/)
+    expect(rejectQc).toHaveBeenCalledWith('s1', 'r1', 'p1', '阈值过宽')
+    expect(recorded).toHaveBeenCalledOnce()
   })
 })

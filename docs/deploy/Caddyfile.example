@@ -1,0 +1,32 @@
+# CellSpatio 公共证据服务：内网 Caddy 参考配置。
+# 把 cellspatio.internal 换成实际域名；内网自签用 tls internal，
+# 正式域名改为自动 HTTPS 或显式证书路径。
+# request_body 需要 Caddy >= 2.10。
+{
+	admin off
+	# 不自动把本地根证书装进系统信任库；需要时手动 caddy trust 或分发 root.crt。
+	skip_install_trust
+}
+
+https://cellspatio.internal {
+	tls internal
+
+	# 证据卡应远小于 1 MB；超限在代理层直接 413。
+	request_body {
+		max_size 1MB
+	}
+
+	header {
+		Content-Security-Policy "default-src 'self'; frame-ancestors 'none'; base-uri 'self'; form-action 'self'"
+		X-Content-Type-Options "nosniff"
+		X-Frame-Options "DENY"
+		Referrer-Policy "no-referrer"
+		Strict-Transport-Security "max-age=31536000; includeSubDomains"
+		-Server
+	}
+
+	reverse_proxy 127.0.0.1:8700 {
+		# 应用只信 X-Forwarded-For 最后一段；删除客户端伪造的 X-Real-IP。
+		header_up -X-Real-IP
+	}
+}

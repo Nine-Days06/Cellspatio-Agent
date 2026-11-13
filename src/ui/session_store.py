@@ -19,6 +19,15 @@ logger = logging.getLogger(__name__)
 DEFAULT_DB_PATH = Path(".cellspatio") / "sessions.db"
 
 SCHEMA = """
+CREATE TABLE IF NOT EXISTS projects (
+    id TEXT PRIMARY KEY,
+    label TEXT NOT NULL,
+    kind TEXT NOT NULL DEFAULT 'local',
+    root_path TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    archived_at TEXT
+);
 CREATE TABLE IF NOT EXISTS sessions (
     id TEXT PRIMARY KEY,
     title TEXT NOT NULL DEFAULT '新会话',
@@ -26,7 +35,10 @@ CREATE TABLE IF NOT EXISTS sessions (
     updated_at TEXT NOT NULL,
     summary TEXT,
     summary_upto INTEGER NOT NULL DEFAULT 0,
-    downloaded_assets TEXT NOT NULL DEFAULT '[]'
+    downloaded_assets TEXT NOT NULL DEFAULT '[]',
+    project_id TEXT REFERENCES projects(id) ON DELETE RESTRICT,
+    pinned INTEGER NOT NULL DEFAULT 0,
+    archived_at TEXT
 );
 CREATE TABLE IF NOT EXISTS messages (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -55,6 +67,8 @@ CREATE TABLE IF NOT EXISTS qc_previews (
     payload TEXT NOT NULL,
     status TEXT NOT NULL DEFAULT 'pending',
     approved_at TEXT,
+    rejected_at TEXT,
+    reviewer TEXT,
     reason TEXT,
     message_id INTEGER REFERENCES messages(id) ON DELETE SET NULL
 );
@@ -152,6 +166,31 @@ CREATE TABLE IF NOT EXISTS sc_marker_attempts (
     message_id INTEGER REFERENCES messages(id) ON DELETE SET NULL,
     UNIQUE(cluster_attempt_id, binding_sha256, tool_version)
 );
+CREATE TABLE IF NOT EXISTS sc_cluster_rejections (
+    review_id TEXT PRIMARY KEY,
+    cluster_attempt_id TEXT NOT NULL REFERENCES sc_cluster_attempts(attempt_id) ON DELETE CASCADE,
+    binding_sha256 TEXT NOT NULL,
+    record_version TEXT NOT NULL,
+    source_revision INTEGER NOT NULL,
+    reason TEXT NOT NULL,
+    reviewer TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    message_id INTEGER REFERENCES messages(id) ON DELETE SET NULL,
+    UNIQUE(cluster_attempt_id, binding_sha256, record_version, source_revision)
+);
+CREATE TABLE IF NOT EXISTS sc_marker_reviews (
+    review_id TEXT PRIMARY KEY,
+    marker_attempt_id TEXT NOT NULL REFERENCES sc_marker_attempts(attempt_id) ON DELETE CASCADE,
+    binding_sha256 TEXT NOT NULL,
+    record_version TEXT NOT NULL,
+    source_revision INTEGER NOT NULL,
+    decision TEXT NOT NULL CHECK(decision IN ('accepted', 'rejected')),
+    reason TEXT NOT NULL,
+    reviewer TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    message_id INTEGER REFERENCES messages(id) ON DELETE SET NULL,
+    UNIQUE(marker_attempt_id, binding_sha256, record_version, source_revision)
+);
 CREATE TABLE IF NOT EXISTS knowledge_qa_reviews (
     review_id TEXT PRIMARY KEY,
     answer_id TEXT NOT NULL,
@@ -172,6 +211,25 @@ CREATE INDEX IF NOT EXISTS idx_knowledge_qa_reviews_answer
 
 def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+def _migrate_schema(conn: sqlite3.Connection) -> None:
+    """旧库补列并建索引：CREATE TABLE IF NOT EXISTS 不会修改既有 sessions 表。"""
+    columns = {row[1] for row in conn.execute("PRAGMA table_info(sessions)").fetchall()}
+    additions = {
+        "project_id": "TEXT REFERENCES projects(id) ON DELETE RESTRICT",
+        "pinned": "INTEGER NOT NULL DEFAULT 0",
+        "archived_at": "TEXT",
+    }
+    for name, ddl in additions.items():
+        if name not in columns:
+            conn.execute(f"ALTER TABLE sessions ADD COLUMN {name} {ddl}")
+    preview_columns = {row[1] for row in conn.execute("PRAGMA table_info(qc_previews)").fetchall()}
+    for name, ddl in {"rejected_at": "TEXT", "reviewer": "TEXT"}.items():
+        if name not in preview_columns:
+            conn.execute(f"ALTER TABLE qc_previews ADD COLUMN {name} {ddl}")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_sessions_project ON sessions(project_id)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_sessions_updated ON sessions(updated_at)")
 
 
 def _encode_results(results: dict[str, Any] | None) -> str | None:
@@ -235,29 +293,50 @@ class SessionStore:
             conn.execute("PRAGMA journal_mode=WAL")
             conn.execute("PRAGMA foreign_keys=ON")
             conn.executescript(SCHEMA)
+            _migrate_schema(conn)
             yield conn
             conn.commit()
         finally:
             conn.close()
 
-    def create_session(self, title: str = "新会话") -> str:
+    def create_session(self, title: str = "新会话", project_id: str | None = None) -> str:
+        if project_id is not None:
+            project = self.get_project(project_id)
+            if project is None:
+                raise ValueError("项目不存在")
+            if project["archived_at"]:
+                raise ValueError("项目已归档")
         sid = uuid.uuid4().hex
         now = _now()
         with self._conn() as conn:
             conn.execute(
-                "INSERT INTO sessions (id, title, created_at, updated_at) VALUES (?, ?, ?, ?)",
-                (sid, title, now, now),
+                "INSERT INTO sessions (id, title, created_at, updated_at, project_id) "
+                "VALUES (?, ?, ?, ?, ?)",
+                (sid, title, now, now, project_id),
             )
+            if project_id is not None:
+                conn.execute("UPDATE projects SET updated_at=? WHERE id=?", (now, project_id))
         return sid
 
-    def list_sessions(self) -> list[dict[str, Any]]:
+    def list_sessions(self, include_archived: bool = False) -> list[dict[str, Any]]:
+        where = (
+            ""
+            if include_archived
+            else "WHERE s.archived_at IS NULL AND (s.project_id IS NULL OR p.archived_at IS NULL)"
+        )
         with self._conn() as conn:
             rows = conn.execute(
-                "SELECT s.id, s.title, s.updated_at, "
+                "SELECT s.id, s.title, s.updated_at, s.project_id, s.pinned, "
+                "s.archived_at, p.label AS project_label, "
                 "(SELECT COUNT(*) FROM messages m WHERE m.session_id = s.id) "
-                "AS message_count FROM sessions s ORDER BY s.updated_at DESC"
+                f"AS message_count FROM sessions s LEFT JOIN projects p "
+                f"ON p.id = s.project_id {where} "
+                "ORDER BY s.pinned DESC, s.updated_at DESC"
             ).fetchall()
-        return [dict(r) for r in rows]
+        sessions = [dict(r) for r in rows]
+        for session in sessions:
+            session["pinned"] = bool(session["pinned"])
+        return sessions
 
     def get_session(self, session_id: str) -> dict[str, Any] | None:
         with self._conn() as conn:
@@ -266,37 +345,178 @@ class SessionStore:
             return None
         session = dict(row)
         session["downloaded_assets"] = _decode_downloaded(session["downloaded_assets"])
+        session["pinned"] = bool(session["pinned"])
         return session
 
+    def create_project(self, label: str, root_path: str | None = None, kind: str = "local") -> str:
+        """创建扁平项目；同名允许，靠 id 区分。"""
+        pid = uuid.uuid4().hex
+        now = _now()
+        with self._conn() as conn:
+            conn.execute(
+                "INSERT INTO projects (id, label, kind, root_path, created_at, updated_at) "
+                "VALUES (?, ?, ?, ?, ?, ?)",
+                (pid, label, kind, root_path, now, now),
+            )
+        return pid
+
+    def list_projects(self, include_archived: bool = False) -> list[dict[str, Any]]:
+        """列出项目及未归档会话数；默认隐藏已归档。"""
+        where = "" if include_archived else "WHERE p.archived_at IS NULL"
+        with self._conn() as conn:
+            rows = conn.execute(
+                "SELECT p.*, (SELECT COUNT(*) FROM sessions s "
+                "WHERE s.project_id = p.id AND s.archived_at IS NULL) AS session_count "
+                f"FROM projects p {where} ORDER BY p.updated_at DESC"
+            ).fetchall()
+        return [dict(r) for r in rows]
+
+    def get_project(self, project_id: str) -> dict[str, Any] | None:
+        """按 id 取项目（含未归档会话数）；不存在返回 None。"""
+        with self._conn() as conn:
+            row = conn.execute(
+                "SELECT p.*, (SELECT COUNT(*) FROM sessions s "
+                "WHERE s.project_id = p.id AND s.archived_at IS NULL) AS session_count "
+                "FROM projects p WHERE p.id = ?",
+                (project_id,),
+            ).fetchone()
+        return dict(row) if row else None
+
+    def update_project(
+        self,
+        project_id: str,
+        label: str | None = None,
+        root_path: str | None = None,
+        clear_root_path: bool = False,
+        archived: bool | None = None,
+    ) -> None:
+        """None = 不更新；archived 显式切换归档时间。"""
+        if archived:
+            with self._conn() as conn:
+                rows = conn.execute(
+                    "SELECT id FROM sessions WHERE project_id=? AND archived_at IS NULL",
+                    (project_id,),
+                ).fetchall()
+            for row in rows:
+                running = self.running_stage(row["id"])
+                if running:
+                    raise ValueError(f"{running}运行中，不能归档项目")
+        sets, vals = [], []
+        if label is not None:
+            sets.append("label=?")
+            vals.append(label)
+        if root_path is not None or clear_root_path:
+            sets.append("root_path=?")
+            vals.append(root_path or None)
+        if archived is not None:
+            sets.append("archived_at=?")
+            vals.append(_now() if archived else None)
+        if not sets:
+            return
+        sets.append("updated_at=?")
+        vals.extend([_now(), project_id])
+        with self._conn() as conn:
+            cursor = conn.execute(f"UPDATE projects SET {', '.join(sets)} WHERE id=?", vals)
+            if cursor.rowcount == 0:
+                raise ValueError("项目不存在")
+
+    def delete_project(self, project_id: str) -> None:
+        """只删除空项目；非空项目须先移动或归档会话。"""
+        with self._conn() as conn:
+            row = conn.execute(
+                "SELECT COUNT(*) AS total FROM sessions WHERE project_id = ?",
+                (project_id,),
+            ).fetchone()
+            if row["total"]:
+                raise ValueError("项目仍有会话，不能删除")
+            cursor = conn.execute("DELETE FROM projects WHERE id = ?", (project_id,))
+            if cursor.rowcount == 0:
+                raise ValueError("项目不存在")
+
+    def move_session(self, session_id: str, project_id: str | None) -> None:
+        """移动到项目；None = 移回未归类。"""
+        if project_id is not None:
+            project = self.get_project(project_id)
+            if project is None:
+                raise ValueError("项目不存在")
+            if project["archived_at"]:
+                raise ValueError("项目已归档")
+        with self._conn() as conn:
+            previous = conn.execute(
+                "SELECT project_id FROM sessions WHERE id=?", (session_id,)
+            ).fetchone()
+            cursor = conn.execute(
+                "UPDATE sessions SET project_id=?, updated_at=? WHERE id=?",
+                (project_id, _now(), session_id),
+            )
+            if cursor.rowcount == 0:
+                raise ValueError("会话不存在")
+            for touched in {previous["project_id"], project_id} - {None}:
+                conn.execute("UPDATE projects SET updated_at=? WHERE id=?", (_now(), touched))
+
+    def set_session_pinned(self, session_id: str, pinned: bool) -> None:
+        """设置会话置顶状态。"""
+        with self._conn() as conn:
+            cursor = conn.execute(
+                "UPDATE sessions SET pinned=?, updated_at=? WHERE id=?",
+                (1 if pinned else 0, _now(), session_id),
+            )
+            if cursor.rowcount == 0:
+                raise ValueError("会话不存在")
+
+    def archive_session(self, session_id: str, archived: bool = True) -> None:
+        """归档或恢复会话；运行中的受控阶段拒绝归档。"""
+        if archived:
+            running = self.running_stage(session_id)
+            if running:
+                raise ValueError(f"{running}运行中，不能归档会话")
+        with self._conn() as conn:
+            cursor = conn.execute(
+                "UPDATE sessions SET archived_at=?, updated_at=? WHERE id=?",
+                (_now() if archived else None, _now(), session_id),
+            )
+            if cursor.rowcount == 0:
+                raise ValueError("会话不存在")
+
     def delete_session(self, session_id: str) -> None:
+        """删除会话及其消息；运行中的受控阶段拒绝删除。"""
+        running = self.running_stage(session_id)
+        if running:
+            raise ValueError(f"{running}运行中，不能删除会话")
         with self._conn() as conn:
             conn.execute("BEGIN IMMEDIATE")
-            if conn.execute(
-                "SELECT 1 FROM sc_filter_attempts a JOIN qc_runs r USING(run_id) "
-                "WHERE r.session_id = ? AND a.status = 'running'",
-                (session_id,),
-            ).fetchone():
-                raise ValueError("过滤运行中，不能删除会话")
-            if conn.execute(
-                "SELECT 1 FROM sc_pca_attempts a JOIN qc_runs r USING(run_id) "
-                "WHERE r.session_id = ? AND a.status = 'running'",
-                (session_id,),
-            ).fetchone():
-                raise ValueError("PCA 运行中，不能删除会话")
-            if conn.execute(
-                "SELECT 1 FROM sc_cluster_attempts a JOIN qc_runs r USING(run_id) "
-                "WHERE r.session_id = ? AND a.status = 'running'",
-                (session_id,),
-            ).fetchone():
-                raise ValueError("聚类运行中，不能删除会话")
-            if conn.execute(
-                "SELECT 1 FROM sc_marker_attempts a JOIN qc_runs r USING(run_id) "
-                "WHERE r.session_id = ? AND a.status = 'running'",
-                (session_id,),
-            ).fetchone():
-                raise ValueError("marker 运行中，不能删除会话")
             conn.execute("DELETE FROM messages WHERE session_id = ?", (session_id,))
             conn.execute("DELETE FROM sessions WHERE id = ?", (session_id,))
+
+    def running_stage(self, session_id: str) -> str | None:
+        """返回正在运行的受控阶段名；供删除/归档前预检。"""
+        checks = (
+            (
+                "过滤",
+                "SELECT 1 FROM sc_filter_attempts a JOIN qc_runs r USING(run_id) "
+                "WHERE r.session_id=? AND a.status='running'",
+            ),
+            (
+                "PCA",
+                "SELECT 1 FROM sc_pca_attempts a JOIN qc_runs r USING(run_id) "
+                "WHERE r.session_id=? AND a.status='running'",
+            ),
+            (
+                "聚类",
+                "SELECT 1 FROM sc_cluster_attempts a JOIN qc_runs r USING(run_id) "
+                "WHERE r.session_id=? AND a.status='running'",
+            ),
+            (
+                "marker",
+                "SELECT 1 FROM sc_marker_attempts a JOIN qc_runs r USING(run_id) "
+                "WHERE r.session_id=? AND a.status='running'",
+            ),
+        )
+        with self._conn() as conn:
+            for label, sql in checks:
+                if conn.execute(sql, (session_id,)).fetchone():
+                    return label
+        return None
 
     def append_message(
         self,
@@ -333,6 +553,13 @@ class SessionStore:
                     "UPDATE sessions SET title = ?, updated_at = ? WHERE id = ?",
                     (content[:20], now, session_id),
                 )
+            else:
+                conn.execute("UPDATE sessions SET updated_at = ? WHERE id = ?", (now, session_id))
+            conn.execute(
+                "UPDATE projects SET updated_at = ? "
+                "WHERE id = (SELECT project_id FROM sessions WHERE id = ?)",
+                (now, session_id),
+            )
 
     def register_qc_run(
         self, session_id: str, run_id: str, directory: str, evidence: dict[str, Any]
@@ -378,6 +605,16 @@ class SessionStore:
             marker_attempts = conn.execute(
                 "SELECT * FROM sc_marker_attempts WHERE run_id = ? ORDER BY rowid", (run_id,)
             ).fetchall()
+            cluster_rejections = conn.execute(
+                "SELECT d.* FROM sc_cluster_rejections d JOIN sc_cluster_attempts a "
+                "ON d.cluster_attempt_id = a.attempt_id WHERE a.run_id = ? ORDER BY d.rowid",
+                (run_id,),
+            ).fetchall()
+            marker_reviews = conn.execute(
+                "SELECT d.* FROM sc_marker_reviews d JOIN sc_marker_attempts a "
+                "ON d.marker_attempt_id = a.attempt_id WHERE a.run_id = ? ORDER BY d.rowid",
+                (run_id,),
+            ).fetchall()
         run = dict(row)
         run["evidence"] = json.loads(run["evidence"])
         run["previews"] = [
@@ -385,6 +622,8 @@ class SessionStore:
                 **json.loads(p["payload"]),
                 "status": p["status"],
                 "approved_at": p["approved_at"],
+                "rejected_at": p["rejected_at"],
+                "reviewer": p["reviewer"],
                 "reason": p["reason"],
                 "message_id": p["message_id"],
             }
@@ -420,7 +659,17 @@ class SessionStore:
             }
             for a in marker_attempts
         ]
+        run["cluster_rejections"] = [dict(d) for d in cluster_rejections]
+        run["marker_reviews"] = [dict(d) for d in marker_reviews]
         return run
+
+    def list_qc_runs(self, session_id: str) -> list[dict[str, Any]]:
+        """按创建顺序列出会话的 QC run（供导出/删除 CLI 枚举产物）。"""
+        with self._conn() as conn:
+            rows = conn.execute(
+                "SELECT * FROM qc_runs WHERE session_id=? ORDER BY rowid", (session_id,)
+            ).fetchall()
+        return [dict(row) for row in rows]
 
     def activate_qc_preview(
         self, session_id: str, run_id: str, revision: int, preview: dict[str, Any]
@@ -457,6 +706,8 @@ class SessionStore:
             ).fetchone()
             if run is None or preview is None:
                 raise ValueError("QC 关联不存在")
+            if preview["status"] == "rejected":
+                raise ValueError("该预览已被拒绝，请重新预览")
             if preview["status"] != "approved":
                 if run["revision"] != revision or run["active_preview_id"] != preview_id:
                     raise ValueError("预览已失效，请刷新后重新预览")
@@ -485,6 +736,66 @@ class SessionStore:
                     "UPDATE qc_previews SET status = 'approved', approved_at = ?, reason = ?, message_id = ? "
                     "WHERE preview_id = ? AND status = 'pending'",
                     (now, reason, message_id, preview_id),
+                )
+                conn.execute(
+                    "UPDATE qc_runs SET revision = revision + 1 WHERE run_id = ?", (run_id,)
+                )
+                conn.execute("UPDATE sessions SET updated_at = ? WHERE id = ?", (now, session_id))
+        return self.get_qc_run(session_id, run_id)
+
+    def record_qc_rejection(
+        self,
+        session_id: str,
+        run_id: str,
+        preview_id: str,
+        reason: str,
+        reviewer: str = "local-user",
+    ) -> dict[str, Any]:
+        """拒绝当前待批准的 QC 预览；只记事实，不执行过滤。"""
+        reason = reason.strip()
+        if not reason:
+            raise ValueError("拒绝必须填写原因")
+        reviewer = reviewer.strip() or "local-user"
+        with self._conn() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            self._require_no_filter(conn, run_id)
+            run = conn.execute(
+                "SELECT * FROM qc_runs WHERE session_id = ? AND run_id = ?", (session_id, run_id)
+            ).fetchone()
+            preview = conn.execute(
+                "SELECT * FROM qc_previews WHERE run_id = ? AND preview_id = ?",
+                (run_id, preview_id),
+            ).fetchone()
+            if run is None or preview is None:
+                raise ValueError("QC 关联不存在")
+            if preview["status"] == "rejected":
+                if preview["reason"] != reason or preview["reviewer"] != reviewer:
+                    raise ValueError("同一预览的拒绝内容冲突")
+            else:
+                if preview["status"] != "pending" or run["active_preview_id"] != preview_id:
+                    raise ValueError("仅可拒绝当前待批准预览")
+                now = _now()
+                seq = conn.execute(
+                    "SELECT COALESCE(MAX(seq), 0) + 1 FROM messages WHERE session_id = ?",
+                    (session_id,),
+                ).fetchone()[0]
+                message_id = conn.execute(
+                    "INSERT INTO messages (session_id, seq, role, content, timestamp, results) "
+                    "VALUES (?, ?, 'assistant', ?, ?, ?)",
+                    (
+                        session_id,
+                        seq,
+                        "QC 阈值预览已拒绝；未执行过滤或下游分析。",
+                        now,
+                        _encode_results(
+                            {"qc_rejection": {"run_id": run_id, "preview_id": preview_id}}
+                        ),
+                    ),
+                ).lastrowid
+                conn.execute(
+                    "UPDATE qc_previews SET status = 'rejected', rejected_at = ?, reviewer = ?, "
+                    "reason = ?, message_id = ? WHERE preview_id = ? AND status = 'pending'",
+                    (now, reviewer, reason, message_id, preview_id),
                 )
                 conn.execute(
                     "UPDATE qc_runs SET revision = revision + 1 WHERE run_id = ?", (run_id,)
@@ -1258,6 +1569,119 @@ class SessionStore:
             conn.execute("UPDATE sessions SET updated_at = ? WHERE id = ?", (now, sid))
         return result
 
+    def record_sc_marker_review(
+        self,
+        session_id: str,
+        marker_attempt_id: str,
+        decision: str,
+        reason: str,
+        reviewer: str,
+        version: str,
+        *,
+        revision: int,
+    ) -> dict[str, Any]:
+        """追加 marker 人工复核事实；同 revision 幂等，内容冲突拒绝。"""
+        if decision not in {"accepted", "rejected"}:
+            raise ValueError("marker 复核结论必须是 accepted 或 rejected")
+        reason = reason.strip()
+        if not reason:
+            raise ValueError("复核必须填写原因")
+        reviewer = reviewer.strip() or "local-user"
+        with self._conn() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            attempt = conn.execute(
+                "SELECT a.*, r.session_id, r.revision FROM sc_marker_attempts a "
+                "JOIN qc_runs r USING(run_id) WHERE a.attempt_id = ?",
+                (marker_attempt_id,),
+            ).fetchone()
+            if attempt is None or attempt["session_id"] != session_id:
+                raise ValueError("marker 关联不存在")
+            if attempt["status"] != "completed":
+                raise ValueError("marker 尚未完成，不能复核")
+            if attempt["revision"] != revision:
+                raise ValueError("marker 记录已失效，请刷新")
+            binding = attempt["binding_sha256"]
+            previous = conn.execute(
+                "SELECT * FROM sc_marker_reviews WHERE marker_attempt_id = ? "
+                "AND binding_sha256 = ? AND record_version = ? AND source_revision = ?",
+                (marker_attempt_id, binding, version, revision),
+            ).fetchone()
+            if previous:
+                same = (
+                    previous["decision"] == decision
+                    and previous["reason"] == reason
+                    and previous["reviewer"] == reviewer
+                )
+                if not same:
+                    raise ValueError("同一 revision 的 marker 复核内容冲突")
+                return self.get_qc_run(session_id, attempt["run_id"])
+            latest = conn.execute(
+                "SELECT * FROM sc_marker_reviews WHERE marker_attempt_id = ? "
+                "ORDER BY rowid DESC LIMIT 1",
+                (marker_attempt_id,),
+            ).fetchone()
+            if (
+                latest
+                and latest["binding_sha256"] == binding
+                and latest["record_version"] == version
+                and latest["source_revision"] + 1 == revision
+                and latest["decision"] == decision
+                and latest["reason"] == reason
+                and latest["reviewer"] == reviewer
+            ):
+                return self.get_qc_run(session_id, attempt["run_id"])
+            self._require_no_filter(conn, attempt["run_id"])
+            now = _now()
+            seq = conn.execute(
+                "SELECT COALESCE(MAX(seq), 0) + 1 FROM messages WHERE session_id = ?",
+                (session_id,),
+            ).fetchone()[0]
+            message_id = conn.execute(
+                "INSERT INTO messages (session_id, seq, role, content, timestamp, results) "
+                "VALUES (?, ?, 'assistant', ?, ?, ?)",
+                (
+                    session_id,
+                    seq,
+                    "marker 人工复核已记录；未执行自动注释。",
+                    now,
+                    _encode_results(
+                        {
+                            "sc_marker_review": {
+                                "run_id": attempt["run_id"],
+                                "marker_attempt_id": marker_attempt_id,
+                                "decision": decision,
+                                "stage": "marker_review",
+                                "scientific_status": "unreviewed",
+                            }
+                        }
+                    ),
+                ),
+            ).lastrowid
+            conn.execute(
+                "INSERT INTO sc_marker_reviews "
+                "(review_id, marker_attempt_id, binding_sha256, record_version, source_revision, "
+                "decision, reason, reviewer, created_at, message_id) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (
+                    uuid.uuid4().hex,
+                    marker_attempt_id,
+                    binding,
+                    version,
+                    revision,
+                    decision,
+                    reason,
+                    reviewer,
+                    now,
+                    message_id,
+                ),
+            )
+            conn.execute(
+                "UPDATE qc_runs SET revision = revision + 1 WHERE run_id = ?",
+                (attempt["run_id"],),
+            )
+            conn.execute("UPDATE sessions SET updated_at = ? WHERE id = ?", (now, session_id))
+        return self.get_qc_run(session_id, attempt["run_id"])
+
     def interrupt_sc_markers(self) -> None:
         """单进程启动中断遗留作业，安全消息与 revision 随终态原子提交。"""
         with self._conn() as conn:
@@ -1375,6 +1799,114 @@ class SessionStore:
                     version,
                     revision,
                     reason,
+                    now,
+                    message_id,
+                ),
+            )
+            conn.execute(
+                "UPDATE qc_runs SET revision = revision + 1 WHERE run_id = ?", (run["run_id"],)
+            )
+            conn.execute("UPDATE sessions SET updated_at = ? WHERE id = ?", (now, session_id))
+
+    def record_sc_cluster_rejection(
+        self,
+        session_id: str,
+        run: dict[str, Any],
+        cluster: dict[str, Any],
+        binding: str,
+        version: str,
+        revision: int,
+        reason: str,
+        reviewer: str = "local-user",
+    ) -> None:
+        """追加聚类拒绝事实；不改写既有接受历史，不授权 marker。"""
+        reason = reason.strip()
+        if not reason:
+            raise ValueError("拒绝必须填写原因")
+        reviewer = reviewer.strip() or "local-user"
+        with self._conn() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            row = conn.execute(
+                "SELECT * FROM qc_runs WHERE session_id = ? AND run_id = ?",
+                (session_id, run["run_id"]),
+            ).fetchone()
+            attempt = conn.execute(
+                "SELECT * FROM sc_cluster_attempts WHERE attempt_id = ? AND run_id = ?",
+                (cluster["attempt_id"], run["run_id"]),
+            ).fetchone()
+            if row is None or attempt is None:
+                raise ValueError("聚类关联不存在")
+            if attempt["status"] != "completed" or attempt["binding_sha256"] != binding:
+                raise ValueError("聚类未完成或绑定不符")
+            if row["revision"] != revision:
+                raise ValueError("聚类记录已失效，请刷新")
+            previous = conn.execute(
+                "SELECT * FROM sc_cluster_rejections WHERE cluster_attempt_id = ? "
+                "AND binding_sha256 = ? AND record_version = ? AND source_revision = ?",
+                (cluster["attempt_id"], binding, version, revision),
+            ).fetchone()
+            if previous:
+                if previous["reason"] != reason or previous["reviewer"] != reviewer:
+                    raise ValueError("同一 revision 的聚类拒绝内容冲突")
+                return
+            latest = conn.execute(
+                "SELECT * FROM sc_cluster_rejections WHERE cluster_attempt_id = ? "
+                "ORDER BY rowid DESC LIMIT 1",
+                (cluster["attempt_id"],),
+            ).fetchone()
+            if (
+                latest
+                and latest["binding_sha256"] == binding
+                and latest["record_version"] == version
+                and latest["source_revision"] + 1 == revision
+                and latest["reason"] == reason
+                and latest["reviewer"] == reviewer
+            ):
+                return
+            if conn.execute(
+                "SELECT 1 FROM sc_cluster_reviews WHERE cluster_attempt_id = ? "
+                "AND binding_sha256 = ? AND record_version = ? AND source_revision = ?",
+                (cluster["attempt_id"], binding, version, revision),
+            ).fetchone():
+                raise ValueError("同一 revision 已有聚类接受事实")
+            self._require_no_filter(conn, run["run_id"])
+            now = _now()
+            seq = conn.execute(
+                "SELECT COALESCE(MAX(seq), 0) + 1 FROM messages WHERE session_id = ?",
+                (session_id,),
+            ).fetchone()[0]
+            message_id = conn.execute(
+                "INSERT INTO messages (session_id, seq, role, content, timestamp, results) "
+                "VALUES (?, ?, 'assistant', ?, ?, ?)",
+                (
+                    session_id,
+                    seq,
+                    "探索性聚类拒绝已记录；未授权 marker 或注释。",
+                    now,
+                    _encode_results(
+                        {
+                            "sc_cluster_rejection": {
+                                "run_id": run["run_id"],
+                                "cluster_attempt_id": cluster["attempt_id"],
+                                "stage": "cluster_review",
+                                "scientific_status": "unreviewed",
+                            }
+                        }
+                    ),
+                ),
+            ).lastrowid
+            conn.execute(
+                "INSERT INTO sc_cluster_rejections "
+                "(review_id, cluster_attempt_id, binding_sha256, record_version, source_revision, "
+                "reason, reviewer, created_at, message_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (
+                    uuid.uuid4().hex,
+                    cluster["attempt_id"],
+                    binding,
+                    version,
+                    revision,
+                    reason,
+                    reviewer,
                     now,
                     message_id,
                 ),
@@ -1535,3 +2067,27 @@ def _decode_downloaded(text: str | None) -> list:
     except json.JSONDecodeError:  # 容错：坏数据按空列表处理
         logger.warning("downloaded_assets JSON 解析失败，按空列表处理")
         return []
+
+
+def project_analysis_root(session_id: str | None, repo_root: str | Path) -> Path:
+    """新分析产物根：项目会话落 data/projects/<id>/analysis，其余沿用 data/analysis。"""
+    base = Path(repo_root) / "data"
+    if session_id:
+        session = SessionStore().get_session(session_id)
+        if session is None:
+            raise ValueError("会话不存在，不能确定分析产物根")
+        if session.get("project_id"):
+            return (base / "projects" / session["project_id"] / "analysis").resolve()
+    return (base / "analysis").resolve()
+
+
+def project_scoped_analysis_root(session_id: str | None, repo_root: str | Path) -> Path | None:
+    """仅项目会话返回项目分析根；未归类或无会话返回 None，保留旧输出位置。"""
+    if not session_id:
+        return None
+    session = SessionStore().get_session(session_id)
+    if session is None:
+        raise ValueError("会话不存在，不能确定分析产物根")
+    if not session.get("project_id"):
+        return None
+    return project_analysis_root(session_id, repo_root)

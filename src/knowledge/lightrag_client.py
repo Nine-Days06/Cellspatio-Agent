@@ -149,13 +149,26 @@ def default_workspace_for(working_dir: str | Path) -> str:
     return Path(working_dir).resolve().name
 
 
-def build_storage_kwargs() -> dict[str, Any]:
-    """LightRAG 的四个 storage 参数：四类存储全走 PostgreSQL
+FILE_STORAGE_KWARGS = {
+    "kv_storage": "JsonKVStorage",
+    "vector_storage": "NanoVectorDBStorage",
+    "graph_storage": "NetworkXStorage",
+    "doc_status_storage": "JsonDocStatusStorage",
+}
+
+
+def build_storage_kwargs(backend: str = "pg") -> dict[str, Any]:
+    """LightRAG 四个 storage 参数；pg=PG+pgvector，file=本地文件（不需要 PG）。
 
     向量需 pgvector 扩展；图用 PGTableGraphStorage（纯 SQL 表，不需要 AGE 扩展）。
     LightRAG 的 check_storage_env_vars 要求 POSTGRES_USER/PASSWORD/DATABASE
-    必须存在于 os.environ，故此处补齐默认值（连接本地内嵌 PG，端口 5433）。
+    必须存在于 os.environ，故 pg 后端补齐默认值（连接本地内嵌 PG，端口 5433）。
     """
+    if backend == "file":
+        return dict(FILE_STORAGE_KWARGS)
+    if backend != "pg":
+        raise ValueError("storage backend 只能是 pg 或 file")
+
     for key, val in {
         "POSTGRES_HOST": "127.0.0.1",
         "POSTGRES_PORT": "5433",

@@ -1,10 +1,25 @@
 /** 与 src/api/* 实际响应逐字段对齐的线路类型。 */
 
+export interface Project {
+  id: string
+  label: string
+  kind: 'local'
+  root_path: string | null
+  created_at: string
+  updated_at: string
+  archived_at: string | null
+  session_count: number
+}
+
 export interface SessionSummary {
   id: string
   title: string
   updated_at: string
   message_count: number
+  project_id: string | null
+  project_label?: string | null
+  pinned: boolean
+  archived_at: string | null
 }
 
 export interface Session {
@@ -15,6 +30,25 @@ export interface Session {
   summary: string | null
   summary_upto: number
   downloaded_assets: DownloadedAsset[]
+  project_id: string | null
+  pinned: boolean
+  archived_at: string | null
+}
+
+/** GET /api/{sessions|projects}/{id}/usage：产物 + .wrroc + snapshots 的只读汇总。 */
+export interface UsageSummary {
+  scope: 'session' | 'project'
+  target_id: string
+  bytes: number
+  files: number
+}
+
+/** POST /api/sessions/{id}/local-input：登记本地输入并运行固定 QC。 */
+export interface LocalInputResponse {
+  message: WireMessage
+  session: Session
+  qc_run_id: string | null
+  status: 'needs_confirmation' | 'error'
 }
 
 /** 后端只保证它是 dict；前端只在需要时读 access_path / asset_id / source。 */
@@ -133,9 +167,11 @@ export interface QcPreview {
   preview_id: string
   params: Omit<QcThresholds, 'percent_mt_max'> & { percent_mt_max: string }
   summary: { total: number; kept: number; excluded: number; excluded_percent: number; reason_counts: Record<string, number>; blocked: string[]; filtered: false }
-  status: 'pending' | 'approved'
+  status: 'pending' | 'approved' | 'rejected'
   binding_sha256: string
   approved_at: string | null
+  rejected_at?: string | null
+  reviewer?: string | null
   reason: string | null
 }
 
@@ -189,6 +225,15 @@ export interface ClusterAcceptanceState {
   blocked: string[]
   current: ClusterAcceptance | null
   history: ClusterAcceptance[]
+  latest_decision: ReviewFact | null
+}
+
+export interface ReviewFact {
+  decision: 'accepted' | 'rejected'
+  reason: string
+  created_at: string
+  source_revision: number
+  invalidated_reason: string | null
 }
 
 export interface MarkerCandidate {
@@ -224,6 +269,7 @@ export interface MarkerState {
     status: FilterAttempt['status']
     invalidated_reason: string | null
     error: string | null
+    review: ReviewFact | null
     result: {
       cells: number; features: number; clusters: number; marker_rows: number
       positive_rows: number; negative_rows: number; versions: string[]

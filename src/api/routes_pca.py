@@ -24,7 +24,7 @@ from src.analysis.sc_pca import (
     run_sc_pca,
 )
 from src.api.chat_service import session_lock
-from src.api.routes_qc import qc_root, require_run
+from src.api.routes_qc import require_run, run_qc_root
 from src.ui.session_store import SessionStore
 
 router = APIRouter(prefix="/api/sessions/{session_id}/qc/{run_id}/pca", tags=["pca"])
@@ -105,7 +105,11 @@ def get_pca(
 ) -> dict[str, Any]:
     """GET 仅校验和恢复，不启动分析。"""
     run = require_run(SessionStore(), session_id, run_id)
-    return view(run, require_parent(run, filter_attempt_id), qc_root(request.app.state.agent))
+    return view(
+        run,
+        require_parent(run, filter_attempt_id),
+        run_qc_root(request.app.state.agent, run),
+    )
 
 
 class PcaRequest(BaseModel):
@@ -132,7 +136,7 @@ def execute_pca(
     store = SessionStore()
     run = require_run(store, session_id, run_id)
     parent = require_parent(run, filter_attempt_id)
-    root = qc_root(request.app.state.agent)
+    root = run_qc_root(request.app.state.agent, run)
     if any(
         a["filter_attempt_id"] == filter_attempt_id
         and a["binding_sha256"] == body.binding_sha256
@@ -273,7 +277,7 @@ def get_dimensions(
         run,
         require_parent(run, filter_attempt_id),
         require_pca(run, filter_attempt_id, attempt_id),
-        qc_root(request.app.state.agent),
+        run_qc_root(request.app.state.agent, run),
     )
 
 
@@ -298,7 +302,7 @@ def record_dimensions(
     run = require_run(store, session_id, run_id)
     parent = require_parent(run, filter_attempt_id)
     attempt = require_pca(run, filter_attempt_id, attempt_id)
-    root = qc_root(request.app.state.agent)
+    root = run_qc_root(request.app.state.agent, run)
     previous = next(
         (
             d
@@ -357,7 +361,7 @@ def diagnostic(
     if attempt is None or attempt["status"] != "completed":
         raise HTTPException(404, "PCA 诊断未完成或不存在")
     directory = Path(attempt["directory"]).resolve()
-    root = qc_root(request.app.state.agent).parent / "sc_pca"
+    root = run_qc_root(request.app.state.agent, run).parent / "sc_pca"
     path = directory / "pca_diagnostics.png"
     try:
         if directory != root / attempt_id or path.resolve().parent != directory:
