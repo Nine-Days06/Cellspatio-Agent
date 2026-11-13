@@ -38,6 +38,7 @@ dev = [
 
 [tool.setuptools.package-data]
 "src.knowledge" = ["prompts/*.txt"]
+"src.public_api" = ["static/*"]
 
 [tool.ruff]
 line-length = 100
