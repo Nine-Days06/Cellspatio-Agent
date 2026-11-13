@@ -125,6 +125,10 @@ def main(argv: list[str] | None = None) -> int:
     events_parser = subparsers.add_parser("events")
     events_parser.add_argument("evidence_id")
 
+    audit_parser = subparsers.add_parser("audit", help="导出全部提交与事件为 JSONL")
+    audit_parser.add_argument("--out", required=True, help="输出 JSONL 文件")
+    audit_parser.add_argument("--root", default=argparse.SUPPRESS, help="数据根（也可写在前面）")
+
     login_parser = subparsers.add_parser("login", help="登录公共证据服务并打印 token")
     login_parser.add_argument("--server", required=True)
     login_parser.add_argument("--username", required=True)
@@ -164,6 +168,9 @@ def main(argv: list[str] | None = None) -> int:
             return 0
 
         store = _store(args.root)
+        if args.command == "audit":
+            _write_audit(store, args.out)
+            return 0
         if args.command == "submit":
             result: Any = store.submit(_load_envelope(args.envelope))
         elif args.command == "preview":
@@ -214,6 +221,15 @@ def main(argv: list[str] | None = None) -> int:
         return 2
     print(json.dumps(result, ensure_ascii=False, indent=2))
     return 0
+
+
+def _write_audit(store: GovernanceStore, out: str) -> None:
+    """把审计记录写成 JSONL。"""
+    path = Path(out)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("w", encoding="utf-8") as handle:
+        for record in store.audit_records():
+            handle.write(json.dumps(record, ensure_ascii=False) + "\n")
 
 
 if __name__ == "__main__":

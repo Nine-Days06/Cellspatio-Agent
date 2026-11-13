@@ -51,16 +51,13 @@ def _session_days() -> int:
 
 
 def _client_ip(request: Request) -> str:
-    """只有显式声明信任反向代理时才读转发头，否则用直连地址。"""
+    """只有显式声明信任反向代理时才读 X-Forwarded-For 最后一段。"""
     trusted = os.environ.get("CELLSPATIO_TRUST_PROXY", "0").strip().lower() in (
         "1",
         "true",
         "yes",
     )
     if trusted:
-        real_ip = request.headers.get("x-real-ip")
-        if real_ip:
-            return real_ip.strip()
         forwarded = request.headers.get("x-forwarded-for")
         if forwarded:
             return forwarded.split(",")[-1].strip()
