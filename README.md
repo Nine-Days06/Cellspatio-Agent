@@ -153,6 +153,7 @@ python -m src.api
   python -m src.cli.evidence_governance remote-search --server http://127.0.0.1:8700 --query QC
   python -m src.cli.evidence_governance citation <evidence_id> --server http://127.0.0.1:8700
   ```
+  复核者浏览器视图：`http://127.0.0.1:8700/review/`（与 API 同进程，登录后看队列、读卡、勾清单、给结论）。
 
 ## 使用示例
 

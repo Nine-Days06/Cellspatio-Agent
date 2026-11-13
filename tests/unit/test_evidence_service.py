@@ -437,3 +437,26 @@ def test_client_upload_and_citation_use_real_http_path(app, client: TestClient):
         assert public.citation(evidence_id)["claim"]
     finally:
         public.close()
+
+
+def test_review_ui_is_served_and_checklists_come_from_governance(app, client: TestClient):
+    """复核页可访问；清单端点需登录且与治理层常量一致。"""
+    page = client.get("/review/")
+    assert page.status_code == 200
+    assert "复核者登录" in page.text
+    assert client.get("/review/review.js").status_code == 200
+
+    assert client.get("/api/public/evidence/checklists").status_code == 401
+    _account(app, "ui-contributor", (ROLE_CONTRIBUTOR,))
+    _account(app, "ui-domain", (ROLE_DOMAIN,))
+    token = _login(client, "ui-contributor")
+    assert client.get("/api/public/evidence/checklists", headers=_headers(token)).status_code == 403
+    data = client.get(
+        "/api/public/evidence/checklists", headers=_headers(_login(client, "ui-domain"))
+    ).json()
+    assert data[ROLE_DOMAIN] == list(DOMAIN_CHECKLIST)
+    assert data[ROLE_COMPLIANCE] == list(COMPLIANCE_CHECKLIST)
+    queue = client.get(
+        "/api/public/evidence/queue", headers=_headers(_login(client, "ui-domain"))
+    ).json()
+    assert queue["role"] == ROLE_DOMAIN

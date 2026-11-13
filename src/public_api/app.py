@@ -14,12 +14,15 @@ from typing import Annotated, Any
 
 from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 from src.evidence.accounts import AccountStore, public_user
 from src.evidence.contribution import build_envelope
 from src.evidence.governance import (
     ACTION_ROLE,
+    COMPLIANCE_CHECKLIST,
+    DOMAIN_CHECKLIST,
     ROLE_COMPLIANCE,
     ROLE_CONTRIBUTOR,
     ROLE_DOMAIN,
@@ -29,6 +32,8 @@ from src.evidence.governance import (
 from src.evidence.schema import EvidenceCard
 
 logger = logging.getLogger(__name__)
+
+_STATIC_DIR = Path(__file__).resolve().parent / "static"
 
 _LIMIT_WINDOW = 300.0
 _LIMIT_MAX = 5
@@ -253,7 +258,18 @@ def create_public_app(data_root: str | Path) -> FastAPI:
     ) -> dict[str, Any]:
         """复核队列：待审、本角色未签、本人未审，排除自己的提交。"""
         role = _reviewer_role(user)
-        return {"queue": store.review_queue(viewer_actor=user["id"], viewer_role=role)}
+        return {
+            "role": role,
+            "queue": store.review_queue(viewer_actor=user["id"], viewer_role=role),
+        }
+
+    @app.get("/api/public/evidence/checklists")
+    def checklists(user: Reviewer) -> dict[str, list[str]]:
+        """复核清单键；前端标签自行映射，避免复制治理层常量。"""
+        return {
+            ROLE_DOMAIN: list(DOMAIN_CHECKLIST),
+            ROLE_COMPLIANCE: list(COMPLIANCE_CHECKLIST),
+        }
 
     @app.post("/api/public/evidence/submissions/{evidence_id}/review")
     def review(
@@ -360,5 +376,8 @@ def create_public_app(data_root: str | Path) -> FastAPI:
         """未结构化异常统一 500 JSON。"""
         logger.exception("unhandled public evidence error on %s", request.url.path)
         return JSONResponse(status_code=500, content={"detail": "服务内部错误"})
+
+    if _STATIC_DIR.is_dir():
+        app.mount("/review", StaticFiles(directory=_STATIC_DIR, html=True), name="review")
 
     return app

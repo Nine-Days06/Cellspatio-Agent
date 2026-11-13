@@ -1,0 +1,58 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>CellSpatio 证据复核</title>
+    <link rel="stylesheet" href="./review.css" />
+  </head>
+  <body>
+    <header class="topbar">
+      <div class="brand">
+        <span class="brand-name">CellSpatio</span>
+        <span class="brand-sub">公共证据复核</span>
+      </div>
+      <div id="session" class="session hidden">
+        <span id="who" class="who"></span>
+        <button id="logout" type="button" class="ghost">退出</button>
+      </div>
+    </header>
+
+    <main class="shell">
+      <section id="login-view" class="login-view hidden">
+        <form id="login-form" class="login-card">
+          <h1>复核者登录</h1>
+          <p class="muted">使用公共服务账号登录，查看待审证据卡。</p>
+          <label>
+            <span>用户名</span>
+            <input id="username" name="username" autocomplete="username" required />
+          </label>
+          <label>
+            <span>密码</span>
+            <input
+              id="password"
+              name="password"
+              type="password"
+              autocomplete="current-password"
+              required
+            />
+          </label>
+          <p id="login-error" class="error" role="alert"></p>
+          <button type="submit" class="primary">登录</button>
+        </form>
+      </section>
+
+      <section id="workspace" class="workspace hidden">
+        <aside class="queue-panel">
+          <h2>待审队列 <span id="queue-count" class="count"></span></h2>
+          <p id="role-note" class="note hidden"></p>
+          <ul id="queue-list" class="queue-list"></ul>
+        </aside>
+        <section id="detail" class="detail"></section>
+      </section>
+    </main>
+
+    <p id="toast" class="toast hidden" role="status" aria-live="polite"></p>
+    <script type="module" src="./review.js"></script>
+  </body>
+</html>
