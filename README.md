@@ -153,7 +153,9 @@ python -m src.api
   python -m src.cli.evidence_governance remote-search --server http://127.0.0.1:8700 --query QC
   python -m src.cli.evidence_governance citation <evidence_id> --server http://127.0.0.1:8700
   ```
-  复核者浏览器视图：`http://127.0.0.1:8700/review/`（与 API 同进程，登录后看队列、读卡、勾清单、给结论）。
+  浏览器视图：`http://127.0.0.1:8700/review/`（与 API 同进程）。复核者看队列、读卡、
+  勾清单、给结论；贡献者选择本地证据卡 JSON → 预览 → 显式同意 → 上传，并在“我的提交”
+  查看原因、修订或撤回。只上传证据卡聚合字段，原始数据不出本机。
 
 ## 使用示例
 

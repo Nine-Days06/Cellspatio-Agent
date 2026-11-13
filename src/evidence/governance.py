@@ -558,6 +558,30 @@ class GovernanceStore:
         with self._conn() as conn:
             return self._summary(self._row(conn, submission_id), self._superseded_map(conn))
 
+    def submissions_by_contributor(self, contributor_id: str) -> list[dict[str, Any]]:
+        """本人的全部提交摘要，附带最近一次带原因的动作。"""
+        if not _clean(contributor_id):
+            raise ValueError("contributor_id 必填")
+        with self._conn() as conn:
+            superseded = self._superseded_map(conn)
+            rows = conn.execute(
+                "SELECT * FROM submissions WHERE contributor_id=? "
+                "ORDER BY submitted_at DESC, submission_id DESC",
+                (contributor_id,),
+            ).fetchall()
+            items = []
+            for row in rows:
+                item = self._summary(row, superseded)
+                item["claim"] = row["claim_text"]
+                latest = conn.execute(
+                    "SELECT action, reason FROM events WHERE submission_id=? "
+                    "AND reason IS NOT NULL ORDER BY id DESC LIMIT 1",
+                    (row["submission_id"],),
+                ).fetchone()
+                item["latest_reason"] = latest["reason"] if latest else None
+                items.append(item)
+            return items
+
     def search(self, text: str = "", gate: str | None = None) -> list[dict[str, Any]]:
         """只检索 accepted 提交；被取代项保留但降权。"""
         with self._conn() as conn:

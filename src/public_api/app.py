@@ -18,7 +18,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 from src.evidence.accounts import AccountStore, public_user
-from src.evidence.contribution import build_envelope
+from src.evidence.contribution import build_envelope, preview_card
 from src.evidence.governance import (
     ACTION_ROLE,
     COMPLIANCE_CHECKLIST,
@@ -26,6 +26,7 @@ from src.evidence.governance import (
     ROLE_COMPLIANCE,
     ROLE_CONTRIBUTOR,
     ROLE_DOMAIN,
+    STATE_NEEDS_CHANGES,
     GovernanceStore,
     public_evidence_dir,
 )
@@ -136,6 +137,13 @@ class SubmitRequest(BaseModel):
 
     preview: dict[str, Any]
     consent: bool = False
+
+
+class PreviewRequest(BaseModel):
+    """上传前预览请求：只收证据卡内容与可选修订引用。"""
+
+    card: dict[str, Any]
+    revises_submission_id: str | None = None
 
 
 class ReviewRequest(BaseModel):
@@ -270,6 +278,27 @@ def create_public_app(data_root: str | Path) -> FastAPI:
             ROLE_DOMAIN: list(DOMAIN_CHECKLIST),
             ROLE_COMPLIANCE: list(COMPLIANCE_CHECKLIST),
         }
+
+    @app.post("/api/public/evidence/preview")
+    def preview(body: PreviewRequest, user: Contributor, store: Store) -> dict[str, Any]:
+        """用服务端身份生成上传前预览；修订归属与隐私校验失败直接 4xx。"""
+        if body.revises_submission_id:
+            original = store.summary(body.revises_submission_id)
+            if original["contributor_id"] != user["id"]:
+                raise ValueError("只能修订自己的提交")
+            if original["status"] != STATE_NEEDS_CHANGES:
+                raise ValueError("只能修订 needs_changes 的提交")
+        card = EvidenceCard.model_validate(body.card)
+        return preview_card(
+            card,
+            contributor_id=user["id"],
+            revises_submission_id=body.revises_submission_id,
+        )
+
+    @app.get("/api/public/evidence/mine")
+    def mine(user: Contributor, store: Store) -> dict[str, Any]:
+        """贡献者查看本人全部提交状态与最近一次原因。"""
+        return {"submissions": store.submissions_by_contributor(user["id"])}
 
     @app.post("/api/public/evidence/submissions/{evidence_id}/review")
     def review(
