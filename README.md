@@ -89,18 +89,16 @@ python -m src.api
 
 ### 便携客户端（免登录，数据在本地）
 
-```powershell
-.\client\build.ps1          # 瘦包：只打应用代码
-.\client\build.ps1 -Fat -RRuntime D:\R-4.6.1   # 胖包：内置 CPython + R/Seurat
-```
+便携客户端有两种包：
 
-产物在 `dist/client/`：`cellspatio-thin.zip` / `cellspatio-fat.zip`。
+- **在线安装包**：只含应用代码。解压后先运行 `bootstrap.ps1`（联网安装 Python 依赖并检查 R 4.6.x + Seurat/presto/uwot），再运行 `launch.cmd`。
+- **内置运行时包**：内置 Python 与 R/Seurat，解压后直接运行 `launch.cmd`。
 
-- 数据放便携目录下的 `data/`（`CELLSPATIO_HOME` 可覆盖）。升级时把新包覆盖解压到同一目录即可，`data/` 不在包内、不会被覆盖；不要先删目录。瘦包与胖包要在同一目录运行、或共用同一 `CELLSPATIO_HOME`，才会共享数据。请解压到用户可写目录，不要放 Program Files。
-- 胖包解压后双击 `launch.cmd`，无需登录；瘦包先跑 `bootstrap.ps1` 装 Python 依赖并检查 R 4.6.x + Seurat/presto/uwot。
+- 数据放便携目录下的 `data/`（`CELLSPATIO_HOME` 可覆盖）。升级时把新包覆盖解压到同一目录即可，`data/` 不在包内、不会被覆盖；不要先删目录。两种包要在同一目录运行、或共用同一 `CELLSPATIO_HOME`，才会共享数据。请解压到用户可写目录，不要放 Program Files。
 - QC→markers 可离线；知识问答仍需 Ollama 或在线 LLM/embedding。
 - 本地默认不写 KG 记忆；`CELLSPATIO_LOCAL_KG=1` 时用文件型 LightRAG，按项目独立目录落盘，不需要 PostgreSQL。
 - 无 LLM 时用页头「本地数据」输入 10x 目录或 counts CSV 的绝对路径，直接跑固定 QC；后续过滤、PCA、聚类与 marker 仍逐阶段人工授权。
+- 包内 `README.txt` 说明目录、升级与离线范围。
 
 ### 项目与记录管理
 
@@ -264,7 +262,7 @@ cellspatio-agent/
 │   ├── src/lib/        # API/SSE 客户端与类型
 │   ├── src/store/      # 状态（zustand chat store）
 │   └── dist/           # 构建产物（npm run build，由 FastAPI 挂到 /）
-├── client/              # 便携客户端（launch/bootstrap/build；瘦包与胖包）
+├── client/              # 便携客户端（launch/bootstrap；在线安装包与内置运行时包）
 ├── pubmed-etl/          # 独立文献批量下载与清洗工具（单细胞+时空方向）
 ├── tests/               # 测试
 ├── docs/                # 文档

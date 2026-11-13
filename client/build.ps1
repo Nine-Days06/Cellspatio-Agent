@@ -1,16 +1,17 @@
 <#
-Build the portable folder and thin/fat zips.
+Build the portable folder and online/bundled-runtime zips.
 
-  .\build.ps1                 # thin: app code only
-  .\build.ps1 -Fat            # fat: bundles CPython + R into runtime/
-  .\build.ps1 -Fat -NoZip     # folder only, faster for local checks
+  .\build.ps1                    # online: app code only
+  .\build.ps1 -Bundled           # bundled runtime: CPython + R into runtime/
+  .\build.ps1 -Bundled -NoZip    # folder only, faster for local checks
 
-Fat needs an R install: pass -RRuntime <dir> or set R_HOME.
+Bundled runtime needs an R install: pass -RRuntime <dir> or set R_HOME.
 Python defaults to a uv-managed CPython 3.13; override with -PythonRuntime <dir>.
 #>
 [CmdletBinding()]
 param(
-    [switch]$Fat,
+    [Alias("Fat")]
+    [switch]$Bundled,
     [string]$PythonRuntime = "",
     [string]$RRuntime = "",
     [switch]$NoZip
@@ -49,11 +50,13 @@ Copy-Tree (Join-Path $root "web\dist") (Join-Path $app "web\dist")
 Copy-Item (Join-Path $root "pyproject.toml"), (Join-Path $root "requirements.txt") $app
 Copy-Item (Join-Path $PSScriptRoot "launch.ps1"), (Join-Path $PSScriptRoot "launch.cmd"), (Join-Path $PSScriptRoot "bootstrap.ps1"), (Join-Path $PSScriptRoot "README.txt") $stage
 
-if ($Fat) {
+if ($Bundled) {
     $runtime = Join-Path $stage "runtime"
     $uv = Get-Command uv -ErrorAction Stop
     if (-not $RRuntime) {
-        if (-not $env:R_HOME) { throw "Pass -RRuntime <R install> or set R_HOME for a fat build." }
+        if (-not $env:R_HOME) {
+            throw "Pass -RRuntime <R install> or set R_HOME for a bundled-runtime build."
+        }
         $RRuntime = $env:R_HOME
     }
     if (-not $PythonRuntime) {
@@ -82,7 +85,7 @@ if ($Fat) {
 }
 
 if (-not $NoZip) {
-    $kind = if ($Fat) { "fat" } else { "thin" }
+    $kind = if ($Bundled) { "bundled" } else { "online" }
     $zip = Join-Path $out "cellspatio-$kind.zip"
     if (Test-Path -LiteralPath $zip) { Remove-Item -LiteralPath $zip -Force }
     & tar -a -c -f $zip -C $stage .
