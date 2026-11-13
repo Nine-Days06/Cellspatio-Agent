@@ -15,6 +15,7 @@ from src.evidence.builder import (
     build_qa_card,
     build_qc_card,
 )
+from src.evidence.governance import admission_problems
 from src.evidence.schema import EvidenceCard, validate_card
 
 EXAMPLES = Path(__file__).resolve().parents[2] / "docs" / "examples" / "evidence-cards"
@@ -26,6 +27,7 @@ def test_example_cards_pass_validation():
     for path in cards:
         card = EvidenceCard.model_validate_json(path.read_text(encoding="utf-8"))
         assert validate_card(card).card_id == card.card_id
+        assert admission_problems(card) == [], f"{path.name} 未通过准入"
 
 
 def _card() -> EvidenceCard:
