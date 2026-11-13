@@ -134,6 +134,27 @@ cd web && npm run typecheck && npm run test && npm run build
 
 格式化用 `ruff format` 统一，不再使用 black。
 
+## 便携客户端打包（维护者）
+
+仅在用户明确要求打包、发版或交付验收时运行；日常开发、审查和单测不重建
+`dist/client/`。
+
+前置：先构建前端 `cd web && npm run build`。内置运行时包还需要 `uv`、
+CPython 3.13（或用 `-PythonRuntime` 指定），以及 R 4.6.x + Seurat/presto/uwot
+（用 `-RRuntime` 或 `R_HOME` 指定）。
+
+```powershell
+.\client\build.ps1                                  # 在线安装包：只打应用代码
+.\client\build.ps1 -Bundled -RRuntime D:\R-4.6.1    # 内置运行时包：CPython + R/Seurat
+.\client\build.ps1 -Bundled -NoZip                  # 只生成目录，便于本地检查
+```
+
+旧脚本里的 `-Fat` 作为兼容别名保留，但新脚本和文档统一用 `-Bundled`。
+
+产物：`dist/client/cellspatio-online.zip` 与
+`dist/client/cellspatio-bundled.zip`；解压目录为 `dist/client/cellspatio/`。
+不要提交 `dist/` 或客户端 `data/`。
+
 ## 不提交、不推送的内容（本地专用）
 
 以下内容已在 `.gitignore` / 全局排除中忽略，请勿提交：
