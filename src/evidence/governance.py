@@ -653,18 +653,47 @@ class GovernanceStore:
                 "FROM events WHERE submission_id=? ORDER BY id",
                 (submission_id,),
             ).fetchall()
-        return [
-            {
-                "actor_id": row["actor_id"],
-                "role": row["role"],
-                "action": row["action"],
-                "checklist": json.loads(row["checklist_json"]) if row["checklist_json"] else None,
-                "reason": row["reason"],
-                "card_sha256": row["card_sha256"],
-                "created_at": row["created_at"],
+        return [self._event_record(row) for row in rows]
+
+    @staticmethod
+    def _event_record(row: sqlite3.Row, *, with_submission: bool = False) -> dict[str, Any]:
+        """事件行 → 审计字典；可按需带上提交定位。"""
+        record = {
+            "actor_id": row["actor_id"],
+            "role": row["role"],
+            "action": row["action"],
+            "checklist": json.loads(row["checklist_json"]) if row["checklist_json"] else None,
+            "reason": row["reason"],
+            "card_sha256": row["card_sha256"],
+            "created_at": row["created_at"],
+        }
+        if with_submission:
+            return {
+                "event_id": row["id"],
+                "submission_id": row["submission_id"],
+                **record,
             }
-            for row in rows
-        ]
+        return record
+
+    def audit_records(self) -> Iterator[dict[str, Any]]:
+        """导出全部提交与事件，供离线审计；不读取账号库。"""
+        with self._conn() as conn:
+            superseded = self._superseded_map(conn)
+            submissions = conn.execute(
+                "SELECT * FROM submissions ORDER BY submitted_at, submission_id"
+            ).fetchall()
+            for row in submissions:
+                yield {
+                    "type": "submission",
+                    **self._summary(row, superseded),
+                    "card": json.loads(row["card_json"]),
+                }
+            events = conn.execute(
+                "SELECT id, submission_id, actor_id, role, action, checklist_json, reason, "
+                "card_sha256, created_at FROM events ORDER BY id"
+            ).fetchall()
+            for row in events:
+                yield {"type": "event", **self._event_record(row, with_submission=True)}
 
     def review_queue(self, *, viewer_actor: str, viewer_role: str) -> list[dict[str, Any]]:
         """复核队列：返回待审且本角色尚未签署、本人也未审过的全文。"""
