@@ -1,5 +1,5 @@
 <#
-Prepare a thin pack: install Python dependencies, then check R/Seurat.
+Prepare an online package: install Python dependencies, then check R/Seurat.
 
 This does not install R itself (needs admin). It prints the commands instead.
 #>
