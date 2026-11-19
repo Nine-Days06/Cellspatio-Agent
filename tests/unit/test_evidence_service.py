@@ -307,7 +307,26 @@ def test_events_returns_review_capability_for_current_viewer(app, client: TestCl
     payload = client.get(url, headers=_headers(domain_token)).json()
     assert payload["review"] == {
         "role": ROLE_DOMAIN,
-        "actions": [ACTION_DOMAIN_PASS, ACTION_DOMAIN_NEEDS_CHANGES, ACTION_DOMAIN_REJECT],
+        "actions": [
+            {
+                "id": ACTION_DOMAIN_PASS,
+                "kind": "pass",
+                "requires_checklist": True,
+                "requires_reason": False,
+            },
+            {
+                "id": ACTION_DOMAIN_NEEDS_CHANGES,
+                "kind": "needs_changes",
+                "requires_checklist": False,
+                "requires_reason": True,
+            },
+            {
+                "id": ACTION_DOMAIN_REJECT,
+                "kind": "reject",
+                "requires_checklist": False,
+                "requires_reason": True,
+            },
+        ],
         "blocked_reason": None,
         "blocked_code": None,
         "checklists": {ROLE_DOMAIN: list(DOMAIN_CHECKLIST)},
@@ -581,13 +600,18 @@ def test_client_upload_and_citation_use_real_http_path(app, client: TestClient):
 
 
 def test_review_ui_is_served_and_checklists_come_from_governance(app, client: TestClient):
-    """复核页可访问；清单端点需登录且与治理层常量一致。"""
+    """复核页可访问；页面只渲染服务端下发的动作规格与阻断文案。"""
     page = client.get("/review/")
     assert page.status_code == 200
     assert "公共证据" in page.text
     assert "登录" in page.text
-    assert client.get("/review/review.js").status_code == 200
+    review_js = client.get("/review/review.js")
+    assert review_js.status_code == 200
+    assert 'blocked_code === "self_review"' not in review_js.text
+    assert "requires_checklist" in review_js.text
+    assert 'endsWith("_pass")' not in review_js.text
 
+    # 端点保留给直接调用方；复核页本身不再请求它。
     assert client.get("/api/public/evidence/checklists").status_code == 401
     _account(app, "ui-contributor", (ROLE_CONTRIBUTOR,))
     _account(app, "ui-domain", (ROLE_DOMAIN,))

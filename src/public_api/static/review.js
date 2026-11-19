@@ -578,21 +578,16 @@ function reviewForm() {
   }
   const reason = el("textarea", { placeholder: "要求补充或拒绝时必须填写具体原因" });
 
-  const actionKind = (action) => {
-    if (action.endsWith("_pass")) return "pass";
-    if (action.endsWith("_needs_changes")) return "needs";
-    if (action.endsWith("_reject")) return "reject";
-    return "other";
-  };
-  const BUTTON_LABELS = { pass: "通过", needs: "要求补充", reject: "拒绝" };
+  const BUTTON_LABELS = { pass: "通过", needs_changes: "要求补充", reject: "拒绝" };
 
   const controls = [];
-  const submit = async (action, kind) => {
-    const result = { action };
-    if (kind === "pass") {
+  const submit = async (spec) => {
+    const result = { action: spec.id };
+    if (spec.requires_checklist) {
       if (boxes.some((box) => !box.checked)) return toast("请先勾选全部清单项。");
       result.checklist = Object.fromEntries(boxes.map((box) => [box.dataset.check, true]));
-    } else if (kind === "needs" || kind === "reject") {
+    }
+    if (spec.requires_reason) {
       if (!reason.value.trim()) return toast("要求补充或拒绝必须填写原因。");
       result.reason = reason.value.trim();
     }
@@ -609,25 +604,27 @@ function reviewForm() {
     } catch (error) {
       toast(error.message);
     } finally {
-      controls.forEach(({ button }) => (button.disabled = false));
+      update();
     }
   };
 
-  for (const action of actions) {
-    const kind = actionKind(action);
+  for (const spec of actions) {
+    const kind = spec.kind;
     const button = el("button", {
       type: "button",
       class: kind === "pass" ? "pass" : kind === "reject" ? "danger" : "",
-      text: BUTTON_LABELS[kind] || ACTION_LABELS[action] || action,
+      text: BUTTON_LABELS[kind] || ACTION_LABELS[spec.id] || spec.id,
     });
-    if (kind === "pass") button.disabled = true;
-    button.addEventListener("click", () => submit(action, kind));
-    controls.push({ kind, button });
+    if (spec.requires_checklist) button.disabled = true;
+    button.addEventListener("click", () => submit(spec));
+    controls.push({ spec, button });
   }
 
   const update = () => {
     for (const control of controls) {
-      if (control.kind === "pass") control.button.disabled = boxes.some((box) => !box.checked);
+      if (control.spec.requires_checklist) {
+        control.button.disabled = boxes.some((box) => !box.checked);
+      }
     }
   };
   boxes.forEach((box) => box.addEventListener("change", update));
@@ -642,9 +639,7 @@ function reviewForm() {
 }
 
 function noticeText() {
-  const blocked = state.review?.blocked_reason;
-  if (state.review?.blocked_code === "self_review") return "你已复核过该提交。";
-  return blocked || "该提交不在当前角色的待审范围。";
+  return state.review?.blocked_reason || "该提交不在当前角色的待审范围。";
 }
 
 function eventList() {

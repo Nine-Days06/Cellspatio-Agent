@@ -40,9 +40,9 @@ from src.evidence.review_protocol import (
     STATE_PENDING,
     STATE_REJECTED,
     STATE_WITHDRAWN,
-    next_state,
     queue_eligible,
     review_decision,
+    withdraw_decision,
 )
 from src.evidence.schema import SCHEMA_VERSION, EvidenceCard, validate_card
 
@@ -57,7 +57,11 @@ __all__ = [
     "ACTION_SUBMIT",
     "ACTION_WITHDRAW",
     "COMPLIANCE_CHECKLIST",
+    "CONSENT_TEXT",
+    "CONSENT_TEXT_VERSION",
     "DOMAIN_CHECKLIST",
+    "MAX_DAILY_SUBMISSIONS",
+    "MAX_OPEN_SUBMISSIONS",
     "ROLE_COMPLIANCE",
     "ROLE_CONTRIBUTOR",
     "ROLE_DOMAIN",
@@ -66,6 +70,7 @@ __all__ = [
     "STATE_PENDING",
     "STATE_REJECTED",
     "STATE_WITHDRAWN",
+    "SUBMISSION_SCHEMA_VERSION",
     "GovernanceStore",
     "SubmissionEnvelope",
     "admission_problems",
@@ -469,21 +474,16 @@ class GovernanceStore:
     ) -> dict[str, Any]:
         """贡献者撤回自己的 accepted 提交，或合规复核者强制撤销。"""
         reason = _clean(reason)
-        if not _clean(actor_id):
-            raise EvidenceError("invalid_input", "actor_id 必填")
-        if not reason:
-            raise EvidenceError("invalid_input", "撤销必须填写原因")
         now = _now()
         with self._conn() as conn:
             row = self._row(conn, submission_id)
-            if row["status"] != STATE_ACCEPTED:
-                raise EvidenceError("invalid_state", "只有 accepted 提交可撤销")
-            if role == ROLE_CONTRIBUTOR:
-                if actor_id != row["contributor_id"]:
-                    raise EvidenceError("permission_denied", "只能撤回自己的提交")
-            elif role != ROLE_COMPLIANCE:
-                raise EvidenceError("permission_denied", "只有贡献者或合规复核者可撤销")
-            state = next_state(ACTION_WITHDRAW)
+            state = withdraw_decision(
+                status=row["status"],
+                contributor_id=row["contributor_id"],
+                actor_id=actor_id,
+                role=role,
+                reason=reason,
+            )
             conn.execute(
                 "UPDATE submissions SET status=?, withdrawn_at=? WHERE submission_id=?",
                 (state, now, submission_id),
