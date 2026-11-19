@@ -32,8 +32,6 @@ from src.evidence.review_protocol import (
     ACTION_WITHDRAW,
     COMPLIANCE_CHECKLIST,
     DOMAIN_CHECKLIST,
-    PASS_ACTIONS,
-    REVIEW_ACTIONS,
     ROLE_COMPLIANCE,
     ROLE_CONTRIBUTOR,
     ROLE_DOMAIN,
@@ -42,9 +40,9 @@ from src.evidence.review_protocol import (
     STATE_PENDING,
     STATE_REJECTED,
     STATE_WITHDRAWN,
-    checklist_for_role,
     next_state,
     queue_eligible,
+    review_decision,
 )
 from src.evidence.schema import SCHEMA_VERSION, EvidenceCard, validate_card
 
@@ -177,13 +175,6 @@ def admission_problems(card: EvidenceCard) -> list[str]:
         if not _SOURCE_ID_RE.match(source_id):
             problems.append(f"来源 ID 格式不支持：{source_id}")
     return problems
-
-
-def _require_checklist(checklist: dict[str, Any], required: tuple[str, ...]) -> None:
-    """清单项必须全部为 true；缺项或 false 都拒绝。"""
-    failed = [name for name in required if checklist.get(name) is not True]
-    if failed:
-        raise EvidenceError("invalid_input", "复核清单未全部通过：" + "、".join(failed))
 
 
 class GovernanceStore:
@@ -419,18 +410,6 @@ class GovernanceStore:
             )
         return self.summary(submission_id)
 
-    def _check_distinct_signer(
-        self, conn: sqlite3.Connection, submission_id: str, actor_id: str, action: str
-    ) -> None:
-        """领域与合规签署人必须是不同 actor。"""
-        other = ACTION_COMPLIANCE_PASS if action == ACTION_DOMAIN_PASS else ACTION_DOMAIN_PASS
-        row = conn.execute(
-            "SELECT 1 FROM events WHERE submission_id=? AND action=? AND actor_id=?",
-            (submission_id, other, actor_id),
-        ).fetchone()
-        if row is not None:
-            raise EvidenceError("invalid_input", "同一 actor 不能同时签署领域与合规")
-
     def review(
         self,
         submission_id: str,
@@ -442,39 +421,27 @@ class GovernanceStore:
         reason: str | None = None,
     ) -> dict[str, Any]:
         """记录一次复核；两个 pass 到齐时自动转 accepted。"""
-        if not _clean(actor_id):
-            raise EvidenceError("invalid_input", "actor_id 必填")
-        if action not in REVIEW_ACTIONS:
-            raise EvidenceError("invalid_input", "未知审核动作")
-        if ACTION_ROLE[action] != role:
-            raise EvidenceError(
-                "permission_denied", f"动作 {action} 需要角色 {ACTION_ROLE[action]}"
-            )
         reason = _clean(reason)
         now = _now()
         with self._conn() as conn:
             row = self._row(conn, submission_id)
-            if row["status"] != STATE_PENDING:
-                raise EvidenceError("invalid_state", "只有 pending 提交可审核")
-            if actor_id == row["contributor_id"]:
-                raise EvidenceError("permission_denied", "贡献者不得审核自己的提交")
-            if action in PASS_ACTIONS:
-                required = checklist_for_role(role)
-                _require_checklist(checklist or {}, required)
-                self._check_distinct_signer(conn, submission_id, actor_id, action)
-                if conn.execute(
-                    "SELECT 1 FROM events WHERE submission_id=? AND action=?",
-                    (submission_id, action),
-                ).fetchone():
-                    raise EvidenceError("duplicate", "该角色已经通过")
-            elif not reason:
-                raise EvidenceError("invalid_input", "needs_changes/rejected 必须填写原因")
-            prior_actions = [
-                event["action"]
+            events = [
+                (event["actor_id"], event["action"])
                 for event in conn.execute(
-                    "SELECT action FROM events WHERE submission_id=?", (submission_id,)
+                    "SELECT actor_id, action FROM events WHERE submission_id=? ORDER BY id",
+                    (submission_id,),
                 )
             ]
+            state = review_decision(
+                status=row["status"],
+                contributor_id=row["contributor_id"],
+                actor_id=actor_id,
+                role=role,
+                action=action,
+                checklist=checklist,
+                reason=reason,
+                events=events,
+            )
             self._event(
                 conn,
                 submission_id,
@@ -486,7 +453,6 @@ class GovernanceStore:
                 row["card_sha256"],
                 now,
             )
-            state = next_state(action, prior_actions)
             conn.execute(
                 "UPDATE submissions SET status=?, accepted_at=? WHERE submission_id=?",
                 (state, now if state == STATE_ACCEPTED else None, submission_id),

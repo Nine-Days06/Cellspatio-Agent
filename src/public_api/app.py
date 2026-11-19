@@ -21,7 +21,6 @@ from src.evidence.accounts import AccountStore, public_user
 from src.evidence.contribution import build_envelope, preview_card
 from src.evidence.errors import ErrorKind, EvidenceError
 from src.evidence.governance import (
-    ACTION_ROLE,
     COMPLIANCE_CHECKLIST,
     DOMAIN_CHECKLIST,
     ROLE_COMPLIANCE,
@@ -30,6 +29,13 @@ from src.evidence.governance import (
     STATE_NEEDS_CHANGES,
     GovernanceStore,
     public_evidence_dir,
+)
+from src.evidence.review_protocol import (
+    action_role,
+    checklist_for_role,
+    reviewer_role,
+    viewer_access,
+    withdraw_role,
 )
 from src.evidence.schema import EvidenceCard
 
@@ -127,11 +133,10 @@ class WithdrawRequest(BaseModel):
 
 def _reviewer_role(user: dict[str, Any]) -> str:
     """取账号的复核角色；优先领域，其次合规。"""
-    if ROLE_DOMAIN in user["roles"]:
-        return ROLE_DOMAIN
-    if ROLE_COMPLIANCE in user["roles"]:
-        return ROLE_COMPLIANCE
-    raise EvidenceError("permission_denied", "只有复核者可读取未发布全文")
+    role = reviewer_role(user["roles"])
+    if role is None:
+        raise EvidenceError("permission_denied", "只有复核者可读取未发布全文")
+    return role
 
 
 _KIND_STATUS: dict[ErrorKind, int] = {
@@ -287,7 +292,7 @@ def create_public_app(data_root: str | Path) -> FastAPI:
         store: Store,
     ) -> dict[str, Any]:
         """记录领域或合规复核；动作与角色必须匹配。"""
-        role = ACTION_ROLE.get(body.action)
+        role = action_role(body.action)
         if role is None:
             raise EvidenceError("invalid_input", "未知审核动作")
         if role not in user["roles"]:
@@ -310,12 +315,11 @@ def create_public_app(data_root: str | Path) -> FastAPI:
     ) -> dict[str, Any]:
         """贡献者撤回自己的提交，或合规复核者强制撤销。"""
         summary = store.summary(evidence_id)
-        if user["id"] == summary["contributor_id"]:
-            role = ROLE_CONTRIBUTOR
-        elif ROLE_COMPLIANCE in user["roles"]:
-            role = ROLE_COMPLIANCE
-        else:
-            raise EvidenceError("permission_denied", "只能撤回自己的提交")
+        role = withdraw_role(
+            actor_id=user["id"],
+            contributor_id=summary["contributor_id"],
+            roles=user["roles"],
+        )
         return store.withdraw(evidence_id, actor_id=user["id"], role=role, reason=body.reason)
 
     @app.get("/api/public/evidence/search")
@@ -357,8 +361,27 @@ def create_public_app(data_root: str | Path) -> FastAPI:
         user: Reviewer,
         store: Store,
     ) -> dict[str, Any]:
-        """复核者查看完整审计事件。"""
-        return {"events": store.events(evidence_id)}
+        """复核者查看审计事件，并一次返回当前查看者的复核能力。"""
+        role = _reviewer_role(user)
+        summary = store.summary(evidence_id)
+        records = store.events(evidence_id)
+        access = viewer_access(
+            status=summary["status"],
+            contributor_id=summary["contributor_id"],
+            viewer_actor=user["id"],
+            viewer_role=role,
+            events=[(event["actor_id"], event["action"]) for event in records],
+        )
+        return {
+            "events": records,
+            "review": {
+                "role": role,
+                "actions": list(access.actions),
+                "blocked_reason": access.blocked_reason,
+                "blocked_code": access.blocked_code,
+                "checklists": {role: list(checklist_for_role(role))},
+            },
+        }
 
     @app.get("/api/public/evidence/{evidence_id}")
     def get_evidence(

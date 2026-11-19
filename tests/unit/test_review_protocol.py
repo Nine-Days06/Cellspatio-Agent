@@ -13,6 +13,7 @@ from src.evidence.review_protocol import (
     checklist_for_role,
     next_state,
     queue_eligible,
+    review_decision,
     reviewer_role,
     viewer_access,
     withdraw_role,
@@ -125,17 +126,25 @@ def test_viewer_access_returns_role_specific_actions():
 
 
 @pytest.mark.parametrize(
-    ("kwargs", "reason"),
+    ("kwargs", "reason", "code"),
     [
-        ({"viewer_role": ROLE_CONTRIBUTOR}, "当前账号没有复核角色。"),
-        ({"status": "accepted"}, "该提交已结束审核。"),
-        ({"contributor_id": "dora"}, "贡献者不得审核自己的提交"),
-        ({"events": (("sam", "domain_pass"),)}, "本角色已签署，等待另一角色复核。"),
-        ({"events": (("dora", "domain_pass"),)}, "本角色已签署，等待另一角色复核。"),
-        ({"events": (("dora", "compliance_pass"),)}, "你已复核过该提交。"),
+        ({"viewer_role": ROLE_CONTRIBUTOR}, "当前账号没有复核角色。", "no_role"),
+        ({"status": "accepted"}, "该提交已结束审核。", "finished"),
+        ({"contributor_id": "dora"}, "贡献者不得审核自己的提交", "self_review"),
+        (
+            {"events": (("sam", "domain_pass"),)},
+            "本角色已签署，等待另一角色复核。",
+            "role_signed",
+        ),
+        (
+            {"events": (("dora", "domain_pass"),)},
+            "本角色已签署，等待另一角色复核。",
+            "role_signed",
+        ),
+        ({"events": (("dora", "compliance_pass"),)}, "你已复核过该提交。", "already_reviewed"),
     ],
 )
-def test_viewer_access_blocked_reasons(kwargs, reason):
+def test_viewer_access_blocked_reasons(kwargs, reason, code):
     """阻断原因按现有页面顺序：角色、状态、自审、本角色已签、本人已审。"""
     base = {
         "status": "pending",
@@ -147,6 +156,7 @@ def test_viewer_access_blocked_reasons(kwargs, reason):
     access = viewer_access(**{**base, **kwargs})
     assert access.actions == ()
     assert access.blocked_reason == reason
+    assert access.blocked_code == code
 
 
 def test_reviewer_role_prefers_domain():
@@ -172,3 +182,95 @@ def test_withdraw_role_derivation():
         withdraw_role(actor_id="cara", contributor_id="alice", roles=(ROLE_DOMAIN,))
     assert denied.value.kind == "permission_denied"
     assert "只能撤回自己的提交" in str(denied.value)
+
+
+def _checks(role: str) -> dict[str, bool]:
+    """该角色清单全部通过。"""
+    return {name: True for name in checklist_for_role(role)}
+
+
+def test_review_decision_returns_next_state():
+    """纯规则校验通过时给出与状态机一致的新状态。"""
+    base = {
+        "status": "pending",
+        "contributor_id": "alice",
+        "actor_id": "dora",
+        "role": ROLE_DOMAIN,
+        "action": "domain_pass",
+        "checklist": _checks(ROLE_DOMAIN),
+        "reason": None,
+        "events": (),
+    }
+    assert review_decision(**base) == "pending"
+    assert (
+        review_decision(
+            **{
+                **base,
+                "actor_id": "cara",
+                "role": ROLE_COMPLIANCE,
+                "action": "compliance_pass",
+                "checklist": _checks(ROLE_COMPLIANCE),
+                "events": (("dora", "domain_pass"),),
+            }
+        )
+        == "accepted"
+    )
+
+
+@pytest.mark.parametrize(
+    ("overrides", "kind", "message"),
+    [
+        ({"status": "accepted"}, "invalid_state", "只有 pending"),
+        ({"actor_id": "alice"}, "permission_denied", "不得审核自己"),
+        (
+            {"events": (("dora", "domain_pass"),)},
+            "duplicate",
+            "该角色已经通过",
+        ),
+        (
+            {"checklist": {"method_complete": True}},
+            "invalid_input",
+            "未全部通过",
+        ),
+        (
+            {"action": "domain_needs_changes", "checklist": None, "reason": None},
+            "invalid_input",
+            "必须填写原因",
+        ),
+        ({"action": "withdraw"}, "invalid_input", "未知审核动作"),
+        ({"role": ROLE_COMPLIANCE}, "permission_denied", "需要角色"),
+    ],
+)
+def test_review_decision_blocks_existing_review_errors(overrides, kind, message):
+    """状态、自审、重复签署、清单、原因、动作与角色校验都留在协议内。"""
+    base = {
+        "status": "pending",
+        "contributor_id": "alice",
+        "actor_id": "dora",
+        "role": ROLE_DOMAIN,
+        "action": "domain_pass",
+        "checklist": _checks(ROLE_DOMAIN),
+        "reason": None,
+        "events": (),
+    }
+    with pytest.raises(EvidenceError) as blocked:
+        review_decision(**{**base, **overrides})
+    assert blocked.value.kind == kind
+    assert message in str(blocked.value)
+
+
+def test_review_decision_rejects_same_actor_signing_both_roles():
+    """双签必须由不同 actor 完成，校验在协议内。"""
+    with pytest.raises(EvidenceError) as blocked:
+        review_decision(
+            status="pending",
+            contributor_id="alice",
+            actor_id="dora",
+            role=ROLE_COMPLIANCE,
+            action="compliance_pass",
+            checklist=_checks(ROLE_COMPLIANCE),
+            reason=None,
+            events=(("dora", "domain_pass"),),
+        )
+    assert blocked.value.kind == "invalid_input"
+    assert "不能同时签署" in str(blocked.value)
