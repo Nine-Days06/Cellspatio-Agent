@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react'
 import { Button } from '@/components/ui/button'
 import { Textarea } from '@/components/ui/textarea'
 import { executePca, fetchPca, pcaDiagnosticPath } from '@/lib/api'
+import { evaluateStageGate, isAttemptedByBinding } from '@/lib/stageGate'
 import type { PcaState } from '@/lib/types'
 import { PcaDimensions } from '@/components/PcaDimensions'
 import { ClusterReview } from '@/components/ClusterReview'
@@ -79,8 +80,16 @@ export function PcaReview({ sessionId, runId, filterAttemptId, revision, onRunni
     }
   }
 
-  const attempted = state?.attempts.some((a) => a.binding_sha256 === state.binding_sha256) ?? false
-  const canExecute = !!state?.binding_sha256 && !busy && !running && !attempted && state.blocked.length === 0 && reason.trim().length > 0
+  const attempted = isAttemptedByBinding(state?.attempts ?? [], state?.binding_sha256)
+  const gate = evaluateStageGate({
+    stage: 'pca',
+    bindingExists: !!state?.binding_sha256,
+    bindingAttempted: attempted,
+    blocked: state?.blocked ?? [],
+    busy,
+    running,
+    reasonProvided: reason.trim().length > 0,
+  })
   return <section aria-label="归一化与 PCA 独立授权" className="analysis-stage space-y-3">
     <h4 className="font-medium">归一化与 PCA · 独立授权</h4>
     {error && <p role="alert">{error}</p>}
@@ -91,7 +100,7 @@ export function PcaReview({ sessionId, runId, filterAttemptId, revision, onRunni
     {state?.source_summary && <p>父过滤：{state.source_summary.cells.toLocaleString()} 细胞 · {state.source_summary.features.toLocaleString()} features</p>}
     {state && <details><summary>完整固定协议与绑定</summary><pre className="whitespace-pre-wrap break-all text-xs">{JSON.stringify(state.protocol, null, 2)}</pre><code className="block break-all text-xs">工具 {state.tool_version} · 父过滤 {filterAttemptId} · 绑定 {state.binding_sha256 ?? '不可授权'}</code></details>}
     <label className="block space-y-1"><span>PCA 授权依据（仅本地记录）</span><Textarea maxLength={2000} value={reason} disabled={busy || running || attempted || !state} onChange={(event) => setReason(event.target.value)} /></label>
-    <Button type="button" disabled={!canExecute} onClick={() => void execute()}>{clusterRunning.length > 0 && !pcaRunning ? '聚类或 marker 运行中…' : running ? 'PCA 运行中…' : '独立授权并执行归一化与 PCA'}</Button>
+    <span title={gate.blockerText || undefined}><Button type="button" disabled={!gate.allowed} onClick={() => void execute()}>{clusterRunning.length > 0 && !pcaRunning ? '聚类或 marker 运行中…' : running ? 'PCA 运行中…' : '独立授权并执行归一化与 PCA'}</Button></span>
     <p className="text-xs text-muted-foreground">授权不是科学认可；刷新不执行，失败和中断不自动重跑。原始 counts 与父 QC 不改写；诊断图仅本地读取。</p>
     </details>
     {running && <p role="status">{clusterRunning.length > 0 && !pcaRunning ? '聚类或 marker 运行中；该 run 的阈值、过滤与维度记录暂不可用。' : 'PCA 运行中；该 run 的阈值与过滤修改暂不可用。'}</p>}

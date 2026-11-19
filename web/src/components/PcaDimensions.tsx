@@ -3,6 +3,7 @@ import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Textarea } from '@/components/ui/textarea'
 import { fetchPcaDimensions, recordPcaDimensions } from '@/lib/api'
+import { evaluateStageGate } from '@/lib/stageGate'
 import type { PcaDimensionsState } from '@/lib/types'
 
 /** 人工选择是独立事实；本控件没有分析执行入口。 */
@@ -59,7 +60,15 @@ export function PcaDimensions({ sessionId, runId, filterAttemptId, attemptId, re
 
   const k = Number(nDims)
   const valid = /^\d+$/.test(nDims) && Number.isInteger(k) && k >= 1 && k <= (state?.evidence?.actual_pcs ?? 0)
-  const available = !!state?.binding_sha256 && !busy && !disabled && state.blocked.length === 0
+  const gate = evaluateStageGate({
+    stage: 'pca-dimensions',
+    bindingExists: !!state?.binding_sha256,
+    dimensionsValid: valid,
+    disabled,
+    blocked: state?.blocked ?? [],
+    busy,
+    reasonProvided: reason.trim().length > 0,
+  })
   return <section aria-label="PCA 维度选择记录" className="analysis-stage space-y-3">
     <h5 className="font-medium">记录下游维度选择 · 不执行</h5>
     <p>仅支持手工前缀 1..k，无默认或自动推荐。实际 PCs 是证据范围，不是科学适用性保证。</p>
@@ -74,11 +83,11 @@ export function PcaDimensions({ sessionId, runId, filterAttemptId, attemptId, re
       <p className="whitespace-pre-wrap">依据：{state.current.reason}</p>
     </div> : <p role="status">暂无当前有效维度记录</p>}
     <details open={!state?.current}><summary>填写或修改维度选择</summary>
-    <label className="block space-y-1"><span>维度数 k（手工填写）</span><Input type="number" min={1} max={state?.evidence?.actual_pcs} step={1} value={nDims} disabled={!available} onChange={(event) => setNDims(event.target.value)} /></label>
+    <label className="block space-y-1"><span>维度数 k（手工填写）</span><Input type="number" min={1} max={state?.evidence?.actual_pcs} step={1} value={nDims} disabled={!gate.available} onChange={(event) => setNDims(event.target.value)} /></label>
     {valid && <p className="break-words">将记录：[{Array.from({ length: k }, (_, i) => i + 1).join(', ')}]</p>}
-    <label className="block space-y-1"><span>维度选择依据（仅本地）</span><Textarea maxLength={2000} value={reason} disabled={!available} onChange={(event) => setReason(event.target.value)} /></label>
+    <label className="block space-y-1"><span>维度选择依据（仅本地）</span><Textarea maxLength={2000} value={reason} disabled={!gate.available} onChange={(event) => setReason(event.target.value)} /></label>
     <div className="flex flex-wrap gap-2">
-      <Button type="button" disabled={!available || !valid || !reason.trim()} onClick={() => void record()}>记录选择（不执行）</Button>
+      <span title={gate.blockerText || undefined}><Button type="button" disabled={!gate.allowed} onClick={() => void record()}>记录选择（不执行）</Button></span>
     </div>
     </details>
     <Button type="button" variant="outline" disabled={busy} onClick={() => void refresh()}>只读刷新维度记录</Button>
