@@ -622,9 +622,7 @@ function reviewForm() {
 
   const update = () => {
     for (const control of controls) {
-      if (control.spec.requires_checklist) {
-        control.button.disabled = boxes.some((box) => !box.checked);
-      }
+      control.button.disabled = control.spec.requires_checklist && boxes.some((box) => !box.checked);
     }
   };
   boxes.forEach((box) => box.addEventListener("change", update));
