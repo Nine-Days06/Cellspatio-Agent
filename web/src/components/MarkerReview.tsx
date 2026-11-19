@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react'
 import { Button } from '@/components/ui/button'
 import { Textarea } from '@/components/ui/textarea'
 import { executeMarkers, fetchClusterAcceptance, fetchMarkerCandidates, fetchMarkers, markerDiagnosticPath, recordClusterAcceptance, recordClusterRejection, reviewMarkers } from '@/lib/api'
+import { evaluateStageGate, isAttemptedByBinding } from '@/lib/stageGate'
 import type { ClusterAcceptanceState, MarkerPage, MarkerState } from '@/lib/types'
 import { AnalysisImage } from '@/components/AnalysisImage'
 
@@ -166,21 +167,51 @@ export function MarkerReview({ sessionId, runId, filterAttemptId, pcaAttemptId, 
     } finally { if (ticket === generation.current) setBusy(false) }
   }
 
-  const canAccept = !!review?.binding_sha256 && !review.current && !review.blocked.length && !busy && !running && !disabled
-  const canRejectCluster = !!review?.binding_sha256 && !review.blocked.length && !busy && !running && !disabled
-  const attempted = state?.attempts.some((a) => a.binding_sha256 === state.binding_sha256) ?? false
-  const canExecute = !!state?.binding_sha256 && !!state.review && !state.blocked.length && !attempted && !busy && !running && !disabled
+  const reviewGateFacts = {
+    disabled,
+    blocked: review?.blocked ?? [],
+    busy,
+    running,
+    reasonProvided: reviewReason.trim().length > 0,
+  }
+  const acceptGate = evaluateStageGate({
+    ...reviewGateFacts,
+    stage: 'marker',
+    action: 'accept',
+    bindingExists: !!review?.binding_sha256,
+    hasClusterAcceptance: !!review?.current,
+    accepted,
+  })
+  const rejectGate = evaluateStageGate({
+    ...reviewGateFacts,
+    stage: 'marker',
+    action: 'reject',
+    bindingExists: !!review?.binding_sha256,
+  })
+  const attempted = isAttemptedByBinding(state?.attempts ?? [], state?.binding_sha256)
+  const executeGate = evaluateStageGate({
+    stage: 'marker',
+    action: 'execute',
+    bindingExists: !!state?.binding_sha256,
+    hasClusterAcceptance: !!state?.review,
+    disabled,
+    bindingAttempted: attempted,
+    blocked: state?.blocked ?? [],
+    busy,
+    running,
+    reasonProvided: reason.trim().length > 0,
+  })
   return <section aria-label="聚类接受与 marker 独立授权" className="analysis-stage space-y-3">
     <h6 className="font-medium">探索性聚类接受 → marker · 两次独立记录</h6>
     <p>接受只记录本地事实，不执行 R，也不代表科学认可。marker 比较每簇与其余所有细胞；不含细胞类型注释。</p>
     {error && <p role="alert">{error}</p>}
     {review?.blocked.map((text) => <p role="alert" key={text}>{text}</p>)}
     <details open={!review?.current}><summary>探索性聚类接受记录</summary>
-    <label className="flex items-start gap-2"><input type="checkbox" checked={accepted} disabled={!canAccept} onChange={(event) => setAccepted(event.target.checked)} /><span>我接受当前探索性聚类继续寻找候选 marker（不是科学认可）</span></label>
-    <label className="block space-y-1"><span>探索性聚类接受依据 / 拒绝原因（仅本地）</span><Textarea maxLength={2000} disabled={!canRejectCluster} value={reviewReason} onChange={(event) => setReviewReason(event.target.value)} /></label>
+    <label className="flex items-start gap-2"><input type="checkbox" checked={accepted} disabled={!acceptGate.available} onChange={(event) => setAccepted(event.target.checked)} /><span>我接受当前探索性聚类继续寻找候选 marker（不是科学认可）</span></label>
+    <label className="block space-y-1"><span>探索性聚类接受依据 / 拒绝原因（仅本地）</span><Textarea maxLength={2000} disabled={!rejectGate.available} value={reviewReason} onChange={(event) => setReviewReason(event.target.value)} /></label>
     <div className="flex flex-wrap gap-2">
-      <Button disabled={!canAccept || !accepted || !reviewReason.trim()} onClick={() => void submit('accept')}>仅保存探索性聚类接受</Button>
-      <Button variant="outline" disabled={!canRejectCluster || !reviewReason.trim()} onClick={() => void submit('reject')}>拒绝此聚类</Button>
+      <span title={acceptGate.blockerText || undefined}><Button disabled={!acceptGate.allowed} onClick={() => void submit('accept')}>仅保存探索性聚类接受</Button></span>
+      <span title={rejectGate.blockerText || undefined}><Button variant="outline" disabled={!rejectGate.allowed} onClick={() => void submit('reject')}>拒绝此聚类</Button></span>
     </div>
     {review?.latest_decision?.decision === 'rejected' && <p role="status">最新记录：已拒绝 · {review.latest_decision.reason}{review.latest_decision.invalidated_reason ? ` · ${review.latest_decision.invalidated_reason}` : ''}</p>}
     {!!review?.history.length && <details><summary>本地聚类接受历史（不进入对话或知识库）</summary>{review.history.map((r) => <div className="break-words py-1" key={r.review_id}><p>{r.reason}</p><p className="text-xs">{r.created_at} · {r.invalidated_reason ?? '当前新授权依据'}</p></div>)}</details>}
@@ -191,8 +222,8 @@ export function MarkerReview({ sessionId, runId, filterAttemptId, pcaAttemptId, 
     <p>固定 Seurat + Presto 1.1.0 全细胞 Wilcoxon：min.pct 0.01、|log2FC| ≥ 0.1、raw p &lt; 0.01，双向候选；Bonferroni 按全部 RNA 基因校正。seed 42、单线程、最多 300 秒；不会抽样、调参或后备。</p>
     <p className="text-xs text-muted-foreground">至少两簇，每簇及其余各至少 3 细胞。重复使用聚类数据的 p 值仅供探索，不能替代生物学重复。正向每簇 top 5 用于点图；无候选不是检验失败。</p>
     {state && <details><summary>marker 固定协议与授权绑定</summary><pre className="whitespace-pre-wrap break-all text-xs">{JSON.stringify(state.protocol, null, 2)}</pre><code className="block break-all text-xs">{state.binding_sha256 ?? '不可新授权'}</code></details>}
-    <label className="block space-y-1"><span>marker 授权依据（仅本地）</span><Textarea maxLength={2000} disabled={!canExecute} value={reason} onChange={(event) => setReason(event.target.value)} /></label>
-    <Button disabled={!canExecute || !reason.trim()} onClick={() => void submit('execute')}>{running ? 'marker 运行中…' : '独立授权并执行 marker'}</Button>
+    <label className="block space-y-1"><span>marker 授权依据（仅本地）</span><Textarea maxLength={2000} disabled={!executeGate.available} value={reason} onChange={(event) => setReason(event.target.value)} /></label>
+    <span title={executeGate.blockerText || undefined}><Button disabled={!executeGate.allowed} onClick={() => void submit('execute')}>{running ? 'marker 运行中…' : '独立授权并执行 marker'}</Button></span>
     </details>
     <Button variant="outline" disabled={busy} onClick={() => void refresh()}>只读刷新 marker 与接受记录</Button>
     {running && <p role="status">marker 运行中；该 run 上游修改、再次接受与删除暂不可用。</p>}
