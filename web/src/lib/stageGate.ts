@@ -151,13 +151,18 @@ export function evaluateStageGate(input: StageGateInput): StageGateResult {
     return result(available, available && hasRequiredInput)
   }
 
-  add('missing-binding', !input.bindingExists)
-  add('disabled', input.disabled)
-  add('blocked', !unblocked)
-  add('invalid-dimensions', !input.dimensionsValid)
-  add('missing-reason', !input.reasonProvided)
-  const available = input.bindingExists && !input.disabled && idle && unblocked
-  return result(available, available && input.dimensionsValid && input.reasonProvided)
+  if (input.stage === 'pca-dimensions') {
+    add('missing-binding', !input.bindingExists)
+    add('disabled', input.disabled)
+    add('blocked', !unblocked)
+    add('invalid-dimensions', !input.dimensionsValid)
+    add('missing-reason', !input.reasonProvided)
+    const available = input.bindingExists && !input.disabled && idle && unblocked
+    return result(available, available && input.dimensionsValid && input.reasonProvided)
+  }
+
+  const unreachableStage: never = input
+  throw new Error(`未处理的阶段：${String(unreachableStage)}`)
 }
 
 export function isAttemptedByPreview(

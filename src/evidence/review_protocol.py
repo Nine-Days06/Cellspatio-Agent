@@ -75,6 +75,27 @@ def action_role(action: str) -> str | None:
     return ACTION_ROLE.get(action)
 
 
+def action_kind(action: str) -> str:
+    """复核动作的展示类别：pass / needs_changes / reject。"""
+    if action in PASS_ACTIONS:
+        return "pass"
+    if action in NEEDS_CHANGES_ACTIONS:
+        return "needs_changes"
+    if action in REJECT_ACTIONS:
+        return "reject"
+    raise EvidenceError("invalid_input", "未知审核动作")
+
+
+def action_spec(action: str) -> dict[str, Any]:
+    """下发给界面的动作规格：类别与提交必填项。"""
+    return {
+        "id": action,
+        "kind": action_kind(action),
+        "requires_checklist": action in PASS_ACTIONS,
+        "requires_reason": action in NEEDS_CHANGES_ACTIONS or action in REJECT_ACTIONS,
+    }
+
+
 def checklist_for_role(role: str) -> tuple[str, ...]:
     """角色必须全部勾选的清单键；无复核角色返回空元组。"""
     if role == ROLE_DOMAIN:
@@ -191,14 +212,14 @@ def viewer_access(
         return ReviewAccess((), "当前账号没有复核角色。", BLOCKED_NO_ROLE)
     if status != STATE_PENDING:
         return ReviewAccess((), "该提交已结束审核。", BLOCKED_FINISHED)
-    if contributor_id == viewer_actor:
-        return ReviewAccess((), "贡献者不得审核自己的提交", BLOCKED_SELF)
 
     prefix = "domain" if viewer_role == ROLE_DOMAIN else "compliance"
     pass_action = f"{prefix}_pass"
     records = list(events)
     if any(action == pass_action for _, action in records):
         return ReviewAccess((), "本角色已签署，等待另一角色复核。", BLOCKED_ROLE_SIGNED)
+    if contributor_id == viewer_actor:
+        return ReviewAccess((), "贡献者不得审核自己的提交", BLOCKED_SELF)
     if any(actor_id == viewer_actor for actor_id, _ in records):
         return ReviewAccess((), "你已复核过该提交。", BLOCKED_ALREADY_REVIEWED)
     return ReviewAccess(
@@ -214,3 +235,26 @@ def withdraw_role(*, actor_id: str, contributor_id: str, roles: Iterable[str]) -
     if ROLE_COMPLIANCE in set(roles):
         return ROLE_COMPLIANCE
     raise EvidenceError("permission_denied", "只能撤回自己的提交")
+
+
+def withdraw_decision(
+    *,
+    status: str,
+    contributor_id: str,
+    actor_id: str,
+    role: str,
+    reason: str | None,
+) -> str:
+    """校验一次撤销并返回应用后的状态；失败抛出既有类别的 `EvidenceError`。"""
+    if not str(actor_id or "").strip():
+        raise EvidenceError("invalid_input", "actor_id 必填")
+    if not str(reason or "").strip():
+        raise EvidenceError("invalid_input", "撤销必须填写原因")
+    if status != STATE_ACCEPTED:
+        raise EvidenceError("invalid_state", "只有 accepted 提交可撤销")
+    if role == ROLE_CONTRIBUTOR:
+        if actor_id != contributor_id:
+            raise EvidenceError("permission_denied", "只能撤回自己的提交")
+    elif role != ROLE_COMPLIANCE:
+        raise EvidenceError("permission_denied", "只有贡献者或合规复核者可撤销")
+    return next_state(ACTION_WITHDRAW)

@@ -32,6 +32,7 @@ from src.evidence.governance import (
 )
 from src.evidence.review_protocol import (
     action_role,
+    action_spec,
     checklist_for_role,
     reviewer_role,
     viewer_access,
@@ -376,7 +377,7 @@ def create_public_app(data_root: str | Path) -> FastAPI:
             "events": records,
             "review": {
                 "role": role,
-                "actions": list(access.actions),
+                "actions": [action_spec(action) for action in access.actions],
                 "blocked_reason": access.blocked_reason,
                 "blocked_code": access.blocked_code,
                 "checklists": {role: list(checklist_for_role(role))},

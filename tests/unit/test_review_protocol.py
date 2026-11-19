@@ -9,13 +9,16 @@ from src.evidence.review_protocol import (
     ROLE_COMPLIANCE,
     ROLE_CONTRIBUTOR,
     ROLE_DOMAIN,
+    action_kind,
     action_role,
+    action_spec,
     checklist_for_role,
     next_state,
     queue_eligible,
     review_decision,
     reviewer_role,
     viewer_access,
+    withdraw_decision,
     withdraw_role,
 )
 
@@ -30,6 +33,30 @@ def test_action_role_mapping_is_fixed():
     assert action_role("compliance_reject") == ROLE_COMPLIANCE
     assert action_role("submit") is None
     assert action_role("withdraw") is None
+
+
+def test_action_spec_describes_kind_and_required_inputs():
+    """复核动作由服务端下发类别与必填项，界面不再按名称推断。"""
+    assert action_kind("domain_pass") == "pass"
+    assert action_kind("compliance_pass") == "pass"
+    assert action_kind("domain_needs_changes") == "needs_changes"
+    assert action_kind("compliance_reject") == "reject"
+    assert action_spec("domain_pass") == {
+        "id": "domain_pass",
+        "kind": "pass",
+        "requires_checklist": True,
+        "requires_reason": False,
+    }
+    assert action_spec("compliance_needs_changes") == {
+        "id": "compliance_needs_changes",
+        "kind": "needs_changes",
+        "requires_checklist": False,
+        "requires_reason": True,
+    }
+    assert action_spec("domain_reject")["requires_reason"] is True
+    with pytest.raises(EvidenceError) as unknown:
+        action_spec("submit")
+    assert unknown.value.kind == "invalid_input"
 
 
 def test_checklist_for_role_returns_existing_keys():
@@ -141,11 +168,16 @@ def test_viewer_access_returns_role_specific_actions():
             "本角色已签署，等待另一角色复核。",
             "role_signed",
         ),
+        (
+            {"contributor_id": "dora", "events": (("sam", "domain_pass"),)},
+            "本角色已签署，等待另一角色复核。",
+            "role_signed",
+        ),
         ({"events": (("dora", "compliance_pass"),)}, "你已复核过该提交。", "already_reviewed"),
     ],
 )
 def test_viewer_access_blocked_reasons(kwargs, reason, code):
-    """阻断原因按现有页面顺序：角色、状态、自审、本角色已签、本人已审。"""
+    """阻断原因按现有页面顺序：角色、状态、本角色已签、自审、本人已审。"""
     base = {
         "status": "pending",
         "contributor_id": "alice",
@@ -182,6 +214,32 @@ def test_withdraw_role_derivation():
         withdraw_role(actor_id="cara", contributor_id="alice", roles=(ROLE_DOMAIN,))
     assert denied.value.kind == "permission_denied"
     assert "只能撤回自己的提交" in str(denied.value)
+
+
+def test_withdraw_decision_keeps_existing_errors_and_transition():
+    """撤回校验只在协议内：本人或合规强撤，状态与角色错误沿用现有文案。"""
+    base = {
+        "status": "accepted",
+        "contributor_id": "alice",
+        "actor_id": "alice",
+        "role": ROLE_CONTRIBUTOR,
+        "reason": "发现方法错误",
+    }
+    assert withdraw_decision(**base) == "withdrawn"
+    assert withdraw_decision(**{**base, "actor_id": "carl", "role": ROLE_COMPLIANCE}) == "withdrawn"
+
+    cases = [
+        ({"status": "pending"}, "invalid_state", "只有 accepted 提交可撤销"),
+        ({"actor_id": "carl", "role": ROLE_CONTRIBUTOR}, "permission_denied", "只能撤回自己的提交"),
+        ({"actor_id": "dora", "role": ROLE_DOMAIN}, "permission_denied", "只有贡献者或合规"),
+        ({"reason": "  "}, "invalid_input", "撤销必须填写原因"),
+        ({"actor_id": " "}, "invalid_input", "actor_id 必填"),
+    ]
+    for overrides, kind, message in cases:
+        with pytest.raises(EvidenceError) as blocked:
+            withdraw_decision(**{**base, **overrides})
+        assert blocked.value.kind == kind
+        assert message in str(blocked.value)
 
 
 def _checks(role: str) -> dict[str, bool]:
