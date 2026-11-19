@@ -11,6 +11,7 @@ import json
 from datetime import datetime, timezone
 from typing import Any
 
+from src.evidence.errors import EvidenceError
 from src.evidence.governance import (
     CONSENT_TEXT,
     CONSENT_TEXT_VERSION,
@@ -54,9 +55,12 @@ def preview_card(
     revises_submission_id: str | None = None,
 ) -> dict[str, Any]:
     """生成完整贡献预览；隐私不合格直接拒绝，准入问题只标记不阻断。"""
-    validate_card(card)
+    try:
+        validate_card(card)
+    except ValueError as exc:
+        raise EvidenceError("invalid_input", f"证据卡校验失败：{exc}") from exc
     if not contributor_id.strip():
-        raise ValueError("预览需要 contributor_id")
+        raise EvidenceError("invalid_input", "预览需要 contributor_id")
     card_json = card.model_dump_json()
     problems = admission_problems(card)
     preview: dict[str, Any] = {
@@ -93,21 +97,21 @@ def preview_card(
 def build_envelope(preview: dict[str, Any], *, consent: bool) -> SubmissionEnvelope:
     """把预览转成提交信封；必须显式同意且预览内容未被篡改。"""
     if not consent:
-        raise ValueError("必须显式同意才能提交")
+        raise EvidenceError("invalid_input", "必须显式同意才能提交")
     if preview.get("schema_version") != PREVIEW_SCHEMA_VERSION:
-        raise ValueError(f"预览 schema_version 必须是 {PREVIEW_SCHEMA_VERSION}")
+        raise EvidenceError("invalid_input", f"预览 schema_version 必须是 {PREVIEW_SCHEMA_VERSION}")
     if preview.get("privacy") != "passed":
-        raise ValueError("预览未通过隐私校验")
+        raise EvidenceError("invalid_input", "预览未通过隐私校验")
     if _payload_sha256(preview) != preview.get("preview_sha256"):
-        raise ValueError("预览内容已被修改，请重新生成预览")
+        raise EvidenceError("invalid_input", "预览内容已被修改，请重新生成预览")
     will_send = preview.get("will_send")
     if not isinstance(will_send, dict):
-        raise ValueError("预览缺少 will_send")
+        raise EvidenceError("invalid_input", "预览缺少 will_send")
     submission = will_send.get("submission")
     card_payload = will_send.get("card")
     if not isinstance(submission, dict) or not isinstance(card_payload, dict):
-        raise ValueError("预览缺少 submission 或 card")
+        raise EvidenceError("invalid_input", "预览缺少 submission 或 card")
     card = EvidenceCard.model_validate(card_payload)
     if _sha256(card.model_dump_json()) != preview.get("card_sha256"):
-        raise ValueError("预览中的证据卡已被修改")
+        raise EvidenceError("invalid_input", "预览中的证据卡已被修改")
     return SubmissionEnvelope.model_validate({**submission, "card": card, "consent": True})

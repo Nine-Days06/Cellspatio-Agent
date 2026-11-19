@@ -13,6 +13,7 @@ from src.evidence.contribution import (
     build_envelope,
     preview_card,
 )
+from src.evidence.errors import EvidenceError
 from src.evidence.governance import (
     ACTION_COMPLIANCE_PASS,
     ACTION_DOMAIN_NEEDS_CHANGES,
@@ -23,7 +24,7 @@ from src.evidence.governance import (
     ROLE_CONTRIBUTOR,
     ROLE_DOMAIN,
 )
-from src.evidence.public_client import PublicEvidenceClient
+from src.evidence.public_client import PublicEvidenceClient, PublicEvidenceError
 from src.evidence.schema import (
     Claim,
     EvidenceCard,
@@ -186,6 +187,7 @@ def test_role_guards_self_review_and_duplicate_card(app, client: TestClient):
         headers=_headers(dual_token),
     )
     assert own_review.status_code == 403
+    assert own_review.json()["code"] == "permission_denied"
 
     no_role = client.post(
         f"/api/public/evidence/submissions/{evidence_id}/review",
@@ -207,6 +209,7 @@ def test_role_guards_self_review_and_duplicate_card(app, client: TestClient):
         headers=_headers(dual_token),
     )
     assert duplicate.status_code == 409
+    assert duplicate.json()["code"] == "duplicate"
 
 
 def test_reviewer_queue_unpublished_access_and_events(app, client: TestClient):
@@ -435,6 +438,10 @@ def test_client_upload_and_citation_use_real_http_path(app, client: TestClient):
         assert evidence["status"] == "pending"
         assert public.search("QC")[0]["evidence_id"] == evidence_id
         assert public.citation(evidence_id)["claim"]
+        with pytest.raises(PublicEvidenceError) as missing:
+            public.citation("evs-missing")
+        assert missing.value.status == 404
+        assert missing.value.code == "submission_not_found"
     finally:
         public.close()
 
@@ -461,6 +468,55 @@ def test_review_ui_is_served_and_checklists_come_from_governance(app, client: Te
         "/api/public/evidence/queue", headers=_headers(_login(client, "ui-domain"))
     ).json()
     assert queue["role"] == ROLE_DOMAIN
+
+
+def test_missing_submission_returns_structured_code(client: TestClient):
+    """缺失提交返回 404，并携带稳定 code。"""
+    response = client.get("/api/public/evidence/evs-missing")
+    assert response.status_code == 404
+    assert response.json()["code"] == "submission_not_found"
+
+
+def test_error_kinds_cover_validation_state_and_quota(app, client: TestClient):
+    """校验失败、状态冲突与配额都带稳定 code。"""
+    contributor = _account(app, "codes-contributor", (ROLE_CONTRIBUTOR,))
+    token = _login(client, "codes-contributor")
+
+    bad_card = _card("evc-codes-0")
+    bad_card = bad_card.model_copy(
+        update={
+            "license": bad_card.license.model_copy(update={"attribution": r"C:\secret\raw.h5ad"})
+        }
+    )
+    with pytest.raises(EvidenceError) as invalid:
+        preview_card(bad_card, contributor_id=contributor)
+    assert invalid.value.kind == "invalid_input"
+
+    preview = preview_card(_card("evc-codes-1"), contributor_id=contributor)
+    uploaded = client.post(
+        "/api/public/evidence/submissions",
+        json={"preview": preview, "consent": True},
+        headers=_headers(token),
+    )
+    assert uploaded.status_code == 200, uploaded.text
+    evidence_id = uploaded.json()["evidence_id"]
+    withdrawn = client.post(
+        f"/api/public/evidence/submissions/{evidence_id}/withdraw",
+        json={"reason": "测试"},
+        headers=_headers(token),
+    )
+    assert withdrawn.status_code == 409
+    assert withdrawn.json()["code"] == "invalid_state"
+
+    app.state.governance.max_daily_submissions = 0
+    quota_preview = preview_card(_card("evc-codes-2"), contributor_id=contributor)
+    quota = client.post(
+        "/api/public/evidence/submissions",
+        json={"preview": quota_preview, "consent": True},
+        headers=_headers(token),
+    )
+    assert quota.status_code == 400
+    assert quota.json()["code"] == "quota_exceeded"
 
 
 def test_contributor_browser_preview_mine_and_withdraw(app, client: TestClient):
@@ -538,7 +594,8 @@ def test_contributor_browser_preview_mine_and_withdraw(app, client: TestClient):
         },
         headers=_headers(_login(client, "web-contributor-2")),
     )
-    assert other.status_code == 409
+    assert other.status_code == 403
+    assert other.json()["code"] == "permission_denied"
 
     revised = client.post(
         "/api/public/evidence/preview",

@@ -19,6 +19,7 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
+from src.evidence.errors import EvidenceError
 from src.evidence.schema import SCHEMA_VERSION, EvidenceCard, validate_card
 
 SUBMISSION_SCHEMA_VERSION = "cellspatio-evidence-submission/1.0.0"
@@ -170,7 +171,7 @@ def _require_checklist(checklist: dict[str, Any], required: tuple[str, ...]) -> 
     """清单项必须全部为 true；缺项或 false 都拒绝。"""
     failed = [name for name in required if checklist.get(name) is not True]
     if failed:
-        raise ValueError("复核清单未全部通过：" + "、".join(failed))
+        raise EvidenceError("invalid_input", "复核清单未全部通过：" + "、".join(failed))
 
 
 class GovernanceStore:
@@ -211,7 +212,7 @@ class GovernanceStore:
             "SELECT * FROM submissions WHERE submission_id=?", (submission_id,)
         ).fetchone()
         if row is None:
-            raise ValueError("提交不存在")
+            raise EvidenceError("submission_not_found", "提交不存在")
         return row
 
     def _event(
@@ -246,12 +247,12 @@ class GovernanceStore:
     def _write_card(self, card: EvidenceCard, card_json: str, card_sha256: str) -> None:
         """卡副本只写一次；内容不一致说明 card_id 被复用。"""
         if not _ID_RE.match(card.card_id):
-            raise ValueError("card_id 只能包含字母、数字、点、下划线和短横线")
+            raise EvidenceError("invalid_input", "card_id 只能包含字母、数字、点、下划线和短横线")
         path = self.cards_dir / f"{card.card_id}.json"
         if path.exists():
             existing = hashlib.sha256(path.read_text(encoding="utf-8").encode("utf-8")).hexdigest()
             if existing != card_sha256:
-                raise ValueError("同一 card_id 的卡内容不一致")
+                raise EvidenceError("duplicate", "同一 card_id 的卡内容不一致")
             return
         self.cards_dir.mkdir(parents=True, exist_ok=True)
         path.write_text(card_json, encoding="utf-8")
@@ -262,14 +263,16 @@ class GovernanceStore:
         """supersedes 只能指向已接受的既有提交，且整张引用图必须无环。"""
         for target in supersedes:
             if target == submission_id:
-                raise ValueError("supersedes 不能指向自己")
+                raise EvidenceError("invalid_input", "supersedes 不能指向自己")
             row = conn.execute(
                 "SELECT status FROM submissions WHERE submission_id=?", (target,)
             ).fetchone()
             if row is None:
-                raise ValueError(f"supersedes 指向不存在的提交：{target}")
+                raise EvidenceError(
+                    "submission_not_found", f"supersedes 指向不存在的提交：{target}"
+                )
             if row["status"] != STATE_ACCEPTED:
-                raise ValueError(f"只能取代 accepted 证据：{target}")
+                raise EvidenceError("invalid_state", f"只能取代 accepted 证据：{target}")
         edges = {
             row["submission_id"]: json.loads(row["supersedes_json"])
             for row in conn.execute("SELECT submission_id, supersedes_json FROM submissions")
@@ -280,7 +283,7 @@ class GovernanceStore:
         def visit(node: str) -> None:
             # shortcut: 递归 DFS，supersedes 链超过 1000 层时需改迭代
             if state.get(node) == 1:
-                raise ValueError("supersedes 引用存在环")
+                raise EvidenceError("invalid_input", "supersedes 引用存在环")
             if state.get(node) == 2:
                 return
             state[node] = 1
@@ -299,13 +302,13 @@ class GovernanceStore:
             (contributor_id, ACTION_SUBMIT, day_start.isoformat()),
         ).fetchone()[0]
         if daily >= self.max_daily_submissions:
-            raise ValueError("超过每日提交限额")
+            raise EvidenceError("quota_exceeded", "超过每日提交限额")
         open_count = conn.execute(
             "SELECT COUNT(*) FROM submissions WHERE contributor_id=? AND status NOT IN (?, ?)",
             (contributor_id, STATE_REJECTED, STATE_WITHDRAWN),
         ).fetchone()[0]
         if open_count >= self.max_open_submissions:
-            raise ValueError("未终态提交数超过限额")
+            raise EvidenceError("quota_exceeded", "未终态提交数超过限额")
 
     def submit(self, envelope: SubmissionEnvelope | dict[str, Any]) -> dict[str, Any]:
         """校验并接收一个提交，初始状态一律为 pending。"""
@@ -315,26 +318,32 @@ class GovernanceStore:
             else SubmissionEnvelope.model_validate(envelope)
         )
         if env.schema_version != SUBMISSION_SCHEMA_VERSION:
-            raise ValueError(f"提交 schema_version 必须是 {SUBMISSION_SCHEMA_VERSION}")
+            raise EvidenceError(
+                "invalid_input", f"提交 schema_version 必须是 {SUBMISSION_SCHEMA_VERSION}"
+            )
         if not env.consent:
-            raise ValueError("贡献者必须确认 consent")
+            raise EvidenceError("invalid_input", "贡献者必须确认 consent")
         if env.consent_text_version != CONSENT_TEXT_VERSION:
-            raise ValueError(f"consent_text_version 必须是 {CONSENT_TEXT_VERSION}")
+            raise EvidenceError(
+                "invalid_input", f"consent_text_version 必须是 {CONSENT_TEXT_VERSION}"
+            )
         if not _clean(env.contributor_id):
-            raise ValueError("contributor_id 必填")
+            raise EvidenceError("invalid_input", "contributor_id 必填")
         try:
             validate_card(env.card)
         except ValueError as exc:
-            raise ValueError(f"证据卡校验失败：{exc}") from exc
+            raise EvidenceError("invalid_input", f"证据卡校验失败：{exc}") from exc
         problems = admission_problems(env.card)
         if problems:
-            raise ValueError("准入失败：" + "；".join(problems))
+            raise EvidenceError("invalid_input", "准入失败：" + "；".join(problems))
         if env.card.schema_version != SCHEMA_VERSION:
-            raise ValueError(f"证据卡 schema_version 必须是 {SCHEMA_VERSION}")
+            raise EvidenceError("invalid_input", f"证据卡 schema_version 必须是 {SCHEMA_VERSION}")
 
         submission_id = env.submission_id or f"evs-{uuid.uuid4().hex}"
         if not _ID_RE.match(submission_id):
-            raise ValueError("submission_id 只能包含字母、数字、点、下划线和短横线")
+            raise EvidenceError(
+                "invalid_input", "submission_id 只能包含字母、数字、点、下划线和短横线"
+            )
         card_json = env.card.model_dump_json()
         card_sha256 = hashlib.sha256(card_json.encode("utf-8")).hexdigest()
         now = _now()
@@ -342,25 +351,25 @@ class GovernanceStore:
             try:
                 datetime.fromisoformat(env.submitted_at)
             except ValueError as exc:
-                raise ValueError("submitted_at 必须是 ISO 8601 时间") from exc
+                raise EvidenceError("invalid_input", "submitted_at 必须是 ISO 8601 时间") from exc
         submitted_at = env.submitted_at or now
 
         with self._conn() as conn:
             if conn.execute(
                 "SELECT 1 FROM submissions WHERE card_id=?", (env.card.card_id,)
             ).fetchone():
-                raise ValueError("同一 card_id 只能提交一次")
+                raise EvidenceError("duplicate", "同一 card_id 只能提交一次")
             if conn.execute(
                 "SELECT 1 FROM submissions WHERE submission_id=?", (submission_id,)
             ).fetchone():
-                raise ValueError("submission_id 已存在")
+                raise EvidenceError("duplicate", "submission_id 已存在")
             self._check_supersedes(conn, submission_id, env.supersedes)
             if env.revises_submission_id:
                 original = self._row(conn, env.revises_submission_id)
                 if original["contributor_id"] != env.contributor_id:
-                    raise ValueError("只能修订自己的提交")
+                    raise EvidenceError("permission_denied", "只能修订自己的提交")
                 if original["status"] != STATE_NEEDS_CHANGES:
-                    raise ValueError("只能修订 needs_changes 的提交")
+                    raise EvidenceError("invalid_state", "只能修订 needs_changes 的提交")
             self._check_limits(conn, env.contributor_id, now)
             self._write_card(env.card, card_json, card_sha256)
             conn.execute(
@@ -408,7 +417,7 @@ class GovernanceStore:
             (submission_id, other, actor_id),
         ).fetchone()
         if row is not None:
-            raise ValueError("同一 actor 不能同时签署领域与合规")
+            raise EvidenceError("invalid_input", "同一 actor 不能同时签署领域与合规")
 
     def _next_state(self, conn: sqlite3.Connection, submission_id: str, action: str) -> str:
         """根据已记录事件推导新状态。"""
@@ -439,19 +448,21 @@ class GovernanceStore:
     ) -> dict[str, Any]:
         """记录一次复核；两个 pass 到齐时自动转 accepted。"""
         if not _clean(actor_id):
-            raise ValueError("actor_id 必填")
+            raise EvidenceError("invalid_input", "actor_id 必填")
         if action not in _REVIEW_ACTIONS:
-            raise ValueError("未知审核动作")
+            raise EvidenceError("invalid_input", "未知审核动作")
         if ACTION_ROLE[action] != role:
-            raise ValueError(f"动作 {action} 需要角色 {ACTION_ROLE[action]}")
+            raise EvidenceError(
+                "permission_denied", f"动作 {action} 需要角色 {ACTION_ROLE[action]}"
+            )
         reason = _clean(reason)
         now = _now()
         with self._conn() as conn:
             row = self._row(conn, submission_id)
             if row["status"] != STATE_PENDING:
-                raise ValueError("只有 pending 提交可审核")
+                raise EvidenceError("invalid_state", "只有 pending 提交可审核")
             if actor_id == row["contributor_id"]:
-                raise ValueError("贡献者不得审核自己的提交")
+                raise EvidenceError("permission_denied", "贡献者不得审核自己的提交")
             if action in _PASS_ACTIONS:
                 required = DOMAIN_CHECKLIST if role == ROLE_DOMAIN else COMPLIANCE_CHECKLIST
                 _require_checklist(checklist or {}, required)
@@ -460,9 +471,9 @@ class GovernanceStore:
                     "SELECT 1 FROM events WHERE submission_id=? AND action=?",
                     (submission_id, action),
                 ).fetchone():
-                    raise ValueError("该角色已经通过")
+                    raise EvidenceError("duplicate", "该角色已经通过")
             elif not reason:
-                raise ValueError("needs_changes/rejected 必须填写原因")
+                raise EvidenceError("invalid_input", "needs_changes/rejected 必须填写原因")
             self._event(
                 conn,
                 submission_id,
@@ -492,19 +503,19 @@ class GovernanceStore:
         """贡献者撤回自己的 accepted 提交，或合规复核者强制撤销。"""
         reason = _clean(reason)
         if not _clean(actor_id):
-            raise ValueError("actor_id 必填")
+            raise EvidenceError("invalid_input", "actor_id 必填")
         if not reason:
-            raise ValueError("撤销必须填写原因")
+            raise EvidenceError("invalid_input", "撤销必须填写原因")
         now = _now()
         with self._conn() as conn:
             row = self._row(conn, submission_id)
             if row["status"] != STATE_ACCEPTED:
-                raise ValueError("只有 accepted 提交可撤销")
+                raise EvidenceError("invalid_state", "只有 accepted 提交可撤销")
             if role == ROLE_CONTRIBUTOR:
                 if actor_id != row["contributor_id"]:
-                    raise ValueError("只能撤回自己的提交")
+                    raise EvidenceError("permission_denied", "只能撤回自己的提交")
             elif role != ROLE_COMPLIANCE:
-                raise ValueError("只有贡献者或合规复核者可撤销")
+                raise EvidenceError("permission_denied", "只有贡献者或合规复核者可撤销")
             conn.execute(
                 "UPDATE submissions SET status=?, withdrawn_at=? WHERE submission_id=?",
                 (STATE_WITHDRAWN, now, submission_id),
@@ -561,7 +572,7 @@ class GovernanceStore:
     def submissions_by_contributor(self, contributor_id: str) -> list[dict[str, Any]]:
         """本人的全部提交摘要，附带最近一次带原因的动作。"""
         if not _clean(contributor_id):
-            raise ValueError("contributor_id 必填")
+            raise EvidenceError("invalid_input", "contributor_id 必填")
         with self._conn() as conn:
             superseded = self._superseded_map(conn)
             rows = conn.execute(
@@ -615,11 +626,11 @@ class GovernanceStore:
             row = self._row(conn, submission_id)
             if include_unaccepted and row["status"] != STATE_ACCEPTED:
                 if viewer_role not in (ROLE_DOMAIN, ROLE_COMPLIANCE):
-                    raise ValueError("只有复核者可读取未发布全文")
+                    raise EvidenceError("permission_denied", "只有复核者可读取未发布全文")
                 if not _clean(viewer_actor):
-                    raise ValueError("复核者视角需要 actor_id")
+                    raise EvidenceError("invalid_input", "复核者视角需要 actor_id")
                 if viewer_actor == row["contributor_id"]:
-                    raise ValueError("贡献者不得读取自己的未发布全文")
+                    raise EvidenceError("permission_denied", "贡献者不得读取自己的未发布全文")
             if row["status"] == STATE_ACCEPTED or (
                 include_unaccepted
                 and row["status"] in (STATE_PENDING, STATE_NEEDS_CHANGES, STATE_REJECTED)
@@ -698,9 +709,9 @@ class GovernanceStore:
     def review_queue(self, *, viewer_actor: str, viewer_role: str) -> list[dict[str, Any]]:
         """复核队列：返回待审且本角色尚未签署、本人也未审过的全文。"""
         if viewer_role not in (ROLE_DOMAIN, ROLE_COMPLIANCE):
-            raise ValueError("只有复核者可查看审核队列")
+            raise EvidenceError("permission_denied", "只有复核者可查看审核队列")
         if not _clean(viewer_actor):
-            raise ValueError("审核队列需要 actor_id")
+            raise EvidenceError("invalid_input", "审核队列需要 actor_id")
         pass_action = ACTION_DOMAIN_PASS if viewer_role == ROLE_DOMAIN else ACTION_COMPLIANCE_PASS
         with self._conn() as conn:
             superseded = self._superseded_map(conn)
