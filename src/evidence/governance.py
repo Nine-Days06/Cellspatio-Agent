@@ -20,51 +20,63 @@ from typing import Any, Literal
 from pydantic import BaseModel, Field
 
 from src.evidence.errors import EvidenceError
+from src.evidence.review_protocol import (
+    ACTION_COMPLIANCE_NEEDS_CHANGES,
+    ACTION_COMPLIANCE_PASS,
+    ACTION_COMPLIANCE_REJECT,
+    ACTION_DOMAIN_NEEDS_CHANGES,
+    ACTION_DOMAIN_PASS,
+    ACTION_DOMAIN_REJECT,
+    ACTION_ROLE,
+    ACTION_SUBMIT,
+    ACTION_WITHDRAW,
+    COMPLIANCE_CHECKLIST,
+    DOMAIN_CHECKLIST,
+    PASS_ACTIONS,
+    REVIEW_ACTIONS,
+    ROLE_COMPLIANCE,
+    ROLE_CONTRIBUTOR,
+    ROLE_DOMAIN,
+    STATE_ACCEPTED,
+    STATE_NEEDS_CHANGES,
+    STATE_PENDING,
+    STATE_REJECTED,
+    STATE_WITHDRAWN,
+    checklist_for_role,
+    next_state,
+    queue_eligible,
+)
 from src.evidence.schema import SCHEMA_VERSION, EvidenceCard, validate_card
+
+__all__ = [
+    "ACTION_COMPLIANCE_NEEDS_CHANGES",
+    "ACTION_COMPLIANCE_PASS",
+    "ACTION_COMPLIANCE_REJECT",
+    "ACTION_DOMAIN_NEEDS_CHANGES",
+    "ACTION_DOMAIN_PASS",
+    "ACTION_DOMAIN_REJECT",
+    "ACTION_ROLE",
+    "ACTION_SUBMIT",
+    "ACTION_WITHDRAW",
+    "COMPLIANCE_CHECKLIST",
+    "DOMAIN_CHECKLIST",
+    "ROLE_COMPLIANCE",
+    "ROLE_CONTRIBUTOR",
+    "ROLE_DOMAIN",
+    "STATE_ACCEPTED",
+    "STATE_NEEDS_CHANGES",
+    "STATE_PENDING",
+    "STATE_REJECTED",
+    "STATE_WITHDRAWN",
+    "GovernanceStore",
+    "SubmissionEnvelope",
+    "admission_problems",
+    "public_evidence_dir",
+]
 
 SUBMISSION_SCHEMA_VERSION = "cellspatio-evidence-submission/1.0.0"
 CONSENT_TEXT_VERSION = "public-evidence-consent/1"
 CONSENT_TEXT = "我确认仅上传证据卡的聚合字段，不含原始矩阵、barcode、坐标、样本级 ID 或绝对路径。"
-
-ROLE_CONTRIBUTOR = "contributor"
-ROLE_DOMAIN = "domain_reviewer"
-ROLE_COMPLIANCE = "compliance_reviewer"
-
-STATE_PENDING = "pending"
-STATE_NEEDS_CHANGES = "needs_changes"
-STATE_ACCEPTED = "accepted"
-STATE_REJECTED = "rejected"
-STATE_WITHDRAWN = "withdrawn"
-
-ACTION_SUBMIT = "submit"
-ACTION_DOMAIN_PASS = "domain_pass"
-ACTION_COMPLIANCE_PASS = "compliance_pass"
-ACTION_DOMAIN_NEEDS_CHANGES = "domain_needs_changes"
-ACTION_COMPLIANCE_NEEDS_CHANGES = "compliance_needs_changes"
-ACTION_DOMAIN_REJECT = "domain_reject"
-ACTION_COMPLIANCE_REJECT = "compliance_reject"
-ACTION_WITHDRAW = "withdraw"
-
-DOMAIN_CHECKLIST = ("method_complete", "claim_matches_observation", "limitations_present")
-COMPLIANCE_CHECKLIST = (
-    "privacy_scan_passed",
-    "license_and_attribution_present",
-    "no_raw_data",
-    "small_sample_ok",
-)
-
-ACTION_ROLE = {
-    ACTION_DOMAIN_PASS: ROLE_DOMAIN,
-    ACTION_DOMAIN_NEEDS_CHANGES: ROLE_DOMAIN,
-    ACTION_DOMAIN_REJECT: ROLE_DOMAIN,
-    ACTION_COMPLIANCE_PASS: ROLE_COMPLIANCE,
-    ACTION_COMPLIANCE_NEEDS_CHANGES: ROLE_COMPLIANCE,
-    ACTION_COMPLIANCE_REJECT: ROLE_COMPLIANCE,
-}
-_REVIEW_ACTIONS = tuple(ACTION_ROLE)
-_PASS_ACTIONS = (ACTION_DOMAIN_PASS, ACTION_COMPLIANCE_PASS)
-_REJECT_ACTIONS = (ACTION_DOMAIN_REJECT, ACTION_COMPLIANCE_REJECT)
-_NEEDS_CHANGES_ACTIONS = (ACTION_DOMAIN_NEEDS_CHANGES, ACTION_COMPLIANCE_NEEDS_CHANGES)
 
 MAX_DAILY_SUBMISSIONS = 20
 MAX_OPEN_SUBMISSIONS = 20
@@ -419,23 +431,6 @@ class GovernanceStore:
         if row is not None:
             raise EvidenceError("invalid_input", "同一 actor 不能同时签署领域与合规")
 
-    def _next_state(self, conn: sqlite3.Connection, submission_id: str, action: str) -> str:
-        """根据已记录事件推导新状态。"""
-        if action in _REJECT_ACTIONS:
-            return STATE_REJECTED
-        if action in _NEEDS_CHANGES_ACTIONS:
-            return STATE_NEEDS_CHANGES
-        passes = {
-            row["action"]
-            for row in conn.execute(
-                "SELECT action FROM events WHERE submission_id=? AND action IN (?, ?)",
-                (submission_id, *_PASS_ACTIONS),
-            )
-        }
-        if set(_PASS_ACTIONS) <= passes:
-            return STATE_ACCEPTED
-        return STATE_PENDING
-
     def review(
         self,
         submission_id: str,
@@ -449,7 +444,7 @@ class GovernanceStore:
         """记录一次复核；两个 pass 到齐时自动转 accepted。"""
         if not _clean(actor_id):
             raise EvidenceError("invalid_input", "actor_id 必填")
-        if action not in _REVIEW_ACTIONS:
+        if action not in REVIEW_ACTIONS:
             raise EvidenceError("invalid_input", "未知审核动作")
         if ACTION_ROLE[action] != role:
             raise EvidenceError(
@@ -463,8 +458,8 @@ class GovernanceStore:
                 raise EvidenceError("invalid_state", "只有 pending 提交可审核")
             if actor_id == row["contributor_id"]:
                 raise EvidenceError("permission_denied", "贡献者不得审核自己的提交")
-            if action in _PASS_ACTIONS:
-                required = DOMAIN_CHECKLIST if role == ROLE_DOMAIN else COMPLIANCE_CHECKLIST
+            if action in PASS_ACTIONS:
+                required = checklist_for_role(role)
                 _require_checklist(checklist or {}, required)
                 self._check_distinct_signer(conn, submission_id, actor_id, action)
                 if conn.execute(
@@ -474,6 +469,12 @@ class GovernanceStore:
                     raise EvidenceError("duplicate", "该角色已经通过")
             elif not reason:
                 raise EvidenceError("invalid_input", "needs_changes/rejected 必须填写原因")
+            prior_actions = [
+                event["action"]
+                for event in conn.execute(
+                    "SELECT action FROM events WHERE submission_id=?", (submission_id,)
+                )
+            ]
             self._event(
                 conn,
                 submission_id,
@@ -485,7 +486,7 @@ class GovernanceStore:
                 row["card_sha256"],
                 now,
             )
-            state = self._next_state(conn, submission_id, action)
+            state = next_state(action, prior_actions)
             conn.execute(
                 "UPDATE submissions SET status=?, accepted_at=? WHERE submission_id=?",
                 (state, now if state == STATE_ACCEPTED else None, submission_id),
@@ -516,9 +517,10 @@ class GovernanceStore:
                     raise EvidenceError("permission_denied", "只能撤回自己的提交")
             elif role != ROLE_COMPLIANCE:
                 raise EvidenceError("permission_denied", "只有贡献者或合规复核者可撤销")
+            state = next_state(ACTION_WITHDRAW)
             conn.execute(
                 "UPDATE submissions SET status=?, withdrawn_at=? WHERE submission_id=?",
-                (STATE_WITHDRAWN, now, submission_id),
+                (state, now, submission_id),
             )
             self._event(
                 conn,
@@ -712,16 +714,29 @@ class GovernanceStore:
             raise EvidenceError("permission_denied", "只有复核者可查看审核队列")
         if not _clean(viewer_actor):
             raise EvidenceError("invalid_input", "审核队列需要 actor_id")
-        pass_action = ACTION_DOMAIN_PASS if viewer_role == ROLE_DOMAIN else ACTION_COMPLIANCE_PASS
         with self._conn() as conn:
             superseded = self._superseded_map(conn)
             rows = conn.execute(
-                "SELECT * FROM submissions s WHERE status=? AND contributor_id<>? "
-                "AND NOT EXISTS (SELECT 1 FROM events e WHERE e.submission_id=s.submission_id "
-                "AND (e.actor_id=? OR e.action=?)) ORDER BY submitted_at, submission_id",
-                (STATE_PENDING, viewer_actor, viewer_actor, pass_action),
+                "SELECT * FROM submissions WHERE status=? ORDER BY submitted_at, submission_id",
+                (STATE_PENDING,),
             ).fetchall()
+            events: dict[str, list[tuple[str, str]]] = {}
+            for event in conn.execute(
+                "SELECT e.submission_id, e.actor_id, e.action FROM events e "
+                "JOIN submissions s ON s.submission_id=e.submission_id WHERE s.status=?",
+                (STATE_PENDING,),
+            ):
+                events.setdefault(event["submission_id"], []).append(
+                    (event["actor_id"], event["action"])
+                )
             return [
                 {**self._summary(row, superseded), "card": json.loads(row["card_json"])}
                 for row in rows
+                if queue_eligible(
+                    status=row["status"],
+                    contributor_id=row["contributor_id"],
+                    viewer_actor=viewer_actor,
+                    viewer_role=viewer_role,
+                    events=events.get(row["submission_id"], ()),
+                )
             ]
