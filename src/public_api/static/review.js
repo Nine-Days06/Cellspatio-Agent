@@ -47,7 +47,7 @@ const state = {
   token: sessionStorage.getItem(TOKEN_KEY),
   user: null,
   role: null,
-  checklists: {},
+  review: null,
   queue: [],
   selectedId: null,
   selected: null,
@@ -128,7 +128,7 @@ function clearSession(message) {
   state.token = null;
   state.user = null;
   state.role = null;
-  state.checklists = {};
+  state.review = null;
   state.queue = [];
   state.selectedId = null;
   state.selected = null;
@@ -220,11 +220,10 @@ function renderQueue() {
 
 async function loadWorkspace() {
   view.login.classList.add("hidden");
-  state.checklists = {};
+  state.review = null;
   state.queue = [];
   state.mine = [];
   if (state.canReview) {
-    state.checklists = await api("/api/public/evidence/checklists");
     const queueData = await api("/api/public/evidence/queue");
     state.role = queueData.role;
     state.queue = queueData.queue;
@@ -282,6 +281,7 @@ async function selectEvidence(evidenceId, { updateUrl = true } = {}) {
     ]);
     state.selected = detail;
     state.events = events.events;
+    state.review = events.review;
     renderDetail();
   } catch (error) {
     toast(error.message);
@@ -560,14 +560,14 @@ function contextBlock(card) {
 }
 
 function reviewForm() {
-  if (!state.role || state.selected.status !== "pending") return null;
-  const prefix = state.role === "domain_reviewer" ? "domain" : "compliance";
-  if (state.events.some((event) => event.actor_id === state.user.id)) return null;
-  if (state.events.some((event) => event.action === `${prefix}_pass`)) return null;
-  const required = state.checklists[state.role] || [];
+  const review = state.review;
+  const actions = review?.actions || [];
+  if (!actions.length) return null;
+  const role = review.role;
+  const required = review.checklists?.[role] || [];
   const boxes = [];
   const checklist = el("fieldset", {}, el("legend", {
-    text: `${ROLE_LABELS[state.role]}清单（全部勾选才能通过）`,
+    text: `${ROLE_LABELS[role] || role}清单（全部勾选才能通过）`,
   }));
   for (const key of required) {
     const input = el("input", { type: "checkbox", "data-check": key });
@@ -577,27 +577,26 @@ function reviewForm() {
     );
   }
   const reason = el("textarea", { placeholder: "要求补充或拒绝时必须填写具体原因" });
-  const pass = el("button", { type: "button", class: "pass", disabled: "", text: "通过" });
-  const needs = el("button", { type: "button", text: "要求补充" });
-  const reject = el("button", { type: "button", class: "danger", text: "拒绝" });
 
-  const update = () => {
-    pass.disabled = boxes.some((box) => !box.checked);
+  const actionKind = (action) => {
+    if (action.endsWith("_pass")) return "pass";
+    if (action.endsWith("_needs_changes")) return "needs";
+    if (action.endsWith("_reject")) return "reject";
+    return "other";
   };
-  boxes.forEach((box) => box.addEventListener("change", update));
+  const BUTTON_LABELS = { pass: "通过", needs: "要求补充", reject: "拒绝" };
 
-  const submit = async (kind, prefix) => {
-    const result = { action: `${prefix}_${kind}` };
+  const controls = [];
+  const submit = async (action, kind) => {
+    const result = { action };
     if (kind === "pass") {
       if (boxes.some((box) => !box.checked)) return toast("请先勾选全部清单项。");
       result.checklist = Object.fromEntries(boxes.map((box) => [box.dataset.check, true]));
-    } else if (!reason.value.trim()) {
-      return toast("要求补充或拒绝必须填写原因。");
-    } else {
+    } else if (kind === "needs" || kind === "reject") {
+      if (!reason.value.trim()) return toast("要求补充或拒绝必须填写原因。");
       result.reason = reason.value.trim();
     }
-    const buttons = [pass, needs, reject];
-    buttons.forEach((button) => (button.disabled = true));
+    controls.forEach(({ button }) => (button.disabled = true));
     const evidenceId = state.selectedId;
     try {
       await api(`/api/public/evidence/submissions/${encodeURIComponent(evidenceId)}/review`, {
@@ -610,34 +609,42 @@ function reviewForm() {
     } catch (error) {
       toast(error.message);
     } finally {
-      buttons.forEach((button) => (button.disabled = false));
+      controls.forEach(({ button }) => (button.disabled = false));
     }
   };
 
-  pass.addEventListener("click", () => submit("pass", prefix));
-  needs.addEventListener("click", () => submit("needs_changes", prefix));
-  reject.addEventListener("click", () => submit("reject", prefix));
+  for (const action of actions) {
+    const kind = actionKind(action);
+    const button = el("button", {
+      type: "button",
+      class: kind === "pass" ? "pass" : kind === "reject" ? "danger" : "",
+      text: BUTTON_LABELS[kind] || ACTION_LABELS[action] || action,
+    });
+    if (kind === "pass") button.disabled = true;
+    button.addEventListener("click", () => submit(action, kind));
+    controls.push({ kind, button });
+  }
+
+  const update = () => {
+    for (const control of controls) {
+      if (control.kind === "pass") control.button.disabled = boxes.some((box) => !box.checked);
+    }
+  };
+  boxes.forEach((box) => box.addEventListener("change", update));
 
   return el(
     "form",
     { class: "review-form", onsubmit: (event) => event.preventDefault() },
     checklist,
     el("label", {}, el("span", { class: "muted", text: "说明" }), reason),
-    el("div", { class: "actions" }, pass, needs, reject),
+    el("div", { class: "actions" }, ...controls.map(({ button }) => button)),
   );
 }
 
 function noticeText() {
-  if (!state.role) return "当前账号没有复核角色。";
-  if (state.selected.status !== "pending") return "该提交已结束审核。";
-  const prefix = state.role === "domain_reviewer" ? "domain" : "compliance";
-  if (state.events.some((event) => event.action === `${prefix}_pass`)) {
-    return "本角色已签署，等待另一角色复核。";
-  }
-  if (state.events.some((event) => event.actor_id === state.user.id)) {
-    return "你已复核过该提交。";
-  }
-  return "该提交不在当前角色的待审范围。";
+  const blocked = state.review?.blocked_reason;
+  if (state.review?.blocked_code === "self_review") return "你已复核过该提交。";
+  return blocked || "该提交不在当前角色的待审范围。";
 }
 
 function eventList() {

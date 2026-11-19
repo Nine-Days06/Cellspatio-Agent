@@ -18,6 +18,7 @@ from src.evidence.governance import (
     ACTION_COMPLIANCE_PASS,
     ACTION_DOMAIN_NEEDS_CHANGES,
     ACTION_DOMAIN_PASS,
+    ACTION_DOMAIN_REJECT,
     COMPLIANCE_CHECKLIST,
     DOMAIN_CHECKLIST,
     ROLE_COMPLIANCE,
@@ -283,6 +284,139 @@ def test_reviewer_queue_unpublished_access_and_events(app, client: TestClient):
         headers=_headers(domain_token),
     )
     assert again.status_code == 409
+
+
+def test_events_returns_review_capability_for_current_viewer(app, client: TestClient):
+    """事件响应一次给足复核能力；签署后本角色不再出现表单动作。"""
+    _account(app, "events-contributor", (ROLE_CONTRIBUTOR,))
+    _account(app, "events-domain", (ROLE_DOMAIN,))
+    contributor_token = _login(client, "events-contributor")
+    domain_token = _login(client, "events-domain")
+
+    uploaded = client.post(
+        "/api/public/evidence/submissions",
+        json={
+            "preview": preview_card(_card("evc-events-1"), contributor_id="local"),
+            "consent": True,
+        },
+        headers=_headers(contributor_token),
+    )
+    evidence_id = uploaded.json()["evidence_id"]
+    url = f"/api/public/evidence/{evidence_id}/events"
+
+    payload = client.get(url, headers=_headers(domain_token)).json()
+    assert payload["review"] == {
+        "role": ROLE_DOMAIN,
+        "actions": [ACTION_DOMAIN_PASS, ACTION_DOMAIN_NEEDS_CHANGES, ACTION_DOMAIN_REJECT],
+        "blocked_reason": None,
+        "blocked_code": None,
+        "checklists": {ROLE_DOMAIN: list(DOMAIN_CHECKLIST)},
+    }
+    assert [event["action"] for event in payload["events"]] == ["submit"]
+
+    signed = client.post(
+        f"/api/public/evidence/submissions/{evidence_id}/review",
+        json={"action": ACTION_DOMAIN_PASS, "checklist": _checks(DOMAIN_CHECKLIST)},
+        headers=_headers(domain_token),
+    )
+    assert signed.status_code == 200
+    blocked = client.get(url, headers=_headers(domain_token)).json()["review"]
+    assert blocked["actions"] == []
+    assert blocked["blocked_reason"] == "本角色已签署，等待另一角色复核。"
+    assert blocked["blocked_code"] == "role_signed"
+    assert blocked["checklists"] == {ROLE_DOMAIN: list(DOMAIN_CHECKLIST)}
+
+
+def test_events_capability_blocks_self_review_and_finished_state(app, client: TestClient):
+    """本人提交与非 pending 状态都在协议结果里阻断，页面不再读事件推导。"""
+    _account(app, "events-dual", (ROLE_CONTRIBUTOR, ROLE_DOMAIN))
+    _account(app, "events-other-contributor", (ROLE_CONTRIBUTOR,))
+    _account(app, "events-domain", (ROLE_DOMAIN,))
+    dual_token = _login(client, "events-dual")
+    domain_token = _login(client, "events-domain")
+
+    own = client.post(
+        "/api/public/evidence/submissions",
+        json={
+            "preview": preview_card(_card("evc-events-2"), contributor_id="local"),
+            "consent": True,
+        },
+        headers=_headers(dual_token),
+    ).json()["evidence_id"]
+    own_review = client.get(
+        f"/api/public/evidence/{own}/events", headers=_headers(dual_token)
+    ).json()["review"]
+    assert own_review["actions"] == []
+    assert own_review["blocked_reason"] == "贡献者不得审核自己的提交"
+    assert own_review["blocked_code"] == "self_review"
+
+    other = client.post(
+        "/api/public/evidence/submissions",
+        json={
+            "preview": preview_card(_card("evc-events-3"), contributor_id="local"),
+            "consent": True,
+        },
+        headers=_headers(_login(client, "events-other-contributor")),
+    ).json()["evidence_id"]
+    changed = client.post(
+        f"/api/public/evidence/submissions/{other}/review",
+        json={"action": ACTION_DOMAIN_NEEDS_CHANGES, "reason": "补充限制"},
+        headers=_headers(domain_token),
+    )
+    assert changed.status_code == 200
+    finished = client.get(
+        f"/api/public/evidence/{other}/events", headers=_headers(domain_token)
+    ).json()["review"]
+    assert finished["actions"] == []
+    assert finished["blocked_reason"] == "该提交已结束审核。"
+    assert finished["blocked_code"] == "finished"
+
+
+def test_withdraw_role_blocks_domain_and_allows_compliance_override(app, client: TestClient):
+    """撤回角色只看协议：非本人领域角色 403，合规角色可强撤。"""
+    _account(app, "withdraw-contributor", (ROLE_CONTRIBUTOR,))
+    _account(app, "withdraw-domain", (ROLE_DOMAIN,))
+    _account(app, "withdraw-compliance", (ROLE_COMPLIANCE,))
+    contributor_token = _login(client, "withdraw-contributor")
+    domain_token = _login(client, "withdraw-domain")
+    compliance_token = _login(client, "withdraw-compliance")
+
+    evidence_id = client.post(
+        "/api/public/evidence/submissions",
+        json={
+            "preview": preview_card(_card("evc-withdraw-1"), contributor_id="local"),
+            "consent": True,
+        },
+        headers=_headers(contributor_token),
+    ).json()["evidence_id"]
+    for token, action, checklist in (
+        (domain_token, ACTION_DOMAIN_PASS, DOMAIN_CHECKLIST),
+        (compliance_token, ACTION_COMPLIANCE_PASS, COMPLIANCE_CHECKLIST),
+    ):
+        assert (
+            client.post(
+                f"/api/public/evidence/submissions/{evidence_id}/review",
+                json={"action": action, "checklist": _checks(checklist)},
+                headers=_headers(token),
+            ).status_code
+            == 200
+        )
+
+    denied = client.post(
+        f"/api/public/evidence/submissions/{evidence_id}/withdraw",
+        json={"reason": "越权"},
+        headers=_headers(domain_token),
+    )
+    assert denied.status_code == 403
+    assert denied.json()["code"] == "permission_denied"
+
+    forced = client.post(
+        f"/api/public/evidence/submissions/{evidence_id}/withdraw",
+        json={"reason": "合规强撤"},
+        headers=_headers(compliance_token),
+    )
+    assert forced.status_code == 200
+    assert forced.json()["status"] == "withdrawn"
 
 
 def test_revision_preview_carries_original_submission(app, client: TestClient):
