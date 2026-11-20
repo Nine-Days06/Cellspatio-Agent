@@ -39,6 +39,7 @@ from src.evidence.review_protocol import (
     withdraw_role,
 )
 from src.evidence.schema import EvidenceCard
+from src.evidence.vocabulary import vocabulary
 
 logger = logging.getLogger(__name__)
 
@@ -206,6 +207,11 @@ def create_public_app(data_root: str | Path) -> FastAPI:
     def health() -> dict[str, str]:
         """存活探针。"""
         return {"status": "ok"}
+
+    @app.get("/api/public/vocabulary")
+    def review_vocabulary() -> dict[str, dict[str, str]]:
+        """复核页标签；静态内容，无需登录。"""
+        return vocabulary()
 
     @app.post("/api/auth/login")
     def login(body: LoginRequest, request: Request) -> dict[str, Any]:

@@ -1,50 +1,8 @@
 const TOKEN_KEY = "cellspatio_review_token";
 
-const GATE_LABELS = {
-  qc_review: "质控复核",
-  pca_dimensions: "PCA 维度",
-  cluster_review: "聚类复核",
-  marker_review: "Marker 复核",
-  knowledge_qa_review: "知识问答复核",
-};
-
-const STATUS_LABELS = {
-  pending: "待审",
-  needs_changes: "需补充",
-  accepted: "已接受",
-  rejected: "已拒绝",
-  withdrawn: "已撤回",
-};
-
-const ACTION_LABELS = {
-  submit: "提交",
-  domain_pass: "领域通过",
-  compliance_pass: "合规通过",
-  domain_needs_changes: "领域要求补充",
-  compliance_needs_changes: "合规要求补充",
-  domain_reject: "领域拒绝",
-  compliance_reject: "合规拒绝",
-  withdraw: "撤销",
-};
-
-const ROLE_LABELS = {
-  contributor: "贡献者",
-  domain_reviewer: "领域复核者",
-  compliance_reviewer: "合规复核者",
-};
-
-const CHECK_LABELS = {
-  method_complete: "方法与参数完整",
-  claim_matches_observation: "结论与观测一致",
-  limitations_present: "已写明限制",
-  privacy_scan_passed: "隐私扫描通过",
-  license_and_attribution_present: "许可与署名完整",
-  no_raw_data: "不含原始数据或逐细胞信息",
-  small_sample_ok: "小样本已作说明",
-};
-
 const state = {
   token: sessionStorage.getItem(TOKEN_KEY),
+  labels: {},
   user: null,
   role: null,
   review: null,
@@ -102,6 +60,10 @@ function formatTime(value) {
   if (!value) return "—";
   const parsed = new Date(value);
   return Number.isNaN(parsed.getTime()) ? String(value) : parsed.toLocaleString("zh-CN");
+}
+
+function label(group, key) {
+  return state.labels[group]?.[key] ?? key;
 }
 
 function kvTable(data) {
@@ -180,9 +142,9 @@ function setUser(user) {
   state.canReview = Boolean(state.role);
   state.canContribute = user.roles.includes("contributor");
   const roleText = state.role
-    ? ROLE_LABELS[state.role]
+    ? label("roles", state.role)
     : state.canContribute
-      ? ROLE_LABELS.contributor
+      ? label("roles", "contributor")
       : "无角色";
   view.who.textContent = `${user.username}（${roleText}）`;
   view.session.classList.remove("hidden");
@@ -209,7 +171,7 @@ function renderQueue() {
             "aria-current": String(item.evidence_id === state.selectedId),
             onclick: () => selectEvidence(item.evidence_id),
           },
-          el("span", { class: "gate", text: GATE_LABELS[item.gate] || item.gate }),
+          el("span", { class: "gate", text: label("gates", item.gate) }),
           el("span", { class: "claim", text: card.claim?.text || item.claim || item.card_id }),
           el("span", { class: "when", text: formatTime(item.submitted_at) }),
         ),
@@ -325,11 +287,11 @@ function renderMine() {
         el(
           "div",
           { class: "queue-item" },
-          el("span", { class: "gate", text: GATE_LABELS[item.gate] || item.gate }),
+          el("span", { class: "gate", text: label("gates", item.gate) }),
           el("span", { class: "claim", text: item.claim || item.card_id }),
           el("span", {
             class: "when",
-            text: `${STATUS_LABELS[item.status] || item.status} · ${formatTime(item.submitted_at)}`,
+            text: `${label("statuses", item.status)} · ${formatTime(item.submitted_at)}`,
           }),
           item.latest_reason
             ? el("span", { class: "mine-reason", text: `原因：${item.latest_reason}` })
@@ -436,7 +398,7 @@ function previewBlock(preview) {
       el(
         "div",
         {},
-        el("p", { class: "eyebrow", text: GATE_LABELS[card.gate] || card.gate }),
+        el("p", { class: "eyebrow", text: label("gates", card.gate) }),
         el("h1", { text: card.claim.text }),
         el("p", { class: "meta", text: `卡 ${card.card_id} · 将发送内容如下` }),
       ),
@@ -567,13 +529,13 @@ function reviewForm() {
   const required = review.checklists?.[role] || [];
   const boxes = [];
   const checklist = el("fieldset", {}, el("legend", {
-    text: `${ROLE_LABELS[role] || role}清单（全部勾选才能通过）`,
+    text: `${label("roles", role)}清单（全部勾选才能通过）`,
   }));
   for (const key of required) {
     const input = el("input", { type: "checkbox", "data-check": key });
     boxes.push(input);
     checklist.append(
-      el("label", { class: "check" }, input, el("span", { text: CHECK_LABELS[key] || key })),
+      el("label", { class: "check" }, input, el("span", { text: label("checklists", key) })),
     );
   }
   const reason = el("textarea", { placeholder: "要求补充或拒绝时必须填写具体原因" });
@@ -613,7 +575,7 @@ function reviewForm() {
     const button = el("button", {
       type: "button",
       class: kind === "pass" ? "pass" : kind === "reject" ? "danger" : "",
-      text: BUTTON_LABELS[kind] || ACTION_LABELS[spec.id] || spec.id,
+      text: BUTTON_LABELS[kind] || label("actions", spec.id),
     });
     if (spec.requires_checklist) button.disabled = true;
     button.addEventListener("click", () => submit(spec));
@@ -650,7 +612,7 @@ function eventList() {
         {},
         el("span", {
           class: "event-head",
-          text: `${ACTION_LABELS[event.action] || event.action} · ${ROLE_LABELS[event.role] || event.role}`,
+          text: `${label("actions", event.action)} · ${label("roles", event.role)}`,
         }),
         el("span", {
           class: "event-meta",
@@ -699,12 +661,12 @@ function renderDetail() {
     el(
       "div",
       {},
-      el("p", { class: "eyebrow", text: GATE_LABELS[card.gate] || card.gate }),
+      el("p", { class: "eyebrow", text: label("gates", card.gate) }),
       el("h1", { text: card.claim.text }),
     ),
     el("span", {
       class: `badge ${selected.status}`,
-      text: STATUS_LABELS[selected.status] || selected.status,
+      text: label("statuses", selected.status),
     }),
   );
   const meta = el("p", {
@@ -787,6 +749,11 @@ document.querySelector("#withdraw-cancel").addEventListener("click", () => {
 });
 
 async function boot() {
+  try {
+    state.labels = await api("/api/public/vocabulary");
+  } catch {
+    // 词汇不可用时保留空表，页面回退原始键，不阻断登录。
+  }
   if (!state.token) {
     clearSession("");
     return;
