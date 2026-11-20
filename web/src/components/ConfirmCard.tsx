@@ -1,7 +1,7 @@
 import { Database, FileCode2, RefreshCw } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardFooter, CardHeader, CardTitle } from '@/components/ui/card'
-import type { ConfirmState } from '@/lib/confirmState'
+import { STATUS_TEXT, type ConfirmState } from '@/lib/confirmState'
 import type {
   ConfirmRequestBody,
   DataCandidate,
@@ -9,12 +9,6 @@ import type {
   ScriptCardPayload,
 } from '@/lib/types'
 import { useChatStore } from '@/store/chat'
-
-const STATUS_TEXT: Record<string, string> = {
-  confirmed: '已确认执行',
-  cancelled: '已取消',
-  expired: '已过期（会话已恢复，需重新发起）',
-}
 
 export interface ConfirmCardProps {
   scriptCard: ScriptCardPayload | null
