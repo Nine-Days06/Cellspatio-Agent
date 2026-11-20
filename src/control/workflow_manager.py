@@ -84,38 +84,31 @@ class WorkflowManager:
         intent = self.intent_parser.parse(user_input, context)
         params = self.intent_parser.extract_parameters(user_input)
 
-        # 生成 run_id
-        run_id = f"run-{uuid.uuid4().hex[:8]}"
+        intent_dict = {
+            "type": intent.get("type", "general"),
+            "analysis_type": intent.get("analysis_type"),
+            "original_input": user_input,
+            "confidence": intent.get("confidence", 1.0),
+        }
 
-        # 记录开始：此时已有 intent，直接传入完整信息
-        if self.workflow_recorder:
-            self.workflow_recorder.start_execution(
-                intent={
-                    "type": intent.get("type", "general"),
-                    "analysis_type": intent.get("analysis_type"),
-                    "original_input": user_input,
-                    "confidence": intent.get("confidence", 1.0),
-                },
-                parameters=params,
-                user_input=user_input,
-                context=context,
-                run_id=run_id,
-            )
+        with self._record_run(
+            intent_dict,
+            params,
+            context,
+            user_input=user_input,
+            run_id=f"run-{uuid.uuid4().hex[:8]}",
+        ) as run_id:
+            logger.info(f"Parsed intent: {intent}")
 
-        logger.info(f"Parsed intent: {intent}")
-
-        # 2. 根据意图执行相应工作流
-        if intent["type"] == "analysis":
-            result = self._execute_analysis_workflow(intent, params, context, run_id)
-        elif intent["type"] == "knowledge_query":
-            result = self._execute_knowledge_workflow(intent, params, context, run_id)
-        elif intent["type"] == "fetch_data":
-            result = self._execute_fetch_data_workflow(intent, params, context, run_id)
-        else:
-            result = self._execute_general_workflow(intent, params, context, run_id)
-
-        if self.workflow_recorder:
-            self.workflow_recorder.finish_run(run_id)
+            # 2. 根据意图执行相应工作流
+            if intent["type"] == "analysis":
+                result = self._execute_analysis_workflow(intent, params, context, run_id)
+            elif intent["type"] == "knowledge_query":
+                result = self._execute_knowledge_workflow(intent, params, context, run_id)
+            elif intent["type"] == "fetch_data":
+                result = self._execute_fetch_data_workflow(intent, params, context, run_id)
+            else:
+                result = self._execute_general_workflow(intent, params, context, run_id)
 
         return result
 
@@ -305,14 +298,13 @@ class WorkflowManager:
     ) -> dict[str, Any]:
         """差异表达分析：优先使用已确认下载的 GEO 数据"""
         # 记录步骤开始
-        if self.workflow_recorder and run_id:
-            self.workflow_recorder.record_step(
-                run_id,
-                step_id="de_analysis_start",
-                step_type="analysis",
-                tool="run_analysis",
-                params={"analysis_type": "differential_expression"},
-            )
+        self._record_step(
+            run_id,
+            step_id="de_analysis_start",
+            step_type="analysis",
+            tool="run_analysis",
+            params={"analysis_type": "differential_expression"},
+        )
 
         input_file = None
         # 优先使用已下载的资产（context 传入），其次才用参数里的文件
@@ -330,15 +322,14 @@ class WorkflowManager:
                 "message": ("需提供数据文件，请先下载或指定输入文件"),
                 "results": {},
             }
-            if self.workflow_recorder and run_id:
-                self.workflow_recorder.record_step(
-                    run_id,
-                    step_id="de_analysis_no_input",
-                    step_type="analysis",
-                    tool="run_analysis",
-                    params={},
-                    output={"status": "needs_input", "message": "无输入数据"},
-                )
+            self._record_step(
+                run_id,
+                step_id="de_analysis_no_input",
+                step_type="analysis",
+                tool="run_analysis",
+                params={},
+                output={"status": "needs_input", "message": "无输入数据"},
+            )
             return result
 
         project_root = self._project_output_root(context)
@@ -364,15 +355,14 @@ class WorkflowManager:
                 "params": {"input_file": input_file, "output_file": output_file},
                 "method_context": method_context,
             }
-            if self.workflow_recorder and run_id:
-                self.workflow_recorder.record_step(
-                    run_id,
-                    step_id="de_analysis_script_generated",
-                    step_type="analysis",
-                    tool="run_analysis",
-                    params={"analysis_type": "differential_expression"},
-                    output={"status": "needs_script_confirmation", "script": code[:100]},
-                )
+            self._record_step(
+                run_id,
+                step_id="de_analysis_script_generated",
+                step_type="analysis",
+                tool="run_analysis",
+                params={"analysis_type": "differential_expression"},
+                output={"status": "needs_script_confirmation", "script": code[:100]},
+            )
             return result
 
         result = self._finish_analysis(
@@ -383,15 +373,14 @@ class WorkflowManager:
             context,
         )
 
-        if self.workflow_recorder and run_id:
-            self.workflow_recorder.record_step(
-                run_id,
-                step_id="de_analysis_finish",
-                step_type="analysis",
-                tool="run_analysis",
-                params={"analysis_type": "differential_expression"},
-                output={"status": result.get("status", "success"), "result": result.get("results")},
-            )
+        self._record_step(
+            run_id,
+            step_id="de_analysis_finish",
+            step_type="analysis",
+            tool="run_analysis",
+            params={"analysis_type": "differential_expression"},
+            output={"status": result.get("status", "success"), "result": result.get("results")},
+        )
 
         return result
 
@@ -399,27 +388,25 @@ class WorkflowManager:
         self, params: dict[str, Any], context: dict[str, Any], run_id: str | None = None
     ) -> dict[str, Any]:
         """单细胞固定过滤前 QC；不批准或执行下游分析。"""
-        if self.workflow_recorder and run_id:
-            self.workflow_recorder.record_step(
-                run_id,
-                step_id="sc_analysis_start",
-                step_type="analysis",
-                tool="run_analysis",
-                params={"analysis_type": "single_cell"},
-            )
+        self._record_step(
+            run_id,
+            step_id="sc_analysis_start",
+            step_type="analysis",
+            tool="run_analysis",
+            params={"analysis_type": "single_cell"},
+        )
 
         input_file = self._resolve_input_file(params, context)
         result = self._validate_sc_input(input_file)
         if result is not None:
-            if self.workflow_recorder and run_id:
-                self.workflow_recorder.record_step(
-                    run_id,
-                    step_id="sc_analysis_input_check",
-                    step_type="analysis",
-                    tool="run_analysis",
-                    params={"analysis_type": "single_cell"},
-                    output={"status": result["status"], "message": result["message"]},
-                )
+            self._record_step(
+                run_id,
+                step_id="sc_analysis_input_check",
+                step_type="analysis",
+                tool="run_analysis",
+                params={"analysis_type": "single_cell"},
+                output={"status": result["status"], "message": result["message"]},
+            )
             return result
 
         from src.analysis.sc_qc import run_sc_qc
@@ -432,14 +419,13 @@ class WorkflowManager:
         self, params: dict[str, Any], context: dict[str, Any], run_id: str | None = None
     ) -> dict[str, Any]:
         """空间转录组分析：聚类、空间图"""
-        if self.workflow_recorder and run_id:
-            self.workflow_recorder.record_step(
-                run_id,
-                step_id="spatial_analysis_start",
-                step_type="analysis",
-                tool="run_analysis",
-                params={"analysis_type": "spatial"},
-            )
+        self._record_step(
+            run_id,
+            step_id="spatial_analysis_start",
+            step_type="analysis",
+            tool="run_analysis",
+            params={"analysis_type": "spatial"},
+        )
 
         input_file = self._resolve_input_file(params, context)
         if not input_file:
@@ -463,15 +449,14 @@ class WorkflowManager:
                 "method_context": method_context,
                 "message": "未检测到数据文件，已生成示例 Visium 脚本（占位输入），请确认或取消",
             }
-            if self.workflow_recorder and run_id:
-                self.workflow_recorder.record_step(
-                    run_id,
-                    step_id="spatial_analysis_no_input",
-                    step_type="analysis",
-                    tool="run_analysis",
-                    params={"analysis_type": "spatial"},
-                    output={"status": "needs_script_confirmation", "script": code[:100]},
-                )
+            self._record_step(
+                run_id,
+                step_id="spatial_analysis_no_input",
+                step_type="analysis",
+                tool="run_analysis",
+                params={"analysis_type": "spatial"},
+                output={"status": "needs_script_confirmation", "script": code[:100]},
+            )
             return result
 
         project_root = self._project_output_root(context)
@@ -666,14 +651,13 @@ class WorkflowManager:
         run_id: str | None = None,
     ) -> dict[str, Any]:
         """执行知识查询工作流；本地库缺目标 ID 时按需从 KEGG/UniProt 补库再答"""
-        if self.workflow_recorder and run_id:
-            self.workflow_recorder.record_step(
-                run_id,
-                step_id="knowledge_query_start",
-                step_type="knowledge_query",
-                tool="query_knowledge",
-                params={"query": intent.get("original_input", "")},
-            )
+        self._record_step(
+            run_id,
+            step_id="knowledge_query_start",
+            step_type="knowledge_query",
+            tool="query_knowledge",
+            params={"query": intent.get("original_input", "")},
+        )
 
         query = intent.get("original_input", "")
 
@@ -705,15 +689,14 @@ class WorkflowManager:
             "lazy_ingested": lazy_ingested,
         }
 
-        if self.workflow_recorder and run_id:
-            self.workflow_recorder.record_step(
-                run_id,
-                step_id="knowledge_query_finish",
-                step_type="knowledge_query",
-                tool="query_knowledge",
-                params={"query": query},
-                output={"status": "success", "response": knowledge_result[:100]},
-            )
+        self._record_step(
+            run_id,
+            step_id="knowledge_query_finish",
+            step_type="knowledge_query",
+            tool="query_knowledge",
+            params={"query": query},
+            output={"status": "success", "response": knowledge_result[:100]},
+        )
 
         return result
 
@@ -1008,15 +991,14 @@ class WorkflowManager:
         run_id: str | None = None,
     ) -> dict[str, Any]:
         """执行通用工作流"""
-        if self.workflow_recorder and run_id:
-            self.workflow_recorder.record_step(
-                run_id,
-                step_id="general_workflow",
-                step_type="general",
-                tool="none",
-                params={},
-                output={"status": "success", "message": "通用响应"},
-            )
+        self._record_step(
+            run_id,
+            step_id="general_workflow",
+            step_type="general",
+            tool="none",
+            params={},
+            output={"status": "success", "message": "通用响应"},
+        )
         return {
             "status": "success",
             "type": "general_response",
@@ -1075,24 +1057,54 @@ class WorkflowManager:
     # ── AgentRuntime 执行面（tool-calling）────────────────────
     @contextmanager
     def _record_run(
-        self, intent: dict[str, Any], parameters: dict[str, Any], context: dict[str, Any]
+        self,
+        intent: dict[str, Any],
+        parameters: dict[str, Any],
+        context: dict[str, Any],
+        user_input: str | None = None,
+        run_id: str | None = None,
     ) -> Iterator[str | None]:
-        """主路径（*_for_agent）记录闭环：start → yield run_id → finish_run。
+        """执行面记录闭环：start → yield run_id → finish_run。
 
-        无 recorder 时透传 None；不用 try/finally——异常时不 finish，
-        与 legacy execute_workflow 行为一致。
+        无 recorder 时透传传入的 run_id（legacy 路径仍生成文件名）；不用 try/finally——
+        异常时不 finish，保持既有行为。
         """
         if not self.workflow_recorder:
-            yield None
+            yield run_id
             return
         run_id = self.workflow_recorder.start_execution(
             intent=intent,
             parameters=parameters,
-            user_input=context.get("last_user_input") or intent.get("original_input", ""),
+            user_input=user_input
+            or context.get("last_user_input")
+            or intent.get("original_input", ""),
             context=context,
+            run_id=run_id,
         )
         yield run_id
         self.workflow_recorder.finish_run(run_id)
+
+    def _record_step(
+        self,
+        run_id: str | None,
+        *,
+        step_id: str,
+        step_type: str,
+        tool: str,
+        params: dict[str, Any],
+        output: dict[str, Any] | None = None,
+    ) -> None:
+        """记录执行步骤；无 recorder 或 run_id 为空时静默跳过。"""
+        if not self.workflow_recorder or not run_id:
+            return
+        self.workflow_recorder.record_step(
+            run_id,
+            step_id=step_id,
+            step_type=step_type,
+            tool=tool,
+            params=params,
+            output=output,
+        )
 
     def search_datasets_for_agent(
         self, query: str, params: dict[str, Any], context: dict[str, Any] | None = None
