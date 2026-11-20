@@ -1089,7 +1089,15 @@ class SpyRecorder:
         return rid
 
     def record_step(self, run_id, step_id, step_type, tool, params, output=None):
-        self.steps.append({"run_id": run_id, "step_id": step_id})
+        self.steps.append(
+            {
+                "run_id": run_id,
+                "step_id": step_id,
+                "step_type": step_type,
+                "tool": tool,
+                "params": params,
+            }
+        )
 
     def finish_run(self, run_id):
         self.finishes.append(run_id)
@@ -1118,8 +1126,62 @@ def test_run_analysis_for_agent_records_run():
     # record_step 守卫打通：所有步骤携带同一 run_id
     assert spy.steps
     assert all(s["run_id"] == spy.starts[0]["run_id"] for s in spy.steps)
+    assert any(s["tool"] == "run_analysis" for s in spy.steps)
     # 无输入文件 → needs_input 终态（finish 仍应执行，镜像 legacy）
     assert result["status"] == "needs_input"
+
+
+def test_execute_workflow_records_single_run():
+    """legacy execute_workflow 同样只产生一条 run，显式 user_input 优先于 context。"""
+    manager = _make_spy_manager()
+    manager.intent_parser = FakeIntent(
+        parse_return={"type": "general", "original_input": ""},
+        extract_params_return={},
+    )
+
+    result = manager.execute_workflow("你好", {"last_user_input": "上下文输入"})
+
+    spy = manager.workflow_recorder
+    assert result["type"] == "general_response"
+    assert len(spy.starts) == 1
+    assert spy.starts[0]["user_input"] == "你好"
+    assert spy.starts[0]["intent"]["original_input"] == "你好"
+    assert spy.finishes == [spy.starts[0]["run_id"]]
+    assert spy.steps == [
+        {
+            "run_id": spy.starts[0]["run_id"],
+            "step_id": "general_workflow",
+            "step_type": "general",
+            "tool": "none",
+            "params": {},
+        }
+    ]
+
+
+def test_record_step_without_recorder_is_noop():
+    """无 recorder 时（run_id 为空或伪造非空）步骤 helper 都静默返回。"""
+    manager = _make_manager()
+    assert manager.workflow_recorder is None
+    assert (
+        manager._record_step(
+            None,
+            step_id="general_workflow",
+            step_type="general",
+            tool="none",
+            params={},
+        )
+        is None
+    )
+    assert (
+        manager._record_step(
+            "run-fake",
+            step_id="general_workflow",
+            step_type="general",
+            tool="none",
+            params={},
+        )
+        is None
+    )
 
 
 def test_run_analysis_for_agent_finish_run_persists_wrroc(tmp_path, monkeypatch):
