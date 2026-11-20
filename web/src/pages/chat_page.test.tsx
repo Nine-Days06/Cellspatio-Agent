@@ -600,6 +600,33 @@ describe('ChatPage 确认卡片接线', () => {
     expect(screen.queryByText('该会话已有任务在进行')).not.toBeInTheDocument()
   })
 
+  it('点确认后立即锁定，请求在途时重复点击只提交一次', async () => {
+    const sid = nextSid()
+    await renderReady(sid)
+    act(() => {
+      useChatStore.setState({ scriptCard: pendingCard() })
+    })
+    let resolveConfirm!: (value: { message: WireMessage }) => void
+    confirmActionMock.mockReturnValue(
+      new Promise<{ message: WireMessage }>((resolve) => {
+        resolveConfirm = resolve
+      }),
+    )
+
+    const button = screen.getByRole('button', { name: '执行脚本' })
+    fireEvent.click(button)
+    expect(button).toBeDisabled()
+    expect(screen.getByText(/已提交/)).toBeInTheDocument()
+    fireEvent.click(button)
+    fireEvent.click(button)
+    expect(confirmActionMock).toHaveBeenCalledTimes(1)
+
+    await act(async () => {
+      resolveConfirm({ message: makeMsg(sid) })
+    })
+    await waitFor(() => expect(useChatStore.getState().scriptCard?.status).toBe('confirmed'))
+  })
+
   it('数据确认成功：调用 confirmAction 后清除数据卡', async () => {
     const sid = nextSid()
     await renderReady(sid)

@@ -9,7 +9,7 @@
  * - busy 只由 endTurn / failTurn / onEnd 关闭；停止按钮与 Esc 只置 abort，
  *   文案不承诺瞬时取消（约束 3）。
  */
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useReducer, useRef, useState } from 'react'
 import { useQueryClient } from '@tanstack/react-query'
 import { ArrowUp, Square } from 'lucide-react'
 import { ConfirmCard } from '@/components/ConfirmCard'
@@ -18,6 +18,7 @@ import { MessageList } from '@/components/MessageList'
 import { Sidebar } from '@/components/Sidebar'
 import { ThemeToggle } from '@/components/ThemeToggle'
 import { ApiError, confirmAction, createSession, registerLocalInput } from '@/lib/api'
+import { confirmReducer, initialConfirmState } from '@/lib/confirmState'
 import { queryKeys, useMessages, useProjects, useSessions, useSidebar } from '@/lib/queries'
 import { collectArchivedProjectIds, isActiveSession } from '@/lib/sessions'
 import type {
@@ -52,8 +53,8 @@ export function ChatPage() {
   const [stopping, setStopping] = useState(false)
   /** 超 30s 无 store 事件（约束 3c） */
   const [slowHint, setSlowHint] = useState(false)
-  /** POST /api/confirm 失败的后端中文 detail；发起新一轮确认前置 null */
-  const [confirmError, setConfirmError] = useState<string | null>(null)
+  /** 确认卡唯一状态源；新卡/切换会话/重新生成/新一轮输入时 reset */
+  const [confirmState, dispatchConfirm] = useReducer(confirmReducer, initialConfirmState)
   /** 本轮模式：知识问答只走证据链，智能对话走现有工具循环 */
   const [mode, setMode] = useState<ChatMode>('chat')
 
@@ -157,7 +158,7 @@ export function ChatPage() {
     const prompt = input.trim()
     if (!prompt || busy) return
     setInput('')
-    setConfirmError(null)
+    dispatchConfirm({ type: 'reset' })
     void send(prompt, mode)
   }
 
@@ -177,27 +178,32 @@ export function ChatPage() {
         : 'chat'
       : mode
     setMode(replayMode)
+    dispatchConfirm({ type: 'reset' })
     void send(history[lastUserAt].content, replayMode)
   }
 
-  /** 确认执行：发起前先清旧错误；成功按 action 回写卡片状态 / 清卡（T7 契约） */
+  /** 确认执行：先派发 submit（覆盖旧失败态）；成功按 action 回写卡片状态 / 清卡（T7 契约） */
   async function handleConfirm(body: ConfirmRequestBody): Promise<void> {
-    setConfirmError(null)
+    dispatchConfirm({ type: 'submit', action: body.action })
     try {
       await confirmAction(body)
       if (body.action === 'data_confirm') {
         setDataCard(null)
-        return
+      } else {
+        const card = useChatStore.getState().scriptCard
+        if (card) {
+          setScriptCard({
+            ...card,
+            status: body.action === 'script_confirm' ? 'confirmed' : 'cancelled',
+          })
+        }
       }
-      const card = useChatStore.getState().scriptCard
-      if (card) {
-        setScriptCard({
-          ...card,
-          status: body.action === 'script_confirm' ? 'confirmed' : 'cancelled',
-        })
-      }
+      dispatchConfirm({ type: 'success' })
     } catch (err) {
-      setConfirmError(err instanceof ApiError ? err.message : '确认执行失败')
+      dispatchConfirm({
+        type: 'failure',
+        error: err instanceof ApiError ? err.message : '确认执行失败',
+      })
     }
   }
 
@@ -205,7 +211,7 @@ export function ChatPage() {
   function handleRegen(): void {
     const card = useChatStore.getState().scriptCard
     if (!card) return
-    setConfirmError(null)
+    dispatchConfirm({ type: 'reset' })
     void send(card.user_request, 'chat')
   }
 
@@ -216,7 +222,7 @@ export function ChatPage() {
       useChatStore.getState().stop()
       setStopping(false)
       setSlowHint(false)
-      setConfirmError(null)
+      dispatchConfirm({ type: 'reset' })
       setSession(id, [])
     },
     [setSession],
@@ -336,7 +342,7 @@ export function ChatPage() {
               scriptCard={scriptCard}
               dataCard={dataCard}
               busy={busy}
-              confirmError={confirmError}
+              confirmState={confirmState}
               onConfirm={handleConfirm}
               onRegen={handleRegen}
             />
