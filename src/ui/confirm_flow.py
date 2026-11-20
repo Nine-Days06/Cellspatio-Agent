@@ -8,8 +8,7 @@ from src.control.chat_messages import build_assistant_message
 from src.ui.confirm_protocol import (
     ACTION_SCRIPT_CANCEL,
     ACTION_SCRIPT_CONFIRM,
-    STATUS_CANCELLED,
-    STATUS_CONFIRMED,
+    SCRIPT_STATUS_BY_ACTION,
     STATUS_EXPIRED,
     STATUS_PENDING,
     PendingScript,
@@ -76,7 +75,7 @@ def confirm_script(agent: Any, store: SessionStore, session_id: str, action: str
         raise ConfirmFlowError(ERR_NO_PENDING_SCRIPT, "没有待确认的脚本")
 
     if action == ACTION_SCRIPT_CANCEL:
-        store.set_script_status(session_id, STATUS_CANCELLED)
+        store.set_script_status(session_id, SCRIPT_STATUS_BY_ACTION[action])
         content = "已取消本次脚本执行。"
         results = None
     elif action == ACTION_SCRIPT_CONFIRM:
@@ -86,7 +85,7 @@ def confirm_script(agent: Any, store: SessionStore, session_id: str, action: str
             pending.get("script", ""),
             method_context=pending.get("method_context"),
         )
-        store.set_script_status(session_id, STATUS_CONFIRMED)
+        store.set_script_status(session_id, SCRIPT_STATUS_BY_ACTION[action])
         content = build_assistant_message(result)["content"]
         results = result.get("results")
     else:

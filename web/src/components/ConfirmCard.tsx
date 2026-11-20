@@ -1,7 +1,14 @@
 import { Database, FileCode2, RefreshCw } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardFooter, CardHeader, CardTitle } from '@/components/ui/card'
-import { STATUS_TEXT, type ConfirmState } from '@/lib/confirmState'
+import {
+  ACTION_DATA_CONFIRM,
+  ACTION_SCRIPT_CANCEL,
+  ACTION_SCRIPT_CONFIRM,
+  STATUS_PENDING,
+  STATUS_TEXT,
+  type ConfirmState,
+} from '@/lib/confirmState'
 import type {
   ConfirmRequestBody,
   DataCandidate,
@@ -46,7 +53,7 @@ export function ConfirmCard({
   const session_id = sessionId ?? ''
 
   if (scriptCard) {
-    const isPending = scriptCard.status === 'pending'
+    const isPending = scriptCard.status === STATUS_PENDING
     const submit = (action: ConfirmRequestBody['action']) => {
       if (locked) return
       onConfirm({ session_id, action })
@@ -91,7 +98,7 @@ export function ConfirmCard({
             <Button
               aria-label="执行脚本"
               disabled={locked}
-              onClick={() => submit('script_confirm')}
+              onClick={() => submit(ACTION_SCRIPT_CONFIRM)}
             >
               执行脚本
             </Button>
@@ -99,7 +106,7 @@ export function ConfirmCard({
               aria-label="取消执行"
               variant="outline"
               disabled={locked}
-              onClick={() => submit('script_cancel')}
+              onClick={() => submit(ACTION_SCRIPT_CANCEL)}
             >
               取消执行
             </Button>
@@ -123,7 +130,7 @@ export function ConfirmCard({
       if (locked) return
       onConfirm({
         session_id,
-        action: 'data_confirm',
+        action: ACTION_DATA_CONFIRM,
         source: candidate.source,
         asset_id: candidate.asset_id,
         query: dataCard.query,
