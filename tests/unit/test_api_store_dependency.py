@@ -130,3 +130,57 @@ def test_chat_input_qc_routes_use_overridden_factory(
         assert client.request(method, url, json=payload).status_code == 404
         assert len(RecordingStore.instances) == baseline + 1
         assert RecordingStore.instances[-1].calls == [expected_call]
+
+
+@pytest.mark.parametrize(
+    ("method", "url", "payload"),
+    [
+        ("GET", "/api/sessions/missing/qc/missing/pca/f", None),
+        (
+            "POST",
+            "/api/sessions/missing/qc/missing/pca/f",
+            {"binding_sha256": "0" * 64, "reason": "r"},
+        ),
+        (
+            "GET",
+            "/api/sessions/missing/qc/missing/pca/f/a/dimensions",
+            None,
+        ),
+        ("GET", "/api/sessions/missing/qc/missing/clusters/f/p", None),
+        (
+            "POST",
+            "/api/sessions/missing/qc/missing/clusters/f/p/execute",
+            {
+                "binding_sha256": "0" * 64,
+                "reason": "r",
+                "revision": 0,
+                "dimension_review_id": "0" * 32,
+            },
+        ),
+        ("GET", "/api/sessions/missing/qc/missing/markers/f/p/c", None),
+        (
+            "POST",
+            "/api/sessions/missing/qc/missing/markers/f/p/c/execute",
+            {
+                "binding_sha256": "0" * 64,
+                "reason": "r",
+                "revision": 0,
+                "cluster_review_id": "0" * 32,
+            },
+        ),
+    ],
+)
+def test_pca_cluster_marker_routes_use_overridden_factory(
+    method: str, url: str, payload: dict | None
+):
+    """缺失 session/run 的读写端点只经工厂构造一次 store 并返回 404。"""
+    app = create_app(FakeAgent())
+    RecordingStore.instances.clear()
+    app.state.store_factory = RecordingStore
+
+    with TestClient(app) as client:
+        baseline = len(RecordingStore.instances)
+
+        assert client.request(method, url, json=payload).status_code == 404
+        assert len(RecordingStore.instances) == baseline + 1
+        assert RecordingStore.instances[-1].calls == ["get_qc_run"]

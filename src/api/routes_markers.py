@@ -23,10 +23,10 @@ from src.analysis.sc_markers import (
     run_sc_markers,
 )
 from src.api.authorized_run import StageClaim, run_authorized
+from src.api.deps import StoreDep
 from src.api.routes_clusters import EVIDENCE_ERRORS, require_cluster
 from src.api.routes_pca import PcaRequest, require_parent, require_pca
 from src.api.routes_qc import require_run, run_qc_root
-from src.ui.session_store import SessionStore
 
 router = APIRouter(prefix="/api/sessions/{session_id}/qc/{run_id}/markers", tags=["markers"])
 logger = logging.getLogger(__name__)
@@ -160,10 +160,11 @@ def get_markers(
     pca_attempt_id: str,
     cluster_attempt_id: str,
     request: Request,
+    store: StoreDep,
 ) -> dict[str, Any]:
     """GET 不认领、不执行、不恢复遗留任务。"""
     try:
-        run = require_run(SessionStore(), session_id, run_id)
+        run = require_run(store, session_id, run_id)
         return view(
             run,
             _associated(run, filter_attempt_id, pca_attempt_id, cluster_attempt_id),
@@ -190,9 +191,9 @@ def execute_markers(
     cluster_attempt_id: str,
     body: MarkerRequest,
     request: Request,
+    store: StoreDep,
 ) -> dict[str, Any]:
     """历史请求只返回历史；首次 CAS 认领后在事务外执行一次固定 R。"""
-    store = SessionStore()
 
     def locate(run: dict[str, Any]) -> tuple[dict[str, Any], Path]:
         """按完整父链定位聚类并读取 QC 根目录。"""
@@ -314,10 +315,11 @@ def diagnostic(
     cluster_attempt_id: str,
     attempt_id: str,
     request: Request,
+    store: StoreDep,
 ) -> Response:
     """完整证据校验后返回同一 PNG 字节；不接受路径参数或逐细胞下载。"""
     try:
-        run = require_run(SessionStore(), session_id, run_id)
+        run = require_run(store, session_id, run_id)
         _associated(run, filter_attempt_id, pca_attempt_id, cluster_attempt_id)
         attempt = next(
             (
@@ -352,12 +354,13 @@ def candidates(
     attempt_id: str,
     request: Request,
     response: Response,
+    store: StoreDep,
     offset: int = Query(0, ge=0),
     limit: int = Query(100, ge=1, le=100),
 ) -> dict[str, Any]:
     """身份核对后分页返回候选统计；不返回路径、逐细胞表达或自由文本依据。"""
     try:
-        run = require_run(SessionStore(), session_id, run_id)
+        run = require_run(store, session_id, run_id)
         _associated(run, filter_attempt_id, pca_attempt_id, cluster_attempt_id)
         attempt = next(
             (
@@ -415,10 +418,10 @@ def review_markers(
     attempt_id: str,
     body: MarkerReviewRequest,
     request: Request,
+    store: StoreDep,
 ) -> dict[str, Any]:
     """记录 marker 接受/拒绝；同 revision 幂等，内容或证据冲突返回 409。"""
     try:
-        store = SessionStore()
         run = require_run(store, session_id, run_id)
         cluster = _associated(run, filter_attempt_id, pca_attempt_id, cluster_attempt_id)
         attempt = next(
