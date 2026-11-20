@@ -27,6 +27,7 @@ from src.api.deps import StoreDep
 from src.api.routes_pca import dimension_view, require_parent, require_pca
 from src.api.routes_qc import require_run, run_qc_root
 from src.api.stage_runtime import RUNNING, has_running, running_stages
+from src.ui.run_snapshot import RunSnapshot
 from src.ui.session_store import SessionStore
 
 router = APIRouter(prefix="/api/sessions/{session_id}/qc/{run_id}/clusters", tags=["clusters"])
@@ -43,7 +44,7 @@ EVIDENCE_ERRORS = (
 
 
 def view(
-    run: dict[str, Any], parent: dict[str, Any], pca: dict[str, Any], root: Path
+    run: RunSnapshot, parent: dict[str, Any], pca: dict[str, Any], root: Path
 ) -> dict[str, Any]:
     """新授权看 current；历史展示看 attempt 快照，不依赖被自身推进的 revision。"""
     state = dimension_view(run, parent, pca, root)
@@ -68,7 +69,7 @@ def view(
                 "所选 PCs 存在零范数、非有限或退化列；固定 cosine 协议不适用",
             }
             blocked.append(str(exc) if str(exc) in safe else "PCA 来源不可读取或结构不符")
-    attempts = [a for a in run["cluster_attempts"] if a["pca_attempt_id"] == pca["attempt_id"]]
+    attempts = run.cluster_attempts(pca["attempt_id"])
     latest = attempts[-1] if attempts else None
     if not state["current"] and latest is None:
         blocked.extend(state["blocked"] or ["无当前有效维度记录；请回上游明确记录至少 2 个 PCs"])
@@ -192,24 +193,23 @@ def execute_clusters(
 ) -> dict[str, Any]:
     """同绑定先返历史；首次短事务认领，事务外固定执行，无重试接口。"""
 
-    def locate(run: dict[str, Any]) -> tuple[dict[str, Any], dict[str, Any], Path]:
+    def locate(run: RunSnapshot) -> tuple[dict[str, Any], dict[str, Any], Path]:
         """按父过滤与 PCA 定位本 run 的完整上游链。"""
         parent = require_parent(run, filter_attempt_id)
         pca = require_pca(run, filter_attempt_id, pca_attempt_id)
         return parent, pca, run_qc_root(request.app.state.agent, run)
 
-    def previous(run: dict[str, Any]) -> dict[str, Any] | None:
+    def previous(run: RunSnapshot) -> dict[str, Any] | None:
         """按 PCA 尝试、来源绑定与工具版本查找已落库的聚类尝试。"""
         locate(run)
-        reviews = [d for d in run["dimension_reviews"] if d["pca_attempt_id"] == pca_attempt_id]
+        reviews = run.dimension_reviews(pca_attempt_id)
         if not any(d["review_id"] == body.dimension_review_id for d in reviews):
             raise HTTPException(404, "维度记录关联不存在")
         found = next(
             (
                 a
-                for a in run["cluster_attempts"]
-                if a["pca_attempt_id"] == pca_attempt_id
-                and a["binding_sha256"] == body.binding_sha256
+                for a in run.cluster_attempts(pca_attempt_id)
+                if a["binding_sha256"] == body.binding_sha256
                 and a["tool_version"] == CLUSTER_TOOL_VERSION
             ),
             None,
@@ -218,7 +218,7 @@ def execute_clusters(
             raise HTTPException(409, "维度记录与历史授权不符")
         return found
 
-    def prepare(run: dict[str, Any], attempt_id: str) -> StageClaim:
+    def prepare(run: RunSnapshot, attempt_id: str) -> StageClaim:
         """锁内重读维度授权与来源证据，并给出聚类领取计划。"""
         parent, pca, root = locate(run)
         state = dimension_view(run, parent, pca, root)
@@ -323,11 +323,7 @@ def diagnostic(
         require_parent(run, filter_attempt_id)
         require_pca(run, filter_attempt_id, pca_attempt_id)
         attempt = next(
-            (
-                a
-                for a in run["cluster_attempts"]
-                if a["attempt_id"] == attempt_id and a["pca_attempt_id"] == pca_attempt_id
-            ),
+            (a for a in run.cluster_attempts(pca_attempt_id) if a["attempt_id"] == attempt_id),
             None,
         )
         if attempt is None or attempt["status"] != "completed":
@@ -350,14 +346,10 @@ def diagnostic(
     return Response(data, media_type="image/png", headers={"Cache-Control": "no-store"})
 
 
-def require_cluster(run: dict[str, Any], pca_attempt_id: str, attempt_id: str) -> dict[str, Any]:
+def require_cluster(run: RunSnapshot, pca_attempt_id: str, attempt_id: str) -> dict[str, Any]:
     """只定位本 run 与 PCA 下的确切聚类尝试。"""
     cluster = next(
-        (
-            a
-            for a in run["cluster_attempts"]
-            if a["attempt_id"] == attempt_id and a["pca_attempt_id"] == pca_attempt_id
-        ),
+        (a for a in run.cluster_attempts(pca_attempt_id) if a["attempt_id"] == attempt_id),
         None,
     )
     if cluster is None:
@@ -447,9 +439,8 @@ def record_review(
         previous = next(
             (
                 d
-                for d in run["cluster_reviews"]
-                if d["cluster_attempt_id"] == attempt_id
-                and d["binding_sha256"] == body.binding_sha256
+                for d in run.cluster_reviews(attempt_id)
+                if d["binding_sha256"] == body.binding_sha256
                 and d["record_version"] == CLUSTER_RECORD_VERSION
                 and d["source_revision"] == body.revision
             ),

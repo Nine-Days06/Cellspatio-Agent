@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import Any
 
 from src.ui.confirm_protocol import STATUS_EXPIRED, STATUS_PENDING
+from src.ui.run_snapshot import RunSnapshot
 from src.ui.sc_stage_defs import STAGE_SPECS
 from src.ui.sc_stages import ScStages
 from src.ui.session_codec import _encode_results, _now
@@ -531,7 +532,7 @@ class SessionStore:
                 (run_id, session_id, directory, json.dumps(evidence, ensure_ascii=False)),
             )
 
-    def get_qc_run(self, session_id: str, run_id: str) -> dict[str, Any] | None:
+    def get_qc_run(self, session_id: str, run_id: str) -> RunSnapshot | None:
         """读取权威 run 与预览/批准历史，不从消息倒推状态。"""
         with self._conn() as conn:
             conn.execute("BEGIN")
@@ -621,7 +622,7 @@ class SessionStore:
         ]
         run["cluster_rejections"] = [dict(d) for d in cluster_rejections]
         run["marker_reviews"] = [dict(d) for d in marker_reviews]
-        return run
+        return RunSnapshot(run)
 
     def list_qc_runs(self, session_id: str) -> list[dict[str, Any]]:
         """按创建顺序列出会话的 QC run（供导出/删除 CLI 枚举产物）。"""
@@ -652,7 +653,7 @@ class SessionStore:
 
     def approve_qc_preview(
         self, session_id: str, run_id: str, revision: int, preview_id: str, reason: str
-    ) -> dict[str, Any]:
+    ) -> RunSnapshot | None:
         """批准事实与一条展示消息原子落库；重复请求返回原事实。"""
         with self._conn() as conn:
             conn.execute("BEGIN IMMEDIATE")
@@ -698,7 +699,7 @@ class SessionStore:
         preview_id: str,
         reason: str,
         reviewer: str = "local-user",
-    ) -> dict[str, Any]:
+    ) -> RunSnapshot | None:
         """拒绝当前待批准的 QC 预览；只记事实，不执行过滤。"""
         reason = reason.strip()
         if not reason:

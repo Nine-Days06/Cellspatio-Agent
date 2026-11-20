@@ -4,15 +4,17 @@ from __future__ import annotations
 
 import json
 import tempfile
+from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
+from src.ui.run_snapshot import RunSnapshot
 from src.ui.session_store import SessionStore
 
 _PROTECTED_NAMES = {".cellspatio", ".trash", ".wrroc", "snapshots", "data"}
 
 
-def session_runs(store: SessionStore, session_id: str) -> list[dict[str, Any]]:
+def session_runs(store: SessionStore, session_id: str) -> list[RunSnapshot]:
     """返回会话已登记的 QC run 及其 attempts。"""
     runs = []
     for row in store.list_qc_runs(session_id):
@@ -47,7 +49,7 @@ def wrroc_index(root: Path) -> dict[str, list[tuple[str, dict[str, Any]]]]:
     return index
 
 
-def run_dirs(run: dict[str, Any]) -> list[tuple[str, str]]:
+def run_dirs(run: Mapping[str, Any]) -> list[tuple[str, str]]:
     """返回 run 的 (stage, directory) 列表。"""
     pairs = []
     if run.get("directory"):

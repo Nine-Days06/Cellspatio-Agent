@@ -4,14 +4,16 @@ from __future__ import annotations
 
 import json
 import uuid
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, TypeVar
 
 from fastapi import HTTPException
 
 from src.api.chat_service import session_lock
+
+RunT = TypeVar("RunT", bound=Mapping[str, Any])
 
 
 @dataclass(frozen=True)
@@ -32,9 +34,9 @@ class StageClaim:
 def run_authorized(
     *,
     session_id: str,
-    load: Callable[[], dict[str, Any]],
-    previous: Callable[[dict[str, Any]], dict[str, Any] | None],
-    prepare: Callable[[dict[str, Any], str], StageClaim],
+    load: Callable[[], RunT],
+    previous: Callable[[RunT], dict[str, Any] | None],
+    prepare: Callable[[RunT, str], StageClaim],
     refresh: Callable[[], dict[str, Any]],
     unsafe_directory: str,
 ) -> dict[str, Any]:

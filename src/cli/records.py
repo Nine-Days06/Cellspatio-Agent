@@ -17,6 +17,7 @@ import re
 import shutil
 import sqlite3
 import zipfile
+from collections.abc import Iterable, Mapping
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -55,7 +56,7 @@ def _redact_text(text: str) -> str:
 
 def _json_safe(value: Any, redact: bool) -> Any:
     """递归脱敏字符串并保证值可 JSON 序列化。"""
-    if isinstance(value, dict):
+    if isinstance(value, Mapping):
         return {key: _json_safe(item, redact) for key, item in value.items()}
     if isinstance(value, (list, tuple)):
         return [_json_safe(item, redact) for item in value]
@@ -68,7 +69,7 @@ def _json_safe(value: Any, redact: bool) -> Any:
 
 def _redact_record_paths(value: Any) -> Any:
     """按已知路径字段名递归脱敏记录中的路径。"""
-    if isinstance(value, dict):
+    if isinstance(value, Mapping):
         return {
             key: (
                 "<redacted-path>"
@@ -128,7 +129,7 @@ def _file_row(
 
 
 def _artifact_rows(
-    runs: list[dict[str, Any]],
+    runs: Iterable[Mapping[str, Any]],
     session_id: str,
     root: Path,
     redact: bool,
