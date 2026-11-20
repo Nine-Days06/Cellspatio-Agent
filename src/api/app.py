@@ -45,10 +45,7 @@ async def _unhandled_exception_handler(request: Request, exc: Exception) -> JSON
 
 
 def create_app(agent: Any) -> FastAPI:
-    """构建 FastAPI 应用；agent 挂到 app.state，路由经 request.app.state.agent 取用。
-
-    挂载 routes_sessions + routes_chat + routes_meta；新增路由模块时改这一处。
-    """
+    """挂载全部 API 路由；agent 与 store factory 挂到 app.state。"""
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):

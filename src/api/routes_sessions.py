@@ -37,6 +37,7 @@ class CreateSessionRequest(BaseModel):
 
 @router.get("/sessions")
 def list_sessions(store: StoreDep, include_archived: bool = False) -> dict[str, Any]:
+    """列出会话（可选含归档）；只读，不加会话锁。"""
     return {"sessions": store.list_sessions(include_archived=include_archived)}
 
 
@@ -96,6 +97,7 @@ def update_session(session_id: str, body: UpdateSessionRequest, store: StoreDep)
 
 @router.delete("/sessions/{session_id}")
 def delete_session(session_id: str, store: StoreDep) -> dict[str, Any]:
+    """删除会话；先取非阻塞会话锁，避免删掉生成中的会话。"""
     _require_session(store, session_id)
     # 生成中删除会让 worker 落库失败 → 与 chat/confirm 同一把非阻塞会话锁
     lock = session_lock(session_id)
@@ -112,6 +114,7 @@ def delete_session(session_id: str, store: StoreDep) -> dict[str, Any]:
 
 @router.get("/sessions/{session_id}/messages")
 def list_messages(session_id: str, store: StoreDep, restore: int = 0) -> dict[str, Any]:
+    """返回会话与消息；只读，仅 restore=1 时改写待确认脚本并落库。"""
     session = _require_session(store, session_id)
     messages = store.get_messages(session_id)
     return {

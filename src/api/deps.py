@@ -14,6 +14,7 @@ def get_store(request: Request) -> SessionStore:
     """由 app.state.store_factory 构造本请求的 SessionStore。
 
     FastAPI 在同一请求内缓存依赖结果，多处 Depends(get_store) 只会构造一次。
+    SessionStore 每次操作独立建连，同步依赖与 async 端点共用同一实例是安全的。
     """
     factory: Callable[[], SessionStore] = request.app.state.store_factory
     return factory()
