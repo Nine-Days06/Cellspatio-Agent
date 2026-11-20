@@ -2,11 +2,32 @@
 
 from __future__ import annotations
 
+import ast
+from pathlib import Path
+
 import pytest
 from fastapi.testclient import TestClient
 
 from src.api.app import create_app
 from src.api.chat_service import session_lock
+from src.ui.confirm_flow import (
+    ERR_MISSING_SOURCE,
+    ERR_NO_PENDING_SCRIPT,
+    ERR_NOT_SCRIPT_ACTION,
+    ERR_UNKNOWN_SOURCE,
+    ConfirmFlowError,
+    confirm_data,
+    confirm_script,
+)
+from src.ui.confirm_protocol import (
+    ACTION_DATA_CONFIRM,
+    ACTION_SCRIPT_CANCEL,
+    ACTION_SCRIPT_CONFIRM,
+    STATUS_CANCELLED,
+    STATUS_CONFIRMED,
+    STATUS_EXPIRED,
+    STATUS_PENDING,
+)
 from src.ui.session_store import SessionStore
 from tests.unit.fakes import FakeAgent
 
@@ -20,7 +41,7 @@ def _new_session(client) -> str:
     return client.post("/api/sessions", json={}).json()["session"]["id"]
 
 
-def _with_pending_script(client, status: str = "pending") -> str:
+def _with_pending_script(client, status: str = STATUS_PENDING) -> str:
     sid = _new_session(client)
     SessionStore().append_message(
         sid,
@@ -59,7 +80,7 @@ def test_script_confirm_runs_script_and_persists_result(client):
         "/api/confirm",
         json={
             "session_id": sid,
-            "action": "script_confirm",
+            "action": ACTION_SCRIPT_CONFIRM,
         },
     )
 
@@ -72,7 +93,7 @@ def test_script_confirm_runs_script_and_persists_result(client):
             "method_context": "DESeq2 常规流程",
         }
     ]
-    assert _latest_pending(sid)["pending_script"]["status"] == "confirmed"
+    assert _latest_pending(sid)["pending_script"]["status"] == STATUS_CONFIRMED
     stored = SessionStore().get_messages(sid)
     assert stored[-1]["role"] == "assistant"
     assert "分析完成" in stored[-1]["content"]
@@ -86,26 +107,27 @@ def test_script_confirm_without_pending_returns_409(client):
         "/api/confirm",
         json={
             "session_id": sid,
-            "action": "script_confirm",
+            "action": ACTION_SCRIPT_CONFIRM,
         },
     )
 
     assert response.status_code == 409
-    assert "待确认" in response.json()["detail"]
+    assert response.json()["detail"] == "没有待确认的脚本"
 
 
 def test_script_confirm_on_expired_returns_409(client):
-    sid = _with_pending_script(client, status="expired")
+    sid = _with_pending_script(client, status=STATUS_EXPIRED)
 
     response = client.post(
         "/api/confirm",
         json={
             "session_id": sid,
-            "action": "script_confirm",
+            "action": ACTION_SCRIPT_CONFIRM,
         },
     )
 
     assert response.status_code == 409
+    assert response.json()["detail"] == "没有待确认的脚本"
     assert client.app.state.agent.confirm_calls == []
 
 
@@ -116,12 +138,12 @@ def test_script_cancel_marks_cancelled_and_persists_message(client):
         "/api/confirm",
         json={
             "session_id": sid,
-            "action": "script_cancel",
+            "action": ACTION_SCRIPT_CANCEL,
         },
     )
 
     assert response.status_code == 200
-    assert _latest_pending(sid)["pending_script"]["status"] == "cancelled"
+    assert _latest_pending(sid)["pending_script"]["status"] == STATUS_CANCELLED
     stored = SessionStore().get_messages(sid)
     assert stored[-1]["content"] == "已取消本次脚本执行。"
     assert client.app.state.agent.confirm_calls == []
@@ -138,7 +160,7 @@ def test_data_confirm_appends_asset_to_session(client):
         "/api/confirm",
         json={
             "session_id": sid,
-            "action": "data_confirm",
+            "action": ACTION_DATA_CONFIRM,
             "source": "geo",
             "asset_id": "GSE1",
             "query": "肝癌",
@@ -165,7 +187,7 @@ def test_data_confirm_without_asset_persists_failure_message(client):
         "/api/confirm",
         json={
             "session_id": sid,
-            "action": "data_confirm",
+            "action": ACTION_DATA_CONFIRM,
             "source": "geo",
             "asset_id": "GSE1",
         },
@@ -184,12 +206,13 @@ def test_data_confirm_missing_asset_id_returns_400(client):
         "/api/confirm",
         json={
             "session_id": sid,
-            "action": "data_confirm",
+            "action": ACTION_DATA_CONFIRM,
             "source": "geo",
         },
     )
 
     assert response.status_code == 400
+    assert response.json()["detail"] == "缺少 source 或 asset_id"
 
 
 def test_unknown_action_returns_400(client):
@@ -198,7 +221,7 @@ def test_unknown_action_returns_400(client):
     response = client.post("/api/confirm", json={"session_id": sid, "action": "script_regen"})
 
     assert response.status_code == 400
-    assert "script_regen" in response.json()["detail"]
+    assert response.json()["detail"] == "未知动作: script_regen"
 
 
 def test_confirm_unknown_session_returns_404(client):
@@ -206,7 +229,7 @@ def test_confirm_unknown_session_returns_404(client):
         "/api/confirm",
         json={
             "session_id": "nope",
-            "action": "script_confirm",
+            "action": ACTION_SCRIPT_CONFIRM,
         },
     )
 
@@ -222,7 +245,7 @@ def test_confirm_while_generation_running_returns_409(client):
             "/api/confirm",
             json={
                 "session_id": sid,
-                "action": "data_confirm",
+                "action": ACTION_DATA_CONFIRM,
                 "source": "geo",
                 "asset_id": "GSE1",
             },
@@ -244,7 +267,7 @@ def test_data_confirm_repeat_keeps_single_asset(client):
     }
     payload = {
         "session_id": sid,
-        "action": "data_confirm",
+        "action": ACTION_DATA_CONFIRM,
         "source": "geo",
         "asset_id": "GSE1",
         "query": "肝癌",
@@ -276,7 +299,7 @@ def test_data_confirm_unregistered_source_returns_structured_400():
         "/api/confirm",
         json={
             "session_id": sid,
-            "action": "data_confirm",
+            "action": ACTION_DATA_CONFIRM,
             "source": "not_registered",
             "asset_id": "X1",
         },
@@ -284,7 +307,7 @@ def test_data_confirm_unregistered_source_returns_structured_400():
 
     assert response.status_code == 400
     assert response.headers["content-type"].startswith("application/json")
-    assert "not_registered" in response.json()["detail"]
+    assert response.json()["detail"] == "未知数据源: not_registered"
 
 
 def test_script_confirm_twice_second_gets_409(client):
@@ -295,14 +318,14 @@ def test_script_confirm_twice_second_gets_409(client):
         "message": "分析完成",
         "results": None,
     }
-    payload = {"session_id": sid, "action": "script_confirm"}
+    payload = {"session_id": sid, "action": ACTION_SCRIPT_CONFIRM}
 
     first = client.post("/api/confirm", json=payload)
     second = client.post("/api/confirm", json=payload)
 
     assert first.status_code == 200
     assert second.status_code == 409
-    assert "待确认" in second.json()["detail"]
+    assert second.json()["detail"] == "没有待确认的脚本"
     assert len(client.app.state.agent.confirm_calls) == 1
 
 
@@ -320,11 +343,98 @@ def test_script_confirm_execute_failure_returns_502_keeps_pending():
         "/api/confirm",
         json={
             "session_id": sid,
-            "action": "script_confirm",
+            "action": ACTION_SCRIPT_CONFIRM,
         },
     )
 
     assert response.status_code == 502
     assert response.headers["content-type"].startswith("application/json")
     assert "R 执行崩溃" in response.json()["detail"]
-    assert _latest_pending(sid)["pending_script"]["status"] == "pending"
+    assert _latest_pending(sid)["pending_script"]["status"] == STATUS_PENDING
+
+
+def test_script_cancel_on_expired_returns_409(client):
+    """取消同样只接受 pending；过期脚本不得被改写成 cancelled。"""
+    sid = _with_pending_script(client, status=STATUS_EXPIRED)
+
+    response = client.post(
+        "/api/confirm",
+        json={
+            "session_id": sid,
+            "action": ACTION_SCRIPT_CANCEL,
+        },
+    )
+
+    assert response.status_code == 409
+    assert response.json()["detail"] == "没有待确认的脚本"
+    assert _latest_pending(sid)["pending_script"]["status"] == STATUS_EXPIRED
+
+
+def test_state_machine_no_pending_error_code(client):
+    sid = _new_session(client)
+
+    with pytest.raises(ConfirmFlowError) as exc:
+        confirm_script(client.app.state.agent, SessionStore(), sid, ACTION_SCRIPT_CONFIRM)
+
+    assert exc.value.code == ERR_NO_PENDING_SCRIPT
+    assert str(exc.value) == "没有待确认的脚本"
+
+
+def test_state_machine_missing_source_error_code(client):
+    sid = _new_session(client)
+
+    with pytest.raises(ConfirmFlowError) as exc:
+        confirm_data(client.app.state.agent, SessionStore(), sid, source=None, asset_id="GSE1")
+
+    assert exc.value.code == ERR_MISSING_SOURCE
+    assert str(exc.value) == "缺少 source 或 asset_id"
+
+
+def test_state_machine_unknown_source_error_code(client):
+    sid = _new_session(client)
+
+    def _boom(source, asset_id, query=""):
+        raise KeyError(f"未注册的数据源: {source}")
+
+    client.app.state.agent.confirm_and_download = _boom
+
+    with pytest.raises(ConfirmFlowError) as exc:
+        confirm_data(client.app.state.agent, SessionStore(), sid, source="nope", asset_id="X1")
+
+    assert exc.value.code == ERR_UNKNOWN_SOURCE
+    assert str(exc.value) == "未知数据源: nope"
+
+
+def test_state_machine_not_script_action_error_code(client):
+    sid = _with_pending_script(client)
+
+    with pytest.raises(ConfirmFlowError) as exc:
+        confirm_script(client.app.state.agent, SessionStore(), sid, "bad_action")
+
+    assert exc.value.code == ERR_NOT_SCRIPT_ACTION
+    assert str(exc.value) == "不是脚本动作: bad_action"
+    assert _latest_pending(sid)["pending_script"]["status"] == STATUS_PENDING
+
+
+def _module_imports(relative_path: str) -> set[str]:
+    path = Path(__file__).resolve().parents[2] / relative_path
+    tree = ast.parse(path.read_text(encoding="utf-8"))
+    modules: set[str] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            modules.update(alias.name for alias in node.names)
+        elif isinstance(node, ast.ImportFrom) and node.module:
+            modules.add(node.module)
+    return modules
+
+
+def test_session_store_does_not_import_confirm_flow_or_fastapi():
+    imports = _module_imports("src/ui/session_store.py")
+
+    assert "src.ui.confirm_flow" not in imports
+    assert not any(name == "fastapi" or name.startswith("fastapi.") for name in imports)
+    assert not any(name == "src.control" or name.startswith("src.control.") for name in imports)
+
+
+def test_confirm_protocol_has_no_third_party_imports():
+    assert _module_imports("src/ui/confirm_protocol.py") <= {"__future__", "typing"}

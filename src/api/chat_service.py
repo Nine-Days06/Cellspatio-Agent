@@ -15,6 +15,7 @@ from src.control.chat_messages import (
     format_script_confirmation,
     make_llm_summarize,
 )
+from src.ui.confirm_protocol import STATUS_PENDING
 from src.ui.session_store import SessionStore
 
 logger = logging.getLogger(__name__)
@@ -211,7 +212,7 @@ def run_turn(
             "params": result.get("params") or {},
             "method_context": result.get("method_context"),
             "user_request": prompt,
-            "status": "pending",
+            "status": STATUS_PENDING,
         }
         last = _persist(
             store, session_id, format_script_confirmation(result), pending_script=pending
