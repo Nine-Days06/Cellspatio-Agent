@@ -7,7 +7,7 @@ from src.control.replay import replay_run
 from src.control.snapshot_manager import SnapshotManager
 
 
-def test_replay_restores_and_runs():
+def test_replay_restores_snapshot():
     with tempfile.TemporaryDirectory() as tmp:
         repo = Path(tmp) / "repo"
         repo.mkdir()
@@ -33,6 +33,18 @@ def test_replay_restores_and_runs():
 
         # Replay：应恢复到 worktree 并可读取结果
         result = replay_run("run-replay", repo_root=repo)
-        assert result["status"] == "success"
+        assert result["status"] == "restored"
+        assert "analysis not re-executed" in result["message"]
         assert result["snapshot_path"] == str(mgr.get_snapshot_path("run-replay"))
         assert (Path(result["snapshot_path"]) / "out.de_results.csv").exists()
+
+
+def test_replay_missing_snapshot_returns_error():
+    with tempfile.TemporaryDirectory() as tmp:
+        repo = Path(tmp) / "repo"
+        repo.mkdir()
+
+        result = replay_run("run-missing", repo_root=repo)
+
+        assert result["status"] == "error"
+        assert "run-missing" in result["message"]

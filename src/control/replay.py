@@ -1,4 +1,4 @@
-"""一键复现：恢复 worktree、数据、环境、执行。"""
+"""复现历史运行：恢复快照并尝试同步环境，不重跑分析。"""
 
 from __future__ import annotations
 
@@ -11,11 +11,12 @@ from src.control.snapshot_manager import SnapshotManager
 
 def replay_run(run_id: str, repo_root: Path | str | None = None) -> dict[str, Any]:
     """
-    一键复现：
+    复现历史运行：
     1. 定位 snapshots/<run_id> worktree
-    2. 可选：恢复数据文件（从 WRROC 或 worktree）
-    3. 可选：恢复环境（uv sync / renv::restore）
-    4. 返回快照路径与状态
+    2. 可选：同步环境（uv sync / renv::restore）
+    3. 返回快照路径与状态
+
+    只恢复快照、尝试环境同步，不重跑分析；成功状态为 ``restored``。
     """
     repo_root = Path(repo_root) if repo_root else Path.cwd()
     mgr = SnapshotManager(repo_root)
@@ -35,8 +36,8 @@ def replay_run(run_id: str, repo_root: Path | str | None = None) -> dict[str, An
         )
 
     return {
-        "status": "success",
+        "status": "restored",
         "run_id": run_id,
         "snapshot_path": str(snap_path),
-        "message": f"Restored snapshot for {run_id} at {snap_path}",
+        "message": f"Snapshot restored for {run_id}; analysis not re-executed",
     }
