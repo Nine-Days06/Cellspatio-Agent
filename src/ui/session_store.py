@@ -309,6 +309,37 @@ _FILTER_STAGE = StageSpec(
 )
 
 
+def _pca_message(attempt: sqlite3.Row, result: dict[str, Any]) -> tuple[str, dict[str, Any]]:
+    """PCA 终态的固定文案与安全汇总。"""
+    content = (
+        "归一化与 PCA 产物已保存，等待审阅；科学未复核，未执行聚类或注释。"
+        if result["status"] == "completed"
+        else "归一化与 PCA 失败，本地证据保留；不会自动重跑。"
+    )
+    return content, {
+        "sc_pca": {
+            "run_id": attempt["run_id"],
+            "filter_attempt_id": attempt["filter_attempt_id"],
+            "attempt_id": attempt["attempt_id"],
+            "stage": "pca_review",
+            "technical_status": result["status"],
+            "scientific_status": "unreviewed",
+        }
+    }
+
+
+_PCA_STAGE = StageSpec(
+    table="sc_pca_attempts",
+    match_columns=("filter_attempt_id", "binding_sha256", "tool_version"),
+    terminal=("completed", "failed"),
+    missing_run="QC 关联不存在",
+    revision_error="仅可授权当前已批准且过滤完成的父阶段，请刷新",
+    invalid_terminal="PCA 终态非法",
+    not_running="PCA 任务不在运行状态",
+    message=_pca_message,
+)
+
+
 class SessionStore:
     """会话/消息 CRUD。每次操作独立短连接，不做连接池。"""
 
@@ -905,20 +936,9 @@ class SessionStore:
         attempt_id: str,
     ) -> dict[str, Any]:
         """短事务认领独立授权；哈希期间的选择变化通过 revision 拒绝。"""
-        with self._conn() as conn:
-            conn.execute("BEGIN IMMEDIATE")
-            run = conn.execute(
-                "SELECT * FROM qc_runs WHERE session_id = ? AND run_id = ?", (session_id, run_id)
-            ).fetchone()
-            if run is None:
-                raise ValueError("QC 关联不存在")
-            previous = conn.execute(
-                "SELECT * FROM sc_pca_attempts WHERE filter_attempt_id = ? "
-                "AND binding_sha256 = ? AND tool_version = ?",
-                (filter_attempt_id, binding, tool_version),
-            ).fetchone()
-            if previous:
-                return {**dict(previous), "claimed": False}
+
+        def validate(conn: sqlite3.Connection, run: sqlite3.Row) -> None:
+            """锁内确认父过滤已完成且仍是当前批准选择。"""
             self._require_no_filter(conn, run_id)
             parent = conn.execute(
                 "SELECT a.*, p.status AS approval FROM sc_filter_attempts a "
@@ -926,88 +946,36 @@ class SessionStore:
                 (filter_attempt_id, run_id),
             ).fetchone()
             if (
-                run["revision"] != revision
-                or parent is None
+                parent is None
                 or parent["status"] != "completed"
                 or parent["approval"] != "approved"
                 or run["active_preview_id"] != parent["preview_id"]
             ):
                 raise ValueError("仅可授权当前已批准且过滤完成的父阶段，请刷新")
-            conn.execute(
-                "INSERT INTO sc_pca_attempts (attempt_id, filter_attempt_id, run_id, binding_sha256, "
-                "tool_version, protocol, reason, directory, status, created_at) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'running', ?)",
-                (
-                    attempt_id,
-                    filter_attempt_id,
-                    run_id,
-                    binding,
-                    tool_version,
-                    json.dumps(protocol, ensure_ascii=False),
-                    reason,
-                    directory,
-                    _now(),
-                ),
-            )
-            conn.execute("UPDATE qc_runs SET revision = revision + 1 WHERE run_id = ?", (run_id,))
-        return {"attempt_id": attempt_id, "directory": directory, "claimed": True}
+
+        return StageLifecycle(self._conn, _encode_results).claim(
+            _PCA_STAGE,
+            session_id=session_id,
+            run_id=run_id,
+            revision=revision,
+            attempt_id=attempt_id,
+            values={
+                "filter_attempt_id": filter_attempt_id,
+                "binding_sha256": binding,
+                "tool_version": tool_version,
+                "protocol": json.dumps(protocol, ensure_ascii=False),
+                "reason": reason,
+                "directory": directory,
+            },
+            validate=validate,
+            clock=_now,
+        )
 
     def finish_sc_pca(self, attempt_id: str, result: dict[str, Any]) -> None:
         """终态和安全阶段消息原子保存；私有分析证据不进入聊天。"""
-        if result["status"] not in ("completed", "failed"):
-            raise ValueError("PCA 终态非法")
-        with self._conn() as conn:
-            conn.execute("BEGIN IMMEDIATE")
-            attempt = conn.execute(
-                "SELECT a.*, r.session_id FROM sc_pca_attempts a JOIN qc_runs r USING(run_id) "
-                "WHERE attempt_id = ?",
-                (attempt_id,),
-            ).fetchone()
-            if attempt is None or attempt["status"] != "running":
-                raise ValueError("PCA 任务不在运行状态")
-            sid, now = attempt["session_id"], _now()
-            seq = conn.execute(
-                "SELECT COALESCE(MAX(seq), 0) + 1 FROM messages WHERE session_id = ?", (sid,)
-            ).fetchone()[0]
-            message_id = conn.execute(
-                "INSERT INTO messages (session_id, seq, role, content, timestamp, results) "
-                "VALUES (?, ?, 'assistant', ?, ?, ?)",
-                (
-                    sid,
-                    seq,
-                    "归一化与 PCA 产物已保存，等待审阅；科学未复核，未执行聚类或注释。"
-                    if result["status"] == "completed"
-                    else "归一化与 PCA 失败，本地证据保留；不会自动重跑。",
-                    now,
-                    _encode_results(
-                        {
-                            "sc_pca": {
-                                "run_id": attempt["run_id"],
-                                "filter_attempt_id": attempt["filter_attempt_id"],
-                                "attempt_id": attempt_id,
-                                "stage": "pca_review",
-                                "technical_status": result["status"],
-                                "scientific_status": "unreviewed",
-                            }
-                        }
-                    ),
-                ),
-            ).lastrowid
-            conn.execute(
-                "UPDATE sc_pca_attempts SET status = ?, finished_at = ?, result = ?, message_id = ? "
-                "WHERE attempt_id = ? AND status = 'running'",
-                (
-                    result["status"],
-                    now,
-                    json.dumps(result, ensure_ascii=False),
-                    message_id,
-                    attempt_id,
-                ),
-            )
-            conn.execute(
-                "UPDATE qc_runs SET revision = revision + 1 WHERE run_id = ?", (attempt["run_id"],)
-            )
-            conn.execute("UPDATE sessions SET updated_at = ? WHERE id = ?", (now, sid))
+        StageLifecycle(self._conn, _encode_results).finish(
+            _PCA_STAGE, attempt_id=attempt_id, result=result, clock=_now
+        )
 
     def record_pca_dimensions(
         self,
@@ -1091,31 +1059,23 @@ class SessionStore:
             ):
                 return
             review_id, now = uuid.uuid4().hex, _now()
-            seq = conn.execute(
-                "SELECT COALESCE(MAX(seq), 0) + 1 FROM messages WHERE session_id = ?", (session_id,)
-            ).fetchone()[0]
-            message_id = conn.execute(
-                "INSERT INTO messages (session_id, seq, role, content, timestamp, results) "
-                "VALUES (?, ?, 'assistant', ?, ?, ?)",
-                (
-                    session_id,
-                    seq,
-                    "维度选择已记录，科学未复核；未授权下游执行。",
-                    now,
-                    _encode_results(
-                        {
-                            "pca_dimensions": {
-                                "run_id": run["run_id"],
-                                "filter_attempt_id": parent["attempt_id"],
-                                "attempt_id": attempt["attempt_id"],
-                                "review_id": review_id,
-                                "stage": "pca_review",
-                                "scientific_status": "unreviewed",
-                            }
-                        }
-                    ),
-                ),
-            ).lastrowid
+            message_id = publish_message(
+                conn,
+                session_id,
+                "维度选择已记录，科学未复核；未授权下游执行。",
+                {
+                    "pca_dimensions": {
+                        "run_id": run["run_id"],
+                        "filter_attempt_id": parent["attempt_id"],
+                        "attempt_id": attempt["attempt_id"],
+                        "review_id": review_id,
+                        "stage": "pca_review",
+                        "scientific_status": "unreviewed",
+                    }
+                },
+                now,
+                _encode_results,
+            )
             conn.execute(
                 "INSERT INTO sc_pca_dimension_reviews VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (
@@ -1130,10 +1090,7 @@ class SessionStore:
                     message_id,
                 ),
             )
-            conn.execute(
-                "UPDATE qc_runs SET revision = revision + 1 WHERE run_id = ?", (run["run_id"],)
-            )
-            conn.execute("UPDATE sessions SET updated_at = ? WHERE id = ?", (now, session_id))
+            advance_run(conn, run["run_id"], session_id, now)
 
     def interrupt_sc_pcas(self) -> None:
         """单进程启动恢复：旧 running 标中断，不接管或重跑。"""
