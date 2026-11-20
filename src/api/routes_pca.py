@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import logging
 import sqlite3
-import uuid
 from pathlib import Path
 from typing import Any
 
@@ -23,7 +22,7 @@ from src.analysis.sc_pca import (
     dimension_binding,
     run_sc_pca,
 )
-from src.api.chat_service import session_lock
+from src.api.authorized_run import StageClaim, run_authorized
 from src.api.routes_qc import require_run, run_qc_root
 from src.ui.session_store import SessionStore
 
@@ -134,64 +133,81 @@ def execute_pca(
 ) -> dict[str, Any]:
     """同绑定终态/运行态只返历史；首次请求独立校验和原子认领。"""
     store = SessionStore()
-    run = require_run(store, session_id, run_id)
-    parent = require_parent(run, filter_attempt_id)
-    root = run_qc_root(request.app.state.agent, run)
-    if any(
-        a["filter_attempt_id"] == filter_attempt_id
-        and a["binding_sha256"] == body.binding_sha256
-        and a["tool_version"] == PCA_TOOL_VERSION
-        for a in run["pca_attempts"]
-    ):
-        return view(run, parent, root)
-    lock = session_lock(session_id)
-    if not lock.acquire(blocking=False):
-        raise HTTPException(409, "该会话已有任务在进行")
-    try:
-        run = require_run(store, session_id, run_id)
+
+    def previous(run: dict[str, Any]) -> dict[str, Any] | None:
+        """按父过滤、来源绑定与工具版本查找已落库的 PCA 尝试。"""
+        require_parent(run, filter_attempt_id)
+        return next(
+            (
+                a
+                for a in run["pca_attempts"]
+                if a["filter_attempt_id"] == filter_attempt_id
+                and a["binding_sha256"] == body.binding_sha256
+                and a["tool_version"] == PCA_TOOL_VERSION
+            ),
+            None,
+        )
+
+    def prepare(run: dict[str, Any], attempt_id: str) -> StageClaim:
+        """锁内重读父关联与来源证据，并给出 PCA 领取计划。"""
         parent = require_parent(run, filter_attempt_id)
+        root = run_qc_root(request.app.state.agent, run)
         source = checked_parent(run, parent, root)
         if source["binding_sha256"] != body.binding_sha256 or source["cells"] < 3:
             raise ValueError("PCA 绑定不符或细胞不足，请刷新")
-        attempt_id = uuid.uuid4().hex
-        directory = root.parent / "sc_pca" / attempt_id
-        if directory.resolve().parent != root.parent / "sc_pca" or directory.exists():
-            raise ValueError("PCA 输出目录非法")
-        attempt = store.start_sc_pca(
-            session_id,
-            run_id,
-            run["revision"],
-            filter_attempt_id,
-            body.binding_sha256,
-            PCA_TOOL_VERSION,
-            PROTOCOL,
-            body.reason,
-            str(directory),
-            attempt_id,
+        directory_parent = root.parent / "sc_pca"
+        directory = directory_parent / attempt_id
+        return StageClaim(
+            directory_parent=directory_parent,
+            directory=directory,
+            start=lambda: store.start_sc_pca(
+                session_id,
+                run_id,
+                run["revision"],
+                filter_attempt_id,
+                body.binding_sha256,
+                PCA_TOOL_VERSION,
+                PROTOCOL,
+                body.reason,
+                str(directory),
+                attempt_id,
+            ),
+            execute=lambda attempt: run_sc_pca(
+                run,
+                parent,
+                root,
+                directory,
+                body.binding_sha256,
+                request.app.state.agent.workflow_manager.r_executor,
+            ),
+            finish=lambda result: store.finish_sc_pca(attempt_id, result),
+            on_error=lambda exc: {
+                "status": "failed",
+                "stage": "pca_review",
+                "scientific_status": "unreviewed",
+                "error": str(exc),
+            },
         )
-        if attempt["claimed"]:
-            try:
-                result = run_sc_pca(
-                    run,
-                    parent,
-                    root,
-                    directory,
-                    body.binding_sha256,
-                    request.app.state.agent.workflow_manager.r_executor,
-                )
-            except OSError as exc:
-                result = {
-                    "status": "failed",
-                    "stage": "pca_review",
-                    "scientific_status": "unreviewed",
-                    "error": str(exc),
-                }
-            store.finish_sc_pca(attempt_id, result)
-        return view(require_run(store, session_id, run_id), parent, root)
+
+    def refresh() -> dict[str, Any]:
+        """重读同一 run 并返回 PCA 只读视图。"""
+        run = require_run(store, session_id, run_id)
+        return view(
+            run, require_parent(run, filter_attempt_id), run_qc_root(request.app.state.agent, run)
+        )
+
+    try:
+        return run_authorized(
+            session_id=session_id,
+            load=lambda: require_run(store, session_id, run_id),
+            previous=previous,
+            prepare=prepare,
+            refresh=refresh,
+            unsafe_directory="PCA 输出目录非法",
+        )
     except (OSError, ValueError, KeyError, TypeError, sqlite3.OperationalError) as exc:
+        logger.error("PCA execution rejected: %s", type(exc).__name__)
         raise HTTPException(409, str(exc)) from exc
-    finally:
-        lock.release()
 
 
 def require_pca(run: dict[str, Any], filter_attempt_id: str, attempt_id: str) -> dict[str, Any]:

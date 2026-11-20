@@ -174,6 +174,8 @@ def test_get_never_executes_post_once_and_private_stage_only(parent_ready):
     assert all(p.read_bytes() == content for p, content in original.items())
     run = store.get_qc_run(sid, rid)
     attempt = run["pca_attempts"][0]
+    assert Path(attempt["directory"]).parent == root.parent / "sc_pca"
+    assert Path(attempt["directory"]).name == attempt["attempt_id"]
     assert attempt["reason"] == "私有依据" and json.loads(attempt["protocol"]) == PROTOCOL
     assert attempt["result"]["stage"] == "pca_review"
     messages = store.get_messages(sid)
