@@ -26,6 +26,7 @@ def _filter_message(attempt: sqlite3.Row, result: dict[str, Any]) -> tuple[str, 
     }
 
 
+# shortcut: 过滤/PCA 的中断恢复只改状态、不写消息/不推进 revision；统一中断语义需单独决策
 FILTER_STAGE = StageSpec(
     table="sc_filter_attempts",
     match_columns=("preview_id", "binding_sha256", "tool_version"),
