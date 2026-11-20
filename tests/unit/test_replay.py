@@ -3,6 +3,7 @@
 import tempfile
 from pathlib import Path
 
+import src.cli.replay as replay_cli
 from src.control.replay import replay_run
 from src.control.snapshot_manager import SnapshotManager
 
@@ -48,3 +49,14 @@ def test_replay_missing_snapshot_returns_error():
 
         assert result["status"] == "error"
         assert "run-missing" in result["message"]
+
+
+def test_cli_exit_code_follows_restore_status(monkeypatch):
+    monkeypatch.setattr(
+        replay_cli, "replay_run", lambda run_id, repo_root=None: {"status": "restored"}
+    )
+    assert replay_cli.main(["run-1"]) == 0
+    monkeypatch.setattr(
+        replay_cli, "replay_run", lambda run_id, repo_root=None: {"status": "error"}
+    )
+    assert replay_cli.main(["run-1"]) == 1
