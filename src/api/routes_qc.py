@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import sqlite3
-import uuid
 from pathlib import Path
 from typing import Any
 
@@ -12,7 +11,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from src.analysis.qc_preview import Thresholds, build_preview, check_preview, checked_evidence
 from src.analysis.sc_filter import FILTER_TOOL_VERSION, run_sc_filter, verified_selection
-from src.api.chat_service import session_lock
+from src.api.authorized_run import StageClaim, run_authorized
 from src.ui.session_store import SessionStore
 
 router = APIRouter(prefix="/api/sessions/{session_id}/qc", tags=["qc"])
@@ -175,22 +174,20 @@ def filter_qc(
 ) -> dict[str, Any]:
     """固定过滤执行；重复授权只返回历史，不调用 R。"""
     store = SessionStore()
-    run = require_run(store, session_id, run_id)
-    previous = next(
-        (
-            a
-            for a in run.get("attempts", [])
-            if a["preview_id"] == body.preview_id and a["tool_version"] == FILTER_TOOL_VERSION
-        ),
-        None,
-    )
-    if previous:
-        return view(run)
-    lock = session_lock(session_id)
-    if not lock.acquire(blocking=False):
-        raise HTTPException(409, "该会话已有任务在进行")
-    try:
-        run = require_run(store, session_id, run_id)
+
+    def previous(run: dict[str, Any]) -> dict[str, Any] | None:
+        """按预览身份与工具版本查找已落库的过滤尝试。"""
+        return next(
+            (
+                a
+                for a in run.get("attempts", [])
+                if a["preview_id"] == body.preview_id and a["tool_version"] == FILTER_TOOL_VERSION
+            ),
+            None,
+        )
+
+    def prepare(run: dict[str, Any], attempt_id: str) -> StageClaim:
+        """锁内校验当前批准预览，并给出 attempt 目录与领取计划。"""
         preview = next((p for p in run["previews"] if p["preview_id"] == body.preview_id), None)
         if (
             preview is None
@@ -200,39 +197,45 @@ def filter_qc(
             raise ValueError("仅可执行当前已批准选择")
         root = run_qc_root(request.app.state.agent, run)
         verified_selection(run, root, preview)
-        attempt_id = uuid.uuid4().hex
-        directory = root.parent / "sc_filter" / attempt_id
-        if directory.parent.resolve() != root.parent / "sc_filter" or directory.exists():
-            raise ValueError("过滤输出目录非法")
-        attempt = store.start_sc_filter(
-            session_id,
-            run_id,
-            run["revision"],
-            body.preview_id,
-            preview["binding_sha256"],
-            FILTER_TOOL_VERSION,
-            str(directory),
-            attempt_id,
+        directory_parent = root.parent / "sc_filter"
+        directory = directory_parent / attempt_id
+        return StageClaim(
+            directory_parent=directory_parent,
+            directory=directory,
+            start=lambda: store.start_sc_filter(
+                session_id,
+                run_id,
+                run["revision"],
+                body.preview_id,
+                preview["binding_sha256"],
+                FILTER_TOOL_VERSION,
+                str(directory),
+                attempt_id,
+            ),
+            execute=lambda attempt: run_sc_filter(
+                run,
+                preview,
+                root,
+                directory,
+                request.app.state.agent.workflow_manager.r_executor,
+            ),
+            finish=lambda result: store.finish_sc_filter(attempt_id, result),
+            on_error=lambda exc: {
+                "status": "failed",
+                "stage": "filter_review",
+                "scientific_status": "unreviewed",
+                "error": str(exc),
+            },
         )
-        if attempt["claimed"]:
-            try:
-                result = run_sc_filter(
-                    run,
-                    preview,
-                    root,
-                    directory,
-                    request.app.state.agent.workflow_manager.r_executor,
-                )
-            except OSError as exc:
-                result = {
-                    "status": "failed",
-                    "stage": "filter_review",
-                    "scientific_status": "unreviewed",
-                    "error": str(exc),
-                }
-            store.finish_sc_filter(attempt_id, result)
-        return view(require_run(store, session_id, run_id))
+
+    try:
+        return run_authorized(
+            session_id=session_id,
+            load=lambda: require_run(store, session_id, run_id),
+            previous=previous,
+            prepare=prepare,
+            refresh=lambda: view(require_run(store, session_id, run_id)),
+            unsafe_directory="过滤输出目录非法",
+        )
     except (OSError, ValueError, sqlite3.OperationalError) as exc:
         raise HTTPException(409, str(exc)) from exc
-    finally:
-        lock.release()

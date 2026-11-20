@@ -58,6 +58,7 @@ def test_filter_once_exact_binding_and_stage_only(ready):
     assert response.status_code == 200, response.text
     attempt = response.json()["attempts"][0]
     assert attempt["status"] == "completed" and attempt["result"]["cells"] == 1
+    assert Path(attempt["directory"]).parent == root.parent / "sc_filter"
     assert attempt["result"]["scientific_status"] == "unreviewed"
     assert source.read_bytes() == before
     assert (

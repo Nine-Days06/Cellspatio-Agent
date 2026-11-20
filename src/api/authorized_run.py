@@ -1,0 +1,71 @@
+"""受控分析阶段共用的“授权一次运行”编排。"""
+
+from __future__ import annotations
+
+import uuid
+from collections.abc import Callable
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Any
+
+from fastapi import HTTPException
+
+from src.api.chat_service import session_lock
+
+
+@dataclass(frozen=True)
+class StageClaim:
+    """通过证据校验后的一次领取计划。
+
+    阶段提供 attempt 目录及其父目录，seam 只负责校验目录未被占用且直接位于父目录下。
+    """
+
+    directory_parent: Path
+    directory: Path
+    start: Callable[[], dict[str, Any]]
+    execute: Callable[[dict[str, Any]], dict[str, Any]]
+    finish: Callable[[dict[str, Any]], None]
+    on_error: Callable[[Exception], dict[str, Any]]
+
+
+def run_authorized(
+    *,
+    session_id: str,
+    load: Callable[[], dict[str, Any]],
+    previous: Callable[[dict[str, Any]], dict[str, Any] | None],
+    prepare: Callable[[dict[str, Any], str], StageClaim],
+    refresh: Callable[[], dict[str, Any]],
+    unsafe_directory: str,
+) -> dict[str, Any]:
+    """执行一次已授权分析；历史、锁、目录、领取和失败收口只在这里实现。
+
+    ``prepare`` 必须在锁内、重读状态后完成证据校验，并返回领取计划。
+    抢锁失败时再查一次历史：重复请求已落库则返回历史，否则才是忙。
+    """
+    run = load()
+    if previous(run) is not None:
+        return refresh()
+
+    lock = session_lock(session_id)
+    if not lock.acquire(blocking=False):
+        if previous(load()) is not None:
+            return refresh()
+        raise HTTPException(409, "该会话已有任务在进行")
+    try:
+        run = load()
+        attempt_id = uuid.uuid4().hex
+        claim = prepare(run, attempt_id)
+        base = claim.directory_parent.resolve()
+        directory = claim.directory
+        if directory.parent.resolve() != base or directory.name != attempt_id or directory.exists():
+            raise ValueError(unsafe_directory)
+        attempt = claim.start()
+        if attempt["claimed"]:
+            try:
+                result = claim.execute(attempt)
+            except OSError as exc:
+                result = claim.on_error(exc)
+            claim.finish(result)
+        return refresh()
+    finally:
+        lock.release()
