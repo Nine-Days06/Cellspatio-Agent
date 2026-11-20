@@ -1,8 +1,14 @@
 import { cleanup, fireEvent, render, screen } from '@testing-library/react'
+import { useReducer } from 'react'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import { ConfirmCard } from '@/components/ConfirmCard'
+import { ConfirmCard, type ConfirmCardProps } from '@/components/ConfirmCard'
+import {
+  confirmReducer,
+  initialConfirmState,
+  type ConfirmState,
+} from '@/lib/confirmState'
 import { useChatStore } from '@/store/chat'
-import type { DataCardPayload, PendingScript, ScriptCardPayload } from '@/lib/types'
+import type { DataCardPayload, ScriptCardPayload } from '@/lib/types'
 
 const scriptCard: ScriptCardPayload = {
   message_id: 3,
@@ -40,16 +46,62 @@ const dataCard: DataCardPayload = {
   ],
 }
 
-function renderCard(overrides: Partial<Parameters<typeof ConfirmCard>[0]> = {}) {
+type CardOverrides = Partial<Omit<ConfirmCardProps, 'confirmState'>> & {
+  confirmState?: ConfirmState
+}
+
+function renderCard(overrides: CardOverrides = {}) {
   const onConfirm = vi.fn()
   const onRegen = vi.fn()
-  // 计划的 helper 漏了 container/rerender（空态用例解构 container 必然 undefined），这里补上
   const view = render(
     <ConfirmCard
       scriptCard={null}
       dataCard={null}
       busy={false}
-      confirmError={null}
+      confirmState={initialConfirmState}
+      onConfirm={onConfirm}
+      onRegen={onRegen}
+      {...overrides}
+    />,
+  )
+  return { onConfirm, onRegen, ...view }
+}
+
+/** 受控 harness：按 ChatPage 语义在点击时派发 submit，failWith 模拟请求失败。 */
+function ConfirmHarness({
+  failWith,
+  onConfirm,
+  ...props
+}: Omit<ConfirmCardProps, 'confirmState' | 'onConfirm'> & {
+  failWith?: string
+  onConfirm?: ConfirmCardProps['onConfirm']
+}) {
+  const [state, dispatch] = useReducer(confirmReducer, initialConfirmState)
+  return (
+    <ConfirmCard
+      {...props}
+      confirmState={state}
+      onConfirm={(body) => {
+        dispatch({ type: 'submit', action: body.action })
+        onConfirm?.(body)
+        if (failWith) dispatch({ type: 'failure', error: failWith })
+      }}
+    />
+  )
+}
+
+function renderHarness(
+  overrides: Partial<Omit<ConfirmCardProps, 'confirmState' | 'onConfirm'>> & {
+    failWith?: string
+  } = {},
+) {
+  const onConfirm = vi.fn()
+  const onRegen = vi.fn()
+  const view = render(
+    <ConfirmHarness
+      scriptCard={null}
+      dataCard={null}
+      busy={false}
       onConfirm={onConfirm}
       onRegen={onRegen}
       {...overrides}
@@ -104,18 +156,18 @@ describe('脚本确认卡片', () => {
   })
 
   it('status 非 pending 时隐藏动作按钮，只显示状态', () => {
-    const expired: PendingScript = { ...scriptCard, status: 'expired' }
     renderCard({
       scriptCard: { ...scriptCard, status: 'expired' },
-      onConfirm: undefined,
-    } as never)
+    })
     expect(screen.queryByRole('button', { name: '执行脚本' })).not.toBeInTheDocument()
     expect(screen.getByText(/已过期/)).toBeInTheDocument()
-    expect(expired.status).toBe('expired')
   })
 
   it('展示确认错误 detail', () => {
-    renderCard({ scriptCard, confirmError: 'R 环境不可用' })
+    renderCard({
+      scriptCard,
+      confirmState: { phase: 'failed', action: 'script_confirm', error: 'R 环境不可用' },
+    })
     expect(screen.getByText('R 环境不可用')).toBeInTheDocument()
   })
 
@@ -126,7 +178,7 @@ describe('脚本确认卡片', () => {
   })
 
   it('点确认后立即进入已提交态：按钮禁用防重复提交', () => {
-    const { onConfirm } = renderCard({ scriptCard })
+    const { onConfirm } = renderHarness({ scriptCard })
     const confirmBtn = screen.getByRole('button', { name: '执行脚本' })
     fireEvent.click(confirmBtn)
     expect(confirmBtn).toBeDisabled()
@@ -139,19 +191,11 @@ describe('脚本确认卡片', () => {
   })
 
   it('409：卡片保留、显示后端 detail、按钮恢复可点', () => {
-    const onConfirm = vi.fn()
-    const props = {
+    renderHarness({
       scriptCard,
-      dataCard: null,
-      busy: false,
-      confirmError: null,
-      onConfirm,
-      onRegen: vi.fn(),
-    }
-    const { rerender } = render(<ConfirmCard {...props} />)
+      failWith: '该会话已有任务在进行',
+    })
     fireEvent.click(screen.getByRole('button', { name: '执行脚本' }))
-    expect(screen.getByRole('button', { name: '执行脚本' })).toBeDisabled()
-    rerender(<ConfirmCard {...props} confirmError="该会话已有任务在进行" />)
     expect(screen.getByTestId('script-card')).toBeInTheDocument()
     expect(screen.getByText('该会话已有任务在进行')).toBeInTheDocument()
     expect(screen.queryByText(/已提交/)).not.toBeInTheDocument()
@@ -215,7 +259,7 @@ describe('数据候选卡片', () => {
   })
 
   it('点「使用此数据集」后进入已提交态，防重复提交', () => {
-    const { onConfirm } = renderCard({ dataCard })
+    const { onConfirm } = renderHarness({ dataCard })
     const buttons = screen.getAllByRole('button', { name: '使用此数据集' })
     fireEvent.click(buttons[0])
     expect(buttons[0]).toBeDisabled()
@@ -226,18 +270,11 @@ describe('数据候选卡片', () => {
   })
 
   it('409：数据卡保留、显示后端 detail、候选按钮恢复可点', () => {
-    const props = {
-      scriptCard: null,
+    renderHarness({
       dataCard,
-      busy: false,
-      confirmError: null,
-      onConfirm: vi.fn(),
-      onRegen: vi.fn(),
-    }
-    const { rerender } = render(<ConfirmCard {...props} />)
+      failWith: '该会话已有任务在进行',
+    })
     fireEvent.click(screen.getAllByRole('button', { name: '使用此数据集' })[0])
-    expect(screen.getAllByRole('button', { name: '使用此数据集' })[0]).toBeDisabled()
-    rerender(<ConfirmCard {...props} confirmError="该会话已有任务在进行" />)
     expect(screen.getByTestId('data-card')).toBeInTheDocument()
     expect(screen.getByText('该会话已有任务在进行')).toBeInTheDocument()
     expect(screen.queryByText(/已提交/)).not.toBeInTheDocument()
