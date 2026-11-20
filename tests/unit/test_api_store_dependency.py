@@ -2,12 +2,26 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 from fastapi.testclient import TestClient
 
 from src.api.app import create_app
 from src.ui.session_store import SessionStore
 from tests.unit.fakes import FakeAgent
+
+_API_DIR = Path(__file__).resolve().parents[2] / "src" / "api"
+
+
+def test_api_modules_do_not_construct_session_store_directly() -> None:
+    """HTTP 层只能经 get_store 取 store，直接构造会绕开 app.state.store_factory。"""
+    offenders = [
+        str(path.relative_to(_API_DIR.parents[1]))
+        for path in _API_DIR.rglob("*.py")
+        if "SessionStore(" in path.read_text(encoding="utf-8")
+    ]
+    assert offenders == []
 
 
 class _RecordingStages:
