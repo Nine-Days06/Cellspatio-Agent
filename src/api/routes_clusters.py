@@ -26,6 +26,7 @@ from src.api.authorized_run import StageClaim, run_authorized
 from src.api.deps import StoreDep
 from src.api.routes_pca import dimension_view, require_parent, require_pca
 from src.api.routes_qc import require_run, run_qc_root
+from src.api.stage_runtime import RUNNING, has_running, running_stages
 from src.ui.session_store import SessionStore
 
 router = APIRouter(prefix="/api/sessions/{session_id}/qc/{run_id}/clusters", tags=["clusters"])
@@ -72,11 +73,10 @@ def view(
     if not state["current"] and latest is None:
         blocked.extend(state["blocked"] or ["无当前有效维度记录；请回上游明确记录至少 2 个 PCs"])
     display_snapshot = auth_snapshot or (latest["snapshot"] if latest else None)
-    cluster_running = any(a["status"] == "running" for a in run["cluster_attempts"])
-    if any(
-        a["status"] == "running"
-        for a in [*run["attempts"], *run["pca_attempts"], *run.get("marker_attempts", [])]
-    ) or (cluster_running and latest is not None and latest["status"] != "running"):
+    cluster_running = "cluster" in running_stages(run)
+    if has_running(run, ("filter", "pca", "marker")) or (
+        cluster_running and latest is not None and latest["status"] != RUNNING
+    ):
         blocked.append("该 run 有阶段运行中，不能新授权")
     attempts_view = []
     for a in attempts:

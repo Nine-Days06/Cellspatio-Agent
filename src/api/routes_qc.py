@@ -13,6 +13,7 @@ from src.analysis.qc_preview import Thresholds, build_preview, check_preview, ch
 from src.analysis.sc_filter import FILTER_TOOL_VERSION, run_sc_filter, verified_selection
 from src.api.authorized_run import StageClaim, run_authorized
 from src.api.deps import StoreDep
+from src.api.stage_runtime import running_stages
 from src.ui.session_store import SessionStore
 
 router = APIRouter(prefix="/api/sessions/{session_id}/qc", tags=["qc"])
@@ -45,6 +46,7 @@ def require_run(store: SessionStore, session_id: str, run_id: str) -> dict[str, 
 
 def view(run: dict[str, Any], blocked: str | None = None) -> dict[str, Any]:
     """只返回界面需要的权威状态，不返回原输入或逐细胞内容。"""
+    running = running_stages(run)
     return {
         "run_id": run["run_id"],
         "revision": run["revision"],
@@ -54,9 +56,9 @@ def view(run: dict[str, Any], blocked: str | None = None) -> dict[str, Any]:
         ),
         "approvals": [p for p in run["previews"] if p["status"] == "approved"],
         "blocked": [blocked] if blocked else [],
-        "pca_running": any(a["status"] == "running" for a in run.get("pca_attempts", [])),
-        "cluster_running": any(a["status"] == "running" for a in run.get("cluster_attempts", [])),
-        "marker_running": any(a["status"] == "running" for a in run.get("marker_attempts", [])),
+        "pca_running": "pca" in running,
+        "cluster_running": "cluster" in running,
+        "marker_running": "marker" in running,
         "attempts": [
             {
                 **{
