@@ -11,6 +11,7 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
 
+from src.ui.confirm_protocol import STATUS_EXPIRED, STATUS_PENDING
 from src.ui.sc_stage_defs import STAGE_SPECS
 from src.ui.sc_stages import ScStages
 from src.ui.session_codec import _encode_results, _now
@@ -881,7 +882,7 @@ class SessionStore:
             if row is None:
                 return
             script = json.loads(row["pending_script"])
-            if script.get("status") not in ("pending", "expired"):
+            if script.get("status") not in (STATUS_PENDING, STATUS_EXPIRED):
                 return
             script["status"] = status
             conn.execute(
