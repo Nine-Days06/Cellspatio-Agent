@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import ast
 from pathlib import Path
+from typing import Any
 
 import pytest
 from fastapi.testclient import TestClient
@@ -12,15 +14,51 @@ from src.ui.session_store import SessionStore
 from tests.unit.fakes import FakeAgent
 
 _API_DIR = Path(__file__).resolve().parents[2] / "src" / "api"
+_FACTORY_BYPASS_EXEMPT = {"app.py", "deps.py"}
 
 
-def test_api_modules_do_not_construct_session_store_directly() -> None:
+def _session_store_aliases(tree: ast.Module) -> set[str]:
+    """收集 `from src.ui.session_store import SessionStore [as S]` 的本地名。"""
+    aliases: set[str] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ImportFrom) and node.module == "src.ui.session_store":
+            aliases.update(
+                alias.asname or alias.name for alias in node.names if alias.name == "SessionStore"
+            )
+    return aliases
+
+
+def test_api_modules_do_not_call_session_store_directly() -> None:
     """HTTP 层只能经 get_store 取 store，直接构造会绕开 app.state.store_factory。"""
-    offenders = [
-        str(path.relative_to(_API_DIR.parents[1]))
-        for path in _API_DIR.rglob("*.py")
-        if "SessionStore(" in path.read_text(encoding="utf-8")
-    ]
+    offenders: list[str] = []
+    for path in _API_DIR.rglob("*.py"):
+        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+        aliases = _session_store_aliases(tree)
+        if any(
+            isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Name)
+            and node.func.id in aliases
+            for node in ast.walk(tree)
+        ):
+            offenders.append(str(path.relative_to(_API_DIR.parents[1])))
+    assert offenders == []
+
+
+def test_api_modules_do_not_bypass_store_dependency() -> None:
+    """除 app.py/deps.py 外，路由不得自行调用 factory 或依赖入口。"""
+    offenders: list[str] = []
+    for path in _API_DIR.rglob("*.py"):
+        if path.name in _FACTORY_BYPASS_EXEMPT:
+            continue
+        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Call):
+                continue
+            func = node.func
+            if isinstance(func, ast.Attribute) and func.attr in {"store_factory", "get_store"}:
+                offenders.append(f"{path.relative_to(_API_DIR.parents[1])}:{node.lineno}")
+            elif isinstance(func, ast.Name) and func.id == "get_store":
+                offenders.append(f"{path.relative_to(_API_DIR.parents[1])}:{node.lineno}")
     assert offenders == []
 
 
@@ -39,7 +77,7 @@ class RecordingStore(SessionStore):
 
     instances: list[RecordingStore] = []
 
-    def __init__(self, *args, **kwargs):
+    def __init__(self, *args: Any, **kwargs: Any) -> None:
         super().__init__(*args, **kwargs)
         self.interrupted = False
         self.calls: list[str] = []
@@ -49,13 +87,17 @@ class RecordingStore(SessionStore):
     def stages(self) -> _RecordingStages:
         return _RecordingStages(self)
 
-    def list_sessions(self, include_archived: bool = False) -> list[dict]:
+    def list_sessions(self, include_archived: bool = False) -> list[dict[str, Any]]:
         self.calls.append("list_sessions")
         return super().list_sessions(include_archived=include_archived)
 
-    def list_projects(self, include_archived: bool = False) -> list[dict]:
+    def list_projects(self, include_archived: bool = False) -> list[dict[str, Any]]:
         self.calls.append("list_projects")
         return super().list_projects(include_archived=include_archived)
+
+    def create_session(self, title: str, project_id: str | None = None) -> str:
+        self.calls.append("create_session")
+        return super().create_session(title, project_id)
 
     def get_session(self, session_id: str) -> dict | None:
         self.calls.append("get_session")
@@ -66,7 +108,7 @@ class RecordingStore(SessionStore):
         return super().get_qc_run(session_id, run_id)
 
 
-def test_lifespan_interrupt_recovery_uses_app_factory():
+def test_lifespan_interrupt_recovery_uses_app_factory() -> None:
     app = create_app(FakeAgent())
     RecordingStore.instances.clear()
     app.state.store_factory = RecordingStore
@@ -78,7 +120,7 @@ def test_lifespan_interrupt_recovery_uses_app_factory():
     assert RecordingStore.instances[0].interrupted is True
 
 
-def test_sessions_projects_sidebar_use_overridden_factory_once_per_request():
+def test_sessions_projects_sidebar_use_overridden_factory_once_per_request() -> None:
     app = create_app(FakeAgent())
     RecordingStore.instances.clear()
     app.state.store_factory = RecordingStore
@@ -97,6 +139,22 @@ def test_sessions_projects_sidebar_use_overridden_factory_once_per_request():
         assert client.get("/api/sidebar", params={"session_id": "missing"}).status_code == 200
         assert len(RecordingStore.instances) == baseline + 3
         assert RecordingStore.instances[-1].calls == ["get_session"]
+
+
+def test_create_session_reuses_one_store_for_create_and_fetch() -> None:
+    """POST /api/sessions 只构造一个 store，创建与读回走同一实例。"""
+    app = create_app(FakeAgent())
+    RecordingStore.instances.clear()
+    app.state.store_factory = RecordingStore
+
+    with TestClient(app) as client:
+        baseline = len(RecordingStore.instances)
+
+        response = client.post("/api/sessions", json={"title": "契约"})
+
+        assert response.status_code == 200
+        assert len(RecordingStore.instances) == baseline + 1
+        assert RecordingStore.instances[-1].calls == ["create_session", "get_session"]
 
 
 @pytest.mark.parametrize(
@@ -133,7 +191,7 @@ def test_sessions_projects_sidebar_use_overridden_factory_once_per_request():
 )
 def test_chat_input_qc_routes_use_overridden_factory(
     method: str, url: str, payload: dict | None, expected_call: str
-):
+) -> None:
     app = create_app(FakeAgent())
     RecordingStore.instances.clear()
     app.state.store_factory = RecordingStore
@@ -186,7 +244,7 @@ def test_chat_input_qc_routes_use_overridden_factory(
 )
 def test_pca_cluster_marker_routes_use_overridden_factory(
     method: str, url: str, payload: dict | None
-):
+) -> None:
     """缺失 session/run 的读写端点只经工厂构造一次 store 并返回 404。"""
     app = create_app(FakeAgent())
     RecordingStore.instances.clear()
