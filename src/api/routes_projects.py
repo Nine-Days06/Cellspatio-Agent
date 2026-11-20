@@ -9,16 +9,11 @@ from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
 from src.api.chat_service import session_lock
+from src.api.deps import StoreDep
 from src.ui.record_files import writable_dir
-from src.ui.session_store import SessionStore
 from src.ui.usage import project_usage
 
 router = APIRouter(prefix="/api", tags=["projects"])
-
-
-def _store() -> SessionStore:
-    """每次新建短连接存储，与其它路由同策略。"""
-    return SessionStore()
 
 
 class ProjectCreateRequest(BaseModel):
@@ -55,13 +50,13 @@ def _validated_root_path(value: str | None) -> str | None:
 
 
 @router.get("/projects")
-def list_projects(include_archived: bool = False) -> dict[str, Any]:
+def list_projects(store: StoreDep, include_archived: bool = False) -> dict[str, Any]:
     """列出项目；默认隐藏已归档。"""
-    return {"projects": _store().list_projects(include_archived=include_archived)}
+    return {"projects": store.list_projects(include_archived=include_archived)}
 
 
 @router.post("/projects")
-def create_project(body: ProjectCreateRequest) -> dict[str, Any]:
+def create_project(body: ProjectCreateRequest, store: StoreDep) -> dict[str, Any]:
     """新建项目；标签可省略，缺省取工作目录名。"""
     label = (body.label or "").strip()
     root_path = _validated_root_path(body.root_path)
@@ -71,24 +66,22 @@ def create_project(body: ProjectCreateRequest) -> dict[str, Any]:
         label = Path(root_path).name
         if not label:
             raise HTTPException(status_code=422, detail="无法从工作目录推导项目名，请填写项目名")
-    store = _store()
     project_id = store.create_project(label, root_path=root_path)
     return {"project": store.get_project(project_id)}
 
 
 @router.get("/projects/{project_id}/usage")
-def get_project_usage(project_id: str) -> dict[str, Any]:
+def get_project_usage(project_id: str, store: StoreDep) -> dict[str, Any]:
     """返回项目目录、会话产物与 kg_memory 的只读占用汇总。"""
     try:
-        return project_usage(_store(), project_id, Path.cwd())
+        return project_usage(store, project_id, Path.cwd())
     except ValueError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
 
 
 @router.patch("/projects/{project_id}")
-def update_project(project_id: str, body: ProjectUpdateRequest) -> dict[str, Any]:
+def update_project(project_id: str, body: ProjectUpdateRequest, store: StoreDep) -> dict[str, Any]:
     """更新项目；归档前先拿项目下所有会话锁，运行中拒绝。"""
-    store = _store()
     if store.get_project(project_id) is None:
         raise HTTPException(status_code=404, detail="项目不存在")
     if body.label is not None and not body.label.strip():

@@ -22,6 +22,7 @@ from src.api import (
     routes_qc,
     routes_sessions,
 )
+from src.ui.session_store import SessionStore
 
 logger = logging.getLogger(__name__)
 
@@ -52,11 +53,12 @@ def create_app(agent: Any) -> FastAPI:
     @asynccontextmanager
     async def lifespan(app: FastAPI):
         """单进程启动只标记旧过滤任务中断，不恢复执行。"""
-        routes_sessions._store().stages.interrupt_all()
+        app.state.store_factory().stages.interrupt_all()
         yield
 
     app = FastAPI(title="CellSpatio API", lifespan=lifespan)
     app.state.agent = agent
+    app.state.store_factory = SessionStore
     app.include_router(routes_sessions.router)
     app.include_router(routes_projects.router)
     app.include_router(routes_chat.router)

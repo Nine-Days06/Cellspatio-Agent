@@ -13,6 +13,7 @@ from typing import Any
 from fastapi import APIRouter, Request
 
 from src.api.chat_service import soft_warn_for
+from src.api.deps import StoreDep
 from src.ui.session_store import SessionStore
 
 logger = logging.getLogger(__name__)
@@ -87,23 +88,27 @@ def _env_status(agent: Any) -> dict[str, Any]:
     }
 
 
-def _soft_warn(session_id: str | None) -> bool:
+def _soft_warn(store: SessionStore, session_id: str | None) -> bool:
     """按会话当前上下文判断压缩软阈值；无会话或异常一律 False。"""
     if not session_id:
         return False
     try:
-        return soft_warn_for(SessionStore(), session_id)
+        return soft_warn_for(store, session_id)
     except Exception as exc:  # noqa: BLE001 - 软警告探测失败按未触发处理
         logger.warning("soft warn probe failed: %s", exc)
         return False
 
 
 @router.get("/sidebar")
-def sidebar(request: Request, session_id: str | None = None) -> dict[str, Any]:
+def sidebar(
+    request: Request,
+    store: StoreDep,
+    session_id: str | None = None,
+) -> dict[str, Any]:
     """侧边栏状态端点：kb_stats + env + soft_warn，任何探测失败都不抛错。"""
     agent = request.app.state.agent
     return {
         "kb_stats": _kb_stats(agent),
         "env": _env_status(agent),
-        "soft_warn": _soft_warn(session_id),
+        "soft_warn": _soft_warn(store, session_id),
     }

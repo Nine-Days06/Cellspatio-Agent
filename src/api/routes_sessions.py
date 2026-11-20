@@ -10,6 +10,7 @@ from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel
 
 from src.api.chat_service import session_lock, soft_warn_for
+from src.api.deps import StoreDep
 from src.api.events import wire_message
 from src.control.chat_messages import build_assistant_message
 from src.ui.session_store import SessionStore
@@ -18,11 +19,6 @@ from src.ui.usage import session_usage
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api", tags=["sessions"])
-
-
-def _store() -> SessionStore:
-    """每次新建短连接存储（与 src/ui/app.py:_get_store 同策略）。"""
-    return SessionStore()
 
 
 def _require_session(store: SessionStore, session_id: str) -> dict[str, Any]:
@@ -40,14 +36,13 @@ class CreateSessionRequest(BaseModel):
 
 
 @router.get("/sessions")
-def list_sessions(include_archived: bool = False) -> dict[str, Any]:
-    return {"sessions": _store().list_sessions(include_archived=include_archived)}
+def list_sessions(store: StoreDep, include_archived: bool = False) -> dict[str, Any]:
+    return {"sessions": store.list_sessions(include_archived=include_archived)}
 
 
 @router.post("/sessions")
-def create_session(body: CreateSessionRequest | None = None) -> dict[str, Any]:
+def create_session(store: StoreDep, body: CreateSessionRequest | None = None) -> dict[str, Any]:
     """新建会话；显式 project_id 时归入该项目，否则保持未归类。"""
-    store = _store()
     title = body.title if body and body.title else "新会话"
     try:
         session_id = store.create_session(title, body.project_id if body else None)
@@ -58,10 +53,10 @@ def create_session(body: CreateSessionRequest | None = None) -> dict[str, Any]:
 
 
 @router.get("/sessions/{session_id}/usage")
-def get_session_usage(session_id: str) -> dict[str, Any]:
+def get_session_usage(session_id: str, store: StoreDep) -> dict[str, Any]:
     """返回会话产物、.wrroc 与 snapshots 的只读占用汇总。"""
     try:
-        return session_usage(_store(), session_id, Path.cwd())
+        return session_usage(store, session_id, Path.cwd())
     except ValueError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
 
@@ -75,9 +70,8 @@ class UpdateSessionRequest(BaseModel):
 
 
 @router.patch("/sessions/{session_id}")
-def update_session(session_id: str, body: UpdateSessionRequest) -> dict[str, Any]:
+def update_session(session_id: str, body: UpdateSessionRequest, store: StoreDep) -> dict[str, Any]:
     """更新归属/置顶/归档；归档前先拿会话锁，避免误藏运行中的对话。"""
-    store = _store()
     _require_session(store, session_id)
     lock = None
     if body.archived:
@@ -101,8 +95,7 @@ def update_session(session_id: str, body: UpdateSessionRequest) -> dict[str, Any
 
 
 @router.delete("/sessions/{session_id}")
-def delete_session(session_id: str) -> dict[str, Any]:
-    store = _store()
+def delete_session(session_id: str, store: StoreDep) -> dict[str, Any]:
     _require_session(store, session_id)
     # 生成中删除会让 worker 落库失败 → 与 chat/confirm 同一把非阻塞会话锁
     lock = session_lock(session_id)
@@ -118,8 +111,7 @@ def delete_session(session_id: str) -> dict[str, Any]:
 
 
 @router.get("/sessions/{session_id}/messages")
-def list_messages(session_id: str, restore: int = 0) -> dict[str, Any]:
-    store = _store()
+def list_messages(session_id: str, store: StoreDep, restore: int = 0) -> dict[str, Any]:
     session = _require_session(store, session_id)
     messages = store.get_messages(session_id)
     return {
@@ -170,14 +162,13 @@ class ConfirmRequest(BaseModel):
 
 # 用同步 def：FastAPI 丢到线程池执行，避免阻塞事件循环上的其它 SSE 流
 @router.post("/confirm", tags=["confirm"])
-def confirm(body: ConfirmRequest, request: Request) -> dict[str, Any]:
+def confirm(body: ConfirmRequest, request: Request, store: StoreDep) -> dict[str, Any]:
     """HITL 确认端点：脚本确认 / 脚本取消 / 数据下载确认。
 
     script_regen 不设端点：前端用 pending_script.user_request 直接重发
     /api/chat，与 Streamlit 的「重新生成」不改 DB status 行为一致。
     """
     agent = request.app.state.agent
-    store = _store()
     _require_session(store, body.session_id)
     lock = session_lock(body.session_id)
     if not lock.acquire(blocking=False):
