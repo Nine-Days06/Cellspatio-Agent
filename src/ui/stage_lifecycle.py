@@ -79,9 +79,14 @@ class StageLifecycle:
         attempt_id: str,
         values: dict[str, Any],
         validate: Callable[[sqlite3.Connection, sqlite3.Row], None],
+        check_previous: Callable[[sqlite3.Row], None] | None = None,
+        after_claim: Callable[[sqlite3.Connection, str], dict[str, Any]] | None = None,
         clock: Callable[[], str],
     ) -> dict[str, Any]:
-        """短事务认领：相同匹配返回历史，否则校验后插入 running 并推进 revision。"""
+        """短事务认领：相同匹配返回历史，否则校验后插入 running 并推进 revision。
+
+        ``after_claim`` 可在同一事务内读回完整 attempt；``check_previous`` 可拒绝冲突历史。
+        """
         with self._connect() as conn:
             conn.execute("BEGIN IMMEDIATE")
             run = conn.execute(
@@ -96,6 +101,8 @@ class StageLifecycle:
                 (run_id, *match.values()),
             ).fetchone()
             if previous is not None:
+                if check_previous is not None:
+                    check_previous(previous)
                 return {**dict(previous), "claimed": False}
             validate(conn, run)
             if run["revision"] != revision:
@@ -114,6 +121,8 @@ class StageLifecycle:
                 tuple(columns.values()),
             )
             advance_run(conn, run_id, session_id, now, touch_session=False)
+            if after_claim is not None:
+                return {**after_claim(conn, attempt_id), "claimed": True}
         return {"attempt_id": attempt_id, "directory": values["directory"], "claimed": True}
 
     def finish(
@@ -122,9 +131,14 @@ class StageLifecycle:
         *,
         attempt_id: str,
         result: dict[str, Any],
+        finalize: Callable[[sqlite3.Connection, sqlite3.Row, dict[str, Any]], dict[str, Any]]
+        | None = None,
         clock: Callable[[], str],
-    ) -> None:
-        """校验 running 后原子写终态、消息、revision 与会话时间。"""
+    ) -> dict[str, Any]:
+        """校验 running 后原子写终态、消息、revision 与会话时间，返回权威结果。
+
+        ``finalize`` 只能读库并改写结果，不得写库或推进 revision。
+        """
         if result["status"] not in spec.terminal:
             raise ValueError(spec.invalid_terminal)
         with self._connect() as conn:
@@ -136,6 +150,10 @@ class StageLifecycle:
             ).fetchone()
             if attempt is None or attempt["status"] != "running":
                 raise ValueError(spec.not_running)
+            if finalize is not None:
+                result = finalize(conn, attempt, result)
+                if result["status"] not in spec.terminal:
+                    raise ValueError(spec.invalid_terminal)
             now = clock()
             content, results = spec.message(attempt, result)
             message_id = publish_message(
@@ -153,3 +171,4 @@ class StageLifecycle:
                 ),
             )
             advance_run(conn, attempt["run_id"], attempt["session_id"], now)
+        return result

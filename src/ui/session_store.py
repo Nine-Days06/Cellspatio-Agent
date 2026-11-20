@@ -340,6 +340,37 @@ _PCA_STAGE = StageSpec(
 )
 
 
+def _cluster_message(attempt: sqlite3.Row, result: dict[str, Any]) -> tuple[str, dict[str, Any]]:
+    """聚类终态的固定文案与安全汇总。"""
+    content = (
+        "聚类与 UMAP 产物已保存，科学未复核；未执行 markers 或注释。"
+        if result["status"] == "completed"
+        else "聚类与 UMAP 失败或中断，本地证据保留；不会自动重跑。"
+    )
+    return content, {
+        "sc_cluster": {
+            "run_id": attempt["run_id"],
+            "pca_attempt_id": attempt["pca_attempt_id"],
+            "attempt_id": attempt["attempt_id"],
+            "stage": "cluster_review",
+            "technical_status": result["status"],
+            "scientific_status": "unreviewed",
+        }
+    }
+
+
+_CLUSTER_STAGE = StageSpec(
+    table="sc_cluster_attempts",
+    match_columns=("pca_attempt_id", "binding_sha256", "tool_version"),
+    terminal=("completed", "failed", "interrupted"),
+    missing_run="QC 关联不存在",
+    revision_error="维度或父身份已变化，请刷新后重新授权",
+    invalid_terminal="聚类终态非法",
+    not_running="聚类任务不在运行状态",
+    message=_cluster_message,
+)
+
+
 class SessionStore:
     """会话/消息 CRUD。每次操作独立短连接，不做连接池。"""
 
@@ -1163,74 +1194,70 @@ class SessionStore:
         attempt_id: str,
     ) -> dict[str, Any]:
         """短事务 CAS 认领，保存完整授权维度和父身份快照。"""
-        with self._conn() as conn:
-            conn.execute("BEGIN IMMEDIATE")
-            run = conn.execute(
-                "SELECT * FROM qc_runs WHERE session_id = ? AND run_id = ?", (session_id, run_id)
-            ).fetchone()
-            if run is None:
-                raise ValueError("QC 关联不存在")
-            previous = conn.execute(
-                "SELECT * FROM sc_cluster_attempts WHERE pca_attempt_id = ? AND binding_sha256 = ? AND tool_version = ?",
-                (snapshot["pca"]["attempt_id"], binding, tool_version),
-            ).fetchone()
-            if previous:
-                if previous["review_id"] != snapshot["review"]["review_id"]:
-                    raise ValueError("维度关联冲突")
-                return {**dict(previous), "claimed": False}
+
+        def validate(conn: sqlite3.Connection, run: sqlite3.Row) -> None:
+            """锁内确认维度记录与父身份仍与认领快照一致。"""
             self._require_no_filter(conn, run_id)
-            if (
-                run["revision"] != revision
-                or snapshot["review"]["source_revision"] + 1 != revision
-                or not self._cluster_source_matches(conn, run, snapshot)
+            if snapshot["review"]["source_revision"] + 1 != revision or not (
+                self._cluster_source_matches(conn, run, snapshot)
             ):
                 raise ValueError("维度或父身份已变化，请刷新后重新授权")
-            conn.execute(
-                "INSERT INTO sc_cluster_attempts (attempt_id, run_id, pca_attempt_id, review_id, snapshot, "
-                "binding_sha256, tool_version, protocol, source_revision, claim_revision, reason, directory, status, created_at) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'running', ?)",
-                (
-                    attempt_id,
-                    run_id,
-                    snapshot["pca"]["attempt_id"],
-                    snapshot["review"]["review_id"],
-                    json.dumps(snapshot, ensure_ascii=False),
-                    binding,
-                    tool_version,
-                    json.dumps(protocol),
-                    revision,
-                    revision + 1,
-                    reason,
-                    directory,
-                    _now(),
-                ),
-            )
-            conn.execute("UPDATE qc_runs SET revision = revision + 1 WHERE run_id = ?", (run_id,))
+
+        def check_previous(previous: sqlite3.Row) -> None:
+            """同一来源必须对应相同维度记录。"""
+            if previous["review_id"] != snapshot["review"]["review_id"]:
+                raise ValueError("维度关联冲突")
+
+        def claimed_row(conn: sqlite3.Connection, attempt_id: str) -> dict[str, Any]:
+            """在领取事务内读回完整 attempt，供完成时比对权威快照。"""
             row = dict(
                 conn.execute(
                     "SELECT * FROM sc_cluster_attempts WHERE attempt_id = ?", (attempt_id,)
                 ).fetchone()
             )
-        return {**row, "snapshot": snapshot, "claimed": True}
+            return {**row, "snapshot": snapshot}
+
+        claimed = StageLifecycle(self._conn, _encode_results).claim(
+            _CLUSTER_STAGE,
+            session_id=session_id,
+            run_id=run_id,
+            revision=revision,
+            attempt_id=attempt_id,
+            values={
+                "pca_attempt_id": snapshot["pca"]["attempt_id"],
+                "review_id": snapshot["review"]["review_id"],
+                "snapshot": json.dumps(snapshot, ensure_ascii=False),
+                "binding_sha256": binding,
+                "tool_version": tool_version,
+                "protocol": json.dumps(protocol),
+                "source_revision": revision,
+                "claim_revision": revision + 1,
+                "reason": reason,
+                "directory": directory,
+            },
+            validate=validate,
+            check_previous=check_previous,
+            after_claim=claimed_row,
+            clock=_now,
+        )
+        return claimed
 
     def finish_sc_cluster(
         self, attempt_id: str, result: dict[str, Any], expected: dict[str, Any] | None = None
     ) -> dict[str, Any]:
         """终态/消息/revision 原子保存；外部改变只阻止成功，不阻止失败收口。"""
-        if result["status"] not in ("completed", "failed", "interrupted"):
-            raise ValueError("聚类终态非法")
-        with self._conn() as conn:
-            conn.execute("BEGIN IMMEDIATE")
-            attempt = conn.execute(
-                "SELECT * FROM sc_cluster_attempts WHERE attempt_id = ?", (attempt_id,)
-            ).fetchone()
-            if attempt is None or attempt["status"] != "running":
-                raise ValueError("聚类任务不在运行状态")
+
+        def finalize(
+            conn: sqlite3.Connection, attempt: sqlite3.Row, result: dict[str, Any]
+        ) -> dict[str, Any]:
+            """完成前复核授权快照；一旦失效只降级成功，不阻止失败收口。"""
+            if result["status"] != "completed":
+                return result
             run = conn.execute(
                 "SELECT * FROM qc_runs WHERE run_id = ?", (attempt["run_id"],)
             ).fetchone()
             snapshot = json.loads(attempt["snapshot"])
-            if result["status"] == "completed" and (
+            if (
                 expected is None
                 or run["revision"] != expected["claim_revision"]
                 or snapshot != expected["snapshot"]
@@ -1251,49 +1278,12 @@ class SessionStore:
                 )
                 or not self._cluster_source_matches(conn, run, snapshot)
             ):
-                result = {**result, "status": "failed", "error": "运行中授权快照或父身份发生变化"}
-            sid, now = run["session_id"], _now()
-            seq = conn.execute(
-                "SELECT COALESCE(MAX(seq), 0) + 1 FROM messages WHERE session_id = ?", (sid,)
-            ).fetchone()[0]
-            message_id = conn.execute(
-                "INSERT INTO messages (session_id, seq, role, content, timestamp, results) VALUES (?, ?, 'assistant', ?, ?, ?)",
-                (
-                    sid,
-                    seq,
-                    "聚类与 UMAP 产物已保存，科学未复核；未执行 markers 或注释。"
-                    if result["status"] == "completed"
-                    else "聚类与 UMAP 失败或中断，本地证据保留；不会自动重跑。",
-                    now,
-                    _encode_results(
-                        {
-                            "sc_cluster": {
-                                "run_id": attempt["run_id"],
-                                "pca_attempt_id": attempt["pca_attempt_id"],
-                                "attempt_id": attempt_id,
-                                "stage": "cluster_review",
-                                "technical_status": result["status"],
-                                "scientific_status": "unreviewed",
-                            }
-                        }
-                    ),
-                ),
-            ).lastrowid
-            conn.execute(
-                "UPDATE sc_cluster_attempts SET status = ?, finished_at = ?, result = ?, message_id = ? WHERE attempt_id = ?",
-                (
-                    result["status"],
-                    now,
-                    json.dumps(result, ensure_ascii=False),
-                    message_id,
-                    attempt_id,
-                ),
-            )
-            conn.execute(
-                "UPDATE qc_runs SET revision = revision + 1 WHERE run_id = ?", (run["run_id"],)
-            )
-            conn.execute("UPDATE sessions SET updated_at = ? WHERE id = ?", (now, sid))
-        return result
+                return {**result, "status": "failed", "error": "运行中授权快照或父身份发生变化"}
+            return result
+
+        return StageLifecycle(self._conn, _encode_results).finish(
+            _CLUSTER_STAGE, attempt_id=attempt_id, result=result, finalize=finalize, clock=_now
+        )
 
     def interrupt_sc_clusters(self) -> None:
         """单进程启动中断遗留作业，安全消息与 revision 随终态原子提交。"""
@@ -1673,30 +1663,22 @@ class SessionStore:
             ):
                 return
             review_id, now = uuid.uuid4().hex, _now()
-            seq = conn.execute(
-                "SELECT COALESCE(MAX(seq), 0) + 1 FROM messages WHERE session_id = ?", (session_id,)
-            ).fetchone()[0]
-            message_id = conn.execute(
-                "INSERT INTO messages (session_id, seq, role, content, timestamp, results) "
-                "VALUES (?, ?, 'assistant', ?, ?, ?)",
-                (
-                    session_id,
-                    seq,
-                    "探索性聚类接受已记录，科学未复核；未授权 marker 或注释。",
-                    now,
-                    _encode_results(
-                        {
-                            "sc_cluster_review": {
-                                "run_id": run["run_id"],
-                                "cluster_attempt_id": cluster["attempt_id"],
-                                "review_id": review_id,
-                                "stage": "cluster_review",
-                                "scientific_status": "unreviewed",
-                            }
-                        }
-                    ),
-                ),
-            ).lastrowid
+            message_id = publish_message(
+                conn,
+                session_id,
+                "探索性聚类接受已记录，科学未复核；未授权 marker 或注释。",
+                {
+                    "sc_cluster_review": {
+                        "run_id": run["run_id"],
+                        "cluster_attempt_id": cluster["attempt_id"],
+                        "review_id": review_id,
+                        "stage": "cluster_review",
+                        "scientific_status": "unreviewed",
+                    }
+                },
+                now,
+                _encode_results,
+            )
             conn.execute(
                 "INSERT INTO sc_cluster_reviews VALUES (?, ?, ?, ?, ?, 1, ?, ?, ?)",
                 (
@@ -1710,10 +1692,7 @@ class SessionStore:
                     message_id,
                 ),
             )
-            conn.execute(
-                "UPDATE qc_runs SET revision = revision + 1 WHERE run_id = ?", (run["run_id"],)
-            )
-            conn.execute("UPDATE sessions SET updated_at = ? WHERE id = ?", (now, session_id))
+            advance_run(conn, run["run_id"], session_id, now)
 
     def record_sc_cluster_rejection(
         self,
@@ -1778,30 +1757,21 @@ class SessionStore:
                 raise ValueError("同一 revision 已有聚类接受事实")
             self._require_no_filter(conn, run["run_id"])
             now = _now()
-            seq = conn.execute(
-                "SELECT COALESCE(MAX(seq), 0) + 1 FROM messages WHERE session_id = ?",
-                (session_id,),
-            ).fetchone()[0]
-            message_id = conn.execute(
-                "INSERT INTO messages (session_id, seq, role, content, timestamp, results) "
-                "VALUES (?, ?, 'assistant', ?, ?, ?)",
-                (
-                    session_id,
-                    seq,
-                    "探索性聚类拒绝已记录；未授权 marker 或注释。",
-                    now,
-                    _encode_results(
-                        {
-                            "sc_cluster_rejection": {
-                                "run_id": run["run_id"],
-                                "cluster_attempt_id": cluster["attempt_id"],
-                                "stage": "cluster_review",
-                                "scientific_status": "unreviewed",
-                            }
-                        }
-                    ),
-                ),
-            ).lastrowid
+            message_id = publish_message(
+                conn,
+                session_id,
+                "探索性聚类拒绝已记录；未授权 marker 或注释。",
+                {
+                    "sc_cluster_rejection": {
+                        "run_id": run["run_id"],
+                        "cluster_attempt_id": cluster["attempt_id"],
+                        "stage": "cluster_review",
+                        "scientific_status": "unreviewed",
+                    }
+                },
+                now,
+                _encode_results,
+            )
             conn.execute(
                 "INSERT INTO sc_cluster_rejections "
                 "(review_id, cluster_attempt_id, binding_sha256, record_version, source_revision, "
@@ -1818,10 +1788,7 @@ class SessionStore:
                     message_id,
                 ),
             )
-            conn.execute(
-                "UPDATE qc_runs SET revision = revision + 1 WHERE run_id = ?", (run["run_id"],)
-            )
-            conn.execute("UPDATE sessions SET updated_at = ? WHERE id = ?", (now, session_id))
+            advance_run(conn, run["run_id"], session_id, now)
 
     def record_knowledge_qa_review(
         self,
