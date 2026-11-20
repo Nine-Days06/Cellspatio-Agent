@@ -28,17 +28,16 @@ from src.api.routes_clusters import EVIDENCE_ERRORS, require_cluster
 from src.api.routes_pca import PcaRequest, require_parent, require_pca
 from src.api.routes_qc import require_run, run_qc_root
 from src.api.stage_runtime import has_other_marker_running, has_running
+from src.ui.run_snapshot import RunSnapshot
 
 router = APIRouter(prefix="/api/sessions/{session_id}/qc/{run_id}/markers", tags=["markers"])
 logger = logging.getLogger(__name__)
 
 
-def view(run: dict[str, Any], cluster: dict[str, Any], root: Path) -> dict[str, Any]:
+def view(run: RunSnapshot, cluster: dict[str, Any], root: Path) -> dict[str, Any]:
     """新授权看 current；结果恢复看自己的快照。所有字段均为安全汇总。"""
     state = review_view(run, cluster, root)
-    attempts = [
-        a for a in run["marker_attempts"] if a["cluster_attempt_id"] == cluster["attempt_id"]
-    ]
+    attempts = run.marker_attempts(cluster["attempt_id"])
     latest = attempts[-1] if attempts else None
     blocked, snapshot = [], None
     if state["current"]:
@@ -112,8 +111,7 @@ def view(run: dict[str, Any], cluster: dict[str, Any], root: Path) -> dict[str, 
                             if d["source_revision"] + 1 == run["revision"]
                             else "记录已失效；请刷新后重新复核",
                         }
-                        for d in reversed(run["marker_reviews"])
-                        if d["marker_attempt_id"] == a["attempt_id"]
+                        for d in reversed(run.marker_reviews(a["attempt_id"]))
                     ),
                     None,
                 ),
@@ -137,7 +135,7 @@ def view(run: dict[str, Any], cluster: dict[str, Any], root: Path) -> dict[str, 
 
 
 def _associated(
-    run: dict[str, Any], filter_attempt_id: str, pca_attempt_id: str, cluster_attempt_id: str
+    run: RunSnapshot, filter_attempt_id: str, pca_attempt_id: str, cluster_attempt_id: str
 ) -> dict[str, Any]:
     """所有父级关联都必须属于当前 run；跨会话和错配统一 404。"""
     require_parent(run, filter_attempt_id)
@@ -188,26 +186,24 @@ def execute_markers(
 ) -> dict[str, Any]:
     """历史请求只返回历史；首次 CAS 认领后在事务外执行一次固定 R。"""
 
-    def locate(run: dict[str, Any]) -> tuple[dict[str, Any], Path]:
+    def locate(run: RunSnapshot) -> tuple[dict[str, Any], Path]:
         """按完整父链定位聚类并读取 QC 根目录。"""
         root = run_qc_root(request.app.state.agent, run)
         return _associated(run, filter_attempt_id, pca_attempt_id, cluster_attempt_id), root
 
-    def previous(run: dict[str, Any]) -> dict[str, Any] | None:
+    def previous(run: RunSnapshot) -> dict[str, Any] | None:
         """按聚类尝试、来源绑定与工具版本查找已落库的 marker 尝试。"""
         locate(run)
         if not any(
             r["review_id"] == body.cluster_review_id
-            and r["cluster_attempt_id"] == cluster_attempt_id
-            for r in run["cluster_reviews"]
+            for r in run.cluster_reviews(cluster_attempt_id)
         ):
             raise HTTPException(404, "聚类接受关联不存在")
         found = next(
             (
                 a
-                for a in run["marker_attempts"]
-                if a["cluster_attempt_id"] == cluster_attempt_id
-                and a["binding_sha256"] == body.binding_sha256
+                for a in run.marker_attempts(cluster_attempt_id)
+                if a["binding_sha256"] == body.binding_sha256
                 and a["tool_version"] == MARKER_TOOL_VERSION
             ),
             None,
@@ -216,7 +212,7 @@ def execute_markers(
             raise HTTPException(409, "聚类接受与历史 marker 授权不符")
         return found
 
-    def prepare(run: dict[str, Any], attempt_id: str) -> StageClaim:
+    def prepare(run: RunSnapshot, attempt_id: str) -> StageClaim:
         """锁内重读聚类接受与来源证据，并给出 marker 领取计划。"""
         cluster, root = locate(run)
         state = review_view(run, cluster, root)
@@ -315,11 +311,7 @@ def diagnostic(
         run = require_run(store, session_id, run_id)
         _associated(run, filter_attempt_id, pca_attempt_id, cluster_attempt_id)
         attempt = next(
-            (
-                a
-                for a in run["marker_attempts"]
-                if a["attempt_id"] == attempt_id and a["cluster_attempt_id"] == cluster_attempt_id
-            ),
+            (a for a in run.marker_attempts(cluster_attempt_id) if a["attempt_id"] == attempt_id),
             None,
         )
         if not attempt or attempt["status"] != "completed":
@@ -356,11 +348,7 @@ def candidates(
         run = require_run(store, session_id, run_id)
         _associated(run, filter_attempt_id, pca_attempt_id, cluster_attempt_id)
         attempt = next(
-            (
-                a
-                for a in run["marker_attempts"]
-                if a["attempt_id"] == attempt_id and a["cluster_attempt_id"] == cluster_attempt_id
-            ),
+            (a for a in run.marker_attempts(cluster_attempt_id) if a["attempt_id"] == attempt_id),
             None,
         )
         if not attempt or attempt["status"] != "completed":
@@ -418,11 +406,7 @@ def review_markers(
         run = require_run(store, session_id, run_id)
         cluster = _associated(run, filter_attempt_id, pca_attempt_id, cluster_attempt_id)
         attempt = next(
-            (
-                a
-                for a in run["marker_attempts"]
-                if a["attempt_id"] == attempt_id and a["cluster_attempt_id"] == cluster_attempt_id
-            ),
+            (a for a in run.marker_attempts(cluster_attempt_id) if a["attempt_id"] == attempt_id),
             None,
         )
         if attempt is None:

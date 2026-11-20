@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import uuid
+from collections.abc import Mapping
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -21,6 +22,7 @@ from src.evidence.schema import (
     Subject,
     validate_card,
 )
+from src.ui.run_snapshot import RunSnapshot
 from src.ui.session_store import SessionStore
 
 
@@ -74,7 +76,7 @@ def _result_artifacts(result: dict[str, Any]) -> list[Artifact]:
     ]
 
 
-def _run(store: SessionStore, session_id: str, run_id: str) -> dict[str, Any]:
+def _run(store: SessionStore, session_id: str, run_id: str) -> RunSnapshot:
     """取权威 run；缺失直接拒绝生成。"""
     run = store.get_qc_run(session_id, run_id)
     if run is None:
@@ -82,7 +84,7 @@ def _run(store: SessionStore, session_id: str, run_id: str) -> dict[str, Any]:
     return run
 
 
-def _qc_metadata(run: dict[str, Any]) -> dict[str, Any]:
+def _qc_metadata(run: Mapping[str, Any]) -> dict[str, Any]:
     """读取 QC 本地 metadata；缺失时返回空表。"""
     path = Path(run["directory"]) / "metadata.json"
     return json.loads(path.read_text(encoding="utf-8")) if path.is_file() else {}

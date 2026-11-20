@@ -10,6 +10,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from src.api.app import create_app
+from src.ui.run_snapshot import RunSnapshot
 from src.ui.session_store import SessionStore
 from tests.unit.fakes import FakeAgent
 
@@ -103,7 +104,7 @@ class RecordingStore(SessionStore):
         self.calls.append("get_session")
         return super().get_session(session_id)
 
-    def get_qc_run(self, session_id: str, run_id: str) -> dict | None:
+    def get_qc_run(self, session_id: str, run_id: str) -> RunSnapshot | None:
         self.calls.append("get_qc_run")
         return super().get_qc_run(session_id, run_id)
 

@@ -26,21 +26,22 @@ from src.api.authorized_run import StageClaim, run_authorized
 from src.api.deps import StoreDep
 from src.api.routes_qc import require_run, run_qc_root
 from src.api.stage_runtime import has_running
+from src.ui.run_snapshot import RunSnapshot
 from src.ui.session_store import SessionStore
 
 router = APIRouter(prefix="/api/sessions/{session_id}/qc/{run_id}/pca", tags=["pca"])
 logger = logging.getLogger(__name__)
 
 
-def require_parent(run: dict[str, Any], filter_attempt_id: str) -> dict[str, Any]:
+def require_parent(run: RunSnapshot, filter_attempt_id: str) -> dict[str, Any]:
     """仅定位已关联父记录；路径不能来自客户端。"""
-    parent = next((a for a in run["attempts"] if a["attempt_id"] == filter_attempt_id), None)
+    parent = next((a for a in run.filter_attempts if a["attempt_id"] == filter_attempt_id), None)
     if parent is None:
         raise HTTPException(404, "父过滤关联不存在")
     return parent
 
 
-def view(run: dict[str, Any], parent: dict[str, Any], root: Path) -> dict[str, Any]:
+def view(run: RunSnapshot, parent: dict[str, Any], root: Path) -> dict[str, Any]:
     """返回方法/授权状态和必要汇总，不返回逐细胞数据或私有路径。"""
     blocked = []
     source = None
@@ -50,7 +51,7 @@ def view(run: dict[str, Any], parent: dict[str, Any], root: Path) -> dict[str, A
             blocked.append("PCA 至少需要 3 个过滤后细胞；不放宽 QC")
     except (OSError, ValueError, KeyError, TypeError) as exc:
         blocked.append(str(exc))
-    attempts = [a for a in run["pca_attempts"] if a["filter_attempt_id"] == parent["attempt_id"]]
+    attempts = run.pca_attempts(parent["attempt_id"])
     if has_running(run):
         blocked.append("该 run 有阶段运行中")
     return {
@@ -136,21 +137,20 @@ def execute_pca(
 ) -> dict[str, Any]:
     """同绑定终态/运行态只返历史；首次请求独立校验和原子认领。"""
 
-    def previous(run: dict[str, Any]) -> dict[str, Any] | None:
+    def previous(run: RunSnapshot) -> dict[str, Any] | None:
         """按父过滤、来源绑定与工具版本查找已落库的 PCA 尝试。"""
         require_parent(run, filter_attempt_id)
         return next(
             (
                 a
-                for a in run["pca_attempts"]
-                if a["filter_attempt_id"] == filter_attempt_id
-                and a["binding_sha256"] == body.binding_sha256
+                for a in run.pca_attempts(filter_attempt_id)
+                if a["binding_sha256"] == body.binding_sha256
                 and a["tool_version"] == PCA_TOOL_VERSION
             ),
             None,
         )
 
-    def prepare(run: dict[str, Any], attempt_id: str) -> StageClaim:
+    def prepare(run: RunSnapshot, attempt_id: str) -> StageClaim:
         """锁内重读父关联与来源证据，并给出 PCA 领取计划。"""
         parent = require_parent(run, filter_attempt_id)
         root = run_qc_root(request.app.state.agent, run)
@@ -212,14 +212,10 @@ def execute_pca(
         raise HTTPException(409, str(exc)) from exc
 
 
-def require_pca(run: dict[str, Any], filter_attempt_id: str, attempt_id: str) -> dict[str, Any]:
+def require_pca(run: RunSnapshot, filter_attempt_id: str, attempt_id: str) -> dict[str, Any]:
     """只定位本会话关联的 PCA，不能借用其他父记录。"""
     attempt = next(
-        (
-            a
-            for a in run["pca_attempts"]
-            if a["attempt_id"] == attempt_id and a["filter_attempt_id"] == filter_attempt_id
-        ),
+        (a for a in run.pca_attempts(filter_attempt_id) if a["attempt_id"] == attempt_id),
         None,
     )
     if attempt is None:
@@ -228,7 +224,7 @@ def require_pca(run: dict[str, Any], filter_attempt_id: str, attempt_id: str) ->
 
 
 def dimension_view(
-    run: dict[str, Any], parent: dict[str, Any], attempt: dict[str, Any], root: Path
+    run: RunSnapshot, parent: dict[str, Any], attempt: dict[str, Any], root: Path
 ) -> dict[str, Any]:
     """恢复当前选择及失效历史；不返回原始细胞表或私有产物路径。"""
     evidence = None
@@ -244,7 +240,7 @@ def dimension_view(
         blocked.append(str(exc))
     if has_running(run):
         blocked.append("该 run 有阶段运行中，不能记录维度")
-    history = [d for d in run["dimension_reviews"] if d["pca_attempt_id"] == attempt["attempt_id"]]
+    history = run.dimension_reviews(attempt["attempt_id"])
     latest = history[-1] if history else None
     current = (
         None if blocked else current_dimensions(run, attempt, binding, DIMENSION_RECORD_VERSION)
@@ -333,9 +329,8 @@ def record_dimensions(
     previous = next(
         (
             d
-            for d in run["dimension_reviews"]
-            if d["pca_attempt_id"] == attempt_id
-            and d["binding_sha256"] == body.binding_sha256
+            for d in run.dimension_reviews(attempt_id)
+            if d["binding_sha256"] == body.binding_sha256
             and d["record_version"] == DIMENSION_RECORD_VERSION
             and d["source_revision"] == body.revision
         ),
@@ -383,11 +378,7 @@ def diagnostic(
     run = require_run(store, session_id, run_id)
     require_parent(run, filter_attempt_id)
     attempt = next(
-        (
-            a
-            for a in run["pca_attempts"]
-            if a["attempt_id"] == attempt_id and a["filter_attempt_id"] == filter_attempt_id
-        ),
+        (a for a in run.pca_attempts(filter_attempt_id) if a["attempt_id"] == attempt_id),
         None,
     )
     if attempt is None or attempt["status"] != "completed":

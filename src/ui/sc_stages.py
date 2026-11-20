@@ -5,10 +5,11 @@ from __future__ import annotations
 import json
 import sqlite3
 import uuid
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from contextlib import AbstractContextManager
 from typing import TYPE_CHECKING, Any
 
+from src.ui.run_snapshot import RunSnapshot
 from src.ui.sc_stage_defs import (
     CLUSTER_STAGE,
     FILTER_STAGE,
@@ -39,7 +40,7 @@ class ScStages:
         """复用 SessionStore 的运行中阶段检查。"""
         self._store._require_no_filter(conn, run_id)
 
-    def get_qc_run(self, session_id: str, run_id: str) -> dict[str, Any] | None:
+    def get_qc_run(self, session_id: str, run_id: str) -> RunSnapshot | None:
         """读取 QC 及全部阶段历史。"""
         return self._store.get_qc_run(session_id, run_id)
 
@@ -151,7 +152,7 @@ class ScStages:
     def record_dimensions(
         self,
         session_id: str,
-        run: dict[str, Any],
+        run: Mapping[str, Any],
         parent: dict[str, Any],
         attempt: dict[str, Any],
         binding: str,
@@ -439,7 +440,7 @@ class ScStages:
     def record_cluster_review(
         self,
         session_id: str,
-        run: dict[str, Any],
+        run: Mapping[str, Any],
         cluster: dict[str, Any],
         binding: str,
         version: str,
@@ -517,7 +518,7 @@ class ScStages:
     def record_cluster_rejection(
         self,
         session_id: str,
-        run: dict[str, Any],
+        run: Mapping[str, Any],
         cluster: dict[str, Any],
         binding: str,
         version: str,
@@ -743,7 +744,7 @@ class ScStages:
         version: str,
         *,
         revision: int,
-    ) -> dict[str, Any]:
+    ) -> RunSnapshot | None:
         """追加 marker 人工复核事实；同 revision 幂等，内容冲突拒绝。"""
         if decision not in {"accepted", "rejected"}:
             raise ValueError("marker 复核结论必须是 accepted 或 rejected")
