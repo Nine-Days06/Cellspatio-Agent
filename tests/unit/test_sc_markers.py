@@ -15,7 +15,7 @@ from src.analysis import sc_markers
 from src.analysis.r_executor import RExecutorError
 from src.api import authorized_run
 from src.evidence.builder import build_marker_card
-from src.ui import session_store
+from src.ui import sc_stages
 from tests.unit.test_qc_preview import PARAMS
 from tests.unit.test_sc_cluster import dimensions_ready as _dimensions_ready
 from tests.unit.test_sc_cluster import execute
@@ -609,7 +609,7 @@ def test_terminal_message_failure_rolls_back_and_restart_never_resumes(marker_re
         raise sqlite3.OperationalError("private encoding failure")
 
     with monkeypatch.context() as scoped:
-        scoped.setattr(session_store, "_encode_results", fail)
+        scoped.setattr(sc_stages, "_encode_results", fail)
         response = d.client.post(d.marker_path + "/execute", json=d.marker_body)
     assert response.status_code == 409 and "private encoding failure" not in response.text
     run = d.store.get_qc_run(d.sid, d.rid)
