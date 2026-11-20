@@ -25,6 +25,7 @@ from src.analysis.sc_pca import (
 from src.api.authorized_run import StageClaim, run_authorized
 from src.api.deps import StoreDep
 from src.api.routes_qc import require_run, run_qc_root
+from src.api.stage_runtime import has_running
 from src.ui.session_store import SessionStore
 
 router = APIRouter(prefix="/api/sessions/{session_id}/qc/{run_id}/pca", tags=["pca"])
@@ -50,15 +51,7 @@ def view(run: dict[str, Any], parent: dict[str, Any], root: Path) -> dict[str, A
     except (OSError, ValueError, KeyError, TypeError) as exc:
         blocked.append(str(exc))
     attempts = [a for a in run["pca_attempts"] if a["filter_attempt_id"] == parent["attempt_id"]]
-    if any(
-        a["status"] == "running"
-        for a in [
-            *run["attempts"],
-            *run["pca_attempts"],
-            *run.get("cluster_attempts", []),
-            *run.get("marker_attempts", []),
-        ]
-    ):
+    if has_running(run):
         blocked.append("该 run 有阶段运行中")
     return {
         "run_id": run["run_id"],
@@ -249,15 +242,7 @@ def dimension_view(
         blocked.append("PCA 或父证据文件不可读取，请检查本地产物")
     except (ValueError, KeyError, TypeError, OverflowError) as exc:
         blocked.append(str(exc))
-    if any(
-        a["status"] == "running"
-        for a in [
-            *run["attempts"],
-            *run["pca_attempts"],
-            *run.get("cluster_attempts", []),
-            *run.get("marker_attempts", []),
-        ]
-    ):
+    if has_running(run):
         blocked.append("该 run 有阶段运行中，不能记录维度")
     history = [d for d in run["dimension_reviews"] if d["pca_attempt_id"] == attempt["attempt_id"]]
     latest = history[-1] if history else None

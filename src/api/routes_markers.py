@@ -27,6 +27,7 @@ from src.api.deps import StoreDep
 from src.api.routes_clusters import EVIDENCE_ERRORS, require_cluster
 from src.api.routes_pca import PcaRequest, require_parent, require_pca
 from src.api.routes_qc import require_run, run_qc_root
+from src.api.stage_runtime import has_other_marker_running, has_running
 
 router = APIRouter(prefix="/api/sessions/{session_id}/qc/{run_id}/markers", tags=["markers"])
 logger = logging.getLogger(__name__)
@@ -51,17 +52,9 @@ def view(run: dict[str, Any], cluster: dict[str, Any], root: Path) -> dict[str, 
         blocked.extend(
             state["blocked"] or ["需要当前有效的探索性聚类接受；不会自动接受或运行 marker"]
         )
-    if any(
-        a["status"] == "running"
-        for key in ("attempts", "pca_attempts", "cluster_attempts")
-        for a in run[key]
-    ):
+    if has_running(run, ("filter", "pca", "cluster")):
         blocked.append("该 run 有阶段运行中，不能授权 marker")
-    if any(
-        a["status"] == "running"
-        for a in run["marker_attempts"]
-        if a["cluster_attempt_id"] != cluster["attempt_id"]
-    ):
+    if has_other_marker_running(run, cluster["attempt_id"]):
         blocked.append("该 run 有其他 marker 运行中")
     displayed = snapshot or (latest["snapshot"] if latest else None)
     history = []
