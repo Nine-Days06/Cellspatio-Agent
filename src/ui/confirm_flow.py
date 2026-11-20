@@ -27,7 +27,7 @@ ERR_NOT_SCRIPT_ACTION = "not_script_action"
 class ConfirmFlowError(ValueError):
     """确认状态机业务错误；由 API 路由映射为 HTTP 状态码。"""
 
-    def __init__(self, code: str, message: str):
+    def __init__(self, code: str, message: str) -> None:
         super().__init__(message)
         self.code = code
 
@@ -41,9 +41,9 @@ def latest_pending_raw(store: SessionStore, session_id: str) -> PendingScript | 
 
 
 def restore_pending(
-    store: SessionStore, session_id: str, messages: list[PendingScript]
+    store: SessionStore, session_id: str, messages: list[dict[str, Any]]
 ) -> PendingScript | None:
-    """复刻 Streamlit 会话加载的过期语义。
+    """会话加载时的待确认脚本过期语义。
 
     只看最新一条带 pending_script 的消息：pending → 落库置 expired 后按
     expired 返回；expired → 原样返回；其他状态 → None。

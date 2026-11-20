@@ -15,6 +15,7 @@ from src.api.events import wire_message
 from src.ui.confirm_flow import (
     ERR_MISSING_SOURCE,
     ERR_NO_PENDING_SCRIPT,
+    ERR_NOT_SCRIPT_ACTION,
     ERR_UNKNOWN_SOURCE,
     ConfirmFlowError,
     confirm_data,
@@ -33,6 +34,7 @@ _CONFIRM_ERROR_STATUS = {
     ERR_NO_PENDING_SCRIPT: 409,
     ERR_MISSING_SOURCE: 400,
     ERR_UNKNOWN_SOURCE: 400,
+    ERR_NOT_SCRIPT_ACTION: 400,
 }
 
 
