@@ -253,12 +253,12 @@ def execute_clusters(
 
         def finish(result: dict[str, Any]) -> dict[str, Any]:
             """保存终态并返回数据库权威结果。"""
-            return store.finish_sc_cluster(attempt_id, result, claimed["attempt"])
+            return store.stages.finish_cluster(attempt_id, result, claimed["attempt"])
 
         return StageClaim(
             directory_parent=directory_parent,
             directory=directory,
-            start=lambda: store.start_sc_cluster(
+            start=lambda: store.stages.claim_cluster(
                 session_id,
                 run_id,
                 body.revision,
@@ -439,7 +439,7 @@ def record_review(
         state = review_view(run, cluster, root)
         if not state["binding_sha256"] or state["binding_sha256"] != body.binding_sha256:
             raise HTTPException(409, "聚类证据不可记录或已变化，请只读刷新")
-        store.record_sc_cluster_review(
+        store.stages.record_cluster_review(
             session_id,
             run,
             cluster,
@@ -479,7 +479,7 @@ def reject_review(
         state = review_view(run, cluster, root)
         if not state["binding_sha256"] or state["binding_sha256"] != body.binding_sha256:
             raise HTTPException(409, "聚类证据不可记录或已变化，请只读刷新")
-        store.record_sc_cluster_rejection(
+        store.stages.record_cluster_rejection(
             session_id,
             run,
             cluster,

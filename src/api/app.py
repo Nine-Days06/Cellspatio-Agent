@@ -52,10 +52,7 @@ def create_app(agent: Any) -> FastAPI:
     @asynccontextmanager
     async def lifespan(app: FastAPI):
         """单进程启动只标记旧过滤任务中断，不恢复执行。"""
-        routes_sessions._store().interrupt_sc_filters()
-        routes_sessions._store().interrupt_sc_pcas()
-        routes_sessions._store().interrupt_sc_clusters()
-        routes_sessions._store().interrupt_sc_markers()
+        routes_sessions._store().stages.interrupt_all()
         yield
 
     app = FastAPI(title="CellSpatio API", lifespan=lifespan)

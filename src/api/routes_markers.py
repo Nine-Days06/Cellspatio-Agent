@@ -257,12 +257,12 @@ def execute_markers(
 
         def finish(result: dict[str, Any]) -> dict[str, Any]:
             """保存终态并返回数据库权威结果。"""
-            return store.finish_sc_markers(attempt_id, result, claimed["attempt"])
+            return store.stages.finish_marker(attempt_id, result, claimed["attempt"])
 
         return StageClaim(
             directory_parent=directory_parent,
             directory=directory,
-            start=lambda: store.start_sc_markers(
+            start=lambda: store.stages.claim_marker(
                 session_id,
                 run_id,
                 body.revision,
@@ -431,7 +431,7 @@ def review_markers(
         )
         if attempt is None:
             raise HTTPException(404, "marker 关联不存在")
-        store.record_sc_marker_review(
+        store.stages.record_marker_review(
             session_id,
             attempt_id,
             body.decision,

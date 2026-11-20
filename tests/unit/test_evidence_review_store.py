@@ -145,7 +145,7 @@ def test_record_cluster_rejection_and_idempotency(tmp_path):
     run = store.get_qc_run("s", "r")
     cluster = run["cluster_attempts"][0]
 
-    store.record_sc_cluster_rejection(
+    store.stages.record_cluster_rejection(
         "s",
         run,
         cluster,
@@ -160,7 +160,7 @@ def test_record_cluster_rejection_and_idempotency(tmp_path):
     assert saved["cluster_rejections"][0]["reviewer"] == "reviewer-a"
     assert saved["revision"] == run["revision"] + 1
 
-    store.record_sc_cluster_rejection(
+    store.stages.record_cluster_rejection(
         "s",
         saved,
         cluster,
@@ -172,7 +172,7 @@ def test_record_cluster_rejection_and_idempotency(tmp_path):
     )
     assert len(store.get_qc_run("s", "r")["cluster_rejections"]) == 1
     with pytest.raises(ValueError, match="已失效"):
-        store.record_sc_cluster_rejection(
+        store.stages.record_cluster_rejection(
             "s",
             saved,
             cluster,
@@ -188,7 +188,7 @@ def test_record_marker_review_accepted_then_rejected(tmp_path):
     store = SessionStore(tmp_path / "sessions.db")
     _seed(store, tmp_path)
 
-    run = store.record_sc_marker_review(
+    run = store.stages.record_marker_review(
         "s",
         "m1",
         "accepted",
@@ -199,20 +199,20 @@ def test_record_marker_review_accepted_then_rejected(tmp_path):
     )
     assert run["marker_reviews"][0]["decision"] == "accepted"
 
-    updated = store.record_sc_marker_review(
+    updated = store.stages.record_marker_review(
         "s", "m1", "rejected", "候选不足", "reviewer-b", MARKER_REVIEW_VERSION, revision=2
     )
     assert [item["decision"] for item in updated["marker_reviews"]] == ["accepted", "rejected"]
-    again = store.record_sc_marker_review(
+    again = store.stages.record_marker_review(
         "s", "m1", "rejected", "候选不足", "reviewer-b", MARKER_REVIEW_VERSION, revision=3
     )
     assert len(again["marker_reviews"]) == 2
     with pytest.raises(ValueError, match="已失效"):
-        store.record_sc_marker_review(
+        store.stages.record_marker_review(
             "s", "m1", "rejected", "候选不足", "reviewer-b", MARKER_REVIEW_VERSION, revision=2
         )
     with pytest.raises(ValueError, match="不存在"):
-        store.record_sc_marker_review(
+        store.stages.record_marker_review(
             "other", "m1", "accepted", "ok", "reviewer-a", MARKER_REVIEW_VERSION, revision=3
         )
 

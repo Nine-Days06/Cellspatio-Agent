@@ -12,9 +12,10 @@ from typing import Any
 
 @dataclass(frozen=True)
 class StageSpec:
-    """一个受控阶段的持久化描述：表、终态、错误文案与消息形状。"""
+    """一个受控阶段的持久化描述：表、标签、终态、错误文案与消息形状。"""
 
     table: str
+    label: str
     match_columns: tuple[str, ...]
     terminal: tuple[str, ...]
     missing_run: str
@@ -22,6 +23,7 @@ class StageSpec:
     invalid_terminal: str
     not_running: str
     message: Callable[[sqlite3.Row, dict[str, Any]], tuple[str, dict[str, Any]]]
+    interrupt_result: dict[str, Any] | None = None
 
 
 def publish_message(

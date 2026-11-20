@@ -23,6 +23,7 @@ def fake_message(attempt: sqlite3.Row, result: dict[str, Any]) -> tuple[str, dic
 
 FAKE_STAGE = StageSpec(
     table="fake_attempts",
+    label="fake",
     match_columns=("worker",),
     terminal=("completed", "failed"),
     missing_run="QC 关联不存在",

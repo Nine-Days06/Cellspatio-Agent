@@ -333,7 +333,7 @@ def test_multi_connection_claim_running_guards_restart_and_atomic_finish(parent_
 
     def claim(index):
         barrier.wait()
-        return store.start_sc_pca(
+        return store.stages.claim_pca(
             sid,
             rid,
             run["revision"],
@@ -362,7 +362,7 @@ def test_multi_connection_claim_running_guards_restart_and_atomic_finish(parent_
             "CREATE TRIGGER reject_pca BEFORE UPDATE OF status ON sc_pca_attempts BEGIN SELECT RAISE(ABORT, 'forced rollback'); END;"
         )
     with pytest.raises(sqlite3.IntegrityError, match="forced rollback"):
-        store.finish_sc_pca(attempt_id, {"status": "completed"})
+        store.stages.finish_pca(attempt_id, {"status": "completed"})
     assert len(store.get_messages(sid)) == count
     assert store.get_qc_run(sid, rid)["pca_attempts"][0]["status"] == "running"
     with store._conn() as conn:

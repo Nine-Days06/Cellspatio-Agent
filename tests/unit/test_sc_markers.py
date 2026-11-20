@@ -616,12 +616,12 @@ def test_terminal_message_failure_rolls_back_and_restart_never_resumes(marker_re
     assert run["marker_attempts"][0]["status"] == "running"
     assert run["revision"] == d.marker_body["revision"] + 1
     assert len(d.store.get_messages(d.sid)) == before
-    d.store.interrupt_sc_markers()
+    d.store.stages.interrupt_all()
     state = d.client.get(d.marker_path).json()
     assert state["attempts"][0]["status"] == "interrupted"
     assert state["revision"] == d.marker_body["revision"] + 2
     assert len(d.store.get_messages(d.sid)) == before + 1
-    d.store.interrupt_sc_markers()
+    d.store.stages.interrupt_all()
     assert len(d.store.get_messages(d.sid)) == before + 1
     assert d.client.post(d.marker_path + "/execute", json=d.marker_body).json() == state
     d.executor.execute_script.assert_called_once()

@@ -2,19 +2,19 @@
 
 from __future__ import annotations
 
-import base64
-import io
 import json
 import logging
 import os
 import sqlite3
 import uuid
 from contextlib import contextmanager
-from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from src.ui.stage_lifecycle import StageLifecycle, StageSpec, advance_run, publish_message
+from src.ui.sc_stage_defs import CLUSTER_STAGE, FILTER_STAGE, MARKER_STAGE, PCA_STAGE, STAGE_SPECS
+from src.ui.sc_stages import ScStages
+from src.ui.session_codec import _encode_results, _now
+from src.ui.stage_lifecycle import StageLifecycle, advance_run, publish_message
 
 logger = logging.getLogger(__name__)
 
@@ -211,10 +211,6 @@ CREATE INDEX IF NOT EXISTS idx_knowledge_qa_reviews_answer
 """
 
 
-def _now() -> str:
-    return datetime.now(timezone.utc).isoformat()
-
-
 def _migrate_schema(conn: sqlite3.Connection) -> None:
     """旧库补列并建索引：CREATE TABLE IF NOT EXISTS 不会修改既有 sessions 表。"""
     columns = {row[1] for row in conn.execute("PRAGMA table_info(sessions)").fetchall()}
@@ -232,32 +228,6 @@ def _migrate_schema(conn: sqlite3.Connection) -> None:
             conn.execute(f"ALTER TABLE qc_previews ADD COLUMN {name} {ddl}")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_sessions_project ON sessions(project_id)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_sessions_updated ON sessions(updated_at)")
-
-
-def _encode_results(results: dict[str, Any] | None) -> str | None:
-    """results → JSON；plotly Figure 内嵌 json，matplotlib Figure 转 PNG base64。"""
-    if results is None:
-        return None
-    payload: dict[str, Any] = dict(results)
-    charts = payload.get("charts")
-    if isinstance(charts, list):
-        encoded = []
-        for chart in charts:
-            if hasattr(chart, "savefig"):  # matplotlib Figure
-                buf = io.BytesIO()
-                chart.savefig(buf, format="png", dpi=120, bbox_inches="tight")
-                encoded.append(
-                    {
-                        "type": "image",
-                        "image_b64": base64.b64encode(buf.getvalue()).decode(),
-                    }
-                )
-            elif hasattr(chart, "to_json"):  # plotly Figure
-                encoded.append({"type": "plotly", "figure_json": chart.to_json()})
-            else:
-                encoded.append(chart)  # 普通 dict 原样
-        payload["charts"] = encoded
-    return json.dumps(payload, ensure_ascii=False, default=str)
 
 
 def _decode_results(text: str | None) -> dict[str, Any] | None:
@@ -279,135 +249,17 @@ def _decode_results(text: str | None) -> dict[str, Any] | None:
     return payload
 
 
-def _filter_message(attempt: sqlite3.Row, result: dict[str, Any]) -> tuple[str, dict[str, Any]]:
-    """过滤终态的固定文案与安全汇总。"""
-    content = (
-        "过滤产物已保存，等待审阅；科学未复核，未执行归一化或聚类。"
-        if result["status"] == "completed"
-        else "过滤失败，本地证据已保留；不会自动重跑。"
-    )
-    return content, {
-        "sc_filter": {
-            "run_id": attempt["run_id"],
-            "attempt_id": attempt["attempt_id"],
-            "stage": "filter_review",
-            "technical_status": result["status"],
-            "scientific_status": "unreviewed",
-        }
-    }
-
-
-_FILTER_STAGE = StageSpec(
-    table="sc_filter_attempts",
-    match_columns=("preview_id", "binding_sha256", "tool_version"),
-    terminal=("completed", "failed"),
-    missing_run="QC 关联不存在",
-    revision_error="仅可执行当前已批准的精确选择，请刷新",
-    invalid_terminal="过滤终态非法",
-    not_running="过滤任务不在运行状态",
-    message=_filter_message,
-)
-
-
-def _pca_message(attempt: sqlite3.Row, result: dict[str, Any]) -> tuple[str, dict[str, Any]]:
-    """PCA 终态的固定文案与安全汇总。"""
-    content = (
-        "归一化与 PCA 产物已保存，等待审阅；科学未复核，未执行聚类或注释。"
-        if result["status"] == "completed"
-        else "归一化与 PCA 失败，本地证据保留；不会自动重跑。"
-    )
-    return content, {
-        "sc_pca": {
-            "run_id": attempt["run_id"],
-            "filter_attempt_id": attempt["filter_attempt_id"],
-            "attempt_id": attempt["attempt_id"],
-            "stage": "pca_review",
-            "technical_status": result["status"],
-            "scientific_status": "unreviewed",
-        }
-    }
-
-
-_PCA_STAGE = StageSpec(
-    table="sc_pca_attempts",
-    match_columns=("filter_attempt_id", "binding_sha256", "tool_version"),
-    terminal=("completed", "failed"),
-    missing_run="QC 关联不存在",
-    revision_error="仅可授权当前已批准且过滤完成的父阶段，请刷新",
-    invalid_terminal="PCA 终态非法",
-    not_running="PCA 任务不在运行状态",
-    message=_pca_message,
-)
-
-
-def _cluster_message(attempt: sqlite3.Row, result: dict[str, Any]) -> tuple[str, dict[str, Any]]:
-    """聚类终态的固定文案与安全汇总。"""
-    content = (
-        "聚类与 UMAP 产物已保存，科学未复核；未执行 markers 或注释。"
-        if result["status"] == "completed"
-        else "聚类与 UMAP 失败或中断，本地证据保留；不会自动重跑。"
-    )
-    return content, {
-        "sc_cluster": {
-            "run_id": attempt["run_id"],
-            "pca_attempt_id": attempt["pca_attempt_id"],
-            "attempt_id": attempt["attempt_id"],
-            "stage": "cluster_review",
-            "technical_status": result["status"],
-            "scientific_status": "unreviewed",
-        }
-    }
-
-
-_CLUSTER_STAGE = StageSpec(
-    table="sc_cluster_attempts",
-    match_columns=("pca_attempt_id", "binding_sha256", "tool_version"),
-    terminal=("completed", "failed", "interrupted"),
-    missing_run="QC 关联不存在",
-    revision_error="维度或父身份已变化，请刷新后重新授权",
-    invalid_terminal="聚类终态非法",
-    not_running="聚类任务不在运行状态",
-    message=_cluster_message,
-)
-
-
-def _marker_message(attempt: sqlite3.Row, result: dict[str, Any]) -> tuple[str, dict[str, Any]]:
-    """marker 终态的固定文案与安全汇总。"""
-    content = (
-        "marker 候选与诊断产物已保存，科学未复核；未执行细胞类型注释。"
-        if result["status"] == "completed"
-        else "marker 失败或中断，本地证据保留；不会自动重跑。"
-    )
-    return content, {
-        "sc_markers": {
-            "run_id": attempt["run_id"],
-            "cluster_attempt_id": attempt["cluster_attempt_id"],
-            "attempt_id": attempt["attempt_id"],
-            "stage": "marker_review",
-            "technical_status": result["status"],
-            "scientific_status": "unreviewed",
-        }
-    }
-
-
-_MARKER_STAGE = StageSpec(
-    table="sc_marker_attempts",
-    match_columns=("cluster_attempt_id", "binding_sha256", "tool_version"),
-    terminal=("completed", "failed", "interrupted"),
-    missing_run="QC 关联不存在",
-    revision_error="聚类接受或父身份已变化，请刷新后重新授权",
-    invalid_terminal="marker 终态非法",
-    not_running="marker 任务不在运行状态",
-    message=_marker_message,
-)
-
-
 class SessionStore:
     """会话/消息 CRUD。每次操作独立短连接，不做连接池。"""
 
     def __init__(self, db_path: str | Path | None = None):
         path = db_path or os.environ.get("CELLSPATIO_SESSIONS_DB") or DEFAULT_DB_PATH
         self.db_path = Path(path)
+
+    @property
+    def stages(self) -> ScStages:
+        """受控阶段操作的窄接口。"""
+        return ScStages(self)
 
     @contextmanager
     def _conn(self):
@@ -615,32 +467,14 @@ class SessionStore:
 
     def running_stage(self, session_id: str) -> str | None:
         """返回正在运行的受控阶段名；供删除/归档前预检。"""
-        checks = (
-            (
-                "过滤",
-                "SELECT 1 FROM sc_filter_attempts a JOIN qc_runs r USING(run_id) "
-                "WHERE r.session_id=? AND a.status='running'",
-            ),
-            (
-                "PCA",
-                "SELECT 1 FROM sc_pca_attempts a JOIN qc_runs r USING(run_id) "
-                "WHERE r.session_id=? AND a.status='running'",
-            ),
-            (
-                "聚类",
-                "SELECT 1 FROM sc_cluster_attempts a JOIN qc_runs r USING(run_id) "
-                "WHERE r.session_id=? AND a.status='running'",
-            ),
-            (
-                "marker",
-                "SELECT 1 FROM sc_marker_attempts a JOIN qc_runs r USING(run_id) "
-                "WHERE r.session_id=? AND a.status='running'",
-            ),
-        )
         with self._conn() as conn:
-            for label, sql in checks:
+            for spec in STAGE_SPECS:
+                sql = (
+                    f"SELECT 1 FROM {spec.table} a JOIN qc_runs r USING(run_id) "
+                    "WHERE r.session_id=? AND a.status='running'"
+                )
                 if conn.execute(sql, (session_id,)).fetchone():
-                    return label
+                    return spec.label
         return None
 
     def append_message(
@@ -907,24 +741,13 @@ class SessionStore:
     @staticmethod
     def _require_no_filter(conn: sqlite3.Connection, run_id: str) -> None:
         """运行中的选择不能被新预览或批准替换。"""
-        if conn.execute(
-            "SELECT 1 FROM sc_filter_attempts WHERE run_id = ? AND status = 'running'", (run_id,)
-        ).fetchone():
-            raise ValueError("过滤运行中，不能修改选择")
-        if conn.execute(
-            "SELECT 1 FROM sc_pca_attempts WHERE run_id = ? AND status = 'running'", (run_id,)
-        ).fetchone():
-            raise ValueError("PCA 运行中，不能修改选择")
-        if conn.execute(
-            "SELECT 1 FROM sc_cluster_attempts WHERE run_id = ? AND status = 'running'", (run_id,)
-        ).fetchone():
-            raise ValueError("聚类运行中，不能修改选择")
-        if conn.execute(
-            "SELECT 1 FROM sc_marker_attempts WHERE run_id = ? AND status = 'running'", (run_id,)
-        ).fetchone():
-            raise ValueError("marker 运行中，不能修改选择")
+        for spec in STAGE_SPECS:
+            if conn.execute(
+                f"SELECT 1 FROM {spec.table} WHERE run_id = ? AND status = 'running'", (run_id,)
+            ).fetchone():
+                raise ValueError(f"{spec.label}运行中，不能修改选择")
 
-    def start_sc_filter(
+    def _claim_filter(
         self,
         session_id: str,
         run_id: str,
@@ -953,7 +776,7 @@ class SessionStore:
                 raise ValueError("仅可执行当前已批准的精确选择，请刷新")
 
         return StageLifecycle(self._conn, _encode_results).claim(
-            _FILTER_STAGE,
+            FILTER_STAGE,
             session_id=session_id,
             run_id=run_id,
             revision=revision,
@@ -968,23 +791,13 @@ class SessionStore:
             clock=_now,
         )
 
-    def finish_sc_filter(self, attempt_id: str, result: dict[str, Any]) -> None:
+    def _finish_filter(self, attempt_id: str, result: dict[str, Any]) -> None:
         """技术终态与单条阶段消息原子落库，不暴露每细胞证据。"""
         StageLifecycle(self._conn, _encode_results).finish(
-            _FILTER_STAGE, attempt_id=attempt_id, result=result, clock=_now
+            FILTER_STAGE, attempt_id=attempt_id, result=result, clock=_now
         )
 
-    def interrupt_sc_filters(self) -> None:
-        """仅服务启动恢复：中断历史 running，不接管、不自动重跑。"""
-        with self._conn() as conn:
-            conn.execute("BEGIN IMMEDIATE")
-            conn.execute(
-                "UPDATE sc_filter_attempts SET status = 'interrupted', finished_at = ? "
-                "WHERE status = 'running'",
-                (_now(),),
-            )
-
-    def start_sc_pca(
+    def _claim_pca(
         self,
         session_id: str,
         run_id: str,
@@ -1016,7 +829,7 @@ class SessionStore:
                 raise ValueError("仅可授权当前已批准且过滤完成的父阶段，请刷新")
 
         return StageLifecycle(self._conn, _encode_results).claim(
-            _PCA_STAGE,
+            PCA_STAGE,
             session_id=session_id,
             run_id=run_id,
             revision=revision,
@@ -1033,13 +846,13 @@ class SessionStore:
             clock=_now,
         )
 
-    def finish_sc_pca(self, attempt_id: str, result: dict[str, Any]) -> None:
+    def _finish_pca(self, attempt_id: str, result: dict[str, Any]) -> None:
         """终态和安全阶段消息原子保存；私有分析证据不进入聊天。"""
         StageLifecycle(self._conn, _encode_results).finish(
-            _PCA_STAGE, attempt_id=attempt_id, result=result, clock=_now
+            PCA_STAGE, attempt_id=attempt_id, result=result, clock=_now
         )
 
-    def record_pca_dimensions(
+    def _record_dimensions(
         self,
         session_id: str,
         run: dict[str, Any],
@@ -1154,16 +967,6 @@ class SessionStore:
             )
             advance_run(conn, run["run_id"], session_id, now)
 
-    def interrupt_sc_pcas(self) -> None:
-        """单进程启动恢复：旧 running 标中断，不接管或重跑。"""
-        with self._conn() as conn:
-            conn.execute("BEGIN IMMEDIATE")
-            conn.execute(
-                "UPDATE sc_pca_attempts SET status = 'interrupted', finished_at = ? "
-                "WHERE status = 'running'",
-                (_now(),),
-            )
-
     @staticmethod
     def _cluster_source_matches(
         conn: sqlite3.Connection, run: sqlite3.Row, snapshot: dict[str, Any]
@@ -1211,7 +1014,7 @@ class SessionStore:
             and {**dict(live_review), "dims": json.loads(live_review["dims"])} == review
         )
 
-    def start_sc_cluster(
+    def _claim_cluster(
         self,
         session_id: str,
         run_id: str,
@@ -1249,7 +1052,7 @@ class SessionStore:
             return {**row, "snapshot": snapshot}
 
         claimed = StageLifecycle(self._conn, _encode_results).claim(
-            _CLUSTER_STAGE,
+            CLUSTER_STAGE,
             session_id=session_id,
             run_id=run_id,
             revision=revision,
@@ -1273,7 +1076,7 @@ class SessionStore:
         )
         return claimed
 
-    def finish_sc_cluster(
+    def _finish_cluster(
         self, attempt_id: str, result: dict[str, Any], expected: dict[str, Any] | None = None
     ) -> dict[str, Any]:
         """终态/消息/revision 原子保存；外部改变只阻止成功，不阻止失败收口。"""
@@ -1313,27 +1116,8 @@ class SessionStore:
             return result
 
         return StageLifecycle(self._conn, _encode_results).finish(
-            _CLUSTER_STAGE, attempt_id=attempt_id, result=result, finalize=finalize, clock=_now
+            CLUSTER_STAGE, attempt_id=attempt_id, result=result, finalize=finalize, clock=_now
         )
-
-    def interrupt_sc_clusters(self) -> None:
-        """单进程启动中断遗留作业，安全消息与 revision 随终态原子提交。"""
-        with self._conn() as conn:
-            ids = [
-                r[0]
-                for r in conn.execute(
-                    "SELECT attempt_id FROM sc_cluster_attempts WHERE status = 'running'"
-                )
-            ]
-        for attempt_id in ids:
-            self.finish_sc_cluster(
-                attempt_id,
-                {
-                    "status": "interrupted",
-                    "stage": "cluster_review",
-                    "scientific_status": "unreviewed",
-                },
-            )
 
     @classmethod
     def _marker_source_matches(
@@ -1351,7 +1135,7 @@ class SessionStore:
             and cls._completed_cluster_matches(conn, run, cluster)
         )
 
-    def start_sc_markers(
+    def _claim_marker(
         self,
         session_id: str,
         run_id: str,
@@ -1389,7 +1173,7 @@ class SessionStore:
             return {**row, "snapshot": snapshot}
 
         return StageLifecycle(self._conn, _encode_results).claim(
-            _MARKER_STAGE,
+            MARKER_STAGE,
             session_id=session_id,
             run_id=run_id,
             revision=revision,
@@ -1412,7 +1196,7 @@ class SessionStore:
             clock=_now,
         )
 
-    def finish_sc_markers(
+    def _finish_marker(
         self, attempt_id: str, result: dict[str, Any], expected: dict[str, Any] | None = None
     ) -> dict[str, Any]:
         """终态/消息/revision 原子保存；外部改变只阻止成功，不阻止失败收口。"""
@@ -1452,10 +1236,10 @@ class SessionStore:
             return result
 
         return StageLifecycle(self._conn, _encode_results).finish(
-            _MARKER_STAGE, attempt_id=attempt_id, result=result, finalize=finalize, clock=_now
+            MARKER_STAGE, attempt_id=attempt_id, result=result, finalize=finalize, clock=_now
         )
 
-    def record_sc_marker_review(
+    def _record_marker_review(
         self,
         session_id: str,
         marker_attempt_id: str,
@@ -1555,25 +1339,6 @@ class SessionStore:
             advance_run(conn, attempt["run_id"], session_id, now)
         return self.get_qc_run(session_id, attempt["run_id"])
 
-    def interrupt_sc_markers(self) -> None:
-        """单进程启动中断遗留作业，安全消息与 revision 随终态原子提交。"""
-        with self._conn() as conn:
-            ids = [
-                r[0]
-                for r in conn.execute(
-                    "SELECT attempt_id FROM sc_marker_attempts WHERE status = 'running'"
-                )
-            ]
-        for attempt_id in ids:
-            self.finish_sc_markers(
-                attempt_id,
-                {
-                    "status": "interrupted",
-                    "stage": "marker_review",
-                    "scientific_status": "unreviewed",
-                },
-            )
-
     @classmethod
     def _completed_cluster_matches(
         cls, conn: sqlite3.Connection, run: sqlite3.Row, cluster: dict[str, Any]
@@ -1592,7 +1357,7 @@ class SessionStore:
         }
         return live == cluster and cls._cluster_source_matches(conn, run, cluster["snapshot"])
 
-    def record_sc_cluster_review(
+    def _record_cluster_review(
         self,
         session_id: str,
         run: dict[str, Any],
@@ -1670,7 +1435,7 @@ class SessionStore:
             )
             advance_run(conn, run["run_id"], session_id, now)
 
-    def record_sc_cluster_rejection(
+    def _record_cluster_rejection(
         self,
         session_id: str,
         run: dict[str, Any],

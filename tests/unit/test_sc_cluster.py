@@ -265,7 +265,7 @@ def test_previous_attempt_is_rechecked_after_lock(ready, monkeypatch):
 
     class RacingLock:
         def acquire(self, blocking=False):
-            claimed = d.store.start_sc_cluster(
+            claimed = d.store.stages.claim_cluster(
                 d.sid,
                 d.rid,
                 d.body["revision"],
@@ -277,7 +277,7 @@ def test_previous_attempt_is_rechecked_after_lock(ready, monkeypatch):
                 str(d.root.parent / "sc_clusters" / attempt_id),
                 attempt_id,
             )
-            d.store.finish_sc_cluster(attempt_id, {"status": "completed"}, claimed)
+            d.store.stages.finish_cluster(attempt_id, {"status": "completed"}, claimed)
             return True
 
         def release(self):
@@ -443,7 +443,7 @@ def test_db_failure_does_not_execute_or_leak(ready, monkeypatch, caplog):
     def fail(*args):
         raise sqlite3.OperationalError("private path and clinical reason")
 
-    monkeypatch.setattr(type(d.store), "start_sc_cluster", fail)
+    monkeypatch.setattr(type(d.store.stages), "claim_cluster", fail)
     response = d.client.post(d.path + "/execute", json=d.body)
     assert response.status_code == 409
     assert "clinical" not in response.text + caplog.text
@@ -469,7 +469,7 @@ def test_finish_message_failure_rolls_back_terminal_state(ready, monkeypatch):
     assert run["cluster_attempts"][0]["status"] == "running"
     assert len(d.store.get_messages(d.sid)) == before
 
-    d.store.interrupt_sc_clusters()
+    d.store.stages.interrupt_all()
     run = d.store.get_qc_run(d.sid, d.rid)
     assert run["cluster_attempts"][0]["status"] == "interrupted"
     assert run["revision"] == revision + 2
@@ -517,15 +517,15 @@ def test_interrupted_is_atomic_and_no_auto_resume(ready, monkeypatch):
         raise sqlite3.OperationalError("simulated process loss after claim")
 
     with monkeypatch.context() as scoped:
-        scoped.setattr(type(d.store), "finish_sc_cluster", stop)
+        scoped.setattr(type(d.store.stages), "finish_cluster", stop)
         assert d.client.post(d.path + "/execute", json=d.body).status_code == 409
     messages = len(d.store.get_messages(d.sid))
-    d.store.interrupt_sc_clusters()
+    d.store.stages.interrupt_all()
     state = d.client.get(d.path).json()
     assert state["revision"] == d.body["revision"] + 2
     assert state["attempts"][0]["status"] == "interrupted"
     assert len(d.store.get_messages(d.sid)) == messages + 1
-    d.store.interrupt_sc_clusters()
+    d.store.stages.interrupt_all()
     assert len(d.store.get_messages(d.sid)) == messages + 1
     assert d.client.post(d.path + "/execute", json=d.body).json() == state
     d.executor.execute_script.assert_called_once()

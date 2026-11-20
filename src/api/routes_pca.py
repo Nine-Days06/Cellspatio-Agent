@@ -160,7 +160,7 @@ def execute_pca(
         return StageClaim(
             directory_parent=directory_parent,
             directory=directory,
-            start=lambda: store.start_sc_pca(
+            start=lambda: store.stages.claim_pca(
                 session_id,
                 run_id,
                 run["revision"],
@@ -180,7 +180,7 @@ def execute_pca(
                 body.binding_sha256,
                 request.app.state.agent.workflow_manager.r_executor,
             ),
-            finish=lambda result: store.finish_sc_pca(attempt_id, result),
+            finish=lambda result: store.stages.finish_pca(attempt_id, result),
             on_error=lambda exc: {
                 "status": "failed",
                 "stage": "pca_review",
@@ -340,7 +340,7 @@ def record_dimensions(
     if body.n_dims > state["evidence"]["actual_pcs"]:
         raise HTTPException(422, "维度数不能超过已计算的 actual_pcs")
     try:
-        store.record_pca_dimensions(
+        store.stages.record_dimensions(
             session_id,
             run,
             parent,

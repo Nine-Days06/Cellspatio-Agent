@@ -202,7 +202,7 @@ def filter_qc(
         return StageClaim(
             directory_parent=directory_parent,
             directory=directory,
-            start=lambda: store.start_sc_filter(
+            start=lambda: store.stages.claim_filter(
                 session_id,
                 run_id,
                 run["revision"],
@@ -219,7 +219,7 @@ def filter_qc(
                 directory,
                 request.app.state.agent.workflow_manager.r_executor,
             ),
-            finish=lambda result: store.finish_sc_filter(attempt_id, result),
+            finish=lambda result: store.stages.finish_filter(attempt_id, result),
             on_error=lambda exc: {
                 "status": "failed",
                 "stage": "filter_review",

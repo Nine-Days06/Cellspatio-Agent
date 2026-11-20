@@ -218,7 +218,7 @@ def test_store_cas_double_claim_running_blocks_mutation_and_restart(ready):
 
     def claim(index):
         barrier.wait()
-        return store.start_sc_filter(
+        return store.stages.claim_filter(
             sid,
             rid,
             run["revision"],
@@ -263,7 +263,7 @@ def test_selection_recomputed_even_if_artifact_identity_replaced(ready):
 def test_finish_state_message_transaction_rolls_back(ready):
     store, sid, rid, root, source, client, url, pid, executor = ready
     run = store.get_qc_run(sid, rid)
-    store.start_sc_filter(
+    store.stages.claim_filter(
         sid,
         rid,
         run["revision"],
@@ -279,7 +279,7 @@ def test_finish_state_message_transaction_rolls_back(ready):
             "CREATE TRIGGER reject_filter BEFORE UPDATE OF status ON sc_filter_attempts BEGIN SELECT RAISE(ABORT, 'forced rollback'); END;"
         )
     with pytest.raises(sqlite3.IntegrityError, match="forced rollback"):
-        store.finish_sc_filter("fail", {"status": "completed"})
+        store.stages.finish_filter("fail", {"status": "completed"})
     assert len(store.get_messages(sid)) == count
     assert store.get_qc_run(sid, rid)["attempts"][0]["status"] == "running"
 
