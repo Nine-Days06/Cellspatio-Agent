@@ -14,6 +14,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from src.ui.stage_lifecycle import StageLifecycle, StageSpec, advance_run, publish_message
+
 logger = logging.getLogger(__name__)
 
 DEFAULT_DB_PATH = Path(".cellspatio") / "sessions.db"
@@ -275,6 +277,36 @@ def _decode_results(text: str | None) -> dict[str, Any] | None:
                 decoded.append(chart)
         payload["charts"] = decoded
     return payload
+
+
+def _filter_message(attempt: sqlite3.Row, result: dict[str, Any]) -> tuple[str, dict[str, Any]]:
+    """过滤终态的固定文案与安全汇总。"""
+    content = (
+        "过滤产物已保存，等待审阅；科学未复核，未执行归一化或聚类。"
+        if result["status"] == "completed"
+        else "过滤失败，本地证据已保留；不会自动重跑。"
+    )
+    return content, {
+        "sc_filter": {
+            "run_id": attempt["run_id"],
+            "attempt_id": attempt["attempt_id"],
+            "stage": "filter_review",
+            "technical_status": result["status"],
+            "scientific_status": "unreviewed",
+        }
+    }
+
+
+_FILTER_STAGE = StageSpec(
+    table="sc_filter_attempts",
+    match_columns=("preview_id", "binding_sha256", "tool_version"),
+    terminal=("completed", "failed"),
+    missing_run="QC 关联不存在",
+    revision_error="仅可执行当前已批准的精确选择，请刷新",
+    invalid_terminal="过滤终态非法",
+    not_running="过滤任务不在运行状态",
+    message=_filter_message,
+)
 
 
 class SessionStore:
@@ -715,32 +747,20 @@ class SessionStore:
                 if payload["summary"]["blocked"]:
                     raise ValueError("该预览不能批准")
                 now = _now()
-                seq = conn.execute(
-                    "SELECT COALESCE(MAX(seq), 0) + 1 FROM messages WHERE session_id = ?",
-                    (session_id,),
-                ).fetchone()[0]
-                message_id = conn.execute(
-                    "INSERT INTO messages (session_id, seq, role, content, timestamp, results) "
-                    "VALUES (?, ?, 'assistant', ?, ?, ?)",
-                    (
-                        session_id,
-                        seq,
-                        "过滤选择已记录，尚未执行过滤或下游分析。",
-                        now,
-                        _encode_results(
-                            {"qc_selection": {"run_id": run_id, "preview_id": preview_id}}
-                        ),
-                    ),
-                ).lastrowid
+                message_id = publish_message(
+                    conn,
+                    session_id,
+                    "过滤选择已记录，尚未执行过滤或下游分析。",
+                    {"qc_selection": {"run_id": run_id, "preview_id": preview_id}},
+                    now,
+                    _encode_results,
+                )
                 conn.execute(
                     "UPDATE qc_previews SET status = 'approved', approved_at = ?, reason = ?, message_id = ? "
                     "WHERE preview_id = ? AND status = 'pending'",
                     (now, reason, message_id, preview_id),
                 )
-                conn.execute(
-                    "UPDATE qc_runs SET revision = revision + 1 WHERE run_id = ?", (run_id,)
-                )
-                conn.execute("UPDATE sessions SET updated_at = ? WHERE id = ?", (now, session_id))
+                advance_run(conn, run_id, session_id, now)
         return self.get_qc_run(session_id, run_id)
 
     def record_qc_rejection(
@@ -775,32 +795,20 @@ class SessionStore:
                 if preview["status"] != "pending" or run["active_preview_id"] != preview_id:
                     raise ValueError("仅可拒绝当前待批准预览")
                 now = _now()
-                seq = conn.execute(
-                    "SELECT COALESCE(MAX(seq), 0) + 1 FROM messages WHERE session_id = ?",
-                    (session_id,),
-                ).fetchone()[0]
-                message_id = conn.execute(
-                    "INSERT INTO messages (session_id, seq, role, content, timestamp, results) "
-                    "VALUES (?, ?, 'assistant', ?, ?, ?)",
-                    (
-                        session_id,
-                        seq,
-                        "QC 阈值预览已拒绝；未执行过滤或下游分析。",
-                        now,
-                        _encode_results(
-                            {"qc_rejection": {"run_id": run_id, "preview_id": preview_id}}
-                        ),
-                    ),
-                ).lastrowid
+                message_id = publish_message(
+                    conn,
+                    session_id,
+                    "QC 阈值预览已拒绝；未执行过滤或下游分析。",
+                    {"qc_rejection": {"run_id": run_id, "preview_id": preview_id}},
+                    now,
+                    _encode_results,
+                )
                 conn.execute(
                     "UPDATE qc_previews SET status = 'rejected', rejected_at = ?, reviewer = ?, "
                     "reason = ?, message_id = ? WHERE preview_id = ? AND status = 'pending'",
                     (now, reviewer, reason, message_id, preview_id),
                 )
-                conn.execute(
-                    "UPDATE qc_runs SET revision = revision + 1 WHERE run_id = ?", (run_id,)
-                )
-                conn.execute("UPDATE sessions SET updated_at = ? WHERE id = ?", (now, session_id))
+                advance_run(conn, run_id, session_id, now)
         return self.get_qc_run(session_id, run_id)
 
     @staticmethod
@@ -835,101 +843,43 @@ class SessionStore:
         attempt_id: str,
     ) -> dict[str, Any]:
         """短事务认领当前已批准选择；相同绑定只执行一次。"""
-        with self._conn() as conn:
-            conn.execute("BEGIN IMMEDIATE")
-            run = conn.execute(
-                "SELECT * FROM qc_runs WHERE session_id = ? AND run_id = ?", (session_id, run_id)
-            ).fetchone()
-            if run is None:
-                raise ValueError("QC 关联不存在")
-            previous = conn.execute(
-                "SELECT * FROM sc_filter_attempts WHERE run_id = ? AND preview_id = ? "
-                "AND binding_sha256 = ? AND tool_version = ?",
-                (run_id, preview_id, binding, tool_version),
-            ).fetchone()
-            if previous:
-                return {**dict(previous), "claimed": False}
+
+        def validate(conn: sqlite3.Connection, run: sqlite3.Row) -> None:
+            """锁内确认没有阶段在跑且预览仍是已批准的精确选择。"""
             self._require_no_filter(conn, run_id)
             preview = conn.execute(
                 "SELECT * FROM qc_previews WHERE run_id = ? AND preview_id = ?",
                 (run_id, preview_id),
             ).fetchone()
             if (
-                run["revision"] != revision
-                or run["active_preview_id"] != preview_id
+                run["active_preview_id"] != preview_id
                 or preview is None
                 or preview["status"] != "approved"
                 or json.loads(preview["payload"])["binding_sha256"] != binding
             ):
                 raise ValueError("仅可执行当前已批准的精确选择，请刷新")
-            conn.execute(
-                "INSERT INTO sc_filter_attempts "
-                "(attempt_id, run_id, preview_id, binding_sha256, tool_version, directory, status, created_at) "
-                "VALUES (?, ?, ?, ?, ?, ?, 'running', ?)",
-                (attempt_id, run_id, preview_id, binding, tool_version, directory, _now()),
-            )
-            conn.execute("UPDATE qc_runs SET revision = revision + 1 WHERE run_id = ?", (run_id,))
-        return {"attempt_id": attempt_id, "directory": directory, "claimed": True}
+
+        return StageLifecycle(self._conn, _encode_results).claim(
+            _FILTER_STAGE,
+            session_id=session_id,
+            run_id=run_id,
+            revision=revision,
+            attempt_id=attempt_id,
+            values={
+                "preview_id": preview_id,
+                "binding_sha256": binding,
+                "tool_version": tool_version,
+                "directory": directory,
+            },
+            validate=validate,
+            clock=_now,
+        )
 
     def finish_sc_filter(self, attempt_id: str, result: dict[str, Any]) -> None:
         """技术终态与单条阶段消息原子落库，不暴露每细胞证据。"""
-        if result["status"] not in ("completed", "failed"):
-            raise ValueError("过滤终态非法")
-        with self._conn() as conn:
-            conn.execute("BEGIN IMMEDIATE")
-            attempt = conn.execute(
-                "SELECT a.*, r.session_id FROM sc_filter_attempts a JOIN qc_runs r USING(run_id) "
-                "WHERE attempt_id = ?",
-                (attempt_id,),
-            ).fetchone()
-            if attempt is None or attempt["status"] != "running":
-                raise ValueError("过滤任务不在运行状态")
-            sid, now = attempt["session_id"], _now()
-            seq = conn.execute(
-                "SELECT COALESCE(MAX(seq), 0) + 1 FROM messages WHERE session_id = ?",
-                (sid,),
-            ).fetchone()[0]
-            content = (
-                "过滤产物已保存，等待审阅；科学未复核，未执行归一化或聚类。"
-                if result["status"] == "completed"
-                else "过滤失败，本地证据已保留；不会自动重跑。"
-            )
-            message_id = conn.execute(
-                "INSERT INTO messages (session_id, seq, role, content, timestamp, results) "
-                "VALUES (?, ?, 'assistant', ?, ?, ?)",
-                (
-                    sid,
-                    seq,
-                    content,
-                    now,
-                    _encode_results(
-                        {
-                            "sc_filter": {
-                                "run_id": attempt["run_id"],
-                                "attempt_id": attempt_id,
-                                "stage": "filter_review",
-                                "technical_status": result["status"],
-                                "scientific_status": "unreviewed",
-                            }
-                        }
-                    ),
-                ),
-            ).lastrowid
-            conn.execute(
-                "UPDATE sc_filter_attempts SET status = ?, finished_at = ?, result = ?, message_id = ? "
-                "WHERE attempt_id = ? AND status = 'running'",
-                (
-                    result["status"],
-                    now,
-                    json.dumps(result, ensure_ascii=False),
-                    message_id,
-                    attempt_id,
-                ),
-            )
-            conn.execute(
-                "UPDATE qc_runs SET revision = revision + 1 WHERE run_id = ?", (attempt["run_id"],)
-            )
-            conn.execute("UPDATE sessions SET updated_at = ? WHERE id = ?", (now, sid))
+        StageLifecycle(self._conn, _encode_results).finish(
+            _FILTER_STAGE, attempt_id=attempt_id, result=result, clock=_now
+        )
 
     def interrupt_sc_filters(self) -> None:
         """仅服务启动恢复：中断历史 running，不接管、不自动重跑。"""
