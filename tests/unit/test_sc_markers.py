@@ -556,6 +556,23 @@ def test_r_failure_keeps_local_evidence_without_retry_or_private_message(marker_
     d.executor.execute_script.assert_called_once()
 
 
+def test_unexpected_executor_error_is_safely_failed(marker_ready):
+    """未预期执行异常只落为安全失败，不泄漏本地细节。"""
+    d = marker_ready
+
+    def crash(script):
+        raise RuntimeError("private local path")
+
+    d.executor.execute_script.side_effect = crash
+    response = d.client.post(d.marker_path + "/execute", json=d.marker_body)
+    assert response.status_code == 200, response.text
+    state = response.json()
+    assert state["attempts"][0]["status"] == "failed"
+    assert state["attempts"][0]["result"] is None
+    assert "private local path" not in response.text
+    assert state["revision"] == d.marker_body["revision"] + 2
+
+
 @pytest.mark.parametrize("kind", ["artifact", "protocol", "review"])
 def test_history_drift_invalidates_diagnostic(marker_ready, kind):
     d = marker_ready
