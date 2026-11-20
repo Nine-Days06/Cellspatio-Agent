@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import pytest
 from fastapi.testclient import TestClient
 
 from src.api.app import create_app
@@ -46,6 +47,10 @@ class RecordingStore(SessionStore):
         self.calls.append("get_session")
         return super().get_session(session_id)
 
+    def get_qc_run(self, session_id: str, run_id: str) -> dict | None:
+        self.calls.append("get_qc_run")
+        return super().get_qc_run(session_id, run_id)
+
 
 def test_lifespan_interrupt_recovery_uses_app_factory():
     app = create_app(FakeAgent())
@@ -78,3 +83,50 @@ def test_sessions_projects_sidebar_use_overridden_factory_once_per_request():
         assert client.get("/api/sidebar", params={"session_id": "missing"}).status_code == 200
         assert len(RecordingStore.instances) == baseline + 3
         assert RecordingStore.instances[-1].calls == ["get_session"]
+
+
+@pytest.mark.parametrize(
+    ("method", "url", "payload", "expected_call"),
+    [
+        ("POST", "/api/chat", {"session_id": "missing", "prompt": "hi"}, "get_session"),
+        ("POST", "/api/sessions/missing/local-input", {"path": "missing"}, "get_session"),
+        ("GET", "/api/sessions/missing/qc/missing", None, "get_qc_run"),
+        (
+            "POST",
+            "/api/sessions/missing/qc/missing/preview",
+            {"n_feature_min": 1, "n_feature_max": 10, "percent_mt_max": 5},
+            "get_qc_run",
+        ),
+        (
+            "POST",
+            "/api/sessions/missing/qc/missing/approve",
+            {"preview_id": "p", "reason": "r"},
+            "get_qc_run",
+        ),
+        (
+            "POST",
+            "/api/sessions/missing/qc/missing/reject",
+            {"preview_id": "p", "reason": "r"},
+            "get_qc_run",
+        ),
+        (
+            "POST",
+            "/api/sessions/missing/qc/missing/filter",
+            {"preview_id": "p"},
+            "get_qc_run",
+        ),
+    ],
+)
+def test_chat_input_qc_routes_use_overridden_factory(
+    method: str, url: str, payload: dict | None, expected_call: str
+):
+    app = create_app(FakeAgent())
+    RecordingStore.instances.clear()
+    app.state.store_factory = RecordingStore
+
+    with TestClient(app) as client:
+        baseline = len(RecordingStore.instances)
+
+        assert client.request(method, url, json=payload).status_code == 404
+        assert len(RecordingStore.instances) == baseline + 1
+        assert RecordingStore.instances[-1].calls == [expected_call]

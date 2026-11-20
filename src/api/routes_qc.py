@@ -12,6 +12,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from src.analysis.qc_preview import Thresholds, build_preview, check_preview, checked_evidence
 from src.analysis.sc_filter import FILTER_TOOL_VERSION, run_sc_filter, verified_selection
 from src.api.authorized_run import StageClaim, run_authorized
+from src.api.deps import StoreDep
 from src.ui.session_store import SessionStore
 
 router = APIRouter(prefix="/api/sessions/{session_id}/qc", tags=["qc"])
@@ -84,9 +85,9 @@ def view(run: dict[str, Any], blocked: str | None = None) -> dict[str, Any]:
 
 
 @router.get("/{run_id}")
-def get_qc(session_id: str, run_id: str, request: Request) -> dict[str, Any]:
+def get_qc(session_id: str, run_id: str, request: Request, store: StoreDep) -> dict[str, Any]:
     """刷新后仍显示精确批准历史；变化证据显示阻断。"""
-    run = require_run(SessionStore(), session_id, run_id)
+    run = require_run(store, session_id, run_id)
     try:
         checked_evidence(run, run_qc_root(request.app.state.agent, run))
         active = next(
@@ -100,9 +101,10 @@ def get_qc(session_id: str, run_id: str, request: Request) -> dict[str, Any]:
 
 
 @router.post("/{run_id}/preview")
-def preview_qc(session_id: str, run_id: str, body: Thresholds, request: Request) -> dict[str, Any]:
+def preview_qc(
+    session_id: str, run_id: str, body: Thresholds, request: Request, store: StoreDep
+) -> dict[str, Any]:
     """生成独立预览，以数据库版本条件替换 active 预览。"""
-    store = SessionStore()
     run = require_run(store, session_id, run_id)
     try:
         preview = build_preview(run, run_qc_root(request.app.state.agent, run), body)
@@ -122,10 +124,9 @@ class ApprovalRequest(BaseModel):
 
 @router.post("/{run_id}/approve")
 def approve_qc(
-    session_id: str, run_id: str, body: ApprovalRequest, request: Request
+    session_id: str, run_id: str, body: ApprovalRequest, request: Request, store: StoreDep
 ) -> dict[str, Any]:
     """验证证据后短事务批准；已批准请求幂等返回历史，不再次计算。"""
-    store = SessionStore()
     run = require_run(store, session_id, run_id)
     preview = next((p for p in run["previews"] if p["preview_id"] == body.preview_id), None)
     if preview is None:
@@ -150,9 +151,10 @@ class RejectionRequest(BaseModel):
 
 
 @router.post("/{run_id}/reject")
-def reject_qc(session_id: str, run_id: str, body: RejectionRequest) -> dict[str, Any]:
+def reject_qc(
+    session_id: str, run_id: str, body: RejectionRequest, store: StoreDep
+) -> dict[str, Any]:
     """记录当前待批准预览的拒绝；已批准预览与已执行 run 不可拒绝。"""
-    store = SessionStore()
     require_run(store, session_id, run_id)
     try:
         run = store.record_qc_rejection(session_id, run_id, body.preview_id, body.reason)
@@ -170,10 +172,9 @@ class FilterRequest(BaseModel):
 
 @router.post("/{run_id}/filter")
 def filter_qc(
-    session_id: str, run_id: str, body: FilterRequest, request: Request
+    session_id: str, run_id: str, body: FilterRequest, request: Request, store: StoreDep
 ) -> dict[str, Any]:
     """固定过滤执行；重复授权只返回历史，不调用 R。"""
-    store = SessionStore()
 
     def previous(run: dict[str, Any]) -> dict[str, Any] | None:
         """按预览身份与工具版本查找已落库的过滤尝试。"""
