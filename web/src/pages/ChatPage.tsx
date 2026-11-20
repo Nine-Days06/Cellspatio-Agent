@@ -18,7 +18,7 @@ import { MessageList } from '@/components/MessageList'
 import { Sidebar } from '@/components/Sidebar'
 import { ThemeToggle } from '@/components/ThemeToggle'
 import { ApiError, confirmAction, createSession, registerLocalInput } from '@/lib/api'
-import { confirmReducer, initialConfirmState } from '@/lib/confirmState'
+import { confirmReducer, initialConfirmState, scriptStatusForAction } from '@/lib/confirmState'
 import { queryKeys, useMessages, useProjects, useSessions, useSidebar } from '@/lib/queries'
 import { collectArchivedProjectIds, isActiveSession } from '@/lib/sessions'
 import type {
@@ -113,6 +113,16 @@ export function ChatPage() {
     }
   }, [messagesQuery.data, setSession, setScriptCard])
 
+  // ②-b 当前展示卡的 message_id 变化（恢复出新卡/换卡）→ 丢弃上一张卡的失败/成功态；
+  //      同一 message_id 的 status 回写不算换卡。scriptCard 优先，与 ConfirmCard 一致。
+  const activeCardId = scriptCard?.message_id ?? dataCard?.message_id ?? null
+  const activeCardIdRef = useRef(activeCardId)
+  useEffect(() => {
+    if (activeCardIdRef.current === activeCardId) return
+    activeCardIdRef.current = activeCardId
+    dispatchConfirm({ type: 'reset' })
+  }, [activeCardId])
+
   // ③ busy 收尾 → 复位输入区提示（stopping / slowHint 只在本轮内有意义）
   useEffect(() => {
     if (busy) return
@@ -185,21 +195,43 @@ export function ChatPage() {
   /** 确认执行：先派发 submit（覆盖旧失败态）；成功按 action 回写卡片状态 / 清卡（T7 契约） */
   async function handleConfirm(body: ConfirmRequestBody): Promise<void> {
     dispatchConfirm({ type: 'submit', action: body.action })
+    const scriptStatus = scriptStatusForAction(body.action)
+    const currentCard = () => {
+      const state = useChatStore.getState()
+      return scriptStatus === null ? state.dataCard : state.scriptCard
+    }
+    const sessionAtSubmit = useChatStore.getState().sessionId
+    const cardIdAtSubmit = currentCard()?.message_id ?? null
+    const isStale = (): boolean => {
+      const state = useChatStore.getState()
+      return (
+        state.sessionId !== sessionAtSubmit ||
+        (currentCard()?.message_id ?? null) !== cardIdAtSubmit
+      )
+    }
     try {
       await confirmAction(body)
-      if (body.action === 'data_confirm') {
+      if (isStale()) {
+        dispatchConfirm({ type: 'reset' })
+        return
+      }
+      if (scriptStatus === null) {
         setDataCard(null)
       } else {
         const card = useChatStore.getState().scriptCard
         if (card) {
           setScriptCard({
             ...card,
-            status: body.action === 'script_confirm' ? 'confirmed' : 'cancelled',
+            status: scriptStatus,
           })
         }
       }
       dispatchConfirm({ type: 'success' })
     } catch (err) {
+      if (isStale()) {
+        dispatchConfirm({ type: 'reset' })
+        return
+      }
       dispatchConfirm({
         type: 'failure',
         error: err instanceof ApiError ? err.message : '确认执行失败',
