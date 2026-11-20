@@ -19,7 +19,7 @@ from src.analysis.sc_cluster import (
     dimension_binding,
     epochs_for,
 )
-from src.api import routes_clusters
+from src.api import authorized_run
 from src.api.routes_pca import DIMENSION_RECORD_VERSION
 from tests.unit.test_sc_pca import PARAMS, table
 from tests.unit.test_sc_pca_dimensions import dimensions_ready as _dimensions_ready
@@ -153,6 +153,8 @@ def test_authorize_restore_idempotent_own_revision_and_no_leak(ready):
     exposed = json.dumps(state) + json.dumps(d.store.get_messages(d.sid))
     assert d.body["reason"] not in exposed and str(d.source) not in exposed
     attempt = d.store.get_qc_run(d.sid, d.rid)["cluster_attempts"][0]
+    assert Path(attempt["directory"]).parent == d.root.parent / "sc_clusters"
+    assert Path(attempt["directory"]).name == attempt["attempt_id"]
     assert attempt["reason"] == d.body["reason"]
     assert attempt["snapshot"]["review"]["reason"] == "私有维度依据"
     assert d.body["reason"] not in (Path(attempt["directory"]) / "script.R").read_text()
@@ -268,7 +270,7 @@ def test_previous_attempt_is_rechecked_after_lock(ready, monkeypatch):
         def release(self):
             return None
 
-    monkeypatch.setattr(routes_clusters, "session_lock", lambda _: RacingLock())
+    monkeypatch.setattr(authorized_run, "session_lock", lambda _: RacingLock())
     response = d.client.post(d.path + "/execute", json=d.body)
     assert response.status_code == 200
     assert response.json()["attempts"][0]["attempt_id"] == attempt_id
@@ -308,6 +310,9 @@ def test_live_mutation_fails_finish_without_restoring_revision(ready, mutation):
     state = d.client.post(d.path + "/execute", json=d.body).json()
     assert state["attempts"][0]["status"] == "failed"
     assert state["revision"] == d.body["revision"] + (12 if mutation == "revision" else 2)
+    attempt = d.store.get_qc_run(d.sid, d.rid)["cluster_attempts"][0]
+    metadata = json.loads((Path(attempt["directory"]) / "metadata.json").read_text())
+    assert metadata["status"] == "failed"
     assert d.client.post(d.path + "/execute", json=d.body).status_code == 200
     d.executor.execute_script.assert_called_once()
 

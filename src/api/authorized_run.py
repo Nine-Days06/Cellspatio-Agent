@@ -40,7 +40,7 @@ def run_authorized(
     """执行一次已授权分析；历史、锁、目录、领取和失败收口只在这里实现。
 
     ``prepare`` 必须在锁内、重读状态后完成证据校验，并返回领取计划。
-    抢锁失败时再查一次历史：重复请求已落库则返回历史，否则才是忙。
+    抢锁前后都重查历史：重复请求已落库则返回历史，抢锁失败且无历史才是忙。
     """
     run = load()
     if previous(run) is not None:
@@ -53,12 +53,14 @@ def run_authorized(
         raise HTTPException(409, "该会话已有任务在进行")
     try:
         run = load()
+        if previous(run) is not None:
+            return refresh()
         attempt_id = uuid.uuid4().hex
         claim = prepare(run, attempt_id)
         base = claim.directory_parent.resolve()
         directory = claim.directory
         if directory.parent.resolve() != base or directory.name != attempt_id or directory.exists():
-            raise ValueError(unsafe_directory)
+            raise HTTPException(409, unsafe_directory)
         attempt = claim.start()
         if attempt["claimed"]:
             try:

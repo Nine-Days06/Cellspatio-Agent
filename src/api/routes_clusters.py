@@ -5,7 +5,6 @@ from __future__ import annotations
 import json
 import logging
 import sqlite3
-import uuid
 from pathlib import Path
 from typing import Any
 
@@ -24,7 +23,7 @@ from src.analysis.sc_cluster import (
 )
 from src.analysis.sc_marker_reviews import CLUSTER_RECORD_VERSION, review_view
 from src.api import routes_pca
-from src.api.chat_service import session_lock
+from src.api.authorized_run import StageClaim, run_authorized
 from src.api.routes_pca import dimension_view, require_parent, require_pca
 from src.api.routes_qc import require_run, run_qc_root
 from src.ui.session_store import SessionStore
@@ -187,17 +186,20 @@ def execute_clusters(
 ) -> dict[str, Any]:
     """同绑定先返历史；首次短事务认领，事务外固定执行，无重试接口。"""
     store = SessionStore()
-    lock = session_lock(session_id)
-    acquired = False
-    try:
-        run = require_run(store, session_id, run_id)
+
+    def locate(run: dict[str, Any]) -> tuple[dict[str, Any], dict[str, Any], Path]:
+        """按父过滤与 PCA 定位本 run 的完整上游链。"""
         parent = require_parent(run, filter_attempt_id)
         pca = require_pca(run, filter_attempt_id, pca_attempt_id)
-        root = run_qc_root(request.app.state.agent, run)
+        return parent, pca, run_qc_root(request.app.state.agent, run)
+
+    def previous(run: dict[str, Any]) -> dict[str, Any] | None:
+        """按 PCA 尝试、来源绑定与工具版本查找已落库的聚类尝试。"""
+        locate(run)
         reviews = [d for d in run["dimension_reviews"] if d["pca_attempt_id"] == pca_attempt_id]
         if not any(d["review_id"] == body.dimension_review_id for d in reviews):
             raise HTTPException(404, "维度记录关联不存在")
-        previous = next(
+        found = next(
             (
                 a
                 for a in run["cluster_attempts"]
@@ -207,30 +209,13 @@ def execute_clusters(
             ),
             None,
         )
-        if previous:
-            if previous["review_id"] != body.dimension_review_id:
-                raise HTTPException(409, "维度记录与历史授权不符")
-            return view(run, parent, pca, root)
-        acquired = lock.acquire(blocking=False)
-        if not acquired:
-            raise HTTPException(409, "该会话已有任务在进行")
-        run = require_run(store, session_id, run_id)
-        parent = require_parent(run, filter_attempt_id)
-        pca = require_pca(run, filter_attempt_id, pca_attempt_id)
-        previous = next(
-            (
-                a
-                for a in run["cluster_attempts"]
-                if a["pca_attempt_id"] == pca_attempt_id
-                and a["binding_sha256"] == body.binding_sha256
-                and a["tool_version"] == CLUSTER_TOOL_VERSION
-            ),
-            None,
-        )
-        if previous:
-            if previous["review_id"] != body.dimension_review_id:
-                raise HTTPException(409, "维度记录与历史授权不符")
-            return view(run, parent, pca, root)
+        if found is not None and found["review_id"] != body.dimension_review_id:
+            raise HTTPException(409, "维度记录与历史授权不符")
+        return found
+
+    def prepare(run: dict[str, Any], attempt_id: str) -> StageClaim:
+        """锁内重读维度授权与来源证据，并给出聚类领取计划。"""
+        parent, pca, root = locate(run)
         state = dimension_view(run, parent, pca, root)
         review = state["current"]
         if state["blocked"] or not review or review["review_id"] != body.dimension_review_id:
@@ -245,57 +230,80 @@ def execute_clusters(
         }
         if execution_binding(run, snapshot) != body.binding_sha256:
             raise HTTPException(409, "聚类来源绑定已变化，请刷新")
-        attempt_id = uuid.uuid4().hex
-        directory = root.parent / "sc_clusters" / attempt_id
-        if directory.resolve().parent != root.parent / "sc_clusters" or directory.exists():
-            raise HTTPException(409, "聚类输出目录不可认领")
-        attempt = store.start_sc_cluster(
-            session_id,
-            run_id,
-            body.revision,
-            snapshot,
-            body.binding_sha256,
-            CLUSTER_TOOL_VERSION,
-            PROTOCOL,
-            body.reason,
-            str(directory),
-            attempt_id,
-        )
-        if attempt["claimed"]:
+        directory_parent = root.parent / "sc_clusters"
+        directory = directory_parent / attempt_id
+        claimed: dict[str, Any] = {}
+
+        def execute(attempt: dict[str, Any]) -> dict[str, Any]:
+            """固定执行；未预期错误也落为失败而不泄漏本地细节。"""
+            claimed["attempt"] = attempt
             try:
-                result = run_sc_cluster(
+                return run_sc_cluster(
                     run, attempt, root, request.app.state.agent.workflow_manager.r_executor
                 )
             except OSError:
-                result = {
-                    "status": "failed",
-                    "stage": "cluster_review",
-                    "scientific_status": "unreviewed",
-                    "error": "聚类产物落盘失败",
-                }
+                raise
             except Exception as exc:
                 logger.error("unexpected cluster execution failure: %s", type(exc).__name__)
-                result = {
+                return {
                     "status": "failed",
                     "stage": "cluster_review",
                     "scientific_status": "unreviewed",
                     "error": "聚类执行出现未预期错误；本地证据保留，请人工检查",
                 }
-            saved = store.finish_sc_cluster(attempt_id, result, attempt)
+
+        def finish(result: dict[str, Any]) -> None:
+            """保存终态；数据库失败权威必须覆盖本地 completed metadata。"""
+            saved = store.finish_sc_cluster(attempt_id, result, claimed["attempt"])
             if saved != result:
-                # DB 的失败权威不能被本地旧 completed metadata 冒充。
                 (directory / "metadata.json").write_text(
                     json.dumps(saved, ensure_ascii=False, indent=2), encoding="utf-8"
                 )
-        return view(require_run(store, session_id, run_id), parent, pca, root)
+
+        return StageClaim(
+            directory_parent=directory_parent,
+            directory=directory,
+            start=lambda: store.start_sc_cluster(
+                session_id,
+                run_id,
+                body.revision,
+                snapshot,
+                body.binding_sha256,
+                CLUSTER_TOOL_VERSION,
+                PROTOCOL,
+                body.reason,
+                str(directory),
+                attempt_id,
+            ),
+            execute=execute,
+            finish=finish,
+            on_error=lambda exc: {
+                "status": "failed",
+                "stage": "cluster_review",
+                "scientific_status": "unreviewed",
+                "error": "聚类产物落盘失败",
+            },
+        )
+
+    def refresh() -> dict[str, Any]:
+        """重读同一 run 并返回聚类只读视图。"""
+        run = require_run(store, session_id, run_id)
+        return view(run, *locate(run))
+
+    try:
+        return run_authorized(
+            session_id=session_id,
+            load=lambda: require_run(store, session_id, run_id),
+            previous=previous,
+            prepare=prepare,
+            refresh=refresh,
+            unsafe_directory="聚类输出目录不可认领",
+        )
     except sqlite3.Error as exc:
         logger.error("cluster state database write failed: %s", type(exc).__name__)
         raise HTTPException(409, "聚类状态持久化失败，请只读刷新；不要重复执行") from exc
     except EVIDENCE_ERRORS as exc:
         raise HTTPException(409, "聚类来源或本地证据不符，请只读刷新并检查上游") from exc
-    finally:
-        if acquired:
-            lock.release()
 
 
 @router.get("/{filter_attempt_id}/{pca_attempt_id}/{attempt_id}/diagnostic")

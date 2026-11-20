@@ -174,8 +174,10 @@ def test_existing_directory_is_rejected_before_claiming(
     def prepare(run: dict[str, Any], attempt_id: str) -> StageClaim:
         return _claim(tmp_path, attempt_id, start=lambda: started.append(attempt_id))
 
-    with pytest.raises(ValueError, match="过滤输出目录非法"):
+    with pytest.raises(HTTPException) as excinfo:
         _call(tmp_path, prepare=prepare)
+    assert excinfo.value.status_code == 409
+    assert excinfo.value.detail == "过滤输出目录非法"
 
     assert started == []
     assert session_lock("s1").acquire(blocking=False)
@@ -195,7 +197,9 @@ def test_directory_outside_parent_is_rejected(tmp_path: Path) -> None:
             start=lambda: started.append(attempt_id),
         )
 
-    with pytest.raises(ValueError, match="过滤输出目录非法"):
+    with pytest.raises(HTTPException) as excinfo:
         _call(tmp_path, prepare=prepare)
+    assert excinfo.value.status_code == 409
+    assert excinfo.value.detail == "过滤输出目录非法"
 
     assert started == []
