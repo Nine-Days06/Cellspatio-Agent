@@ -11,7 +11,7 @@ from types import SimpleNamespace
 import pytest
 
 import src.analysis.sc_cluster as sc_cluster
-import src.ui.session_store as session_store
+import src.ui.sc_stages as sc_stages
 from src.analysis.sc_cluster import (
     CLUSTER_TOOL_VERSION,
     PROTOCOL,
@@ -460,7 +460,7 @@ def test_finish_message_failure_rolls_back_terminal_state(ready, monkeypatch):
         raise sqlite3.OperationalError("private message encoding failure")
 
     with monkeypatch.context() as scoped:
-        scoped.setattr(session_store, "_encode_results", fail)
+        scoped.setattr(sc_stages, "_encode_results", fail)
         response = d.client.post(d.path + "/execute", json=d.body)
     assert response.status_code == 409
     assert "private message encoding failure" not in response.text
