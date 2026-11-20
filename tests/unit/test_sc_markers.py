@@ -13,6 +13,7 @@ import pytest
 
 from src.analysis import sc_markers
 from src.analysis.r_executor import RExecutorError
+from src.api import authorized_run
 from src.evidence.builder import build_marker_card
 from src.ui import session_store
 from tests.unit.test_qc_preview import PARAMS
@@ -201,6 +202,9 @@ def test_independent_marker_authorization_restores_own_snapshot_and_is_idempoten
     assert saved["attempts"][0]["status"] == "completed", saved
     assert saved["attempts"][0]["invalidated_reason"] is None
     assert saved["attempts"][0]["result"]["marker_rows"] == 1
+    attempt = d.store.get_qc_run(d.sid, d.rid)["marker_attempts"][0]
+    assert Path(attempt["directory"]).parent == d.root.parent / "sc_markers"
+    assert Path(attempt["directory"]).name == attempt["attempt_id"]
     assert d.client.get(d.marker_path).json() == saved
     assert d.client.post(d.marker_path + "/execute", json=body).json() == saved
     aid = saved["attempts"][0]["attempt_id"]
@@ -299,6 +303,19 @@ def test_stale_revision_and_binding_conflict(marker_ready):
     d.executor.execute_script.assert_not_called()
 
 
+def test_lock_conflict_is_busy_without_r(marker_ready):
+    d = marker_ready
+    lock = authorized_run.session_lock(d.sid)
+    assert lock.acquire(blocking=False)
+    try:
+        response = d.client.post(d.marker_path + "/execute", json=d.marker_body)
+    finally:
+        lock.release()
+    assert response.status_code == 409
+    assert response.json()["detail"] == "该会话已有任务在进行"
+    d.executor.execute_script.assert_not_called()
+
+
 def test_running_guards_and_duplicate_request(marker_ready):
     d = marker_ready
     entered, release = Event(), Event()
@@ -377,6 +394,9 @@ def test_running_identity_mutation_is_failed_not_completed(marker_ready, mutatio
     assert response.json()["revision"] == d.marker_body["revision"] + (
         12 if mutation == "revision" else 2
     )
+    attempt = d.store.get_qc_run(d.sid, d.rid)["marker_attempts"][0]
+    metadata = json.loads((Path(attempt["directory"]) / "metadata.json").read_text())
+    assert metadata["status"] == "failed"
     assert d.client.post(d.marker_path + "/execute", json=d.marker_body).status_code == 200
     d.executor.execute_script.assert_called_once()
 

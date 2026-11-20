@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 import logging
 import sqlite3
 from pathlib import Path
@@ -252,13 +251,9 @@ def execute_clusters(
                     "error": "聚类执行出现未预期错误；本地证据保留，请人工检查",
                 }
 
-        def finish(result: dict[str, Any]) -> None:
-            """保存终态；数据库失败权威必须覆盖本地 completed metadata。"""
-            saved = store.finish_sc_cluster(attempt_id, result, claimed["attempt"])
-            if saved != result:
-                (directory / "metadata.json").write_text(
-                    json.dumps(saved, ensure_ascii=False, indent=2), encoding="utf-8"
-                )
+        def finish(result: dict[str, Any]) -> dict[str, Any]:
+            """保存终态并返回数据库权威结果。"""
+            return store.finish_sc_cluster(attempt_id, result, claimed["attempt"])
 
         return StageClaim(
             directory_parent=directory_parent,

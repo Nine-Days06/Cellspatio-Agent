@@ -17,6 +17,7 @@ from src.analysis.qc_preview import _identity
 from src.analysis.r_executor import RExecutorError
 from src.analysis.sc_pca import PCA_TOOL_VERSION, PROTOCOL, checked_parent
 from src.analysis.sc_qc import run_sc_qc
+from src.api import authorized_run
 from src.api.app import create_app
 from src.api.chat_service import run_turn
 from src.ui.session_store import SessionStore
@@ -154,6 +155,19 @@ def parent_ready(tmp_path, monkeypatch, request):
     binding = client.get(pca_url).json()["binding_sha256"]
     assert binding and not client.get(pca_url).json()["blocked"]
     return store, sid, rid, root, source, client, url, pid, fid, pca_url, binding, executor
+
+
+def test_lock_conflict_is_busy_without_r(parent_ready):
+    _, sid, _, _, _, client, _, _, _, path, binding, executor = parent_ready
+    lock = authorized_run.session_lock(sid)
+    assert lock.acquire(blocking=False)
+    try:
+        response = client.post(path, json={"binding_sha256": binding, "reason": "私有依据"})
+    finally:
+        lock.release()
+    assert response.status_code == 409
+    assert response.json()["detail"] == "该会话已有任务在进行"
+    executor.execute_script.assert_not_called()
 
 
 def test_get_never_executes_post_once_and_private_stage_only(parent_ready):

@@ -2,10 +2,8 @@
 
 import csv
 import io
-import json
 import logging
 import sqlite3
-import uuid
 from pathlib import Path
 from typing import Any, Literal
 
@@ -24,7 +22,7 @@ from src.analysis.sc_markers import (
     execution_binding,
     run_sc_markers,
 )
-from src.api.chat_service import session_lock
+from src.api.authorized_run import StageClaim, run_authorized
 from src.api.routes_clusters import EVIDENCE_ERRORS, require_cluster
 from src.api.routes_pca import PcaRequest, require_parent, require_pca
 from src.api.routes_qc import require_run, run_qc_root
@@ -194,36 +192,39 @@ def execute_markers(
     request: Request,
 ) -> dict[str, Any]:
     """历史请求只返回历史；首次 CAS 认领后在事务外执行一次固定 R。"""
-    store, lock, acquired = SessionStore(), session_lock(session_id), False
-    try:
-        for pass_number in (0, 1):
-            run = require_run(store, session_id, run_id)
-            root = run_qc_root(request.app.state.agent, run)
-            cluster = _associated(run, filter_attempt_id, pca_attempt_id, cluster_attempt_id)
-            if not any(
-                r["review_id"] == body.cluster_review_id
-                and r["cluster_attempt_id"] == cluster_attempt_id
-                for r in run["cluster_reviews"]
-            ):
-                raise HTTPException(404, "聚类接受关联不存在")
-            previous = next(
-                (
-                    a
-                    for a in run["marker_attempts"]
-                    if a["cluster_attempt_id"] == cluster_attempt_id
-                    and a["binding_sha256"] == body.binding_sha256
-                    and a["tool_version"] == MARKER_TOOL_VERSION
-                ),
-                None,
-            )
-            if previous:
-                if previous["review_id"] != body.cluster_review_id:
-                    raise HTTPException(409, "聚类接受与历史 marker 授权不符")
-                return view(run, cluster, root)
-            if pass_number == 0:
-                acquired = lock.acquire(blocking=False)
-                if not acquired:
-                    raise HTTPException(409, "该会话已有任务在进行")
+    store = SessionStore()
+
+    def locate(run: dict[str, Any]) -> tuple[dict[str, Any], Path]:
+        """按完整父链定位聚类并读取 QC 根目录。"""
+        root = run_qc_root(request.app.state.agent, run)
+        return _associated(run, filter_attempt_id, pca_attempt_id, cluster_attempt_id), root
+
+    def previous(run: dict[str, Any]) -> dict[str, Any] | None:
+        """按聚类尝试、来源绑定与工具版本查找已落库的 marker 尝试。"""
+        locate(run)
+        if not any(
+            r["review_id"] == body.cluster_review_id
+            and r["cluster_attempt_id"] == cluster_attempt_id
+            for r in run["cluster_reviews"]
+        ):
+            raise HTTPException(404, "聚类接受关联不存在")
+        found = next(
+            (
+                a
+                for a in run["marker_attempts"]
+                if a["cluster_attempt_id"] == cluster_attempt_id
+                and a["binding_sha256"] == body.binding_sha256
+                and a["tool_version"] == MARKER_TOOL_VERSION
+            ),
+            None,
+        )
+        if found is not None and found["review_id"] != body.cluster_review_id:
+            raise HTTPException(409, "聚类接受与历史 marker 授权不符")
+        return found
+
+    def prepare(run: dict[str, Any], attempt_id: str) -> StageClaim:
+        """锁内重读聚类接受与来源证据，并给出 marker 领取计划。"""
+        cluster, root = locate(run)
         state = review_view(run, cluster, root)
         review = state["current"]
         if state["blocked"] or not review or review["review_id"] != body.cluster_review_id:
@@ -232,56 +233,76 @@ def execute_markers(
         snapshot = {"cluster": cluster, "review": review, "source": source}
         if execution_binding(run, snapshot) != body.binding_sha256:
             raise HTTPException(409, "marker 来源绑定已变化，请刷新")
-        attempt_id = uuid.uuid4().hex
-        directory = root.parent / "sc_markers" / attempt_id
-        if directory.resolve().parent != root.parent / "sc_markers" or directory.exists():
-            raise HTTPException(409, "marker 输出目录不可认领")
-        attempt = store.start_sc_markers(
-            session_id,
-            run_id,
-            body.revision,
-            snapshot,
-            body.binding_sha256,
-            MARKER_TOOL_VERSION,
-            PROTOCOL,
-            body.reason,
-            str(directory),
-            attempt_id,
-        )
-        if attempt["claimed"]:
+        directory_parent = root.parent / "sc_markers"
+        directory = directory_parent / attempt_id
+        claimed: dict[str, Any] = {}
+
+        def execute(attempt: dict[str, Any]) -> dict[str, Any]:
+            """固定执行；未预期错误也安全收口，不泄漏私有异常。"""
+            claimed["attempt"] = attempt
             try:
-                result = run_sc_markers(
+                return run_sc_markers(
                     run, attempt, root, request.app.state.agent.workflow_manager.r_executor
                 )
             except OSError:
-                result = {
-                    "status": "failed",
-                    "stage": "marker_review",
-                    "scientific_status": "unreviewed",
-                    "error": "marker 产物落盘失败",
-                }
+                raise
             except Exception as exc:  # noqa: BLE001 - 已认领任务必须安全收口，私有异常不进入消息。
                 logger.error("unexpected marker execution failure: %s", type(exc).__name__)
-                result = {
+                return {
                     "status": "failed",
                     "stage": "marker_review",
                     "scientific_status": "unreviewed",
                     "error": "marker 出现未预期错误；请检查本地证据",
                 }
-            saved = store.finish_sc_markers(attempt_id, result, attempt)
-            if saved != result:
-                (directory / "metadata.json").write_text(
-                    json.dumps(saved, ensure_ascii=False, indent=2), encoding="utf-8"
-                )
-        return view(require_run(store, session_id, run_id), cluster, root)
+
+        def finish(result: dict[str, Any]) -> dict[str, Any]:
+            """保存终态并返回数据库权威结果。"""
+            return store.finish_sc_markers(attempt_id, result, claimed["attempt"])
+
+        return StageClaim(
+            directory_parent=directory_parent,
+            directory=directory,
+            start=lambda: store.start_sc_markers(
+                session_id,
+                run_id,
+                body.revision,
+                snapshot,
+                body.binding_sha256,
+                MARKER_TOOL_VERSION,
+                PROTOCOL,
+                body.reason,
+                str(directory),
+                attempt_id,
+            ),
+            execute=execute,
+            finish=finish,
+            on_error=lambda exc: {
+                "status": "failed",
+                "stage": "marker_review",
+                "scientific_status": "unreviewed",
+                "error": "marker 产物落盘失败",
+            },
+        )
+
+    def refresh() -> dict[str, Any]:
+        """重读同一 run 并返回 marker 只读视图。"""
+        run = require_run(store, session_id, run_id)
+        return view(run, *locate(run))
+
+    try:
+        return run_authorized(
+            session_id=session_id,
+            load=lambda: require_run(store, session_id, run_id),
+            previous=previous,
+            prepare=prepare,
+            refresh=refresh,
+            unsafe_directory="marker 输出目录不可认领",
+        )
     except sqlite3.Error as exc:
         logger.error("marker write failed: %s", type(exc).__name__)
         raise HTTPException(409, "marker 状态持久化失败，请只读刷新；不要重复执行") from exc
     except EVIDENCE_ERRORS as exc:
         raise HTTPException(409, "marker 来源或本地证据不符，请只读刷新并检查上游") from exc
-    finally:
-        if acquired:
-            lock.release()
 
 
 @router.get("/{filter_attempt_id}/{pca_attempt_id}/{cluster_attempt_id}/{attempt_id}/diagnostic")

@@ -233,6 +233,19 @@ def test_running_guards_and_duplicate_post(ready):
     d.executor.execute_script.assert_called_once()
 
 
+def test_lock_conflict_is_busy_without_r(ready):
+    d = ready
+    lock = authorized_run.session_lock(d.sid)
+    assert lock.acquire(blocking=False)
+    try:
+        response = d.client.post(d.path + "/execute", json=d.body)
+    finally:
+        lock.release()
+    assert response.status_code == 409
+    assert response.json()["detail"] == "该会话已有任务在进行"
+    d.executor.execute_script.assert_not_called()
+
+
 def test_previous_attempt_is_rechecked_after_lock(ready, monkeypatch):
     d = ready
     run = d.store.get_qc_run(d.sid, d.rid)

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import uuid
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -24,7 +25,7 @@ class StageClaim:
     directory: Path
     start: Callable[[], dict[str, Any]]
     execute: Callable[[dict[str, Any]], dict[str, Any]]
-    finish: Callable[[dict[str, Any]], None]
+    finish: Callable[[dict[str, Any]], dict[str, Any] | None]
     on_error: Callable[[Exception], dict[str, Any]]
 
 
@@ -67,7 +68,11 @@ def run_authorized(
                 result = claim.execute(attempt)
             except OSError as exc:
                 result = claim.on_error(exc)
-            claim.finish(result)
+            saved = claim.finish(result)
+            if saved is not None and saved != result:
+                (directory / "metadata.json").write_text(
+                    json.dumps(saved, ensure_ascii=False, indent=2), encoding="utf-8"
+                )
         return refresh()
     finally:
         lock.release()

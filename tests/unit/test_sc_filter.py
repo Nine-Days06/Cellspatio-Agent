@@ -15,6 +15,7 @@ from fastapi.testclient import TestClient
 from src.analysis.qc_preview import _identity
 from src.analysis.r_executor import RExecutorError
 from src.analysis.sc_filter import FILTER_TOOL_VERSION, verified_selection
+from src.api import authorized_run
 from src.api.app import create_app
 from tests.unit.test_qc_preview import PARAMS
 from tests.unit.test_qc_preview import registered as registered
@@ -76,6 +77,19 @@ def test_filter_once_exact_binding_and_stage_only(ready):
         "scientific_status",
     }
     assert client.get(url).json()["attempts"][0]["status"] == "completed"
+
+
+def test_lock_conflict_is_busy_without_r(ready):
+    _, sid, _, _, _, client, url, pid, executor = ready
+    lock = authorized_run.session_lock(sid)
+    assert lock.acquire(blocking=False)
+    try:
+        response = client.post(url + "/filter", json={"preview_id": pid})
+    finally:
+        lock.release()
+    assert response.status_code == 409
+    assert response.json()["detail"] == "该会话已有任务在进行"
+    executor.execute_script.assert_not_called()
 
 
 def test_qc_rejection_is_idempotent_and_blocks_approval(registered):
