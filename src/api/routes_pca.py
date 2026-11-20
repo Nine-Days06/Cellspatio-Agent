@@ -23,6 +23,7 @@ from src.analysis.sc_pca import (
     run_sc_pca,
 )
 from src.api.authorized_run import StageClaim, run_authorized
+from src.api.deps import StoreDep
 from src.api.routes_qc import require_run, run_qc_root
 from src.ui.session_store import SessionStore
 
@@ -100,10 +101,14 @@ def view(run: dict[str, Any], parent: dict[str, Any], root: Path) -> dict[str, A
 
 @router.get("/{filter_attempt_id}")
 def get_pca(
-    session_id: str, run_id: str, filter_attempt_id: str, request: Request
+    session_id: str,
+    run_id: str,
+    filter_attempt_id: str,
+    request: Request,
+    store: StoreDep,
 ) -> dict[str, Any]:
     """GET 仅校验和恢复，不启动分析。"""
-    run = require_run(SessionStore(), session_id, run_id)
+    run = require_run(store, session_id, run_id)
     return view(
         run,
         require_parent(run, filter_attempt_id),
@@ -129,10 +134,14 @@ class PcaRequest(BaseModel):
 
 @router.post("/{filter_attempt_id}")
 def execute_pca(
-    session_id: str, run_id: str, filter_attempt_id: str, body: PcaRequest, request: Request
+    session_id: str,
+    run_id: str,
+    filter_attempt_id: str,
+    body: PcaRequest,
+    request: Request,
+    store: StoreDep,
 ) -> dict[str, Any]:
     """同绑定终态/运行态只返历史；首次请求独立校验和原子认领。"""
-    store = SessionStore()
 
     def previous(run: dict[str, Any]) -> dict[str, Any] | None:
         """按父过滤、来源绑定与工具版本查找已落库的 PCA 尝试。"""
@@ -285,10 +294,27 @@ def dimension_view(
 
 @router.get("/{filter_attempt_id}/{attempt_id}/dimensions")
 def get_dimensions(
-    session_id: str, run_id: str, filter_attempt_id: str, attempt_id: str, request: Request
+    session_id: str,
+    run_id: str,
+    filter_attempt_id: str,
+    attempt_id: str,
+    request: Request,
+    store: StoreDep,
 ) -> dict[str, Any]:
     """只读证据和人工事实，不调用 R、LLM 或 KG。"""
-    run = require_run(SessionStore(), session_id, run_id)
+    return _dimensions_view(store, session_id, run_id, filter_attempt_id, attempt_id, request)
+
+
+def _dimensions_view(
+    store: SessionStore,
+    session_id: str,
+    run_id: str,
+    filter_attempt_id: str,
+    attempt_id: str,
+    request: Request,
+) -> dict[str, Any]:
+    """按同一 store 重读 run 后返回维度只读视图。"""
+    run = require_run(store, session_id, run_id)
     return dimension_view(
         run,
         require_parent(run, filter_attempt_id),
@@ -312,9 +338,9 @@ def record_dimensions(
     attempt_id: str,
     body: DimensionRequest,
     request: Request,
+    store: StoreDep,
 ) -> dict[str, Any]:
     """显式条件写入；旧请求重发只能返回历史，绝不重新激活。"""
-    store = SessionStore()
     run = require_run(store, session_id, run_id)
     parent = require_parent(run, filter_attempt_id)
     attempt = require_pca(run, filter_attempt_id, attempt_id)
@@ -356,15 +382,20 @@ def record_dimensions(
     except sqlite3.OperationalError as exc:
         logger.exception("PCA dimension record database write failed")
         raise HTTPException(409, "维度记录写入失败，请检查本地数据库并只读刷新") from exc
-    return get_dimensions(session_id, run_id, filter_attempt_id, attempt_id, request)
+    return _dimensions_view(store, session_id, run_id, filter_attempt_id, attempt_id, request)
 
 
 @router.get("/{filter_attempt_id}/{attempt_id}/diagnostic")
 def diagnostic(
-    session_id: str, run_id: str, filter_attempt_id: str, attempt_id: str, request: Request
+    session_id: str,
+    run_id: str,
+    filter_attempt_id: str,
+    attempt_id: str,
+    request: Request,
+    store: StoreDep,
 ) -> Response:
     """验证登记 PNG 的同一份字节后返回，不接受任意路径。"""
-    run = require_run(SessionStore(), session_id, run_id)
+    run = require_run(store, session_id, run_id)
     require_parent(run, filter_attempt_id)
     attempt = next(
         (

@@ -23,6 +23,7 @@ from src.analysis.sc_cluster import (
 from src.analysis.sc_marker_reviews import CLUSTER_RECORD_VERSION, review_view
 from src.api import routes_pca
 from src.api.authorized_run import StageClaim, run_authorized
+from src.api.deps import StoreDep
 from src.api.routes_pca import dimension_view, require_parent, require_pca
 from src.api.routes_qc import require_run, run_qc_root
 from src.ui.session_store import SessionStore
@@ -151,11 +152,16 @@ def view(
 
 @router.get("/{filter_attempt_id}/{pca_attempt_id}")
 def get_clusters(
-    session_id: str, run_id: str, filter_attempt_id: str, pca_attempt_id: str, request: Request
+    session_id: str,
+    run_id: str,
+    filter_attempt_id: str,
+    pca_attempt_id: str,
+    request: Request,
+    store: StoreDep,
 ) -> dict[str, Any]:
     """只读本会话完整关联与阶段历史。"""
     try:
-        run = require_run(SessionStore(), session_id, run_id)
+        run = require_run(store, session_id, run_id)
         return view(
             run,
             require_parent(run, filter_attempt_id),
@@ -182,9 +188,9 @@ def execute_clusters(
     pca_attempt_id: str,
     body: ClusterRequest,
     request: Request,
+    store: StoreDep,
 ) -> dict[str, Any]:
     """同绑定先返历史；首次短事务认领，事务外固定执行，无重试接口。"""
-    store = SessionStore()
 
     def locate(run: dict[str, Any]) -> tuple[dict[str, Any], dict[str, Any], Path]:
         """按父过滤与 PCA 定位本 run 的完整上游链。"""
@@ -309,10 +315,11 @@ def diagnostic(
     pca_attempt_id: str,
     attempt_id: str,
     request: Request,
+    store: StoreDep,
 ) -> Response:
     """只返回完整校验后的同一份 PNG 字节，不提供逐细胞下载。"""
     try:
-        run = require_run(SessionStore(), session_id, run_id)
+        run = require_run(store, session_id, run_id)
         require_parent(run, filter_attempt_id)
         require_pca(run, filter_attempt_id, pca_attempt_id)
         attempt = next(
@@ -387,10 +394,26 @@ def get_review(
     pca_attempt_id: str,
     attempt_id: str,
     request: Request,
+    store: StoreDep,
 ) -> dict[str, Any]:
     """只读证据与本地人工事实；不执行 R、LLM 或 KG。"""
+    return _review_view(
+        store, session_id, run_id, filter_attempt_id, pca_attempt_id, attempt_id, request
+    )
+
+
+def _review_view(
+    store: SessionStore,
+    session_id: str,
+    run_id: str,
+    filter_attempt_id: str,
+    pca_attempt_id: str,
+    attempt_id: str,
+    request: Request,
+) -> dict[str, Any]:
+    """按同一 store 重读 run 后返回聚类复核只读视图。"""
     try:
-        run = require_run(SessionStore(), session_id, run_id)
+        run = require_run(store, session_id, run_id)
         require_parent(run, filter_attempt_id)
         require_pca(run, filter_attempt_id, pca_attempt_id)
         return review_view(
@@ -412,10 +435,10 @@ def record_review(
     attempt_id: str,
     body: ClusterReviewRequest,
     request: Request,
+    store: StoreDep,
 ) -> dict[str, Any]:
     """追加接受事实；旧请求重发仅返回历史，不重新激活或授权 marker。"""
     try:
-        store = SessionStore()
         run = require_run(store, session_id, run_id)
         require_parent(run, filter_attempt_id)
         require_pca(run, filter_attempt_id, pca_attempt_id)
@@ -448,8 +471,8 @@ def record_review(
             body.revision,
             body.reason,
         )
-        return get_review(
-            session_id, run_id, filter_attempt_id, pca_attempt_id, attempt_id, request
+        return _review_view(
+            store, session_id, run_id, filter_attempt_id, pca_attempt_id, attempt_id, request
         )
     except sqlite3.Error as exc:
         logger.error("cluster review database write failed: %s", type(exc).__name__)
@@ -467,10 +490,10 @@ def reject_review(
     attempt_id: str,
     body: ClusterRejectionRequest,
     request: Request,
+    store: StoreDep,
 ) -> dict[str, Any]:
     """追加拒绝事实；不改写接受历史，不授权 marker。"""
     try:
-        store = SessionStore()
         run = require_run(store, session_id, run_id)
         require_parent(run, filter_attempt_id)
         require_pca(run, filter_attempt_id, pca_attempt_id)
@@ -488,8 +511,8 @@ def reject_review(
             body.revision,
             body.reason,
         )
-        return get_review(
-            session_id, run_id, filter_attempt_id, pca_attempt_id, attempt_id, request
+        return _review_view(
+            store, session_id, run_id, filter_attempt_id, pca_attempt_id, attempt_id, request
         )
     except sqlite3.Error as exc:
         logger.error("cluster rejection database write failed: %s", type(exc).__name__)
