@@ -57,10 +57,23 @@ class WRROCStore:
         run = self.load(run_id)
         if not run:
             return graph
-        self._walk_lineage(run, graph, set())
+        # 输入文件 → 使用它的 run，一次建索引；避免在输出循环里反复 list_runs()
+        consumers: dict[str, list[str]] = {}
+        for other in self.list_runs():
+            for asset in other.input.context.get("downloaded_assets", []):
+                path = asset.get("access_path")
+                if path:
+                    consumers.setdefault(path, []).append(other.run_id)
+        self._walk_lineage(run, graph, set(), consumers)
         return graph
 
-    def _walk_lineage(self, run: WorkflowRun, graph: LineageGraph, visited: set[str]) -> None:
+    def _walk_lineage(
+        self,
+        run: WorkflowRun,
+        graph: LineageGraph,
+        visited: set[str],
+        consumers: dict[str, list[str]],
+    ) -> None:
         if run.run_id in visited:
             return
         visited.add(run.run_id)
@@ -89,15 +102,13 @@ class WRROCStore:
                 LineageEdge(src=f"run:{run.run_id}", dst=f"file:{out.path}", relation="output_from")
             )
             # 反向查找：哪些 run 使用了该文件作为输入
-            for other_run in self.list_runs():
-                if other_run.run_id != run.run_id:
-                    for asset in other_run.input.context.get("downloaded_assets", []):
-                        if asset.get("access_path") == out.path:
-                            graph.add_edge(
-                                LineageEdge(
-                                    src=f"file:{out.path}",
-                                    dst=f"run:{other_run.run_id}",
-                                    relation="input_to",
-                                )
-                            )
+            for consumer in consumers.get(out.path, []):
+                if consumer != run.run_id:
+                    graph.add_edge(
+                        LineageEdge(
+                            src=f"file:{out.path}",
+                            dst=f"run:{consumer}",
+                            relation="input_to",
+                        )
+                    )
         # 递归（简单版：仅直接依赖）
