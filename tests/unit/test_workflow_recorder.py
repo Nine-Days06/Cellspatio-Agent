@@ -332,3 +332,74 @@ def test_start_execution_preserves_skill_plan():
     )
     exec_ = recorder.get_record(run_id)
     assert exec_.parameters.skill_plan == plan
+
+
+def test_instances_do_not_share_runs(tmp_path):
+    """两个 recorder 实例的运行表互不可见。"""
+    recorder_a = WorkflowRecorder(wrroc_base_dir=str(tmp_path / "a"))
+    recorder_b = WorkflowRecorder(wrroc_base_dir=str(tmp_path / "b"))
+    run_id = recorder_a.start_execution(
+        intent={
+            "type": "analysis",
+            "analysis_type": "differential_expression",
+            "original_input": "a",
+        },
+        parameters={},
+        user_input="a",
+        context={},
+    )
+
+    assert recorder_a.get_record(run_id) is not None
+    assert run_id in recorder_a.get_context()
+    assert recorder_b.get_record(run_id) is None
+    assert recorder_b.get_context() == {}
+
+
+def test_same_instance_isolated_across_threads(tmp_path):
+    """同一实例在不同线程上下文中运行表隔离。"""
+    import contextvars
+    import threading
+
+    recorder = WorkflowRecorder(wrroc_base_dir=str(tmp_path / "wrroc"))
+    run_id = recorder.start_execution(
+        intent={
+            "type": "analysis",
+            "analysis_type": "differential_expression",
+            "original_input": "main",
+        },
+        parameters={},
+        user_input="main",
+        context={},
+    )
+    worker_ctx: dict = {}
+
+    def worker() -> None:
+        worker_ctx.update(contextvars.copy_context().run(recorder.get_context))
+
+    thread = threading.Thread(target=worker)
+    thread.start()
+    thread.join()
+
+    assert worker_ctx == {}
+    assert run_id in recorder.get_context()
+    assert recorder.get_record(run_id) is not None
+
+
+def test_finish_run_keeps_record_in_context(tmp_path, monkeypatch):
+    """finish_run 后记录仍保留在上下文中（行为不变）。"""
+    monkeypatch.setenv("CELLSPATIO_LOCAL", "1")
+    recorder = WorkflowRecorder(wrroc_base_dir=str(tmp_path / "wrroc"), repo_root=tmp_path)
+    run_id = recorder.start_execution(
+        intent={
+            "type": "analysis",
+            "analysis_type": "differential_expression",
+            "original_input": "test",
+        },
+        parameters={},
+        user_input="test",
+        context={},
+    )
+    recorder.finish_run(run_id)
+
+    assert run_id in recorder.get_context()
+    assert recorder.get_record(run_id) is not None

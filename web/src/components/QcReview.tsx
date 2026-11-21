@@ -1,10 +1,11 @@
-import { useEffect, useRef, useState, type FormEvent } from 'react'
+import { useEffect, useState, type FormEvent } from 'react'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Textarea } from '@/components/ui/textarea'
 import { PcaReview } from '@/components/PcaReview'
 import { approveQc, fetchQc, filterQc, previewQc, rejectQc } from '@/lib/api'
 import { evaluateStageGate, isAttemptedByPreview } from '@/lib/stageGate'
+import { useStageReview } from '@/lib/useStageReview'
 import type { QcReviewState, QcThresholds } from '@/lib/types'
 
 const fields = [
@@ -22,20 +23,21 @@ const reasonNames: Record<string, string> = {
   mt_above_max: 'percent.mt 超过上限', mt_unavailable: 'percent.mt 不可定义',
 }
 
+function runningOf(state: QcReviewState | null, executing: boolean, pcaRunning: string[]) {
+  return executing || (state?.attempts?.some((attempt) => attempt.status === 'running') ?? false) ||
+    !!state?.pca_running || !!state?.cluster_running || !!state?.marker_running || pcaRunning.length > 0
+}
+
 /** 只批准已展示的精确预览；编辑阈值立即禁用旧批准。 */
 export function QcReview({ sessionId, runId, onRecorded }: { sessionId: string; runId: string; onRecorded?: () => void }) {
-  const [state, setState] = useState<QcReviewState | null>(null)
   const [values, setValues] = useState<Values>(empty)
   const [previewValues, setPreviewValues] = useState('')
   const [reason, setReason] = useState('')
-  const [busy, setBusy] = useState(true)
   const [filtering, setFiltering] = useState(false)
   const [pcaRunning, setPcaRunning] = useState<string[]>([])
-  const [error, setError] = useState('')
-  const generation = useRef(0)
+  const [formError, setFormError] = useState('')
 
   function accept(next: QcReviewState) {
-    setState(next)
     const params = next.active_preview?.params
     if (params) {
       const form = Object.fromEntries(fields.map(([name]) => [name, params[name] === null ? '' : String(params[name])])) as Values
@@ -47,70 +49,43 @@ export function QcReview({ sessionId, runId, onRecorded }: { sessionId: string; 
     }
   }
 
+  const { state, busy, executing, error, refresh, perform: runAction } = useStageReview<QcReviewState>({
+    load: () => fetchQc(sessionId, runId),
+    deps: [sessionId, runId],
+    // 只轮询 QC 自身执行；子级运行由 pcaRecorded 显式刷新，避免双发。
+    isRunning: (current, isExecuting) =>
+      isExecuting || (current?.attempts?.some((attempt) => attempt.status === 'running') ?? false),
+    onLoaded: accept,
+    onRecorded,
+  })
+  const running = runningOf(state, executing, pcaRunning)
+
   useEffect(() => {
-    const ticket = ++generation.current
-    setState(null)
     setValues(empty)
     setPreviewValues('')
     setReason('')
-    setError('')
-    setBusy(true)
     setFiltering(false)
     setPcaRunning([])
-    fetchQc(sessionId, runId).then((next) => {
-      if (ticket === generation.current) accept(next)
-    }).catch((err: Error) => {
-      if (ticket === generation.current) setError(err.message)
-    }).finally(() => {
-      if (ticket === generation.current) setBusy(false)
-    })
-    return () => { generation.current++ }
+    setFormError('')
   }, [sessionId, runId])
 
-  const running = (state?.attempts?.some((attempt) => attempt.status === 'running') ?? false) || !!state?.pca_running || !!state?.cluster_running || !!state?.marker_running || pcaRunning.length > 0
-  useEffect(() => {
-    if (!running || busy) return
-    const ticket = generation.current
-    const timer = window.setTimeout(() => {
-      fetchQc(sessionId, runId).then((next) => {
-        if (ticket === generation.current) accept(next)
-      }).catch((err: Error) => {
-        if (ticket === generation.current) setError(err.message)
-      })
-    }, 1500)
-    return () => window.clearTimeout(timer)
-  }, [running, busy, state, sessionId, runId])
-
   async function perform(action: () => Promise<QcReviewState>, recorded = false) {
-    const ticket = ++generation.current
-    setBusy(true)
-    setError('')
-    try {
-      const next = await action()
-      if (ticket !== generation.current) return
-      accept(next)
-      if (recorded) onRecorded?.()
-    } catch (err) {
-      if (ticket !== generation.current) return
-      setError(err instanceof Error ? err.message : 'QC 请求失败')
-      setPreviewValues('')
-    } finally {
-      if (ticket === generation.current) setBusy(false)
-    }
+    const result = await runAction(action, { recorded })
+    if (result === 'failed') setPreviewValues('')
+    return result === 'ok'
   }
 
   async function executeFilter(previewId: string) {
     setFiltering(true)
-    const ticket = generation.current + 1
-    await perform(() => filterQc(sessionId, runId, previewId), true)
-    if (ticket === generation.current) setFiltering(false)
+    try {
+      await perform(() => filterQc(sessionId, runId, previewId), true)
+    } finally {
+      setFiltering(false)
+    }
   }
 
   function pcaRecorded() {
-    const ticket = generation.current
-    void fetchQc(sessionId, runId).then((next) => {
-      if (ticket === generation.current) accept(next)
-    }).catch((err: Error) => { if (ticket === generation.current) setError(err.message) })
+    void refresh()
     onRecorded?.()
   }
 
@@ -121,15 +96,17 @@ export function QcReview({ sessionId, runId, onRecorded }: { sessionId: string; 
       n_count_min: values.n_count_min === '' ? null : Number(values.n_count_min), n_count_max: values.n_count_max === '' ? null : Number(values.n_count_max),
     }
     if (fields.some(([name, , required]) => (required && values[name] === '') || (params[name] !== null && (!Number.isFinite(params[name]) || params[name]! < 0 || (name !== 'percent_mt_max' && !Number.isSafeInteger(params[name]))))) || params.percent_mt_max > 100 || params.n_feature_min > params.n_feature_max || (params.n_count_min !== null && params.n_count_max !== null && params.n_count_min > params.n_count_max)) {
-      setError('请输入合法阈值：非负整数上下限、0–100% 线粒体比例，下限不能超过上限。')
+      setFormError('请输入合法阈值：非负整数上下限、0–100% 线粒体比例，下限不能超过上限。')
       return
     }
+    setFormError('')
     void perform(() => previewQc(sessionId, runId, params))
   }
 
   const active = state?.active_preview
   const unchanged = previewValues === JSON.stringify(values)
   const blocked = [...(state?.blocked ?? []), ...(active?.summary.blocked ?? [])]
+  const message = formError || error
   const gateFacts = {
     previewStatus: active?.status ?? null,
     previewAttempted: isAttemptedByPreview(state?.attempts ?? [], active?.preview_id),
@@ -141,11 +118,20 @@ export function QcReview({ sessionId, runId, onRecorded }: { sessionId: string; 
   const approveGate = evaluateStageGate({ ...gateFacts, stage: 'qc', action: 'approve', unchanged })
   const rejectGate = evaluateStageGate({ ...gateFacts, stage: 'qc', action: 'reject' })
   const filterGate = evaluateStageGate({ ...gateFacts, stage: 'qc', action: 'filter', unchanged })
+  // 预览自身报告的 blocked 不能阻止改阈值重算；只受未加载与上游阻断约束。
+  const previewGate = evaluateStageGate({
+    stage: 'qc',
+    action: 'preview',
+    blocked: state ? state.blocked : ['QC 状态未加载'],
+    busy,
+    running,
+    reasonProvided: false,
+  })
   return (
     <section aria-label="QC 阈值选择" className="analysis-stage space-y-3">
       <h4 className="font-medium">阈值选择 · 记录与执行分开授权</h4>
       <p className="text-xs text-muted-foreground">所有条件 AND、边界包含等号。没有科学默认值；请自行审阅证据并填写依据。</p>
-      {error && <p role="alert" className="text-destructive">{error}</p>}
+      {message && <p role="alert" className="text-destructive">{message}</p>}
       {filtering && <p role="status">过滤运行中；只保存细胞列选择，不执行下游分析。</p>}
       {state?.blocked.map((text) => <p role="alert" key={text}>{text}</p>)}
       <details open={!state?.attempts?.some((a) => a.status === 'completed')}>
@@ -154,10 +140,10 @@ export function QcReview({ sessionId, runId, onRecorded }: { sessionId: string; 
         <div className="grid gap-3 sm:grid-cols-2">
           {fields.map(([name, label, required]) => <label key={name} className="space-y-1 text-xs">
             <span>{label}</span>
-            <Input type="number" min="0" max={name === 'percent_mt_max' ? 100 : undefined} step={name === 'percent_mt_max' ? 'any' : 1} required={required} disabled={busy || running || !state || state.blocked.length > 0} value={values[name]} onChange={(event) => setValues({ ...values, [name]: event.target.value })} />
+            <Input type="number" min="0" max={name === 'percent_mt_max' ? 100 : undefined} step={name === 'percent_mt_max' ? 'any' : 1} required={required} disabled={!previewGate.available} value={values[name]} onChange={(event) => setValues({ ...values, [name]: event.target.value })} />
           </label>)}
         </div>
-        <Button type="submit" disabled={busy || running || !state || state.blocked.length > 0}>{busy ? '正在读取或执行…' : '生成排除预览'}</Button>
+        <Button type="submit" disabled={!previewGate.allowed}>{busy ? '正在读取或执行…' : '生成排除预览'}</Button>
       </form>
       {active && <section className="space-y-2" aria-label="排除预览">
         <p className="break-all text-xs">本预览参数：{JSON.stringify(active.params)}</p>
@@ -168,7 +154,7 @@ export function QcReview({ sessionId, runId, onRecorded }: { sessionId: string; 
         <details><summary>预览身份与绑定</summary><code className="block break-all text-xs text-muted-foreground">预览 {active.preview_id} · 绑定 {active.binding_sha256}</code></details>
         {!unchanged && <p role="status">阈值已编辑，请重新生成预览后批准。</p>}
         {active.status === 'pending' && <>
-          <label className="block space-y-1"><span>选择依据 / 拒绝原因（仅本地记录）</span><Textarea value={reason} maxLength={2000} disabled={busy || running} onChange={(event) => setReason(event.target.value)} /></label>
+          <label className="block space-y-1"><span>选择依据 / 拒绝原因（仅本地记录）</span><Textarea value={reason} maxLength={2000} disabled={!rejectGate.available} onChange={(event) => setReason(event.target.value)} /></label>
           <div className="flex flex-wrap gap-2">
             <span title={approveGate.blockerText || undefined}><Button type="button" disabled={!approveGate.allowed} onClick={() => void perform(() => approveQc(sessionId, runId, active.preview_id, reason.trim()), true)}>记录此过滤选择</Button></span>
             <span title={rejectGate.blockerText || undefined}><Button type="button" variant="outline" disabled={!rejectGate.allowed} onClick={() => void perform(() => rejectQc(sessionId, runId, active.preview_id, reason.trim()), true)}>拒绝此预览</Button></span>

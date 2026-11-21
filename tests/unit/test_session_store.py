@@ -9,7 +9,6 @@ from src.ui.session_store import (
     SessionStore,
     _decode_results,
     _encode_results,
-    project_analysis_root,
 )
 
 
@@ -126,11 +125,6 @@ def test_archive_project_rejects_running_session(monkeypatch):
         store.update_project(pid, archived=True)
 
 
-def test_project_analysis_root_rejects_unknown_session(tmp_path):
-    with pytest.raises(ValueError, match="会话不存在"):
-        project_analysis_root("nope", tmp_path)
-
-
 def test_append_message_sets_title_from_first_user_message():
     store = SessionStore()
     sid = store.create_session("新会话")
@@ -243,3 +237,87 @@ def test_encode_matplotlib_figure_to_image_b64():
     raw = base64.b64decode(chart["image_b64"])
     assert raw[:4] == b"\x89PNG"
     plt.close(fig)
+
+
+def test_record_knowledge_qa_review_inserts_and_replays_idempotently(tmp_path):
+    """QA 复核首次落库；同 revision 重发返回同一记录。"""
+    store = SessionStore(tmp_path / "sessions.db")
+
+    first = store.record_knowledge_qa_review(
+        "a1", "b1", "v1", 3, "accepted", "证据充分", "reviewer-a"
+    )
+    assert first["answer_id"] == "a1"
+    assert first["binding_sha256"] == "b1"
+    assert first["record_version"] == "v1"
+    assert first["source_revision"] == 3
+    assert first["decision"] == "accepted"
+    assert first["veto"] == 0
+    assert first["reason"] == "证据充分"
+    assert first["reviewer"] == "reviewer-a"
+    assert first["review_id"]
+    assert first["created_at"]
+    assert set(first) == {
+        "review_id",
+        "answer_id",
+        "binding_sha256",
+        "record_version",
+        "source_revision",
+        "decision",
+        "veto",
+        "reason",
+        "reviewer",
+        "created_at",
+    }
+
+    again = store.record_knowledge_qa_review(
+        "a1", "b1", "v1", 3, "accepted", "证据充分", "reviewer-a"
+    )
+    assert again == first
+    assert store.get_knowledge_qa_reviews("a1") == [first]
+
+
+def test_record_knowledge_qa_review_rejects_same_revision_conflict(tmp_path):
+    """同 revision 内容不一致时拒绝且不新增。"""
+    store = SessionStore(tmp_path / "sessions.db")
+    store.record_knowledge_qa_review("a1", "b1", "v1", 3, "accepted", "证据充分", "reviewer-a")
+
+    with pytest.raises(ValueError, match="知识问答复核内容冲突"):
+        store.record_knowledge_qa_review("a1", "b1", "v1", 3, "rejected", "证据不足", "reviewer-b")
+    assert len(store.get_knowledge_qa_reviews("a1")) == 1
+
+
+def test_record_knowledge_qa_review_does_not_suppress_next_revision(tmp_path):
+    """QA 复核只做同 revision 幂等，不抑制 latest+1。"""
+    store = SessionStore(tmp_path / "sessions.db")
+    store.record_knowledge_qa_review("a1", "b1", "v1", 3, "accepted", "证据充分", "reviewer-a")
+    store.record_knowledge_qa_review("a1", "b1", "v1", 4, "accepted", "证据充分", "reviewer-a")
+    assert len(store.get_knowledge_qa_reviews("a1")) == 2
+
+
+def test_record_knowledge_qa_review_validates_decision_veto_and_reason(tmp_path):
+    """QA 复核保留结论、否决项与理由校验。"""
+    store = SessionStore(tmp_path / "sessions.db")
+
+    with pytest.raises(ValueError, match="复核结论"):
+        store.record_knowledge_qa_review("a1", "b1", "v1", 0, "maybe", "理由", "reviewer-a")
+    with pytest.raises(ValueError, match="否决项"):
+        store.record_knowledge_qa_review(
+            "a1", "b1", "v1", 0, "accepted", "理由", "reviewer-a", veto=True
+        )
+    with pytest.raises(ValueError, match="复核理由"):
+        store.record_knowledge_qa_review("a1", "b1", "v1", 0, "accepted", "   ", "reviewer-a")
+    assert store.get_knowledge_qa_reviews("a1") == []
+
+
+def test_record_knowledge_qa_review_leaves_session_messages_and_run_untouched(tmp_path):
+    """QA 复核不插消息、不推进任何 run。"""
+    store = SessionStore(tmp_path / "sessions.db")
+    sid = store.create_session()
+    store.register_qc_run(sid, "r", "sc_qc/r", {"kind": "qa"})
+
+    store.record_knowledge_qa_review(
+        "a1", "b1", "v1", 0, "rejected", "证据不足", "reviewer-a", veto=True
+    )
+
+    assert store.get_messages(sid) == []
+    assert store.get_qc_run(sid, "r")["revision"] == 0

@@ -3,6 +3,7 @@ import { Button } from '@/components/ui/button'
 import { Textarea } from '@/components/ui/textarea'
 import { clusterDiagnosticPath, executeClusters, fetchClusters } from '@/lib/api'
 import { evaluateStageGate, isAttemptedByBinding } from '@/lib/stageGate'
+import { useStageReview } from '@/lib/useStageReview'
 import type { ClusterState } from '@/lib/types'
 import { MarkerReview } from '@/components/MarkerReview'
 import { AnalysisImage } from '@/components/AnalysisImage'
@@ -12,28 +13,24 @@ export function ClusterReview({ sessionId, runId, filterAttemptId, pcaAttemptId,
   sessionId: string; runId: string; filterAttemptId: string; pcaAttemptId: string; revision: number
   disabled?: boolean; onRunning?: (running: boolean) => void; onRecorded?: () => void
 }) {
-  const [state, setState] = useState<ClusterState | null>(null)
   const [reason, setReason] = useState('')
-  const [busy, setBusy] = useState(true)
-  const [executing, setExecuting] = useState(false)
-  const [error, setError] = useState('')
   const [markerRunning, setMarkerRunning] = useState<string[]>([])
-  const generation = useRef(0)
-  const callbacks = useRef({ onRunning, onRecorded })
-  callbacks.current = { onRunning, onRecorded }
+  const stage = useStageReview<ClusterState>({
+    load: () => fetchClusters(sessionId, runId, filterAttemptId, pcaAttemptId),
+    deps: [sessionId, runId, filterAttemptId, pcaAttemptId, revision],
+    isRunning: (current, executing) => executing || (current?.attempts.some((a) => a.status === 'running') ?? false),
+    onRecorded,
+  })
+  const { state, busy, executing, error } = stage
+  const callbacks = useRef({ onRunning })
+  callbacks.current = { onRunning }
   const clusterRunning = executing || (state?.attempts.some((a) => a.status === 'running') ?? false)
   const running = clusterRunning || markerRunning.length > 0
 
   useEffect(() => {
-    const ticket = ++generation.current
-    setState(null); setReason(''); setError(''); setBusy(true); setExecuting(false)
-    setMarkerRunning([])
-    fetchClusters(sessionId, runId, filterAttemptId, pcaAttemptId).then((next) => {
-      if (ticket === generation.current) setState(next)
-    }).catch((err: Error) => {
-      if (ticket === generation.current) setError(err.message)
-    }).finally(() => { if (ticket === generation.current) setBusy(false) })
-    return () => { generation.current++ }
+    setReason(''); setMarkerRunning([])
+    // 身份变化时丢弃未保存依据；hook 负责清空记录并重新读取。
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [sessionId, runId, filterAttemptId, pcaAttemptId, revision])
 
   useEffect(() => {
@@ -41,46 +38,27 @@ export function ClusterReview({ sessionId, runId, filterAttemptId, pcaAttemptId,
     return () => callbacks.current.onRunning?.(false)
   }, [running])
 
-  useEffect(() => {
-    if (!clusterRunning || busy) return
-    const ticket = generation.current
-    const timer = window.setTimeout(() => {
-      fetchClusters(sessionId, runId, filterAttemptId, pcaAttemptId).then((next) => {
-        if (ticket !== generation.current) return
-        setState(next)
-        if (!next.attempts.some((a) => a.status === 'running')) callbacks.current.onRecorded?.()
-      }).catch((err: Error) => { if (ticket === generation.current) setError(err.message) })
-    }, 1500)
-    return () => window.clearTimeout(timer)
-  }, [clusterRunning, busy, state, sessionId, runId, filterAttemptId, pcaAttemptId])
-
   async function refresh() {
-    const ticket = ++generation.current
-    setBusy(true); setError(''); setState(null); setReason('')
-    try {
-      const next = await fetchClusters(sessionId, runId, filterAttemptId, pcaAttemptId)
-      if (ticket === generation.current) setState(next)
-    } catch (err) {
-      if (ticket === generation.current) setError(err instanceof Error ? err.message : '读取失败')
-    } finally { if (ticket === generation.current) setBusy(false) }
+    setReason('')
+    await stage.refresh({ clearError: true })
   }
 
   async function execute() {
-    if (!state?.binding_sha256 || !state.selection) return
-    const ticket = ++generation.current
-    setBusy(true); setExecuting(true); setError('')
-    try {
-      const next = await executeClusters(sessionId, runId, filterAttemptId, pcaAttemptId, state.binding_sha256, state.selection.review_id, state.revision, reason.trim())
-      if (ticket !== generation.current) return
-      setState(next); setReason(''); callbacks.current.onRecorded?.()
-    } catch (err) {
-      if (ticket !== generation.current) return
-      setError(err instanceof Error ? err.message : '执行请求失败；请只读刷新，不要重复执行')
+    if (!state) return
+    const binding = state.binding_sha256
+    const selection = state.selection
+    if (!binding || !selection) return
+    const stateRevision = state.revision
+    const result = await stage.perform(async () => {
       try {
-        const next = await fetchClusters(sessionId, runId, filterAttemptId, pcaAttemptId)
-        if (ticket === generation.current) setState(next)
-      } catch { if (ticket === generation.current) setState(null) }
-    } finally { if (ticket === generation.current) { setBusy(false); setExecuting(false) } }
+        return await executeClusters(sessionId, runId, filterAttemptId, pcaAttemptId, binding, selection.review_id, stateRevision, reason.trim())
+      } catch (err) {
+        // 失败只读恢复；generation 已变化时 hook 不会落地旧结果。
+        await stage.recover()
+        throw err
+      }
+    }, { executing: true, recorded: true })
+    if (result === 'ok') setReason('')
   }
 
   const attempted = isAttemptedByBinding(state?.attempts ?? [], state?.binding_sha256)

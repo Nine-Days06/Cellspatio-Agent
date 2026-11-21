@@ -6,15 +6,17 @@ import asyncio
 import logging
 import threading
 from collections.abc import AsyncIterator
+from contextlib import ExitStack
 from typing import Any, Literal
 
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
-from src.api.chat_service import run_turn, session_lock
+from src.api.chat_service import run_turn
 from src.api.deps import StoreDep
 from src.api.events import make_event, sse_frame
+from src.api.session_locks import session_guard
 
 logger = logging.getLogger(__name__)
 
@@ -42,9 +44,9 @@ async def chat(body: ChatRequest, request: Request, store: StoreDep) -> Streamin
     if store.get_session(body.session_id) is None:
         raise HTTPException(status_code=404, detail="会话不存在")
 
-    lock = session_lock(body.session_id)
-    if not lock.acquire(blocking=False):
-        raise HTTPException(status_code=409, detail="该会话已有任务在进行")
+    # 锁要跨 worker 生命周期，不能用 with 包住路由本体的返回。
+    guard = ExitStack()
+    guard.enter_context(session_guard(body.session_id))
 
     try:
         loop = asyncio.get_running_loop()
@@ -71,7 +73,7 @@ async def chat(body: ChatRequest, request: Request, store: StoreDep) -> Streamin
                         make_event("error", message=str(exc) or type(exc).__name__, retryable=True)
                     )
             finally:
-                lock.release()
+                guard.close()
                 try:
                     loop.call_soon_threadsafe(queue.put_nowait, None)
                 except RuntimeError:  # pragma: no cover - loop 已关闭，线程收尾即可
@@ -79,7 +81,7 @@ async def chat(body: ChatRequest, request: Request, store: StoreDep) -> Streamin
 
         threading.Thread(target=worker, name="chat-worker", daemon=True).start()
     except Exception:  # 起流前失败必须先还锁，否则会话永久 409
-        lock.release()
+        guard.close()
         raise
 
     async def event_stream() -> AsyncIterator[str]:

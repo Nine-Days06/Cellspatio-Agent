@@ -13,6 +13,7 @@ from src.analysis.sc_qc import run_sc_qc
 from src.api.app import create_app
 from src.api.chat_service import session_lock
 from src.control.workflow_manager import WorkflowManager
+from src.ui.analysis_roots import AnalysisRoots
 from src.ui.session_store import SessionStore
 from tests.unit.fakes import QC_HEADER, FakeAgent, fake_qc_executor
 
@@ -147,13 +148,15 @@ def test_local_input_runs_tenx_directory_without_llm(tmp_path, monkeypatch):
         QC_HEADER + b"c1,1,1,100,\nc2,4,2,25,\n",
     )
     agent = FakeAgent()
+    store = SessionStore()
     agent.workflow_manager = WorkflowManager(
         intent_parser=None,
         knowledge_client=None,
         r_executor=executor,
         visualizer=None,
+        analysis_roots=AnalysisRoots(store, tmp_path),
     )
-    sid = SessionStore().create_session()
+    sid = store.create_session()
     client = TestClient(create_app(agent))
 
     response = client.post(f"/api/sessions/{sid}/local-input", json={"path": str(tenx)})
@@ -175,13 +178,14 @@ def test_project_session_writes_to_project_analysis_root(tmp_path, monkeypatch):
         QC_HEADER + b"c1,1,1,100,\nc2,4,2,25,\n",
     )
     agent = FakeAgent()
+    store = SessionStore()
     agent.workflow_manager = WorkflowManager(
         intent_parser=None,
         knowledge_client=None,
         r_executor=executor,
         visualizer=None,
+        analysis_roots=AnalysisRoots(store, tmp_path),
     )
-    store = SessionStore()
     pid = store.create_project("肝癌项目")
     sid = store.create_session("项目会话", project_id=pid)
     client = TestClient(create_app(agent))

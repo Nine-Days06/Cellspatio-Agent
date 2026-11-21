@@ -11,7 +11,6 @@ from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import Response
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
-from src.analysis.qc_preview import _identity
 from src.analysis.sc_pca import (
     DIMENSION_RECORD_VERSION,
     PCA_TOOL_VERSION,
@@ -26,6 +25,7 @@ from src.api.authorized_run import StageClaim, run_authorized
 from src.api.deps import StoreDep
 from src.api.routes_qc import require_run, run_qc_root
 from src.api.stage_runtime import has_running
+from src.api.verified_artifact import ArtifactError, read_verified_artifact
 from src.ui.run_snapshot import RunSnapshot
 from src.ui.session_store import SessionStore
 
@@ -35,7 +35,7 @@ logger = logging.getLogger(__name__)
 
 def require_parent(run: RunSnapshot, filter_attempt_id: str) -> dict[str, Any]:
     """仅定位已关联父记录；路径不能来自客户端。"""
-    parent = next((a for a in run.filter_attempts if a["attempt_id"] == filter_attempt_id), None)
+    parent = run.attempt("filter", filter_attempt_id)
     if parent is None:
         raise HTTPException(404, "父过滤关联不存在")
     return parent
@@ -106,7 +106,7 @@ def get_pca(
     return view(
         run,
         require_parent(run, filter_attempt_id),
-        run_qc_root(request.app.state.agent, run),
+        run_qc_root(request.app.state.analysis_roots, run),
     )
 
 
@@ -153,7 +153,7 @@ def execute_pca(
     def prepare(run: RunSnapshot, attempt_id: str) -> StageClaim:
         """锁内重读父关联与来源证据，并给出 PCA 领取计划。"""
         parent = require_parent(run, filter_attempt_id)
-        root = run_qc_root(request.app.state.agent, run)
+        root = run_qc_root(request.app.state.analysis_roots, run)
         source = checked_parent(run, parent, root)
         if source["binding_sha256"] != body.binding_sha256 or source["cells"] < 3:
             raise ValueError("PCA 绑定不符或细胞不足，请刷新")
@@ -195,7 +195,9 @@ def execute_pca(
         """重读同一 run 并返回 PCA 只读视图。"""
         run = require_run(store, session_id, run_id)
         return view(
-            run, require_parent(run, filter_attempt_id), run_qc_root(request.app.state.agent, run)
+            run,
+            require_parent(run, filter_attempt_id),
+            run_qc_root(request.app.state.analysis_roots, run),
         )
 
     try:
@@ -214,10 +216,7 @@ def execute_pca(
 
 def require_pca(run: RunSnapshot, filter_attempt_id: str, attempt_id: str) -> dict[str, Any]:
     """只定位本会话关联的 PCA，不能借用其他父记录。"""
-    attempt = next(
-        (a for a in run.pca_attempts(filter_attempt_id) if a["attempt_id"] == attempt_id),
-        None,
-    )
+    attempt = run.attempt("pca", attempt_id, filter_attempt_id)
     if attempt is None:
         raise HTTPException(404, "PCA 关联不存在")
     return attempt
@@ -300,7 +299,7 @@ def _dimensions_view(
         run,
         require_parent(run, filter_attempt_id),
         require_pca(run, filter_attempt_id, attempt_id),
-        run_qc_root(request.app.state.agent, run),
+        run_qc_root(request.app.state.analysis_roots, run),
     )
 
 
@@ -325,7 +324,7 @@ def record_dimensions(
     run = require_run(store, session_id, run_id)
     parent = require_parent(run, filter_attempt_id)
     attempt = require_pca(run, filter_attempt_id, attempt_id)
-    root = run_qc_root(request.app.state.agent, run)
+    root = run_qc_root(request.app.state.analysis_roots, run)
     previous = next(
         (
             d
@@ -377,22 +376,20 @@ def diagnostic(
     """验证登记 PNG 的同一份字节后返回，不接受任意路径。"""
     run = require_run(store, session_id, run_id)
     require_parent(run, filter_attempt_id)
-    attempt = next(
-        (a for a in run.pca_attempts(filter_attempt_id) if a["attempt_id"] == attempt_id),
-        None,
-    )
+    attempt = run.attempt("pca", attempt_id, filter_attempt_id)
     if attempt is None or attempt["status"] != "completed":
         raise HTTPException(404, "PCA 诊断未完成或不存在")
-    directory = Path(attempt["directory"]).resolve()
-    root = run_qc_root(request.app.state.agent, run).parent / "sc_pca"
-    path = directory / "pca_diagnostics.png"
     try:
-        if directory != root / attempt_id or path.resolve().parent != directory:
-            raise ValueError("PCA 诊断路径非法")
-        data = path.read_bytes()
-        identity = attempt["result"]["artifacts"]["pca_diagnostics.png"]
-        if {"path": str(path), **_identity(data)} != identity or data[:8] != b"\x89PNG\r\n\x1a\n":
-            raise ValueError("PCA 诊断身份已变化")
-    except (OSError, ValueError, KeyError) as exc:
+        artifact = read_verified_artifact(
+            attempt=attempt,
+            name="pca_diagnostics.png",
+            identity_error="PCA 诊断身份已变化",
+            path_error="PCA 诊断路径非法",
+            expected_directory=run_qc_root(request.app.state.analysis_roots, run).parent
+            / "sc_pca"
+            / attempt_id,
+            magic=b"\x89PNG\r\n\x1a\n",
+        )
+    except ArtifactError as exc:
         raise HTTPException(409, str(exc)) from exc
-    return Response(data, media_type="image/png", headers={"Cache-Control": "no-store"})
+    return Response(artifact.data, media_type="image/png", headers={"Cache-Control": "no-store"})

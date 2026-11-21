@@ -6,8 +6,6 @@
 
 import logging
 import os
-import threading
-import time
 from collections.abc import Callable
 from pathlib import Path
 from typing import Annotated, Any
@@ -30,23 +28,17 @@ from src.evidence.governance import (
 )
 from src.evidence.review_protocol import (
     action_role,
-    action_spec,
-    checklist_for_role,
-    reviewer_role,
-    viewer_access,
     withdraw_role,
 )
 from src.evidence.schema import EvidenceCard
 from src.evidence.vocabulary import vocabulary
+from src.public_api.context import reviewer_context
+from src.public_api.evidence_service import PublicEvidenceService
+from src.public_api.login_limiter import LoginLimiter
 
 logger = logging.getLogger(__name__)
 
 _STATIC_DIR = Path(__file__).resolve().parent / "static"
-
-_LIMIT_WINDOW = 300.0
-_LIMIT_MAX = 5
-_attempts: dict[str, list[float]] = {}
-_attempts_guard = threading.Lock()
 
 
 def _session_days() -> int:
@@ -69,31 +61,6 @@ def _client_ip(request: Request) -> str:
         if forwarded:
             return forwarded.split(",")[-1].strip()
     return request.client.host if request.client else "unknown"
-
-
-def _rate_limited(key: str) -> bool:
-    """内存登录限速；进程重启清零，长期防护交给反向代理。"""
-    now = time.monotonic()
-    with _attempts_guard:
-        # shortcut: 内存限速只防短期爆破；键超过 1024 个时清理过期项，避免随机用户名撑大内存。
-        if len(_attempts) > 1024:
-            for stale in [
-                k for k, v in _attempts.items() if not any(now - t < _LIMIT_WINDOW for t in v)
-            ]:
-                _attempts.pop(stale, None)
-        hits = [t for t in _attempts.get(key, []) if now - t < _LIMIT_WINDOW]
-        if len(hits) >= _LIMIT_MAX:
-            _attempts[key] = hits
-            return True
-        hits.append(now)
-        _attempts[key] = hits
-        return False
-
-
-def _clear_attempts(key: str) -> None:
-    """登录成功后清空该 key 的失败记录。"""
-    with _attempts_guard:
-        _attempts.pop(key, None)
 
 
 class LoginRequest(BaseModel):
@@ -131,14 +98,6 @@ class WithdrawRequest(BaseModel):
     reason: str
 
 
-def _reviewer_role(user: dict[str, Any]) -> str:
-    """取账号的复核角色；优先领域，其次合规。"""
-    role = reviewer_role(user["roles"])
-    if role is None:
-        raise EvidenceError("permission_denied", "只有复核者可读取未发布全文")
-    return role
-
-
 _KIND_STATUS: dict[ErrorKind, int] = {
     "invalid_input": 400,
     "submission_not_found": 404,
@@ -155,6 +114,8 @@ def create_public_app(data_root: str | Path) -> FastAPI:
     app = FastAPI(title="CellSpatio Public Evidence API")
     app.state.governance = GovernanceStore(public_dir)
     app.state.accounts = AccountStore(public_dir)
+    app.state.evidence_service_factory = PublicEvidenceService
+    app.state.login_limiter = LoginLimiter()
 
     def governance(request: Request) -> GovernanceStore:
         """取当前应用的治理库。"""
@@ -191,6 +152,12 @@ def create_public_app(data_root: str | Path) -> FastAPI:
     Reviewer = Annotated[dict[str, Any], Depends(require_roles(ROLE_DOMAIN, ROLE_COMPLIANCE))]
     Store = Annotated[GovernanceStore, Depends(governance)]
 
+    def evidence_service(request: Request, store: Store) -> PublicEvidenceService:
+        """按工厂构造读服务；测试可替换 `app.state.evidence_service_factory`。"""
+        return request.app.state.evidence_service_factory(store)
+
+    EvidenceServiceDep = Annotated[PublicEvidenceService, Depends(evidence_service)]
+
     @app.exception_handler(ValueError)
     async def value_error_handler(request: Request, exc: ValueError) -> JSONResponse:
         """领域失败按 kind 映射为稳定 4xx；普通 ValueError 仍兜底为 400。"""
@@ -214,12 +181,13 @@ def create_public_app(data_root: str | Path) -> FastAPI:
     def login(body: LoginRequest, request: Request) -> dict[str, Any]:
         """用户名密码登录，签发 Bearer token。"""
         key = f"{body.username.strip().lower()}|{_client_ip(request)}"
-        if _rate_limited(key):
+        limiter: LoginLimiter = request.app.state.login_limiter
+        if limiter.blocked(key):
             raise HTTPException(status_code=429, detail="尝试次数过多，请稍后再试")
         user = accounts(request).authenticate(body.username, body.password)
         if user is None:
             raise HTTPException(status_code=401, detail="用户名或密码错误")
-        _clear_attempts(key)
+        limiter.clear(key)
         token = accounts(request).create_token(user["id"], days=_session_days())
         return {"token": token, "user": public_user(user)}
 
@@ -250,14 +218,10 @@ def create_public_app(data_root: str | Path) -> FastAPI:
     @app.get("/api/public/evidence/queue")
     def queue(
         user: Reviewer,
-        store: Store,
+        service: EvidenceServiceDep,
     ) -> dict[str, Any]:
         """复核队列：待审、本角色未签、本人未审，排除自己的提交。"""
-        role = _reviewer_role(user)
-        return {
-            "role": role,
-            "queue": store.review_queue(viewer_actor=user["id"], viewer_role=role),
-        }
+        return service.queue(user)
 
     @app.post("/api/public/evidence/preview")
     def preview(body: PreviewRequest, user: Contributor, store: Store) -> dict[str, Any]:
@@ -329,55 +293,18 @@ def create_public_app(data_root: str | Path) -> FastAPI:
         return {"count": len(results), "results": results}
 
     @app.get("/api/public/evidence/{evidence_id}/citation")
-    def citation(evidence_id: str, store: Store) -> dict[str, Any]:
+    def citation(evidence_id: str, service: EvidenceServiceDep) -> dict[str, Any]:
         """引用索引：只对 accepted 证据给出可引用条目；撤销后 404。"""
-        data = store.get(evidence_id)
-        card = data.get("card")
-        if card is None:
-            raise EvidenceError("submission_not_found", "证据已撤销或不可引用")
-        parsed = EvidenceCard.model_validate(card)
-        return {
-            "evidence_id": data["evidence_id"],
-            "card_id": data["card_id"],
-            "gate": data["gate"],
-            "claim": parsed.claim.text,
-            "source_ids": list(parsed.provenance.source_ids),
-            "license": parsed.license.model_dump(),
-            "accepted_at": data["accepted_at"],
-            "superseded_by": data["superseded_by"],
-            "citation": (
-                f"{parsed.claim.text} "
-                f"[{parsed.license.attribution}; CellSpatio evidence {data['evidence_id']}]"
-            ),
-        }
+        return service.citation(evidence_id)
 
     @app.get("/api/public/evidence/{evidence_id}/events")
     def events(
         evidence_id: str,
         user: Reviewer,
-        store: Store,
+        service: EvidenceServiceDep,
     ) -> dict[str, Any]:
         """复核者查看审计事件，并一次返回当前查看者的复核能力。"""
-        role = _reviewer_role(user)
-        summary = store.summary(evidence_id)
-        records = store.events(evidence_id)
-        access = viewer_access(
-            status=summary["status"],
-            contributor_id=summary["contributor_id"],
-            viewer_actor=user["id"],
-            viewer_role=role,
-            events=[(event["actor_id"], event["action"]) for event in records],
-        )
-        return {
-            "events": records,
-            "review": {
-                "role": role,
-                "actions": [action_spec(action) for action in access.actions],
-                "blocked_reason": access.blocked_reason,
-                "blocked_code": access.blocked_code,
-                "checklists": {role: list(checklist_for_role(role))},
-            },
-        }
+        return service.events(evidence_id, user)
 
     @app.get("/api/public/evidence/{evidence_id}")
     def get_evidence(
@@ -390,12 +317,12 @@ def create_public_app(data_root: str | Path) -> FastAPI:
         if not unpublished:
             return store.get(evidence_id)
         user = current_user(request)
-        role = _reviewer_role(user)
+        ctx = reviewer_context(user)
         return store.get(
             evidence_id,
             include_unaccepted=True,
-            viewer_actor=user["id"],
-            viewer_role=role,
+            viewer_actor=ctx.actor_id,
+            viewer_role=ctx.role,
         )
 
     @app.exception_handler(Exception)

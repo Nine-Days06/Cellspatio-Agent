@@ -11,8 +11,8 @@ const record = { review_id: 'review1', cluster_attempt_id: 'c1', binding_sha256:
 const acceptedReview = { ...initialReview, revision: 10, current: record, history: [record] }
 const initial: MarkerState = { run_id: 'r1', cluster_attempt_id: 'c1', revision: 9, stage: 'marker_review', scientific_status: 'unreviewed', binding_sha256: null, review: null, protocol: { full: true }, tool_version: '1', blocked: ['需要独立聚类接受'], attempts: [] }
 const authorized: MarkerState = { ...initial, revision: 10, binding_sha256: 'marker-binding', review: { review_id: 'review1', record_version: '1', accepted: true }, blocked: [] }
-const completed: MarkerState = { ...authorized, revision: 12, binding_sha256: null, review: null, attempts: [{ attempt_id: 'm1', binding_sha256: 'marker-binding', status: 'completed', invalidated_reason: null, error: null, review: null, result: { cells: 31, features: 3, clusters: 2, marker_rows: 1, positive_rows: 1, negative_rows: 0, versions: ['presto 1.1.0'], cluster_summary: [{ cluster_id: '0', cells: '16', rest_cells: '15', result_status: 'candidates_returned', positive_markers: '1', negative_markers: '0' }, { cluster_id: '1', cells: '15', rest_cells: '16', result_status: 'no_returned_candidates', positive_markers: '0', negative_markers: '0' }] } }] }
-const page = { attempt_id: 'm1', total: 1, offset: 0, limit: 100, rows: [{ cluster_id: '0', feature_key: 'F00000002', feature_id: 'original-A', symbol: 'A_B', p_val: 0.0001, avg_log2FC: 1, 'pct.1': 0.8, 'pct.2': 0.2, p_val_adj: 0.0003 }] }
+const completed: MarkerState = { ...authorized, revision: 12, binding_sha256: null, review: null, attempts: [{ attempt_id: 'm1', review_id: 'review1', binding_sha256: 'marker-binding', status: 'completed', created_at: '2026-11-21T00:00:00Z', finished_at: null, source_revision: 10, claim_revision: 11, invalidated_reason: null, error: null, review: null, result: { cells: 31, features: 3, clusters: 2, marker_rows: 1, positive_rows: 1, negative_rows: 0, versions: ['presto 1.1.0'], plot_features: ['F00000002'], backend: 'Seurat-FindAllMarkers-Presto-full', cluster_summary: [{ cluster_id: '0', cells: '16', rest_cells: '15', result_status: 'candidates_returned', positive_markers: '1', negative_markers: '0' }, { cluster_id: '1', cells: '15', rest_cells: '16', result_status: 'no_returned_candidates', positive_markers: '0', negative_markers: '0' }] } }] }
+const page = { attempt_id: 'm1', binding_sha256: 'marker-binding', scientific_status: 'unreviewed' as const, total: 1, offset: 0, limit: 100, rows: [{ cluster_id: '0', feature_key: 'F00000002', feature_id: 'original-A', symbol: 'A_B', p_val: 0.0001, avg_log2FC: 1, 'pct.1': 0.8, 'pct.2': 0.2, p_val_adj: 0.0003 }] }
 beforeEach(() => {
   vi.resetAllMocks()
   vi.mocked(fetchClusterAcceptance).mockResolvedValue(initialReview)
@@ -157,6 +157,7 @@ describe('聚类接受与 marker 独立授权', () => {
     await screen.findByText('A_B')
     expect(executeMarkers).toHaveBeenCalledOnce()
     expect(fetchMarkers).toHaveBeenCalledTimes(2)
+    expect(fetchClusterAcceptance).toHaveBeenCalledTimes(2)
     expect(executeButton()).toBeDisabled()
   })
 
@@ -196,9 +197,22 @@ describe('聚类接受与 marker 独立授权', () => {
     vi.mocked(reviewMarkers).mockResolvedValue(reviewed)
     render(<MarkerReview {...source} revision={12} />)
     await screen.findByText('A_B')
+    expect(screen.getByRole('button', { name: '记录 marker 接受' })).toBeDisabled()
+    expect(screen.getByRole('button', { name: '记录 marker 拒绝' })).toBeDisabled()
     fireEvent.change(screen.getByLabelText('marker 复核理由（仅本地）'), { target: { value: '候选不足' } })
+    expect(screen.getByRole('button', { name: '记录 marker 拒绝' })).toBeEnabled()
     fireEvent.click(screen.getByRole('button', { name: '记录 marker 拒绝' }))
     await screen.findByText(/最新：拒绝 · 候选不足/)
     expect(reviewMarkers).toHaveBeenCalledWith(source, 'm1', 'rejected', 12, '候选不足')
+  })
+
+  it('marker 阶段 blocked 时禁用复核文本框与按钮', async () => {
+    vi.mocked(fetchClusterAcceptance).mockResolvedValue(acceptedReview)
+    vi.mocked(fetchMarkers).mockResolvedValue({ ...completed, blocked: ['阶段前置条件未满足'] })
+    render(<MarkerReview {...source} revision={12} />)
+    await screen.findByText('A_B')
+    expect(screen.getByLabelText('marker 复核理由（仅本地）')).toBeDisabled()
+    expect(screen.getByRole('button', { name: '记录 marker 接受' })).toBeDisabled()
+    expect(screen.getByRole('button', { name: '记录 marker 拒绝' })).toBeDisabled()
   })
 })

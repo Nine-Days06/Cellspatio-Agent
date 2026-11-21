@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import Any
+
 import httpx
 import pytest
 from fastapi.testclient import TestClient
@@ -24,6 +26,7 @@ from src.evidence.governance import (
     ROLE_COMPLIANCE,
     ROLE_CONTRIBUTOR,
     ROLE_DOMAIN,
+    GovernanceStore,
 )
 from src.evidence.public_client import PublicEvidenceClient, PublicEvidenceError
 from src.evidence.schema import (
@@ -36,6 +39,7 @@ from src.evidence.schema import (
     Subject,
 )
 from src.public_api.app import create_public_app
+from src.public_api.context import ReviewerContext, reviewer_context
 
 PASSWORD = "password123"
 
@@ -785,3 +789,78 @@ def test_contributor_browser_preview_mine_and_withdraw(app, client: TestClient):
     )
     assert withdrawn.status_code == 200
     assert withdrawn.json()["status"] == "withdrawn"
+
+
+def test_reviewer_context_uses_domain_priority_and_rejects_no_role():
+    """主复核角色领域优先；无复核角色沿用原 403 文案与类别。"""
+    ctx = reviewer_context({"id": "acct-1", "roles": [ROLE_COMPLIANCE, ROLE_DOMAIN]})
+    assert ctx == ReviewerContext(
+        actor_id="acct-1",
+        role=ROLE_DOMAIN,
+        roles=(ROLE_COMPLIANCE, ROLE_DOMAIN),
+    )
+
+    with pytest.raises(EvidenceError) as denied:
+        reviewer_context({"id": "acct-2", "roles": [ROLE_CONTRIBUTOR]})
+    assert denied.value.kind == "permission_denied"
+    assert str(denied.value) == "只有复核者可读取未发布全文"
+
+
+class _StubService:
+    """替换用的读服务桩；响应完全由桩决定并记录调用顺序。"""
+
+    def __init__(self, store: GovernanceStore) -> None:
+        """保存治理库并初始化调用记录。"""
+        self.store = store
+        self.calls: list[str] = []
+
+    def queue(self, viewer: dict[str, Any]) -> dict[str, Any]:
+        """返回固定队列并记录调用。"""
+        self.calls.append("queue")
+        return {"role": ROLE_DOMAIN, "queue": [{"evidence_id": "stub"}]}
+
+    def events(self, evidence_id: str, viewer: dict[str, Any]) -> dict[str, Any]:
+        """返回固定事件与能力并记录调用。"""
+        self.calls.append(f"events:{evidence_id}")
+        return {
+            "events": [],
+            "review": {
+                "role": ROLE_COMPLIANCE,
+                "actions": [],
+                "blocked_reason": "桩",
+                "blocked_code": "stub",
+                "checklists": {},
+            },
+        }
+
+    def citation(self, evidence_id: str) -> dict[str, Any]:
+        """返回固定引用并记录调用。"""
+        self.calls.append(f"citation:{evidence_id}")
+        return {"evidence_id": evidence_id}
+
+
+def test_public_evidence_service_is_replaceable(app, client: TestClient):
+    """通过 app.state 工厂替换 service 后，路由经由工厂构造的实例取数。"""
+    _account(app, "stub-domain", (ROLE_DOMAIN,))
+    token = _login(client, "stub-domain")
+    created: list[_StubService] = []
+
+    def factory(store: GovernanceStore) -> _StubService:
+        """记录被构造的 service，供测试断言调用顺序。"""
+        service = _StubService(store)
+        created.append(service)
+        return service
+
+    app.state.evidence_service_factory = factory
+
+    queue = client.get("/api/public/evidence/queue", headers=_headers(token))
+    assert queue.status_code == 200
+    assert queue.json() == {"role": ROLE_DOMAIN, "queue": [{"evidence_id": "stub"}]}
+
+    events = client.get("/api/public/evidence/evs-stub/events", headers=_headers(token))
+    assert events.status_code == 200
+    assert events.json()["review"]["blocked_code"] == "stub"
+    assert [call for service in created for call in service.calls] == [
+        "queue",
+        "events:evs-stub",
+    ]

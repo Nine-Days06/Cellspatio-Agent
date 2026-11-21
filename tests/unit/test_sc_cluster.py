@@ -19,9 +19,10 @@ from src.analysis.sc_cluster import (
     dimension_binding,
     epochs_for,
 )
+from src.analysis.sc_marker_reviews import CLUSTER_RECORD_VERSION
 from src.api import authorized_run
 from src.api.routes_pca import DIMENSION_RECORD_VERSION
-from tests.unit.test_sc_pca import PARAMS, table
+from tests.unit.test_sc_pca import PARAMS, duplicate_attempt, table
 from tests.unit.test_sc_pca_dimensions import dimensions_ready as _dimensions_ready
 from tests.unit.test_sc_pca_dimensions import parent_ready as _parent_ready
 
@@ -121,6 +122,90 @@ def execute(d):
     return response.json()
 
 
+def test_cluster_review_uses_review_fact_seam(ready, monkeypatch):
+    """聚类接受由统一接缝追加，阶段只提供聚类身份校验。"""
+    d = ready
+    state = execute(d)
+    aid = state["attempts"][0]["attempt_id"]
+    calls = []
+    real = sc_stages.append_review_fact
+
+    def spy(connect, encode_results, plan, **kwargs):
+        calls.append((plan, kwargs))
+        return real(connect, encode_results, plan, **kwargs)
+
+    monkeypatch.setattr(sc_stages, "append_review_fact", spy)
+    review = d.client.get(f"{d.path}/{aid}/review").json()
+    response = d.client.post(
+        f"{d.path}/{aid}/review",
+        json={
+            "binding_sha256": review["binding_sha256"],
+            "revision": review["revision"],
+            "accepted": True,
+            "reason": "探索性接受",
+        },
+    )
+    assert response.status_code == 200, response.text
+    assert response.json()["history"][0]["accepted"] is True
+    assert len(calls) == 1
+    plan, kwargs = calls[0]
+    assert plan.table == "sc_cluster_reviews"
+    assert plan.previous_match["cluster_attempt_id"] == aid
+    assert plan.previous_match["record_version"] == CLUSTER_RECORD_VERSION
+    assert plan.latest_match == {"cluster_attempt_id": aid}
+    assert plan.insert_values["accepted"] == 1
+    assert plan.run_id == d.rid and plan.session_id == d.sid
+    assert plan.message is not None
+    content, results = plan.message({"review_id": "review-1"})
+    assert content == "探索性聚类接受已记录，科学未复核；未授权 marker 或注释。"
+    assert results == {
+        "sc_cluster_review": {
+            "run_id": d.rid,
+            "cluster_attempt_id": aid,
+            "review_id": "review-1",
+            "stage": "cluster_review",
+            "scientific_status": "unreviewed",
+        }
+    }
+    assert kwargs["validate"] is not None
+
+
+def test_cluster_rejection_uses_review_fact_seam(ready, monkeypatch):
+    """聚类拒绝由统一接缝追加，旧 revision 仍先报失效。"""
+    d = ready
+    state = execute(d)
+    aid = state["attempts"][0]["attempt_id"]
+    calls = []
+    real = sc_stages.append_review_fact
+
+    def spy(connect, encode_results, plan, **kwargs):
+        calls.append((plan, kwargs))
+        return real(connect, encode_results, plan, **kwargs)
+
+    monkeypatch.setattr(sc_stages, "append_review_fact", spy)
+    review = d.client.get(f"{d.path}/{aid}/review").json()
+    response = d.client.post(
+        f"{d.path}/{aid}/reject",
+        json={
+            "binding_sha256": review["binding_sha256"],
+            "revision": review["revision"],
+            "reason": "簇结构不稳定",
+        },
+    )
+    assert response.status_code == 200, response.text
+    assert response.json()["latest_decision"]["decision"] == "rejected"
+    assert response.json()["latest_decision"]["reason"] == "簇结构不稳定"
+    assert len(calls) == 1
+    plan, kwargs = calls[0]
+    assert plan.table == "sc_cluster_rejections"
+    assert plan.previous_match["cluster_attempt_id"] == aid
+    assert plan.previous_match["record_version"] == CLUSTER_RECORD_VERSION
+    assert plan.latest_match == {"cluster_attempt_id": aid}
+    assert plan.insert_values["reviewer"] == "local-user"
+    assert kwargs["validate_first"] is True
+    assert kwargs["before_insert"] is not None
+
+
 def test_authorize_restore_idempotent_own_revision_and_no_leak(ready):
     d = ready
     before = {p: p.read_bytes() for p in [d.source, *d.root.parent.rglob("*")] if p.is_file()}
@@ -190,7 +275,43 @@ def test_revision_and_association_conflicts(ready):
         assert d.client.post(d.path + "/execute", json=body).status_code == code
     other = d.store.create_session()
     assert d.client.get(d.path.replace(d.sid, other)).status_code == 404
+    for target, detail in (
+        (d.path.replace(d.fid, "unknown"), "父过滤关联不存在"),
+        (d.path.replace(d.aid, "unknown"), "PCA 关联不存在"),
+    ):
+        response = d.client.get(target)
+        assert response.status_code == 404
+        assert response.json()["detail"] == detail
+    missing_cluster = d.client.get(f"{d.path}/unknown/diagnostic")
+    assert missing_cluster.status_code == 404
+    assert missing_cluster.json()["detail"] == "聚类图未完成或不存在"
+    missing_review = d.client.get(f"{d.path}/unknown/review")
+    assert missing_review.status_code == 404
+    assert missing_review.json()["detail"] == "聚类关联不存在"
     d.executor.execute_script.assert_not_called()
+
+
+def test_cluster_attempt_with_wrong_pca_parent_is_404(ready):
+    """子聚类存在但路径 PCA 父 ID 不匹配时，仍返回原 404 文案。"""
+    d = ready
+    state = execute(d)
+    cid = state["attempts"][0]["attempt_id"]
+    pca = d.store.get_qc_run(d.sid, d.rid)["pca_attempts"][0]
+    duplicate_attempt(
+        d.store,
+        "sc_pca_attempts",
+        d.aid,
+        "other-pca",
+        binding_sha256="f" * 64,
+        directory=str(Path(pca["directory"]).parent / "other-pca"),
+    )
+    wrong = f"{d.url}/clusters/{d.fid}/other-pca/{cid}"
+    diagnostic = d.client.get(wrong + "/diagnostic")
+    assert diagnostic.status_code == 404
+    assert diagnostic.json()["detail"] == "聚类图未完成或不存在"
+    review = d.client.get(wrong + "/review")
+    assert review.status_code == 404
+    assert review.json()["detail"] == "聚类关联不存在"
 
 
 def test_running_guards_and_duplicate_post(ready):

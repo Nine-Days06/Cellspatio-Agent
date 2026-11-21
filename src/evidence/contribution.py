@@ -8,8 +8,9 @@ from __future__ import annotations
 
 import hashlib
 import json
+from collections.abc import Mapping
 from datetime import datetime, timezone
-from typing import Any
+from typing import Any, Literal, TypedDict
 
 from src.evidence.errors import EvidenceError
 from src.evidence.governance import (
@@ -31,6 +32,49 @@ NOT_SENT = (
 )
 
 
+class Admission(TypedDict):
+    """准入检查结果。"""
+
+    status: Literal["passed", "failed"]
+    problems: list[str]
+
+
+class WillSendSubmission(TypedDict):
+    """将随证据卡一起发送的提交元数据。"""
+
+    schema_version: str
+    contributor_id: str
+    target_library: Literal["public"]
+    supersedes: list[str]
+    revises_submission_id: str | None
+    donor_count: int | None
+    independent_replications: int
+    consent: bool
+    consent_text_version: str
+
+
+class WillSend(TypedDict):
+    """预览中明确列出的将发送内容。"""
+
+    submission: WillSendSubmission
+    card: dict[str, Any]
+
+
+class ContributionPreview(TypedDict):
+    """贡献预览的完整形状；JSON 序列化形状必须保持稳定。"""
+
+    schema_version: str
+    created_at: str
+    card_id: str
+    card_sha256: str
+    privacy: Literal["passed"]
+    admission: Admission
+    will_send: WillSend
+    consent_text: str
+    not_sent: list[str]
+    preview_sha256: str
+
+
 def _now() -> str:
     """当前 UTC 时间（ISO 8601）。"""
     return datetime.now(timezone.utc).isoformat()
@@ -41,7 +85,7 @@ def _sha256(text: str) -> str:
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
 
-def _payload_sha256(preview: dict[str, Any]) -> str:
+def _payload_sha256(preview: Mapping[str, Any]) -> str:
     """对预览正文做稳定哈希，忽略哈希字段本身。"""
     body = {key: value for key, value in preview.items() if key != "preview_sha256"}
     return _sha256(json.dumps(body, ensure_ascii=False, sort_keys=True))
@@ -53,7 +97,7 @@ def preview_card(
     contributor_id: str,
     supersedes: list[str] | None = None,
     revises_submission_id: str | None = None,
-) -> dict[str, Any]:
+) -> ContributionPreview:
     """生成完整贡献预览；隐私不合格直接拒绝，准入问题只标记不阻断。"""
     try:
         validate_card(card)
@@ -63,17 +107,17 @@ def preview_card(
         raise EvidenceError("invalid_input", "预览需要 contributor_id")
     card_json = card.model_dump_json()
     problems = admission_problems(card)
-    preview: dict[str, Any] = {
-        "schema_version": PREVIEW_SCHEMA_VERSION,
-        "created_at": _now(),
-        "card_id": card.card_id,
-        "card_sha256": _sha256(card_json),
-        "privacy": "passed",
-        "admission": {
+    preview = ContributionPreview(
+        schema_version=PREVIEW_SCHEMA_VERSION,
+        created_at=_now(),
+        card_id=card.card_id,
+        card_sha256=_sha256(card_json),
+        privacy="passed",
+        admission={
             "status": "passed" if not problems else "failed",
             "problems": problems,
         },
-        "will_send": {
+        will_send={
             "submission": {
                 "schema_version": SUBMISSION_SCHEMA_VERSION,
                 "contributor_id": contributor_id,
@@ -87,14 +131,17 @@ def preview_card(
             },
             "card": json.loads(card_json),
         },
-        "consent_text": CONSENT_TEXT,
-        "not_sent": list(NOT_SENT),
-    }
+        consent_text=CONSENT_TEXT,
+        not_sent=list(NOT_SENT),
+        preview_sha256="",
+    )
     preview["preview_sha256"] = _payload_sha256(preview)
     return preview
 
 
-def build_envelope(preview: dict[str, Any], *, consent: bool) -> SubmissionEnvelope:
+def build_envelope(
+    preview: ContributionPreview | Mapping[str, Any], *, consent: bool
+) -> SubmissionEnvelope:
     """把预览转成提交信封；必须显式同意且预览内容未被篡改。"""
     if not consent:
         raise EvidenceError("invalid_input", "必须显式同意才能提交")

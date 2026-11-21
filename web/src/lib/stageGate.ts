@@ -59,11 +59,13 @@ type QcFacts = {
 }
 
 type StageFacts =
+  | { stage: 'qc'; action: 'preview' }
   | (QcFacts & { action: 'approve'; unchanged: boolean })
   | (QcFacts & { action: 'reject' })
   | (QcFacts & { action: 'filter'; unchanged: boolean })
   | { stage: 'pca'; bindingExists: boolean; bindingAttempted: boolean }
   | { stage: 'cluster'; bindingExists: boolean; selectionExists: boolean; disabled: boolean; bindingAttempted: boolean }
+  | { stage: 'marker'; action: 'review'; disabled: boolean }
   | { stage: 'marker'; action: 'accept'; bindingExists: boolean; hasClusterAcceptance: boolean; accepted: boolean; disabled: boolean }
   | { stage: 'marker'; action: 'reject'; bindingExists: boolean; disabled: boolean }
   | { stage: 'marker'; action: 'execute'; bindingExists: boolean; hasClusterAcceptance: boolean; disabled: boolean; bindingAttempted: boolean }
@@ -89,6 +91,11 @@ export function evaluateStageGate(input: StageGateInput): StageGateResult {
   add('running', !!input.running)
 
   if (input.stage === 'qc') {
+    if (input.action === 'preview') {
+      add('blocked', !unblocked)
+      return result(idle && unblocked, idle && unblocked)
+    }
+
     if (input.action === 'reject') {
       add('preview-not-pending', input.previewStatus !== 'pending')
       add('missing-reason', !input.reasonProvided)
@@ -131,6 +138,14 @@ export function evaluateStageGate(input: StageGateInput): StageGateResult {
   }
 
   if (input.stage === 'marker') {
+    if (input.action === 'review') {
+      add('disabled', input.disabled)
+      add('blocked', !unblocked)
+      add('missing-reason', !input.reasonProvided)
+      const available = !input.disabled && idle && unblocked
+      return result(available, available && input.reasonProvided)
+    }
+
     add('missing-binding', !input.bindingExists)
     add('disabled', input.disabled)
     add('blocked', !unblocked)
