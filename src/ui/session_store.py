@@ -888,27 +888,3 @@ def _decode_downloaded(text: str | None) -> list:
     except json.JSONDecodeError:  # 容错：坏数据按空列表处理
         logger.warning("downloaded_assets JSON 解析失败，按空列表处理")
         return []
-
-
-def project_analysis_root(session_id: str | None, repo_root: str | Path) -> Path:
-    """新分析产物根：项目会话落 data/projects/<id>/analysis，其余沿用 data/analysis。"""
-    base = Path(repo_root) / "data"
-    if session_id:
-        session = SessionStore().get_session(session_id)
-        if session is None:
-            raise ValueError("会话不存在，不能确定分析产物根")
-        if session.get("project_id"):
-            return (base / "projects" / session["project_id"] / "analysis").resolve()
-    return (base / "analysis").resolve()
-
-
-def project_scoped_analysis_root(session_id: str | None, repo_root: str | Path) -> Path | None:
-    """仅项目会话返回项目分析根；未归类或无会话返回 None，保留旧输出位置。"""
-    if not session_id:
-        return None
-    session = SessionStore().get_session(session_id)
-    if session is None:
-        raise ValueError("会话不存在，不能确定分析产物根")
-    if not session.get("project_id"):
-        return None
-    return project_analysis_root(session_id, repo_root)

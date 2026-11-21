@@ -9,7 +9,6 @@ from src.ui.session_store import (
     SessionStore,
     _decode_results,
     _encode_results,
-    project_analysis_root,
 )
 
 
@@ -124,11 +123,6 @@ def test_archive_project_rejects_running_session(monkeypatch):
 
     with pytest.raises(ValueError, match="运行中"):
         store.update_project(pid, archived=True)
-
-
-def test_project_analysis_root_rejects_unknown_session(tmp_path):
-    with pytest.raises(ValueError, match="会话不存在"):
-        project_analysis_root("nope", tmp_path)
 
 
 def test_append_message_sets_title_from_first_user_message():

@@ -1,24 +1,32 @@
-"""分析产物根解析接缝：会话/项目归属由注入的 SessionStore 决定。"""
+"""分析产物根解析接缝：会话/项目归属由注入的 SessionStore 或其工厂决定。"""
 
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from pathlib import Path
 from typing import Any
 
 from src.ui.session_store import SessionStore
 
+StoreSource = SessionStore | Callable[[], SessionStore]
+
 
 class AnalysisRoots:
-    """持有会话库与仓库根，集中解析分析产物目录。"""
+    """持有 store 来源与仓库根，集中解析分析产物目录。"""
 
-    def __init__(self, store: SessionStore, repo_root: str | Path):
-        self._store = store
+    def __init__(self, store: StoreSource, repo_root: str | Path):
+        self._store_source = store
         self._repo_root = Path(repo_root).resolve()
+
+    def _store(self) -> SessionStore:
+        """实例直接复用；工厂每次取新 store，跟随 app.state.store_factory。"""
+        if isinstance(self._store_source, SessionStore):
+            return self._store_source
+        return self._store_source()
 
     def for_session(self, session_id: str | None) -> Path:
         """新分析产物根：项目会话落 data/projects/<id>/analysis，其余沿用 data/analysis。"""
         base = self._repo_root / "data"
         if session_id:
-            session = self._store.get_session(session_id)
+            session = self._store().get_session(session_id)
             if session is None:
                 raise ValueError("会话不存在，不能确定分析产物根")
             if session.get("project_id"):
@@ -29,7 +37,7 @@ class AnalysisRoots:
         """仅项目会话返回项目分析根；未归类或无会话返回 None，保留旧输出位置。"""
         if not session_id:
             return None
-        session = self._store.get_session(session_id)
+        session = self._store().get_session(session_id)
         if session is None:
             raise ValueError("会话不存在，不能确定分析产物根")
         if not session.get("project_id"):
