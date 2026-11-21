@@ -167,6 +167,20 @@ def test_de_analysis_uses_downloaded_asset(tmp_path):
     assert result["analysis_type"] == "differential_expression"
 
 
+def test_explicit_input_wins_over_downloaded_asset(tmp_path):
+    """显式输入存在时优先于最近下载资产。"""
+    explicit = tmp_path / "explicit.csv"
+    explicit.write_text("gene,log2FC\nTP53,1\n", encoding="utf-8")
+    downloaded = tmp_path / "downloaded.csv"
+    downloaded.write_text("gene,log2FC\nBRCA1,1\n", encoding="utf-8")
+    manager = _make_manager()
+    context = {"downloaded_assets": [{"access_path": str(downloaded)}]}
+
+    assert manager._resolve_input_file({"input_files": [str(explicit)]}, context) == str(explicit)
+    missing = tmp_path / "missing.csv"
+    assert manager._resolve_input_file({"input_files": [str(missing)]}, context) == str(downloaded)
+
+
 def test_de_analysis_without_data_needs_input():
     manager = _make_manager()
     result = manager.execute_workflow("做差异表达分析")

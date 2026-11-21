@@ -131,7 +131,7 @@ class WorkflowManager:
         )
 
     def _resolve_input_file(self, params: dict[str, Any], context: dict[str, Any]) -> str | None:
-        """解析输入文件：优先 params.input_files，其次 context.downloaded_assets"""
+        """解析输入文件：显式路径优先，不可用时回退下载资产。"""
         if params.get("input_files"):
             candidate = params["input_files"][0]
             if Path(candidate).exists():
@@ -323,12 +323,9 @@ class WorkflowManager:
             params={"analysis_type": "differential_expression"},
         )
 
-        input_file = None
-        # 优先使用已下载的资产（context 传入），其次才用参数里的文件
-        if context.get("downloaded_assets"):
-            input_file = context["downloaded_assets"][-1].get("access_path")
-        elif params.get("input_files"):
-            input_file = params["input_files"][0]
+        input_file = self._resolve_input_file(params, context) or next(
+            iter(params.get("input_files") or []), None
+        )
 
         # 无数据：返回 needs_input 终态（AgentRuntime 短路上抛 UI），不再伪造成功
         if not input_file:
