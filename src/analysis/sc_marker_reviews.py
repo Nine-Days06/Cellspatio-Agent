@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from src.analysis.evidence import digest
+from src.analysis.review_standing import review_is_current
 from src.analysis.sc_cluster import checked_completed_cluster
 from src.analysis.sc_pca import DIMENSION_RECORD_VERSION
 
@@ -69,13 +70,13 @@ def review_view(run: RunSnapshot, cluster: dict[str, Any], root: Path) -> dict[s
             and latest["accepted"] is True
             and latest["binding_sha256"] == binding
             and latest["record_version"] == CLUSTER_RECORD_VERSION
-            and latest["source_revision"] + 1 == run["revision"]
+            and review_is_current(latest, run["revision"])
         )
         else None
     )
 
     def decision_fact(record: dict[str, Any], decision: str) -> dict[str, Any]:
-        valid = not blocked and record["source_revision"] + 1 == run["revision"]
+        valid = review_is_current(record, run["revision"], blocked=bool(blocked))
         return {
             "decision": decision,
             "reason": record["reason"],
