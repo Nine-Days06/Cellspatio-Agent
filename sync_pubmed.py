@@ -119,7 +119,7 @@ def main(argv: list[str] | None = None) -> int:
         reimport_all=args.reimport_all,
     )
     print(result)
-    return 0
+    return int(bool(result.get("failed")))
 
 
 if __name__ == "__main__":

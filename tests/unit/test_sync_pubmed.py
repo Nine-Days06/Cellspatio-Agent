@@ -215,6 +215,16 @@ def test_main_parses_args_and_calls_sync(tmp_path):
     assert m_sync.call_args.kwargs["reimport_all"] is False
 
 
+def test_main_returns_nonzero_when_import_failed(tmp_path):
+    """导入失败必须反映到进程退出码。"""
+    etl_dir = tmp_path / "etl"
+    etl_dir.mkdir()
+    fake = {"exported": 1, "imported": 0, "failed": 1}
+    with mock.patch("sync_pubmed.sync_and_import", return_value=fake):
+        rc = sync_pubmed.main(["--etl-dir", str(etl_dir), "--import-dir", str(tmp_path / "import")])
+    assert rc == 1
+
+
 def test_main_parses_reimport_all_flag(tmp_path):
     etl_dir = tmp_path / "etl"
     etl_dir.mkdir()
