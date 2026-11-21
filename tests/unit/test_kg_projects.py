@@ -75,7 +75,9 @@ def test_project_memory_uses_isolated_working_dirs(tmp_path):
     brain = store.create_project("脑")
     liver_session = store.create_session("肝脏会话", project_id=liver)
     brain_session = store.create_session("脑会话", project_id=brain)
-    memory = ProjectKGMemory(tmp_path / "kg", llm_model_func=_llm, embedding_func=_embedding())
+    memory = ProjectKGMemory(
+        tmp_path / "kg", llm_model_func=_llm, embedding_func=_embedding(), store=store
+    )
     try:
         memory.ingest(_execution("run-liver", liver_session))
         memory.ingest(_execution("run-brain", brain_session))
@@ -92,7 +94,9 @@ def test_project_memory_is_singleton_under_concurrency(tmp_path):
     store = SessionStore()
     pid = store.create_project("并发项目")
     sid = store.create_session("会话", project_id=pid)
-    memory = ProjectKGMemory(tmp_path / "kg", llm_model_func=_llm, embedding_func=_embedding())
+    memory = ProjectKGMemory(
+        tmp_path / "kg", llm_model_func=_llm, embedding_func=_embedding(), store=store
+    )
     try:
         with ThreadPoolExecutor(max_workers=4) as pool:
             instances = list(pool.map(lambda _: memory.memory_for(sid), range(8)))

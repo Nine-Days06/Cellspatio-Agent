@@ -24,6 +24,8 @@ from src.knowledge.lightrag_client import LightRAGClient
 from src.knowledge.llm_factory import build_embedding_func, build_llm_func
 from src.skills.loader import SkillLoader
 from src.skills.registry import SkillRegistry
+from src.ui.analysis_roots import AnalysisRoots
+from src.ui.session_store import SessionStore
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -61,6 +63,10 @@ class CellSpatioAgent:
         if not repo_root:
             repo_root = "."
 
+        # 会话库与分析产物根由应用持有，构造期注入到各消费方，避免 helper 内重复新建。
+        self.session_store = SessionStore()
+        self.analysis_roots = AnalysisRoots(self.session_store, repo_root)
+
         # P3c 记忆闭环：真实 LLM/embedding 的 KGMemory，finish_run 时增量写入。
         # 本地客户端不带 PostgreSQL，跳过 KG 记忆；所有消费方都已允许 None。
         self.kg_memory: KGMemory | None = None
@@ -83,6 +89,7 @@ class CellSpatioAgent:
                     Path(repo_root) / ".wrroc" / "kg_memory",
                     llm_model_func=kg_llm_func,
                     embedding_func=build_embedding_func(),
+                    store=self.session_store,
                 )
             except Exception as e:  # noqa: BLE001 - 本地 KG 是可选增强，失败不阻断启动
                 logger.warning("local KG init failed, memory disabled: %s", e)
@@ -157,6 +164,7 @@ class CellSpatioAgent:
             require_script_confirmation=(os.environ.get("SCRIPT_REQUIRE_CONFIRM", "1") == "1"),
             workflow_recorder=self.workflow_recorder,
             kg_query=kg_query,
+            analysis_roots=self.analysis_roots,
         )
 
         # 技能随安装目录走；repo_root 在客户端模式下是数据目录，不能用来找代码

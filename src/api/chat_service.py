@@ -110,13 +110,13 @@ def register_qc_result(
     from pathlib import Path
 
     from src.analysis.qc_preview import register_evidence
-    from src.ui.session_store import project_analysis_root
+    from src.ui.analysis_roots import AnalysisRoots
 
     try:
         directory = Path(result["results"]["qc_artifacts"]["metadata.json"]).resolve().parent
         recorder = getattr(getattr(agent, "workflow_manager", None), "workflow_recorder", None)
         repo_root = Path(recorder.repo_root) if recorder else Path.cwd()
-        root = project_analysis_root(session_id, repo_root) / "sc_qc"
+        root = AnalysisRoots(store, repo_root).for_session(session_id) / "sc_qc"
         evidence = register_evidence(directory, root)
         store.register_qc_run(session_id, directory.name, str(directory), evidence)
         result["results"]["qc_run_id"] = directory.name
