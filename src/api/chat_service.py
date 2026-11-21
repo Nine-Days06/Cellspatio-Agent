@@ -48,10 +48,9 @@ def persist_message(
     pending_script: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """追加助手消息并读回末条（拿 id 与解码后的 results）。"""
-    store.append_message(
+    return store.append_message(
         session_id, "assistant", content, results=results, pending_script=pending_script
     )
-    return store.get_messages(session_id)[-1]
 
 
 # 兼容既有 `_persist` 导入；新代码用 persist_message。
@@ -158,13 +157,13 @@ def run_turn(
 
     emit(event) -> bool：返回 False 表示客户端已断开，后续发射应被忽略。
     """
-    store.append_message(session_id, "user", prompt)
+    question = store.append_message(session_id, "user", prompt)
 
     # 知识问答必须在历史压缩与上下文构造之前分叉：只允许本轮问题进入模型。
     if mode == "knowledge_qa":
         from src.knowledge.qa import run_knowledge_qa
 
-        question_message_id = store.get_messages(session_id)[-1]["id"]
+        question_message_id = question["id"]
         # shortcut: 只在开始前和事件发射处检查断连；进行中的检索/生成不会取消
         if not emit(
             make_event("tool_status", name="knowledge_qa", phase="start", label="检索知识库")

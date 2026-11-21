@@ -22,6 +22,18 @@ def test_create_and_list_sessions():
     assert sessions[0]["message_count"] == 0
 
 
+def test_append_message_returns_inserted_row() -> None:
+    """追加即返回落库身份，调用方不必再读整段历史。"""
+    store = SessionStore()
+    sid = store.create_session()
+
+    msg = store.append_message(sid, "user", "分析这份数据", results={"steps": [1]})
+
+    assert (msg["session_id"], msg["seq"], msg["role"]) == (sid, 1, "user")
+    assert msg["results"] == {"steps": [1]}
+    assert msg["id"] == store.get_messages(sid)[-1]["id"]
+
+
 def test_migrates_legacy_sessions_table(tmp_path):
     """旧库只有原始 sessions 列时，打开后补 project_id/pinned/archived_at 且不丢数据。"""
     db = tmp_path / "legacy.db"

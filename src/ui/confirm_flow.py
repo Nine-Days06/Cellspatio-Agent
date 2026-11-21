@@ -91,8 +91,7 @@ def confirm_script(agent: Any, store: SessionStore, session_id: str, action: str
     else:
         raise ConfirmFlowError(ERR_NOT_SCRIPT_ACTION, f"不是脚本动作: {action}")
 
-    store.append_message(session_id, "assistant", content, results=results)
-    return store.get_messages(session_id)[-1]
+    return store.append_message(session_id, "assistant", content, results=results)
 
 
 def _asset_key(asset: dict[str, Any], source: str) -> tuple[str, Any]:
@@ -129,5 +128,4 @@ def confirm_data(
     else:
         content = result.get("message", "数据下载未完成。")
 
-    store.append_message(session_id, "assistant", content)
-    return store.get_messages(session_id)[-1]
+    return store.append_message(session_id, "assistant", content)

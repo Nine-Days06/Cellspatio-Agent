@@ -487,7 +487,8 @@ class SessionStore:
         content: str,
         results: dict[str, Any] | None = None,
         pending_script: dict[str, Any] | None = None,
-    ) -> None:
+    ) -> dict[str, Any]:
+        """追加消息并返回落库行（含 id、seq、解码后的 results）。"""
         now = _now()
         with self._conn() as conn:
             conn.execute("BEGIN IMMEDIATE")
@@ -496,7 +497,7 @@ class SessionStore:
                 (session_id,),
             ).fetchone()
             seq = row["next_seq"]
-            conn.execute(
+            cursor = conn.execute(
                 "INSERT INTO messages (session_id, seq, role, content, timestamp, "
                 "results, pending_script) VALUES (?, ?, ?, ?, ?, ?, ?)",
                 (
@@ -522,6 +523,15 @@ class SessionStore:
                 "WHERE id = (SELECT project_id FROM sessions WHERE id = ?)",
                 (now, session_id),
             )
+            row = conn.execute(
+                "SELECT * FROM messages WHERE id = ?", (cursor.lastrowid,)
+            ).fetchone()
+        message = dict(row)
+        message["results"] = _decode_results(message["results"])
+        message["pending_script"] = (
+            json.loads(message["pending_script"]) if message["pending_script"] else None
+        )
+        return message
 
     def register_qc_run(
         self, session_id: str, run_id: str, directory: str, evidence: dict[str, Any]
