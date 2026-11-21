@@ -11,7 +11,6 @@ from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import Response
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
-from src.analysis.qc_preview import _identity
 from src.analysis.sc_pca import (
     DIMENSION_RECORD_VERSION,
     PCA_TOOL_VERSION,
@@ -26,6 +25,7 @@ from src.api.authorized_run import StageClaim, run_authorized
 from src.api.deps import StoreDep
 from src.api.routes_qc import require_run, run_qc_root
 from src.api.stage_runtime import has_running
+from src.api.verified_artifact import ArtifactError, read_verified_artifact
 from src.ui.run_snapshot import RunSnapshot
 from src.ui.session_store import SessionStore
 
@@ -379,16 +379,16 @@ def diagnostic(
     attempt = run.attempt("pca", attempt_id, filter_attempt_id)
     if attempt is None or attempt["status"] != "completed":
         raise HTTPException(404, "PCA 诊断未完成或不存在")
-    directory = Path(attempt["directory"]).resolve()
-    root = run_qc_root(request.app.state.analysis_roots, run).parent / "sc_pca"
-    path = directory / "pca_diagnostics.png"
     try:
-        if directory != root / attempt_id or path.resolve().parent != directory:
-            raise ValueError("PCA 诊断路径非法")
-        data = path.read_bytes()
-        identity = attempt["result"]["artifacts"]["pca_diagnostics.png"]
-        if {"path": str(path), **_identity(data)} != identity or data[:8] != b"\x89PNG\r\n\x1a\n":
-            raise ValueError("PCA 诊断身份已变化")
-    except (OSError, ValueError, KeyError) as exc:
+        artifact = read_verified_artifact(
+            attempt=attempt,
+            name="pca_diagnostics.png",
+            identity_error="PCA 诊断身份已变化",
+            expected_directory=run_qc_root(request.app.state.analysis_roots, run).parent
+            / "sc_pca"
+            / attempt_id,
+            magic=b"\x89PNG\r\n\x1a\n",
+        )
+    except ArtifactError as exc:
         raise HTTPException(409, str(exc)) from exc
-    return Response(data, media_type="image/png", headers={"Cache-Control": "no-store"})
+    return Response(artifact.data, media_type="image/png", headers={"Cache-Control": "no-store"})

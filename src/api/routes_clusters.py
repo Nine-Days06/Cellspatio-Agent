@@ -11,7 +11,6 @@ from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import Response
 from pydantic import Field, field_validator
 
-from src.analysis.qc_preview import _identity
 from src.analysis.sc_cluster import (
     CLUSTER_TOOL_VERSION,
     PROTOCOL,
@@ -27,6 +26,7 @@ from src.api.deps import StoreDep
 from src.api.routes_pca import dimension_view, require_parent, require_pca
 from src.api.routes_qc import require_run, run_qc_root
 from src.api.stage_runtime import RUNNING, has_running, running_stages
+from src.api.verified_artifact import read_verified_artifact
 from src.ui.run_snapshot import RunSnapshot
 from src.ui.session_store import SessionStore
 
@@ -331,10 +331,11 @@ def diagnostic(
             run_qc_root(request.app.state.analysis_roots, run),
             routes_pca.DIMENSION_RECORD_VERSION,
         )
-        path = Path(attempt["directory"]).resolve() / "umap_clusters.png"
-        data = path.read_bytes()
-        if {"path": str(path), **_identity(data)} != attempt["result"]["artifacts"][path.name]:
-            raise ValueError("图身份变化")
+        data = read_verified_artifact(
+            attempt=attempt,
+            name="umap_clusters.png",
+            identity_error="图身份变化",
+        ).data
     except sqlite3.Error as exc:
         logger.error("cluster diagnostic database read failed: %s", type(exc).__name__)
         raise HTTPException(409, "聚类状态读取失败，请检查本地数据库") from exc
