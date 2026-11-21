@@ -31,7 +31,36 @@ function qc(action: 'approve' | 'reject' | 'filter', facts: QcFacts = {}) {
   return evaluateStageGate({ ...common, stage: 'qc', action, unchanged })
 }
 
+function qcPreview(facts: Pick<QcFacts, 'blocked' | 'busy' | 'running'> = {}) {
+  const { blocked = [], busy = false, running = false } = facts
+  return evaluateStageGate({ stage: 'qc', action: 'preview', blocked, busy, running, reasonProvided: false })
+}
+
+type MarkerReviewFacts = {
+  disabled?: boolean
+  blocked?: string[]
+  busy?: boolean
+  running?: boolean
+  reasonProvided?: boolean
+}
+
+function markerReview(facts: MarkerReviewFacts = {}) {
+  const { disabled = false, blocked = [], busy = false, running = false, reasonProvided = true } = facts
+  return evaluateStageGate({ stage: 'marker', action: 'review', disabled, blocked, busy, running, reasonProvided })
+}
+
 describe('QC preview gate', () => {
+  it('previews whenever idle and unblocked, without a preview status or reason', () => {
+    expect(qcPreview()).toMatchObject({ available: true, allowed: true, blockers: [] })
+    expect(qcPreview({ blocked: ['参数不完整'] })).toMatchObject({ available: false, allowed: false, blockers: ['blocked'] })
+    expect(qcPreview({ blocked: ['参数不完整'] }).blockerText).toBe('阶段前置条件未满足')
+    expect(qcPreview({ busy: true })).toMatchObject({ available: false, allowed: false, blockers: ['busy'] })
+    expect(qcPreview({ busy: true }).blockerText).toBe('正在读取或执行')
+    expect(qcPreview({ running: true })).toMatchObject({ available: false, allowed: false, blockers: ['running'] })
+    expect(qcPreview({ running: true }).blockerText).toBe('当前阶段或下游正在运行')
+    expect(qcPreview({ busy: true, running: true }).blockerText).toBe('正在读取或执行；当前阶段或下游正在运行')
+  })
+
   it('approves only a pending, unchanged preview with a reason and no block', () => {
     expect(qc('approve')).toMatchObject({ available: true, allowed: true, blockers: [] })
     expect(qc('approve', { previewStatus: 'approved' }).blockers).toContain('preview-not-pending')
@@ -111,6 +140,22 @@ describe('binding-based gates', () => {
     expect(evaluateStageGate({ ...base, bindingAttempted: true, reasonProvided: true }).blockers).toContain('already-attempted')
     expect(evaluateStageGate({ ...base, disabled: true, reasonProvided: true }).blockers).toContain('disabled')
     expect(evaluateStageGate({ ...base, blocked: ['需要至少 31 细胞'], reasonProvided: true }).available).toBe(false)
+  })
+
+  it('reviews marker results without a binding, needing only an idle unblocked stage and a reason', () => {
+    expect(markerReview()).toMatchObject({ available: true, allowed: true, blockers: [] })
+    expect(markerReview({ reasonProvided: false })).toMatchObject({
+      available: true,
+      allowed: false,
+      blockers: ['missing-reason'],
+    })
+    expect(markerReview({ reasonProvided: false }).blockerText).toBe('缺少书面依据')
+    expect(markerReview({ disabled: true })).toMatchObject({ available: false, allowed: false, blockers: ['disabled'] })
+    expect(markerReview({ disabled: true }).blockerText).toBe('上游运行中，暂不可操作')
+    expect(markerReview({ blocked: ['marker 结果缺失'] })).toMatchObject({ available: false, blockers: ['blocked'] })
+    expect(markerReview({ blocked: ['marker 结果缺失'] }).blockerText).toBe('阶段前置条件未满足')
+    expect(markerReview({ busy: true })).toMatchObject({ available: false, blockers: ['busy'] })
+    expect(markerReview({ running: true })).toMatchObject({ available: false, blockers: ['running'] })
   })
 
   it('keeps marker cluster acceptance and marker execution as separate actions', () => {
