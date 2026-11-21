@@ -79,6 +79,25 @@ def test_de_template_param_injection():
     assert "results(" in code
 
 
+def test_windows_paths_are_escaped_in_templates():
+    """Windows 反斜杠必须转义，否则 R 会把路径解析成转义序列。"""
+    from src.control.r_script_generator import RScriptGenerator
+
+    generator = RScriptGenerator()
+    code = generator.generate_code(
+        "differential_expression",
+        {
+            "input_file": r"D:\data\counts.csv",
+            "output_file": r"D:\data\result.csv",
+            "group_csv": r"D:\data\groups.csv",
+        },
+    )
+
+    assert 'input_file <- "D:\\\\data\\\\counts.csv"' in code
+    assert 'output_file <- "D:\\\\data\\\\result.csv"' in code
+    assert 'read.csv("D:\\\\data\\\\groups.csv"' in code
+
+
 def test_visualization_plot_type_param():
     """Test plot_type parameter injection"""
     from src.control.r_script_generator import RScriptGenerator

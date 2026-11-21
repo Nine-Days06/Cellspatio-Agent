@@ -6,6 +6,12 @@ from typing import Any
 
 logger = logging.getLogger(__name__)
 
+
+def _r_string(value: Any) -> str:
+    """把 Python 字符串写成安全的 R 字面量（Windows 反斜杠不能直接进双引号）。"""
+    return json.dumps(str(value), ensure_ascii=False)
+
+
 ANALYSIS_TYPE_DESC = {
     "differential_expression": "两组样本差异表达分析（输出 gene/log2FC/pvalue/padj 表）",
     "pathway_analysis": "差异基因的 KEGG/GO 通路富集分析",
@@ -143,13 +149,13 @@ class RScriptGenerator:
         分组：params['group_csv'] 指向样本注释 CSV（行名=样本名，一列 group）；
         否则前 floor(n/2) 为 control、其余为 treatment。
         """
-        input_file = params.get("input_file", "input.csv")
-        output_file = params.get("output_file", "output.csv")
-        group_csv = params.get("group_csv", "")
+        input_file = _r_string(params.get("input_file", "input.csv"))
+        output_file = _r_string(params.get("output_file", "output.csv"))
+        group_csv = _r_string(params.get("group_csv", ""))
 
-        if group_csv:
+        if params.get("group_csv"):
             group_block = (
-                f'coldata_df <- read.csv("{group_csv}", row.names = 1, '
+                f"coldata_df <- read.csv({group_csv}, row.names = 1, "
                 "stringsAsFactors = FALSE)\n"
                 "groups <- factor(coldata_df[colnames(counts), 1])\n"
             )
@@ -160,10 +166,10 @@ class RScriptGenerator:
                 'rep("treatment", ceiling(n / 2))))\n'
             )
 
-        return f'''#!/usr/bin/env Rscript
+        return f"""#!/usr/bin/env Rscript
 # 差异表达分析（DESeq2）
-input_file <- "{input_file}"
-output_file <- "{output_file}"
+input_file <- {input_file}
+output_file <- {output_file}
 
 if (!requireNamespace("DESeq2", quietly = TRUE)) {{
     stop("请先安装 DESeq2: BiocManager::install('DESeq2')")
@@ -199,20 +205,20 @@ write.csv(
 sig <- sum(res$padj < 0.05, na.rm = TRUE)
 cat("总基因数:", nrow(res), "显著差异基因(padj<0.05):", sig, "\\n")
 cat("结果已保存至:", output_file, "\\n")
-'''
+"""
 
     def _generate_pathway_code(self, params: dict[str, Any]) -> str:
         """真实 clusterProfiler KEGG 富集（回退模板）。
 
         输入约定：DE 输出 CSV（含 gene 与 padj 列）。
         """
-        input_file = params.get("input_file", "de_results.csv")
-        output_file = params.get("output_file", "pathway_enrichment.csv")
+        input_file = _r_string(params.get("input_file", "de_results.csv"))
+        output_file = _r_string(params.get("output_file", "pathway_enrichment.csv"))
 
-        return f'''#!/usr/bin/env Rscript
+        return f"""#!/usr/bin/env Rscript
 # 通路富集分析（clusterProfiler + KEGG）
-input_file <- "{input_file}"
-output_file <- "{output_file}"
+input_file <- {input_file}
+output_file <- {output_file}
 
 if (!requireNamespace("clusterProfiler", quietly = TRUE)) {{
     stop("请先安装: BiocManager::install('clusterProfiler')")
@@ -240,7 +246,7 @@ ek_df <- as.data.frame(ek)
 write.csv(ek_df, output_file, row.names = FALSE)
 cat("富集通路数:", nrow(ek_df), "输入基因数:", length(genes), "\\n")
 cat("结果已保存至:", output_file, "\\n")
-'''
+"""
 
     def _generate_visualization_code(self, params: dict[str, Any]) -> str:
         """生成可视化 R 代码（真实 base R 绘图：火山图/热图/PCA）。
@@ -251,15 +257,15 @@ cat("结果已保存至:", output_file, "\\n")
         - pca: 数值矩阵，行=样本/特征，列=变量。
         输出：PNG 图片写入 output_file；cat() 打印关键统计。
         """
-        input_file = params.get("input_file", "input.csv")
-        output_file = params.get("output_file", "plot.png")
-        plot_type = params.get("plot_type", "volcano")
+        input_file = _r_string(params.get("input_file", "input.csv"))
+        output_file = _r_string(params.get("output_file", "plot.png"))
+        plot_type = _r_string(params.get("plot_type", "volcano"))
 
-        return f'''#!/usr/bin/env Rscript
+        return f"""#!/usr/bin/env Rscript
 # 可视化（base R：火山图 / 热图 / PCA）
-input_file <- "{input_file}"
-output_file <- "{output_file}"
-plot_type <- "{plot_type}"
+input_file <- {input_file}
+output_file <- {output_file}
+plot_type <- {plot_type}
 
 if (!(plot_type %in% c("volcano", "heatmap", "pca"))) {{
     stop("不支持的绘图类型: ", plot_type)
@@ -360,7 +366,7 @@ if (plot_type == "volcano") {{
 }}
 
 cat("Saved to:", output_file, "\\n")
-'''
+"""
 
     @staticmethod
     def _single_cell_input_code(params: dict[str, Any]) -> str:
@@ -476,16 +482,16 @@ cat("cluster 表:", output_file, "marker 表:", marker_file, "\\n")
 
         输入约定：spaceranger 输出目录（含 spatial/ 与 filtered_feature_bc_matrix/）。
         """
-        input_file = params.get("input_file", "spatial_dir")
-        output_file = params.get("output_file", "spatial_clusters.csv")
-        plot_file = params.get("plot_file", "spatial_plot.png")
+        input_file = _r_string(params.get("input_file", "spatial_dir"))
+        output_file = _r_string(params.get("output_file", "spatial_clusters.csv"))
+        plot_file = _r_string(params.get("plot_file", "spatial_plot.png"))
         resolution = params.get("resolution", 0.5)
 
-        return f'''#!/usr/bin/env Rscript
+        return f"""#!/usr/bin/env Rscript
 # 空间转录组分析（Seurat Visium）
-input_dir <- "{input_file}"
-output_file <- "{output_file}"
-plot_file <- "{plot_file}"
+input_dir <- {input_file}
+output_file <- {output_file}
+plot_file <- {plot_file}
 
 if (!requireNamespace("Seurat", quietly = TRUE)) {{
     stop("请先安装 Seurat（>= 4.1 含空间接口）")
@@ -520,4 +526,4 @@ dev.off()
 cat("spot 数:", ncol(obj),
     "聚类数:", length(levels(obj$seurat_clusters)), "\\n")
 cat("cluster 表:", output_file, "空间图:", plot_file, "\\n")
-'''
+"""
