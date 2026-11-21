@@ -16,7 +16,7 @@ from src.ui.run_snapshot import RunSnapshot
 from src.ui.sc_stage_defs import STAGE_SPECS
 from src.ui.sc_stages import ScStages
 from src.ui.session_codec import _encode_results, _now
-from src.ui.stage_lifecycle import advance_run, publish_message
+from src.ui.stage_lifecycle import ReviewFactPlan, advance_run, append_review_fact, publish_message
 
 logger = logging.getLogger(__name__)
 
@@ -767,54 +767,42 @@ class SessionStore:
             raise ValueError("否决项必须标记为 rejected")
         if not reason.strip():
             raise ValueError("复核理由不能为空")
-        with self._conn() as conn:
-            conn.execute("BEGIN IMMEDIATE")
-            previous = conn.execute(
-                "SELECT * FROM knowledge_qa_reviews WHERE answer_id = ? "
-                "AND binding_sha256 = ? AND record_version = ? AND source_revision = ?",
-                (answer_id, binding_sha256, record_version, source_revision),
-            ).fetchone()
-            if previous:
-                same = (
-                    previous["decision"] == decision
-                    and bool(previous["veto"]) == veto
-                    and previous["reason"] == reason
-                    and previous["reviewer"] == reviewer
-                )
-                if not same:
-                    raise ValueError("同一 revision 的知识问答复核内容冲突")
-                return dict(previous)
-            record = {
-                "review_id": uuid.uuid4().hex,
-                "answer_id": answer_id,
-                "binding_sha256": binding_sha256,
-                "record_version": record_version,
-                "source_revision": source_revision,
-                "decision": decision,
-                "veto": int(veto),
-                "reason": reason,
-                "reviewer": reviewer,
-                "created_at": _now(),
-            }
-            conn.execute(
-                "INSERT INTO knowledge_qa_reviews "
-                "(review_id, answer_id, binding_sha256, record_version, source_revision, "
-                "decision, veto, reason, reviewer, created_at) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                (
-                    record["review_id"],
-                    record["answer_id"],
-                    record["binding_sha256"],
-                    record["record_version"],
-                    record["source_revision"],
-                    record["decision"],
-                    record["veto"],
-                    record["reason"],
-                    record["reviewer"],
-                    record["created_at"],
-                ),
+
+        def same_previous(row: sqlite3.Row) -> bool:
+            """同 revision 内容一致才幂等。"""
+            return (
+                row["decision"] == decision
+                and bool(row["veto"]) == veto
+                and row["reason"] == reason
+                and row["reviewer"] == reviewer
             )
-        return record
+
+        return append_review_fact(
+            self._conn,
+            _encode_results,
+            ReviewFactPlan(
+                table="knowledge_qa_reviews",
+                previous_match={
+                    "answer_id": answer_id,
+                    "binding_sha256": binding_sha256,
+                    "record_version": record_version,
+                    "source_revision": source_revision,
+                },
+                insert_values={
+                    "answer_id": answer_id,
+                    "binding_sha256": binding_sha256,
+                    "record_version": record_version,
+                    "source_revision": source_revision,
+                    "decision": decision,
+                    "veto": int(veto),
+                    "reason": reason,
+                    "reviewer": reviewer,
+                },
+                same_previous=same_previous,
+                conflict_message="同一 revision 的知识问答复核内容冲突",
+            ),
+            clock=_now,
+        ).fact
 
     def get_knowledge_qa_reviews(self, answer_id: str | None = None) -> list[dict[str, Any]]:
         """按回答读取复核事实；不传 answer_id 时返回全部。"""

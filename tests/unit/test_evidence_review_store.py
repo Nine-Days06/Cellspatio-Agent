@@ -188,6 +188,7 @@ def test_record_marker_review_accepted_then_rejected(tmp_path):
     store = SessionStore(tmp_path / "sessions.db")
     _seed(store, tmp_path)
 
+    messages_before = len(store.get_messages("s"))
     run = store.stages.record_marker_review(
         "s",
         "m1",
@@ -198,6 +199,10 @@ def test_record_marker_review_accepted_then_rejected(tmp_path):
         revision=1,
     )
     assert run["marker_reviews"][0]["decision"] == "accepted"
+    messages = store.get_messages("s")
+    assert len(messages) == messages_before + 1
+    assert messages[-1]["content"] == "marker 人工复核已记录；未执行自动注释。"
+    assert messages[-1]["results"]["sc_marker_review"]["decision"] == "accepted"
 
     updated = store.stages.record_marker_review(
         "s", "m1", "rejected", "候选不足", "reviewer-b", MARKER_REVIEW_VERSION, revision=2
@@ -207,6 +212,7 @@ def test_record_marker_review_accepted_then_rejected(tmp_path):
         "s", "m1", "rejected", "候选不足", "reviewer-b", MARKER_REVIEW_VERSION, revision=3
     )
     assert len(again["marker_reviews"]) == 2
+    assert len(store.get_messages("s")) == messages_before + 2
     with pytest.raises(ValueError, match="已失效"):
         store.stages.record_marker_review(
             "s", "m1", "rejected", "候选不足", "reviewer-b", MARKER_REVIEW_VERSION, revision=2
@@ -215,6 +221,7 @@ def test_record_marker_review_accepted_then_rejected(tmp_path):
         store.stages.record_marker_review(
             "other", "m1", "accepted", "ok", "reviewer-a", MARKER_REVIEW_VERSION, revision=3
         )
+    assert len(store.get_messages("s")) == messages_before + 2
 
 
 def test_cli_records_qc_cluster_and_marker_reviews(tmp_path):
