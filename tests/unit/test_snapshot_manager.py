@@ -111,7 +111,7 @@ def test_delete_snapshot_omits_empty_force_argument(tmp_path, monkeypatch):
     calls = []
     monkeypatch.setattr(
         "src.control.snapshot_manager.subprocess.run",
-        lambda args, **kwargs: calls.append(args) or SimpleNamespace(stdout=""),
+        lambda args, **kwargs: calls.append(args) or SimpleNamespace(stdout="", returncode=0),
     )
 
     assert mgr.delete_snapshot("run-001")
@@ -121,3 +121,17 @@ def test_delete_snapshot_omits_empty_force_argument(tmp_path, monkeypatch):
     calls.clear()
     assert mgr.delete_snapshot("run-001", force=True)
     assert calls[0] == ["git", "worktree", "remove", "--force", str(snap)]
+
+
+def test_delete_snapshot_does_not_report_success_when_git_fails(tmp_path, monkeypatch):
+    """worktree 删除失败时不得继续删分支或声称成功。"""
+    mgr = SnapshotManager(tmp_path / "repo")
+    (mgr.snapshots_dir / "run-001").mkdir()
+    calls = []
+    monkeypatch.setattr(
+        "src.control.snapshot_manager.subprocess.run",
+        lambda args, **kwargs: calls.append(args) or SimpleNamespace(stdout="", returncode=1),
+    )
+
+    assert not mgr.delete_snapshot("run-001")
+    assert len(calls) == 1

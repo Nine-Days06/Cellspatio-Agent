@@ -70,12 +70,14 @@ class SnapshotManager:
         remove_args = ["git", "worktree", "remove"]
         if force:
             remove_args.append("--force")
-        subprocess.run(
+        removed = subprocess.run(
             [*remove_args, str(snap_path)],
             cwd=self.repo_root,
             check=False,
             capture_output=True,
         )
+        if removed.returncode != 0:
+            return False
         subprocess.run(
             ["git", "branch", "-D", branch_name],
             cwd=self.repo_root,
