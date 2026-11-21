@@ -17,7 +17,9 @@ from src.evidence.contribution import (
 )
 from src.evidence.errors import EvidenceError
 from src.evidence.governance import (
+    ACTION_COMPLIANCE_NEEDS_CHANGES,
     ACTION_COMPLIANCE_PASS,
+    ACTION_COMPLIANCE_REJECT,
     ACTION_DOMAIN_NEEDS_CHANGES,
     ACTION_DOMAIN_PASS,
     ACTION_DOMAIN_REJECT,
@@ -544,6 +546,56 @@ def test_auth_requires_valid_token_and_disabled_users_are_locked_out(app, client
     ]
     assert client.post("/api/auth/logout", headers=_headers(token)).status_code == 200
     assert client.get("/api/auth/me", headers=_headers(token)).status_code == 401
+
+
+@pytest.mark.parametrize(
+    ("username", "roles", "role", "capabilities", "can_contribute"),
+    [
+        (
+            "principal-both",
+            (ROLE_DOMAIN, ROLE_COMPLIANCE),
+            ROLE_DOMAIN,
+            (ACTION_DOMAIN_PASS, ACTION_DOMAIN_NEEDS_CHANGES, ACTION_DOMAIN_REJECT),
+            False,
+        ),
+        (
+            "principal-compliance",
+            (ROLE_COMPLIANCE,),
+            ROLE_COMPLIANCE,
+            (
+                ACTION_COMPLIANCE_PASS,
+                ACTION_COMPLIANCE_NEEDS_CHANGES,
+                ACTION_COMPLIANCE_REJECT,
+            ),
+            False,
+        ),
+        ("principal-none", (), None, (), False),
+        ("principal-contributor", (ROLE_CONTRIBUTOR,), None, (), True),
+    ],
+)
+def test_login_and_me_return_server_principal(
+    app,
+    client: TestClient,
+    username: str,
+    roles: tuple[str, ...],
+    role: str | None,
+    capabilities: tuple[str, ...],
+    can_contribute: bool,
+):
+    """login 与 me 的 principal 一致：领域优先、仅合规、无角色、contributor。"""
+    _account(app, username, roles)
+    login = client.post("/api/auth/login", json={"username": username, "password": PASSWORD})
+    assert login.status_code == 200, login.text
+    login_user = login.json()["user"]
+    me_user = client.get("/api/auth/me", headers=_headers(login.json()["token"])).json()["user"]
+    expected = {
+        "role": role,
+        "capabilities": list(capabilities),
+        "can_review": role is not None,
+        "can_contribute": can_contribute,
+    }
+    assert login_user["principal"] == expected
+    assert me_user["principal"] == expected
 
 
 def test_client_upload_and_citation_use_real_http_path(app, client: TestClient):

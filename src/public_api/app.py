@@ -25,7 +25,7 @@ from src.evidence.governance import (
     public_evidence_dir,
 )
 from src.evidence.vocabulary import vocabulary
-from src.public_api.context import reviewer_context
+from src.public_api.context import principal, reviewer_context
 from src.public_api.evidence_service import PublicEvidenceService
 from src.public_api.login_limiter import LoginLimiter
 
@@ -182,7 +182,7 @@ def create_public_app(data_root: str | Path) -> FastAPI:
             raise HTTPException(status_code=401, detail="用户名或密码错误")
         limiter.clear(key)
         token = accounts(request).create_token(user["id"], days=_session_days())
-        return {"token": token, "user": public_user(user)}
+        return {"token": token, "user": {**public_user(user), "principal": principal(user)}}
 
     @app.post("/api/auth/logout")
     def logout(request: Request, user: CurrentUser) -> dict[str, bool]:
@@ -194,7 +194,7 @@ def create_public_app(data_root: str | Path) -> FastAPI:
     @app.get("/api/auth/me")
     def me(user: CurrentUser) -> dict[str, Any]:
         """返回当前账号与角色。"""
-        return {"user": public_user(user)}
+        return {"user": {**public_user(user), "principal": principal(user)}}
 
     @app.post("/api/public/evidence/submissions")
     def submit(
