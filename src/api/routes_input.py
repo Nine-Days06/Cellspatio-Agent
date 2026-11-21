@@ -10,9 +10,10 @@ from typing import Any
 from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, ConfigDict, Field
 
-from src.api.chat_service import _persist, is_qc_stage, register_qc_result, session_lock
+from src.api.chat_service import _persist, is_qc_stage, register_qc_result
 from src.api.deps import StoreDep
 from src.api.events import wire_message
+from src.api.session_locks import session_guard
 from src.chat_messages import build_assistant_message
 
 router = APIRouter(prefix="/api/sessions/{session_id}", tags=["input"])
@@ -45,47 +46,43 @@ def register_local_input(
         raise HTTPException(400, f"路径不存在：{source}")
     source = source.resolve()
 
-    lock = session_lock(session_id)
-    if not lock.acquire(blocking=False):
-        raise HTTPException(409, "该会话已有任务在进行")
-    try:
-        result = agent.workflow_manager.run_analysis_for_agent(
-            "single_cell",
-            {"input_files": [str(source)]},
-            {"last_user_input": f"本地数据：{source}", "session_id": session_id},
-        )
-        if not is_qc_stage(result):
-            # 非法输入在 QC 之前返回，不落聊天消息，直接作为对话框错误。
-            raise HTTPException(400, result.get("message") or "输入不是有效的单细胞数据")
+    with session_guard(session_id):
+        try:
+            result = agent.workflow_manager.run_analysis_for_agent(
+                "single_cell",
+                {"input_files": [str(source)]},
+                {"last_user_input": f"本地数据：{source}", "session_id": session_id},
+            )
+            if not is_qc_stage(result):
+                # 非法输入在 QC 之前返回，不落聊天消息，直接作为对话框错误。
+                raise HTTPException(400, result.get("message") or "输入不是有效的单细胞数据")
 
-        # 同一会话只保留最新本地输入；后续对话与重跑沿用该路径。
-        assets = [
-            asset
-            for asset in session.get("downloaded_assets") or []
-            if asset.get("source") != "local"
-        ]
-        assets.append(
-            {
-                "source": "local",
-                "asset_id": source.name or str(source),
-                "access_path": str(source),
+            # 同一会话只保留最新本地输入；后续对话与重跑沿用该路径。
+            assets = [
+                asset
+                for asset in session.get("downloaded_assets") or []
+                if asset.get("source") != "local"
+            ]
+            assets.append(
+                {
+                    "source": "local",
+                    "asset_id": source.name or str(source),
+                    "access_path": str(source),
+                }
+            )
+            store.update_session_meta(session_id, downloaded_assets=assets)
+
+            result = register_qc_result(agent, store, session_id, result)
+            message = build_assistant_message(result)
+            last = _persist(store, session_id, message["content"], results=result.get("results"))
+            return {
+                "message": wire_message(last),
+                "session": store.get_session(session_id),
+                "qc_run_id": (result.get("results") or {}).get("qc_run_id"),
+                "status": result.get("status"),
             }
-        )
-        store.update_session_meta(session_id, downloaded_assets=assets)
-
-        result = register_qc_result(agent, store, session_id, result)
-        message = build_assistant_message(result)
-        last = _persist(store, session_id, message["content"], results=result.get("results"))
-        return {
-            "message": wire_message(last),
-            "session": store.get_session(session_id),
-            "qc_run_id": (result.get("results") or {}).get("qc_run_id"),
-            "status": result.get("status"),
-        }
-    except HTTPException:
-        raise
-    except (OSError, ValueError, sqlite3.Error) as exc:
-        logger.warning("local input failed for %s: %s", session_id, exc)
-        raise HTTPException(409, str(exc)) from exc
-    finally:
-        lock.release()
+        except HTTPException:
+            raise
+        except (OSError, ValueError, sqlite3.Error) as exc:
+            logger.warning("local input failed for %s: %s", session_id, exc)
+            raise HTTPException(409, str(exc)) from exc

@@ -11,7 +11,7 @@ from typing import Any, TypeVar
 
 from fastapi import HTTPException
 
-from src.api.chat_service import session_lock
+from src.api.session_locks import lock_for as session_lock
 
 RunT = TypeVar("RunT", bound=Mapping[str, Any])
 
