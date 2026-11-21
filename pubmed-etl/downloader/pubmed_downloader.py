@@ -200,9 +200,8 @@ def _collect_pmids(query: str, lo: str, hi: str) -> list[str]:
 
     parts = _split_range(lo, hi)
     if parts is None:
-        # 理论不可达：单日命中超 10k。降级取前 10k 并告警
-        logger.warning(f"  单日 {lo} 命中 {count} 仍超 10k，降级截断（请报告此问题）")
-        return fetch_pmid_list(query, mindate=lo, maxdate=hi)
+        # 理论不可达：单日命中超 10k。不能截断，否则知识库永久缺数据
+        raise RuntimeError(f"单日 {lo} 命中 {count} 篇仍超 NCBI 10k 限制，无法继续按日期切分")
 
     left, right = parts
     logger.info(f"  切片 {lo}-{hi}: {count} 篇 > {SAFE_LEAF_COUNT}，拆分 → {left} | {right}")
@@ -217,7 +216,7 @@ def fetch_pmid_list(
     mindate/maxdate 支持 "2000" 或 "2025/06/01" 两种格式。
     注意：esearch/efetch 的 retstart 硬限制为 10000；
     调用方应保证切片命中 ≤ SAFE_LEAF_COUNT（_collect_pmids 负责），
-    此处的 10k break 仅作兜底断言。
+    此处触限直接报错，不静默截断。
     """
     logger.info("开始 esearch，获取 WebEnv ...")
     lo = mindate if mindate is not None else SEARCH_YEAR_MIN
@@ -254,11 +253,10 @@ def fetch_pmid_list(
     page_size = 5000
     for start in range(0, total, page_size):
         if start >= 10000:
-            logger.error(
-                f"触发 NCBI 10k 硬限制（切片 {lo}-{hi} 命中超限未被切分），本切片结果被截断。"
+            raise RuntimeError(
+                f"切片 {lo}-{hi} 命中 NCBI 10k 硬限制，已取 {len(pmids)}/{total} 条；"
+                "继续会静默丢数据，请缩窄检索范围或按日期进一步切分"
             )
-            logger.error("这是自适应切分的兜底分支，正常不应出现，请报告。")
-            break
 
         p = {
             **_base_params(),
@@ -278,10 +276,10 @@ def fetch_pmid_list(
             logger.info(f"  PMID 列表进度: {len(pmids)}/{total}")
         except requests.exceptions.HTTPError as e:
             if e.response.status_code == 400:
-                logger.warning(
-                    f"分页请求失败 (retstart={start})，可能触发了 NCBI 的 10k 限制。停止获取 PMID。"
-                )
-                break
+                raise RuntimeError(
+                    f"切片 {lo}-{hi} 分页请求被拒 (retstart={start})，已取 {len(pmids)}/{total} 条；"
+                    "可能是 NCBI 10k 限制，继续会静默丢数据"
+                ) from e
             raise
         time.sleep(REQUEST_INTERVAL)
 

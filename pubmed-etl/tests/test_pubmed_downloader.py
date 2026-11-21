@@ -157,15 +157,14 @@ class TestCollectPmidsAdaptiveSplit(unittest.TestCase):
 
     @patch("downloader.pubmed_downloader.fetch_pmid_list")
     @patch("downloader.pubmed_downloader._fetch_count")
-    def test_single_day_overflow_falls_back_to_fetch(self, mock_count, mock_fetch):
-        # 单日仍超限（理论不可达）→ 降级直接翻页，不无限递归
+    def test_single_day_overflow_raises_instead_of_truncating(self, mock_count, mock_fetch):
+        # 单日仍超限（理论不可达）→ 必须报错，不能截断后当作完整结果
         mock_count.return_value = 10001
-        mock_fetch.return_value = ["9"]
 
-        pmids = _collect_pmids("q", "2025/06/01", "2025/06/01")
+        with self.assertRaises(RuntimeError):
+            _collect_pmids("q", "2025/06/01", "2025/06/01")
 
-        self.assertEqual(pmids, ["9"])
-        mock_fetch.assert_called_once_with("q", mindate="2025/06/01", maxdate="2025/06/01")
+        mock_fetch.assert_not_called()
 
     @patch("downloader.pubmed_downloader.fetch_pmid_list")
     @patch("downloader.pubmed_downloader._fetch_count")
@@ -188,6 +187,26 @@ class TestRateLimitExhaustion(unittest.TestCase):
         mock_get.return_value = Mock(status_code=429)
         with self.assertRaises(requests.HTTPError):
             _get("https://example.test", {}, retries=2)
+
+
+class TestTenKTruncation(unittest.TestCase):
+    """撞到 NCBI 10k 硬限制时必须报错，不能返回不完整列表。"""
+
+    @patch("downloader.pubmed_downloader.time.sleep")
+    @patch("downloader.pubmed_downloader._safe_json")
+    @patch("downloader.pubmed_downloader._get")
+    @patch("downloader.pubmed_downloader._post")
+    def test_fetch_pmid_list_raises_on_truncation(
+        self, mock_post, mock_get, mock_safe_json, _mock_sleep
+    ):
+        mock_post.return_value = Mock()
+        mock_safe_json.return_value = {
+            "esearchresult": {"count": "12000", "webenv": "webenv", "querykey": "1"}
+        }
+        mock_get.return_value = Mock(text="1\n2\n")
+
+        with self.assertRaises(RuntimeError):
+            fetch_pmid_list("q", mindate="2025/01/01", maxdate="2025/01/01")
 
 
 class TestBatchCacheInvalidation(unittest.TestCase):
