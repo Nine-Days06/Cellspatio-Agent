@@ -12,7 +12,7 @@ from src.analysis.evidence import digest, fingerprints, records
 from src.analysis.qc_preview import checked_evidence
 from src.analysis.r_executor import RExecutorError
 from src.analysis.sc_filter import FILTER_TOOL_VERSION, filter_script, verified_selection
-from src.analysis.stage_run import executor_streams, finish_stage, start_stage
+from src.analysis.stage_run import FixedStageRun, PreparedStage, run_fixed_stage
 
 PCA_TOOL_VERSION = "1.0.0"
 DIMENSION_RECORD_VERSION = "sc-pca-dimensions/1.0.0"
@@ -467,7 +467,6 @@ def run_sc_pca(
     executor: Any,
 ) -> dict[str, Any]:
     """事务外执行一次；任何失败保留证据，绝不追加步骤或自动重试。"""
-    started = start_stage(directory)
     metadata: dict[str, Any] = {
         "tool": "sc_pca",
         "tool_version": PCA_TOOL_VERSION,
@@ -480,35 +479,35 @@ def run_sc_pca(
         "status": "failed",
         "timeout_seconds": 300,
     }
-    stdout = stderr = ""
-    try:
+
+    def prepare() -> PreparedStage:
+        """校验父绑定并返回授权来源。"""
         before = checked_parent(run, parent, root)
         if before["binding_sha256"] != binding:
             raise ValueError("PCA 授权绑定已变化")
-        metadata["source_before"] = before["source"]
-        parent_directory = Path(parent["directory"]).resolve()
-        script = directory / "script.R"
-        code = pca_script(parent_directory, directory.resolve())
-        script.write_text(code, encoding="utf-8")
-        completed = executor.execute_script(str(script))
-        stdout, stderr = completed.stdout or "", completed.stderr or ""
-        metadata["returncode"] = completed.returncode
-        if completed.returncode != 0:
-            raise ValueError("PCA R 执行失败")
-        summary = _check_outputs(directory.resolve(), parent_directory)
-        if script.read_text(encoding="utf-8") != code:
-            raise ValueError("PCA 固定脚本发生变化")
+        return PreparedStage(source=before, data=Path(parent["directory"]).resolve())
+
+    def check(prepared: PreparedStage) -> dict[str, Any]:
+        """校验 PCA 产物并返回汇总。"""
+        return _check_outputs(directory.resolve(), prepared.data)
+
+    def after(prepared: PreparedStage) -> dict[str, Any]:
+        """重读父身份并返回当前来源。"""
         after = checked_parent(run, parent, root)
-        metadata["source_after"] = after["source"]
-        if after != before:
-            raise ValueError("PCA 运行中父证据变化")
-        metadata.update(summary, status="completed")
-    except (RExecutorError, OSError, ValueError, KeyError, TypeError) as exc:
-        metadata["error"] = str(exc)
-        if isinstance(exc, RExecutorError):
-            stdout, stderr = executor_streams(exc)
-    finally:
-        finish_stage(
-            directory, metadata, started, stdout, stderr, artifacts=True, fingerprints=fingerprints
-        )
-    return metadata
+        return after
+
+    plan = FixedStageRun(
+        directory=directory,
+        metadata=metadata,
+        prepare=prepare,
+        script=lambda prepared: pca_script(prepared.data, directory.resolve()),
+        check=check,
+        after=after,
+        returncode_error="PCA R 执行失败",
+        script_error="PCA 固定脚本发生变化",
+        errors=(RExecutorError, OSError, ValueError, KeyError, TypeError),
+        source_keys=("source_before", "source_after"),
+        source_projection=lambda checked: checked["source"],
+        source_error="PCA 运行中父证据变化",
+    )
+    return run_fixed_stage(plan, executor)

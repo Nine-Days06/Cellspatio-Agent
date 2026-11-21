@@ -16,7 +16,7 @@ from src.analysis.r_executor import RExecutorError
 from src.analysis.r_values import r_value
 from src.analysis.sc_pca import PROTOCOL as PCA_PROTOCOL
 from src.analysis.sc_pca import checked_completed_pca, dimension_binding
-from src.analysis.stage_run import executor_streams, finish_stage, start_stage
+from src.analysis.stage_run import FixedStageRun, PreparedStage, run_fixed_stage
 
 CLUSTER_TOOL_VERSION = "1.0.0"
 PROTOCOL = {
@@ -377,7 +377,6 @@ def run_sc_cluster(
     snapshot = attempt["snapshot"]
     parent, pca, review = snapshot["parent"], snapshot["pca"], snapshot["review"]
     directory = Path(attempt["directory"]).resolve()
-    started = start_stage(directory)
     metadata = {
         "tool": "sc_cluster",
         "tool_version": CLUSTER_TOOL_VERSION,
@@ -402,44 +401,47 @@ def run_sc_cluster(
         "status": "failed",
         "timeout_seconds": 300,
     }
-    stdout = stderr = ""
-    try:
+
+    def prepare() -> PreparedStage:
+        """校验聚类授权来源并返回执行上下文。"""
         before = checked_source(run, parent, pca, review, root, review["record_version"])
         if (
             before != snapshot["source"]
             or execution_binding(run, snapshot) != attempt["binding_sha256"]
         ):
             raise ValueError("聚类授权来源已变化")
-        metadata["source_before"] = before
-        script = directory / "script.R"
-        code = cluster_script(
-            Path(pca["directory"]).resolve(), Path(parent["directory"]).resolve(), directory, before
+        return PreparedStage(
+            source=before,
+            data=(Path(pca["directory"]).resolve(), Path(parent["directory"]).resolve(), before),
         )
-        script.write_text(code, encoding="utf-8")
-        completed = executor.execute_script(str(script))
-        stdout, stderr = completed.stdout or "", completed.stderr or ""
-        metadata["returncode"] = completed.returncode
-        if completed.returncode != 0:
-            raise ValueError("聚类 R 执行失败；请检查本地证据")
-        summary = check_outputs(directory, Path(pca["directory"]).resolve(), before)
-        if script.read_text(encoding="utf-8") != code:
-            raise ValueError("聚类固定脚本已变化")
+
+    def check(prepared: PreparedStage) -> dict[str, Any]:
+        """校验聚类产物并返回汇总。"""
+        pca_directory, _, before = prepared.data
+        return check_outputs(directory, pca_directory, before)
+
+    def after(prepared: PreparedStage) -> dict[str, Any]:
+        """重读聚类父身份并返回当前来源。"""
         after = checked_source(run, parent, pca, review, root, review["record_version"])
-        metadata["source_after"] = after
-        if before != after:
-            raise ValueError("聚类运行中父证据变化")
-        metadata.update(summary, status="completed")
-    except (RExecutorError, OSError, ValueError, KeyError, TypeError, OverflowError) as exc:
-        metadata["error"] = "聚类执行或证据校验失败；请检查本地证据，不会自动重跑"
-        # 异常可能含私有路径；只保存到本地 stderr，不进入响应、消息或日志。
-        stderr = f"{stderr}\n{exc}"
-        if isinstance(exc, RExecutorError):
-            stdout, stderr = executor_streams(exc)
-    finally:
-        finish_stage(
-            directory, metadata, started, stdout, stderr, artifacts=True, fingerprints=fingerprints
-        )
-    return metadata
+        return after
+
+    plan = FixedStageRun(
+        directory=directory,
+        metadata=metadata,
+        prepare=prepare,
+        script=lambda prepared: cluster_script(
+            prepared.data[0], prepared.data[1], directory, prepared.source
+        ),
+        check=check,
+        after=after,
+        returncode_error="聚类 R 执行失败；请检查本地证据",
+        script_error="聚类固定脚本已变化",
+        errors=(RExecutorError, OSError, ValueError, KeyError, TypeError, OverflowError),
+        source_keys=("source_before", "source_after"),
+        source_error="聚类运行中父证据变化",
+        failure_error="聚类执行或证据校验失败；请检查本地证据，不会自动重跑",
+    )
+    return run_fixed_stage(plan, executor)
 
 
 def checked_completed_cluster(
