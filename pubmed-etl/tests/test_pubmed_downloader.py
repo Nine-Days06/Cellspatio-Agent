@@ -1,4 +1,7 @@
+import json
+import tempfile
 import unittest
+from pathlib import Path
 from unittest.mock import Mock, patch
 from urllib.parse import urlencode
 
@@ -9,6 +12,7 @@ from downloader.pubmed_downloader import (
     _fetch_count,
     _get,
     _split_range,
+    download_xml_batches,
     fetch_pmid_list,
 )
 
@@ -184,6 +188,30 @@ class TestRateLimitExhaustion(unittest.TestCase):
         mock_get.return_value = Mock(status_code=429)
         with self.assertRaises(requests.HTTPError):
             _get("https://example.test", {}, retries=2)
+
+
+class TestBatchCacheInvalidation(unittest.TestCase):
+    """PMID 列表变化后不能按序号复用旧 XML。"""
+
+    def test_changed_pmids_discard_old_batches(self):
+        with tempfile.TemporaryDirectory() as td:
+            out = Path(td)
+            stale = out / "batch_00000.xml"
+            stale.write_text("old", encoding="utf-8")
+            (out / "pmid_list.json").write_text(json.dumps({"pmids": ["9"]}), encoding="utf-8")
+
+            def fake_batch(index, chunk, out_dir, batch_size, total):
+                path = out_dir / f"batch_{index:05d}.xml"
+                path.write_text("new", encoding="utf-8")
+                return path
+
+            with patch(
+                "downloader.pubmed_downloader._download_single_batch", side_effect=fake_batch
+            ):
+                files = download_xml_batches(["1"], out_dir=out, batch_size=10, query="q")
+
+            self.assertEqual(files, [stale])
+            self.assertEqual(stale.read_text(encoding="utf-8"), "new")
 
 
 if __name__ == "__main__":

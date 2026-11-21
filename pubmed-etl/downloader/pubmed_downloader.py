@@ -334,25 +334,52 @@ def download_xml_batches(
     pmids: list[str],
     out_dir: Path = RAW_XML_DIR,
     batch_size: int = EFETCH_BATCH_SIZE,
+    query: str = PUBMED_QUERY,
 ) -> list[Path]:
     """
     将 PMID 列表分批，通过 efetch 并发下载 PubmedArticleSet XML。
-    已存在的批次文件自动跳过（断点续传）。
+    同一 PMID 列表的批次自动跳过；列表变化时旧批次先失效，避免串数据。
     返回所有成功下载的批次文件路径。
     """
     out_dir = Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    # 保存 PMID 列表备用（便于后续复查）
+    total_batches = (len(pmids) + batch_size - 1) // batch_size
+    chunks = [pmids[i * batch_size : (i + 1) * batch_size] for i in range(total_batches)]
+
+    # 批次按序号复用；只失效分块内容变化的批次，保留其余断点续传。
     pmid_list_path = out_dir / "pmid_list.json"
+    previous: dict = {}
+    if pmid_list_path.exists():
+        try:
+            previous = json.loads(pmid_list_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            previous = {}
+    if previous.get("pmids") != pmids or previous.get("batch_size") != batch_size:
+        previous_chunks = previous.get("chunks")
+        if not isinstance(previous_chunks, list):
+            previous_chunks = []
+        for index, chunk in enumerate(chunks):
+            if index >= len(previous_chunks) or previous_chunks[index] != chunk:
+                (out_dir / f"batch_{index:05d}.xml").unlink(missing_ok=True)
+        for stale in out_dir.glob("batch_*.xml"):
+            suffix = stale.stem.removeprefix("batch_")
+            if suffix.isdigit() and int(suffix) >= total_batches:
+                stale.unlink(missing_ok=True)
     with open(pmid_list_path, "w") as f:
-        json.dump({"query": PUBMED_QUERY, "total": len(pmids), "pmids": pmids}, f)
+        json.dump(
+            {
+                "query": query,
+                "total": len(pmids),
+                "pmids": pmids,
+                "batch_size": batch_size,
+                "chunks": chunks,
+            },
+            f,
+        )
     logger.info(f"PMID 列表已保存至 {pmid_list_path}")
 
-    total_batches = (len(pmids) + batch_size - 1) // batch_size
     max_workers = 3 if not NCBI_API_KEY else 8
-
-    chunks = [pmids[i * batch_size : (i + 1) * batch_size] for i in range(total_batches)]
 
     xml_files = []
     futures = {}
@@ -400,5 +427,5 @@ def run_download(query: str = PUBMED_QUERY) -> list[Path]:
     all_pmids = list(dict.fromkeys(all_pmids))
     logger.info(f"所有切片处理完毕，去重后共 {len(all_pmids)} 篇")
 
-    xml_files = download_xml_batches(all_pmids)
+    xml_files = download_xml_batches(all_pmids, query=query)
     return xml_files
