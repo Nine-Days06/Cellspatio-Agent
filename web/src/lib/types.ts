@@ -433,13 +433,20 @@ export interface MessagesResponse {
 
 export type ConfirmAction = 'script_confirm' | 'script_cancel' | 'data_confirm'
 
-export interface ConfirmRequestBody {
+export interface ScriptConfirmRequest {
   session_id: string
-  action: ConfirmAction
-  source?: string
-  asset_id?: string
+  action: 'script_confirm' | 'script_cancel'
+}
+
+export interface DataConfirmRequest {
+  session_id: string
+  action: 'data_confirm'
+  source: string
+  asset_id: string
   query?: string
 }
+
+export type ConfirmRequestBody = ScriptConfirmRequest | DataConfirmRequest
 
 export interface DataCandidate {
   source: string
