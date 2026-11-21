@@ -109,6 +109,8 @@ def test_create_snapshot_rejects_non_directory(tmp_path):
     (mgr.snapshots_dir / "run-001").write_text("not a snapshot", encoding="utf-8")
     with pytest.raises(ValueError):
         mgr.create_snapshot("run-001")
+    assert mgr.get_snapshot_path("run-001") is None
+    assert not mgr.delete_snapshot("run-001")
 
 
 def test_create_snapshot_rejects_symlink(tmp_path):
@@ -123,6 +125,8 @@ def test_create_snapshot_rejects_symlink(tmp_path):
         pytest.skip("当前环境不允许创建符号链接")
     with pytest.raises(ValueError):
         mgr.create_snapshot("run-001")
+    assert mgr.get_snapshot_path("run-001") is None
+    assert not mgr.delete_snapshot("run-001")
 
 
 def test_delete_snapshot_omits_empty_force_argument(tmp_path, monkeypatch):

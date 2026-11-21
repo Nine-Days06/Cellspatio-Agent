@@ -65,7 +65,7 @@ class SnapshotManager:
     def delete_snapshot(self, run_id: str, force: bool = False) -> bool:
         """删除 worktree 与分支"""
         snap_path = self._snapshot_path(run_id)
-        if not snap_path.exists():
+        if not snap_path.exists() or snap_path.is_symlink() or not snap_path.is_dir():
             return False
         branch_name = f"snapshot/{run_id}"
         remove_args = ["git", "worktree", "remove"]
@@ -97,4 +97,6 @@ class SnapshotManager:
 
     def get_snapshot_path(self, run_id: str) -> Path | None:
         snap_path = self._snapshot_path(run_id)
-        return snap_path if snap_path.exists() else None
+        if not snap_path.exists() or snap_path.is_symlink() or not snap_path.is_dir():
+            return None
+        return snap_path
