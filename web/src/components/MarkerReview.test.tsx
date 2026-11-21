@@ -157,6 +157,7 @@ describe('聚类接受与 marker 独立授权', () => {
     await screen.findByText('A_B')
     expect(executeMarkers).toHaveBeenCalledOnce()
     expect(fetchMarkers).toHaveBeenCalledTimes(2)
+    expect(fetchClusterAcceptance).toHaveBeenCalledTimes(2)
     expect(executeButton()).toBeDisabled()
   })
 
