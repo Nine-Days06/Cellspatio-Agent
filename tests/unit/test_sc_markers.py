@@ -1,5 +1,6 @@
 """第七片公开 API 的复核事实、独立授权与证据失效。"""
 
+import ast
 import csv
 import json
 import sqlite3
@@ -222,9 +223,22 @@ def test_independent_marker_authorization_restores_own_snapshot_and_is_idempoten
     assert d.client.get(d.marker_path).json() == saved
     assert d.client.post(d.marker_path + "/execute", json=body).json() == saved
     aid = saved["attempts"][0]["attempt_id"]
-    assert d.client.get(f"{d.marker_path}/{aid}/diagnostic").status_code == 200
+    diagnostic = d.client.get(f"{d.marker_path}/{aid}/diagnostic")
+    assert diagnostic.status_code == 200
+    assert diagnostic.headers["cache-control"] == "no-store"
+    assert diagnostic.content == (Path(attempt["directory"]) / "marker_dotplot.png").read_bytes()
     page = d.client.get(f"{d.marker_path}/{aid}/candidates?offset=0&limit=100")
     assert page.status_code == 200, page.text
+    assert page.headers["cache-control"] == "no-store"
+    assert set(page.json()) == {
+        "attempt_id",
+        "binding_sha256",
+        "scientific_status",
+        "total",
+        "offset",
+        "limit",
+        "rows",
+    }
     assert page.json()["total"] == 1 and page.json()["rows"][0]["symbol"] == "A_B"
     assert page.json()["rows"][0]["avg_log2FC"] == 1
     assert d.client.get(f"{d.marker_path}/{aid}/candidates?limit=101").status_code == 422
@@ -236,6 +250,31 @@ def test_independent_marker_authorization_restores_own_snapshot_and_is_idempoten
     )
     assert body["reason"] not in exposed and d.review_body["reason"] not in exposed
     assert "directory" not in exposed and str(d.source) not in exposed
+
+
+def test_marker_artifact_routes_use_verified_seam():
+    """diagnostic 与 candidates 只经接缝读取，不再手写路径或身份比较。"""
+    path = Path(__file__).resolve().parents[2] / "src" / "api" / "routes_markers.py"
+    source = path.read_text(encoding="utf-8")
+    tree = ast.parse(source, filename=path.name)
+    calls = [
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Name)
+        and node.func.id == "read_verified_artifact"
+    ]
+    assert {
+        keyword.value.value
+        for call in calls
+        for keyword in call.keywords
+        if keyword.arg == "name" and isinstance(keyword.value, ast.Constant)
+    } == {"marker_dotplot.png", "markers.csv"}
+    assert "marker 图身份变化" in source
+    assert "marker 候选身份变化" in source
+    assert "_identity" not in source
+    assert ".read_bytes()" not in source
+    assert "sha256(" not in source
 
 
 @pytest.mark.parametrize(
