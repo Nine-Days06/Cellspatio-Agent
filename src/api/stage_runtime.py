@@ -5,22 +5,24 @@ from __future__ import annotations
 from collections.abc import Iterable, Mapping
 from typing import Any
 
+from src.ui.run_snapshot import RunSnapshot
+
 RUNNING = "running"
-STAGE_ATTEMPTS = {
-    "filter": "attempts",
-    "pca": "pca_attempts",
-    "cluster": "cluster_attempts",
-    "marker": "marker_attempts",
-}
-ALL_STAGES = tuple(STAGE_ATTEMPTS)
+ALL_STAGES = ("filter", "pca", "cluster", "marker")
+
+
+def _snapshot(run: Mapping[str, Any]) -> RunSnapshot:
+    """普通 Mapping 包装为快照读模型；已是快照时原样使用。"""
+    return run if isinstance(run, RunSnapshot) else RunSnapshot(dict(run))
 
 
 def running_stages(run: Mapping[str, Any]) -> set[str]:
     """返回 run 快照中当前存在运行中 attempt 的阶段。"""
+    snapshot = _snapshot(run)
     return {
         stage
-        for stage, key in STAGE_ATTEMPTS.items()
-        if any(attempt["status"] == RUNNING for attempt in run.get(key, []))
+        for stage in ALL_STAGES
+        if any(attempt["status"] == RUNNING for attempt in snapshot.stage_attempts(stage))
     }
 
 
@@ -33,5 +35,5 @@ def has_other_marker_running(run: Mapping[str, Any], cluster_attempt_id: str) ->
     """其他 cluster 是否有运行中的 marker attempt。"""
     return any(
         attempt["status"] == RUNNING and attempt["cluster_attempt_id"] != cluster_attempt_id
-        for attempt in run.get("marker_attempts", [])
+        for attempt in _snapshot(run).marker_attempts()
     )
