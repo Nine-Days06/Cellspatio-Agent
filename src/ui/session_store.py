@@ -22,6 +22,7 @@ from src.ui.store_errors import StoreError
 logger = logging.getLogger(__name__)
 
 DEFAULT_DB_PATH = Path(".cellspatio") / "sessions.db"
+SCHEMA_VERSION = 1
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS projects (
@@ -272,8 +273,11 @@ class SessionStore:
             conn.row_factory = sqlite3.Row
             conn.execute("PRAGMA journal_mode=WAL")
             conn.execute("PRAGMA foreign_keys=ON")
-            conn.executescript(SCHEMA)
-            _migrate_schema(conn)
+            # shortcut: 新增/修改表结构时必须同时递增 SCHEMA_VERSION，否则旧库不会迁移
+            if conn.execute("PRAGMA user_version").fetchone()[0] < SCHEMA_VERSION:
+                conn.executescript(SCHEMA)
+                _migrate_schema(conn)
+                conn.execute(f"PRAGMA user_version={SCHEMA_VERSION}")
             yield conn
             conn.commit()
         finally:

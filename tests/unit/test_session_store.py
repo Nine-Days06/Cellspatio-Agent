@@ -6,6 +6,7 @@ import sqlite3
 import pytest
 
 from src.ui.session_store import (
+    SCHEMA_VERSION,
     SessionStore,
     _decode_results,
     _encode_results,
@@ -63,6 +64,18 @@ def test_migrates_legacy_sessions_table(tmp_path):
     assert session["project_id"] is None
     assert session["pinned"] is False
     assert session["archived_at"] is None
+
+
+def test_schema_version_is_stamped(tmp_path) -> None:
+    """首次打开写版本号，后续连接可跳过建表与迁移。"""
+    store = SessionStore(tmp_path / "v.db")
+    store.create_session()
+
+    conn = sqlite3.connect(tmp_path / "v.db")
+    try:
+        assert conn.execute("PRAGMA user_version").fetchone()[0] == SCHEMA_VERSION
+    finally:
+        conn.close()
 
 
 def test_project_crud_and_session_grouping():
