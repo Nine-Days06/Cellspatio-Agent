@@ -9,15 +9,14 @@ from decimal import Decimal
 from pathlib import Path
 from typing import Any
 
+from src.analysis.evidence import fingerprints, identity
 from src.analysis.qc_preview import (
     Thresholds,
-    _identity,
     check_preview,
     checked_evidence,
     decisions,
 )
 from src.analysis.r_executor import RExecutorError
-from src.analysis.sc_qc import _fingerprints
 from src.analysis.stage_run import executor_streams, finish_stage, start_stage
 from src.control.r_script_generator import RScriptGenerator
 
@@ -45,7 +44,7 @@ def verified_selection(run: dict[str, Any], root: Path, preview: dict[str, Any])
     ]
     if reader.fieldnames != ["barcode", "keep", "reasons"] or list(reader) != expected:
         raise ValueError("逐 barcode 选择与 QC 重算不一致")
-    if _identity(data) != preview["artifacts"]["selection.csv"]:
+    if identity(data) != preview["artifacts"]["selection.csv"]:
         raise ValueError("选择证据已变化")
     return data
 
@@ -183,6 +182,6 @@ def run_sc_filter(
             stdout, stderr = executor_streams(exc)
     finally:
         finish_stage(
-            directory, metadata, started, stdout, stderr, artifacts=True, fingerprints=_fingerprints
+            directory, metadata, started, stdout, stderr, artifacts=True, fingerprints=fingerprints
         )
     return metadata

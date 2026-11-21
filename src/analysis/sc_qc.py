@@ -2,7 +2,6 @@
 
 import base64
 import csv
-import hashlib
 import json
 import math
 import statistics
@@ -10,10 +9,11 @@ import uuid
 from pathlib import Path
 from typing import Any
 
+from src.analysis.evidence import fingerprints
 from src.analysis.r_executor import RExecutorError
 from src.analysis.stage_run import executor_streams, finish_stage, start_stage
 from src.control.r_script_generator import RScriptGenerator
-from src.data.tenx import _open_text, tenx_files
+from src.data.tenx import open_text, tenx_files
 
 QC_TOOL_VERSION = "1.0.0"
 
@@ -76,31 +76,13 @@ dev.off()
     )
 
 
-def _fingerprints(paths: list[Path]) -> list[dict[str, Any]]:
-    """流式记录原件大小和 SHA256；不把输入复制到共享存储。"""
-    records = []
-    for path in paths:
-        digest = hashlib.sha256()
-        with path.open("rb") as handle:
-            for block in iter(lambda: handle.read(1024 * 1024), b""):
-                digest.update(block)
-        records.append(
-            {
-                "path": str(path.resolve()),
-                "bytes": path.stat().st_size,
-                "sha256": digest.hexdigest(),
-            }
-        )
-    return records
-
-
 def _source_labels(path: Path) -> tuple[list[str], list[tuple[str, str]]]:
     """读取输入标识以验证全量 barcode、RNA features 和原 symbol 的对应关系。"""
     if path.is_dir():
         files = tenx_files(path)
-        with _open_text(files["barcodes"]) as handle:
+        with open_text(files["barcodes"]) as handle:
             barcodes = [row[0] for row in csv.reader(handle, delimiter="\t")]
-        with _open_text(files["features"]) as handle:
+        with open_text(files["features"]) as handle:
             features = [
                 (row[0], row[1])
                 for row in csv.reader(handle, delimiter="\t")
@@ -114,7 +96,7 @@ def _source_labels(path: Path) -> tuple[list[str], list[tuple[str, str]]]:
     return barcodes, features
 
 
-def _read_evidence(directory: Path, path: Path) -> dict[str, Any]:
+def read_qc_evidence(directory: Path, path: Path) -> dict[str, Any]:
     """拒绝缺失、截断、重复、错位或非有限的 QC 产物。"""
     barcodes, features = _source_labels(path)
     with (directory / "features.csv").open(encoding="utf-8-sig", newline="") as handle:
@@ -242,18 +224,18 @@ def run_sc_qc(
     }
     try:
         paths = list(tenx_files(path).values()) if path.is_dir() else [path]
-        metadata["inputs_before"] = _fingerprints(paths)
+        metadata["inputs_before"] = fingerprints(paths)
         completed = executor.execute_script(str(script_path))
         stdout, stderr = completed.stdout or "", completed.stderr or ""
         metadata["returncode"] = completed.returncode
         if completed.returncode != 0:
             raise ValueError("QC R 执行失败")
-        metadata["inputs_after"] = _fingerprints(paths)
+        metadata["inputs_after"] = fingerprints(paths)
         if metadata["inputs_before"] != metadata["inputs_after"]:
             raise ValueError("QC 运行期间原输入发生变化")
-        summary = _read_evidence(directory, path)
+        summary = read_qc_evidence(directory, path)
         current_paths = list(tenx_files(path).values()) if path.is_dir() else [path]
-        metadata["inputs_after"] = _fingerprints(current_paths)
+        metadata["inputs_after"] = fingerprints(current_paths)
         if metadata["inputs_before"] != metadata["inputs_after"]:
             raise ValueError("QC 校验期间原输入发生变化")
         (directory / "summary.json").write_text(
@@ -282,7 +264,7 @@ def run_sc_qc(
     finally:
         if "inputs_before" in metadata and "inputs_after" not in metadata:
             try:
-                metadata["inputs_after"] = _fingerprints(paths)
+                metadata["inputs_after"] = fingerprints(paths)
             except OSError as exc:
                 metadata["input_recheck_error"] = str(exc)
         finish_stage(directory, metadata, started, stdout, stderr, artifacts=False)

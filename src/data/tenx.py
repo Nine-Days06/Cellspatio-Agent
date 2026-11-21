@@ -29,7 +29,7 @@ def tenx_files(directory: Path) -> dict[str, Path]:
     return files
 
 
-def _open_text(path: Path) -> TextIO:
+def open_text(path: Path) -> TextIO:
     """以相同编码流式打开普通或 gzip 文本。"""
     opener = gzip.open if path.suffix == ".gz" else open
     return opener(path, "rt", encoding="utf-8-sig", newline="")
@@ -43,7 +43,7 @@ def validate_tenx(directory: Path) -> None:
         identifiers: set[str] = set()
         rna_features = 0
         legacy = files[key].name.startswith("genes.tsv")
-        with _open_text(files[key]) as handle:
+        with open_text(files[key]) as handle:
             for row in csv.reader(handle, delimiter="\t", quoting=csv.QUOTE_NONE):
                 expected = 1 if key == "barcodes" else (2 if legacy else 3)
                 if len(row) != expected or not all(value.strip() for value in row):
@@ -58,7 +58,7 @@ def validate_tenx(directory: Path) -> None:
         if not identifiers or (key == "features" and not rna_features):
             raise ValueError(f"{key} 为空或没有 Gene Expression 数据")
 
-    with _open_text(files["matrix"]) as handle:
+    with open_text(files["matrix"]) as handle:
         header = handle.readline().strip().lower().split()
         if (
             len(header) != 5

@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from src.analysis.qc_preview import _identity
+from src.analysis.evidence import identity
 
 PATH_ERROR = "产物路径非法或缺失"
 
@@ -67,7 +67,7 @@ def read_verified_artifact(
         registered = attempt["result"]["artifacts"][name]
     except (KeyError, TypeError) as exc:
         raise ArtifactError(identity_error) from exc
-    if {"path": str(path), **_identity(data)} != registered:
+    if {"path": str(path), **identity(data)} != registered:
         raise ArtifactError(identity_error)
     if magic is not None and not data.startswith(magic):
         raise ArtifactError(identity_error)

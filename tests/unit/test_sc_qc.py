@@ -8,7 +8,7 @@ from unittest.mock import Mock
 import pytest
 
 from src.analysis.r_executor import RExecutorError
-from src.analysis.sc_qc import _read_evidence, qc_script, run_sc_qc
+from src.analysis.sc_qc import qc_script, read_qc_evidence, run_sc_qc
 
 
 def evidence(directory):
@@ -102,7 +102,7 @@ def test_rejects_bad_evidence(source, tmp_path, change):
         )
         path.write_text("bad")
     with pytest.raises((ValueError, OSError)):
-        _read_evidence(tmp_path, source)
+        read_qc_evidence(tmp_path, source)
 
 
 @pytest.mark.parametrize("failure", ["missing_output", "timeout", "r_error", "changed_input"])

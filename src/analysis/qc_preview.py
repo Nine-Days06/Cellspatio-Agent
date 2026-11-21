@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import csv
-import hashlib
 import io
 import json
 import uuid
@@ -13,7 +12,8 @@ from typing import Annotated, Any
 
 from pydantic import BaseModel, ConfigDict, Field, StrictInt, field_validator, model_validator
 
-from src.analysis.sc_qc import QC_TOOL_VERSION, _fingerprints, _read_evidence, qc_script
+from src.analysis.evidence import digest, fingerprints, identity
+from src.analysis.sc_qc import QC_TOOL_VERSION, qc_script, read_qc_evidence
 from src.data.tenx import tenx_files
 
 PREVIEW_TOOL_VERSION = "1.0.0"
@@ -72,16 +72,6 @@ class Thresholds(BaseModel):
         return result
 
 
-def _digest(data: bytes) -> str:
-    """同一份实际读取的字节用于身份校验和解析。"""
-    return hashlib.sha256(data).hexdigest()
-
-
-def _identity(data: bytes) -> dict[str, Any]:
-    """文件内容身份。"""
-    return {"bytes": len(data), "sha256": _digest(data)}
-
-
 def _qc_bytes(directory: Path) -> dict[str, bytes]:
     """只读取受控目录中的固定文件，不接受外部产物路径。"""
     files = {}
@@ -96,7 +86,7 @@ def _qc_bytes(directory: Path) -> dict[str, bytes]:
 def _input_identity(path: Path) -> list[dict[str, Any]]:
     """复核实际输入文件集合和内容，不重新解析完整 MTX。"""
     paths = list(tenx_files(path).values()) if path.is_dir() else [path]
-    return sorted(_fingerprints(paths), key=lambda record: record["path"])
+    return sorted(fingerprints(paths), key=lambda record: record["path"])
 
 
 def register_evidence(directory: Path, root: Path) -> dict[str, Any]:
@@ -123,12 +113,12 @@ def register_evidence(directory: Path, root: Path) -> dict[str, Any]:
         raise ValueError("QC 原输入已变化，请重新 QC")
     if files["script.R"].decode("utf-8").replace("\r\n", "\n") != qc_script(str(path), directory):
         raise ValueError("QC 固定脚本不符")
-    summary = _read_evidence(directory, path)
+    summary = read_qc_evidence(directory, path)
     if json.loads(files["summary.json"]) != summary or _qc_bytes(directory) != files:
         raise ValueError("QC 证据不一致，请重新 QC")
     return {
         "inputs": inputs,
-        "artifacts": {name: _identity(data) for name, data in files.items()},
+        "artifacts": {name: identity(data) for name, data in files.items()},
         "tool_version": QC_TOOL_VERSION,
         "input_path": str(path),
         "summary": summary,
@@ -144,7 +134,7 @@ def checked_evidence(run: dict[str, Any], root: Path) -> dict[str, bytes]:
     if evidence["tool_version"] != QC_TOOL_VERSION:
         raise ValueError("QC 工具已变化，请重新 QC")
     files = _qc_bytes(directory)
-    if {name: _identity(data) for name, data in files.items()} != evidence[
+    if {name: identity(data) for name, data in files.items()} != evidence[
         "artifacts"
     ] or _input_identity(Path(evidence["input_path"])) != evidence["inputs"]:
         raise ValueError("原输入或 QC 证据已变化，请重新 QC")
@@ -246,7 +236,7 @@ def build_preview(run: dict[str, Any], root: Path, thresholds: Thresholds) -> di
         "preview_id": uuid.uuid4().hex,
         "params": binding["params"],
         "summary": summary,
-        "binding_sha256": _digest(json.dumps(binding, sort_keys=True, ensure_ascii=False).encode()),
+        "binding_sha256": digest(json.dumps(binding, sort_keys=True, ensure_ascii=False).encode()),
         "schema": THRESHOLD_SCHEMA,
         "tool_version": PREVIEW_TOOL_VERSION,
     }
@@ -265,7 +255,7 @@ def build_preview(run: dict[str, Any], root: Path, thresholds: Thresholds) -> di
         json.dumps(preview, ensure_ascii=False, indent=2), encoding="utf-8"
     )
     preview["artifacts"] = {
-        name: _identity((directory / name).read_bytes())
+        name: identity((directory / name).read_bytes())
         for name in ("selection.csv", "preview.json")
     }
     return preview
@@ -282,7 +272,7 @@ def check_preview(run: dict[str, Any], root: Path, preview: dict[str, Any]) -> N
         "schema": THRESHOLD_SCHEMA,
         "tool_version": PREVIEW_TOOL_VERSION,
     }
-    if preview["binding_sha256"] != _digest(
+    if preview["binding_sha256"] != digest(
         json.dumps(binding, sort_keys=True, ensure_ascii=False).encode()
     ):
         raise ValueError("预览绑定不符，请重新预览")
@@ -292,12 +282,12 @@ def check_preview(run: dict[str, Any], root: Path, preview: dict[str, Any]) -> N
         or directory.resolve().parent != directory.parent.resolve()
     ):
         raise ValueError("预览目录非法")
-    for name, identity in preview["artifacts"].items():
+    for name, expected in preview["artifacts"].items():
         path = directory / name
         if (
             name not in ("selection.csv", "preview.json")
             or path.resolve().parent != directory.resolve()
-            or _identity(path.read_bytes()) != identity
+            or identity(path.read_bytes()) != expected
         ):
             raise ValueError("预览证据已变化，请重新预览")
     if preview["summary"]["blocked"]:
