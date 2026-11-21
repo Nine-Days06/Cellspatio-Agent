@@ -1,6 +1,6 @@
 """公共证据服务应用工厂：独立于本地客户端的 FastAPI 进程。
 
-事实源仍是 `GovernanceStore` 的 SQLite；本层只负责认证、角色校验与 HTTP 语义。
+事实源仍是 `GovernanceStore` 的 SQLite；本层只负责认证、粗粒度角色门槛与 HTTP 语义。
 部署到公网时必须在反向代理终止 TLS，Bearer token 不覆盖明文 HTTP。
 """
 
@@ -16,21 +16,14 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 from src.evidence.accounts import AccountStore, public_user
-from src.evidence.contribution import build_envelope, preview_card
 from src.evidence.errors import ErrorKind, EvidenceError
 from src.evidence.governance import (
     ROLE_COMPLIANCE,
     ROLE_CONTRIBUTOR,
     ROLE_DOMAIN,
-    STATE_NEEDS_CHANGES,
     GovernanceStore,
     public_evidence_dir,
 )
-from src.evidence.review_protocol import (
-    action_role,
-    withdraw_role,
-)
-from src.evidence.schema import EvidenceCard
 from src.evidence.vocabulary import vocabulary
 from src.public_api.context import reviewer_context
 from src.public_api.evidence_service import PublicEvidenceService
@@ -153,7 +146,7 @@ def create_public_app(data_root: str | Path) -> FastAPI:
     Store = Annotated[GovernanceStore, Depends(governance)]
 
     def evidence_service(request: Request, store: Store) -> PublicEvidenceService:
-        """按工厂构造读服务；测试可替换 `app.state.evidence_service_factory`。"""
+        """按工厂构造服务；测试可替换 `app.state.evidence_service_factory`。"""
         return request.app.state.evidence_service_factory(store)
 
     EvidenceServiceDep = Annotated[PublicEvidenceService, Depends(evidence_service)]
@@ -207,13 +200,10 @@ def create_public_app(data_root: str | Path) -> FastAPI:
     def submit(
         body: SubmitRequest,
         user: Contributor,
-        store: Store,
+        service: EvidenceServiceDep,
     ) -> dict[str, Any]:
         """上传预览内容；服务端用登录身份覆盖贡献者与时间。"""
-        envelope = build_envelope(body.preview, consent=body.consent)
-        envelope.contributor_id = user["id"]
-        envelope.submitted_at = None
-        return store.submit(envelope)
+        return service.submit(body.preview, body.consent, user)
 
     @app.get("/api/public/evidence/queue")
     def queue(
@@ -224,20 +214,13 @@ def create_public_app(data_root: str | Path) -> FastAPI:
         return service.queue(user)
 
     @app.post("/api/public/evidence/preview")
-    def preview(body: PreviewRequest, user: Contributor, store: Store) -> dict[str, Any]:
+    def preview(
+        body: PreviewRequest,
+        user: Contributor,
+        service: EvidenceServiceDep,
+    ) -> dict[str, Any]:
         """用服务端身份生成上传前预览；修订归属与隐私校验失败直接 4xx。"""
-        if body.revises_submission_id:
-            original = store.summary(body.revises_submission_id)
-            if original["contributor_id"] != user["id"]:
-                raise EvidenceError("permission_denied", "只能修订自己的提交")
-            if original["status"] != STATE_NEEDS_CHANGES:
-                raise EvidenceError("invalid_state", "只能修订 needs_changes 的提交")
-        card = EvidenceCard.model_validate(body.card)
-        return preview_card(
-            card,
-            contributor_id=user["id"],
-            revises_submission_id=body.revises_submission_id,
-        )
+        return service.preview(body.card, user, body.revises_submission_id)
 
     @app.get("/api/public/evidence/mine")
     def mine(user: Contributor, store: Store) -> dict[str, Any]:
@@ -249,38 +232,20 @@ def create_public_app(data_root: str | Path) -> FastAPI:
         evidence_id: str,
         body: ReviewRequest,
         user: Reviewer,
-        store: Store,
+        service: EvidenceServiceDep,
     ) -> dict[str, Any]:
         """记录领域或合规复核；动作与角色必须匹配。"""
-        role = action_role(body.action)
-        if role is None:
-            raise EvidenceError("invalid_input", "未知审核动作")
-        if role not in user["roles"]:
-            raise EvidenceError("permission_denied", f"动作 {body.action} 需要角色 {role}")
-        return store.review(
-            evidence_id,
-            actor_id=user["id"],
-            role=role,
-            action=body.action,
-            checklist=body.checklist,
-            reason=body.reason,
-        )
+        return service.review(evidence_id, body, user)
 
     @app.post("/api/public/evidence/submissions/{evidence_id}/withdraw")
     def withdraw(
         evidence_id: str,
         body: WithdrawRequest,
         user: CurrentUser,
-        store: Store,
+        service: EvidenceServiceDep,
     ) -> dict[str, Any]:
         """贡献者撤回自己的提交，或合规复核者强制撤销。"""
-        summary = store.summary(evidence_id)
-        role = withdraw_role(
-            actor_id=user["id"],
-            contributor_id=summary["contributor_id"],
-            roles=user["roles"],
-        )
-        return store.withdraw(evidence_id, actor_id=user["id"], role=role, reason=body.reason)
+        return service.withdraw(evidence_id, body, user)
 
     @app.get("/api/public/evidence/search")
     def search(
