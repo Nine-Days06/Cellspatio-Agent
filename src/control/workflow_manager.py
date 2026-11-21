@@ -16,7 +16,7 @@ from src.control.kb_coverage import (
     KnowledgeCoverage,
 )
 from src.data.tenx import validate_tenx
-from src.schemas.workflow import StepType
+from src.schemas.workflow import AnalysisType, StepType
 from src.ui.analysis_roots import AnalysisRoots
 from src.ui.session_store import SessionStore
 
@@ -87,9 +87,16 @@ class WorkflowManager:
         intent = self.intent_parser.parse(user_input, context)
         params = self.intent_parser.extract_parameters(user_input)
 
+        analysis_type = intent.get("analysis_type")
+        try:
+            AnalysisType(analysis_type)
+        except ValueError:
+            # 解析器可返回 visualization/pathway_analysis 等未执行类型；
+            # 记录契约只接受受支持子类型，避免在 start_execution 处 500。
+            analysis_type = None
         intent_dict = {
             "type": intent.get("type", "general"),
-            "analysis_type": intent.get("analysis_type"),
+            "analysis_type": analysis_type,
             "original_input": user_input,
             "confidence": intent.get("confidence", 1.0),
         }

@@ -1078,6 +1078,32 @@ def test_unsupported_analysis_type_returns_error():
     assert "pathway_analysis" in result["message"]
 
 
+def test_unsupported_analysis_type_still_records(tmp_path, monkeypatch):
+    """未执行的分析子类型不能把记录阶段变成 500。"""
+    monkeypatch.setenv("CELLSPATIO_LOCAL", "1")
+    recorder = WorkflowRecorder(
+        wrroc_base_dir=str(tmp_path / ".wrroc"),
+        repo_root=tmp_path,
+    )
+    manager = WorkflowManager(
+        intent_parser=FakeIntent(
+            parse_return={"type": "analysis", "analysis_type": "visualization"},
+            extract_params_return={},
+        ),
+        knowledge_client=MockKnowledgeClient(),
+        r_executor=MockRExecutor(),
+        visualizer=MockVisualizer(),
+        r_script_generator=MockRScriptGenerator(),
+        workflow_recorder=recorder,
+    )
+    result = manager.execute_workflow("画个火山图")
+    assert result["status"] == "error"
+    runs = recorder.store.list_runs()
+    assert len(runs) == 1
+    assert runs[0].intent.type.value == "analysis"
+    assert runs[0].intent.analysis_type is None
+
+
 def test_query_memory_for_agent_returns_memory_response():
     """注入 kg_query 时，query_memory_for_agent 返回记忆问答终态。"""
     from src.control.workflow_manager import WorkflowManager

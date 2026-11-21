@@ -53,6 +53,7 @@ class IntentType(str, Enum):
     FETCH_DATA = "fetch_data"
     KNOWLEDGE_QUERY = "knowledge_query"
     GENERAL = "general"
+    AMBIGUOUS = "ambiguous"
 
 
 # ── 记录模型 ──────────────────────────────────────────────────────

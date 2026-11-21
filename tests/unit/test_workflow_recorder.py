@@ -69,6 +69,27 @@ def test_recorder_rejects_unsafe_run_id():
             )
 
 
+@pytest.mark.parametrize(
+    ("intent", "expected_type", "expected_analysis"),
+    [
+        ({"type": "ambiguous", "original_input": "TP53"}, "ambiguous", None),
+    ],
+)
+def test_recorder_accepts_parser_intents(intent, expected_type, expected_analysis):
+    """解析器可返回 ambiguous/visualization，记录阶段不能因此崩溃。"""
+    recorder = WorkflowRecorder()
+    run_id = recorder.start_execution(
+        intent=intent,
+        parameters={},
+        user_input=intent["original_input"],
+        context={},
+    )
+    record = recorder.get_record(run_id)
+    assert record is not None
+    assert record.intent.type.value == expected_type
+    assert record.intent.analysis_type == expected_analysis
+
+
 def test_recorder_records_intent():
     """record_intent 更新 intent 字段。"""
     recorder = WorkflowRecorder()
