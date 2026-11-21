@@ -18,16 +18,8 @@ class SnapshotManager:
         """创建 worktree：snapshots/<run_id>，基于当前 HEAD"""
         snap_path = self.snapshots_dir / run_id
         if snap_path.exists():
-            # 已存在：更新到最新 HEAD
-            subprocess.run(
-                ["git", "fetch", "origin"], cwd=snap_path, check=False, capture_output=True
-            )
-            subprocess.run(
-                ["git", "reset", "--hard", "origin/HEAD"],
-                cwd=snap_path,
-                check=False,
-                capture_output=True,
-            )
+            # 快照是不可变证据：同名已存在时直接返回，绝不 reset 覆盖。
+            return snap_path
         else:
             # 新建 worktree
             branch_name = f"snapshot/{run_id}"

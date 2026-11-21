@@ -63,3 +63,26 @@ def test_snapshot_manager_switches_context():
             check=False,
         )
         assert "Add output" in result.stdout
+
+
+def test_snapshot_manager_does_not_reset_existing_snapshot():
+    """同名快照已存在时不得 reset 覆盖已有产物。"""
+    with tempfile.TemporaryDirectory() as tmp:
+        repo = Path(tmp) / "repo"
+        repo.mkdir()
+        import subprocess
+
+        subprocess.run(["git", "init"], cwd=repo, check=True, capture_output=True)
+        subprocess.run(["git", "config", "user.email", "test@test.com"], cwd=repo, check=True)
+        subprocess.run(["git", "config", "user.name", "Test"], cwd=repo, check=True)
+        (repo / "README.md").write_text("# Test")
+        subprocess.run(["git", "add", "."], cwd=repo, check=True)
+        subprocess.run(["git", "commit", "-m", "init"], cwd=repo, check=True)
+
+        mgr = SnapshotManager(repo_root=repo)
+        snap_path = mgr.create_snapshot("run-001")
+        generated = snap_path / "generated.txt"
+        generated.write_text("keep me")
+
+        assert mgr.create_snapshot("run-001") == snap_path
+        assert generated.read_text() == "keep me"
