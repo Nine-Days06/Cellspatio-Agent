@@ -84,6 +84,15 @@ def test_fetch_recovers_valid_pmids_from_mixed_batch():
     assert list(result) == ["9704485"]
 
 
+def test_save_is_atomic_and_roundtrips(tmp_path):
+    """写入后不残留 .part，内容可原样读回。"""
+    path = tmp_path / "gene_ids.json"
+    pubtator.save_pmid_genes({"1": {"CD4": "NCBIGene:920"}}, path)
+
+    assert pubtator.load_pmid_genes(path) == {"1": {"CD4": "NCBIGene:920"}}
+    assert not (tmp_path / "gene_ids.json.part").exists()
+
+
 def test_cache_roundtrip(tmp_path):
     """写缓存 → 读回一致（JSON）。"""
     path = tmp_path / "gene_ids.json"
