@@ -915,7 +915,10 @@ class WorkflowManager:
             run_id=run_id,
         )
         yield run_id
-        self.workflow_recorder.finish_run(run_id)
+        try:
+            self.workflow_recorder.finish_run(run_id)
+        except Exception as exc:  # noqa: BLE001 - 记录失败不能触发整轮分析重跑
+            logger.error("workflow record finalize failed: %s", exc)
 
     def _record_step(
         self,

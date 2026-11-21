@@ -1289,6 +1289,24 @@ def test_general_workflow_records_with_real_recorder(tmp_path, monkeypatch):
     assert payload["steps"][0]["tool"] is None
 
 
+def test_record_finalize_failure_does_not_fail_workflow(tmp_path, monkeypatch):
+    """记录落盘失败不能把已执行的分析变成异常，否则调用方会重跑整轮。"""
+    manager = _make_manager()
+    manager.intent_parser = FakeIntent(
+        parse_return={"type": "general", "original_input": ""},
+        extract_params_return={},
+    )
+    recorder = WorkflowRecorder(wrroc_base_dir=str(tmp_path / "wrroc"))
+    manager.workflow_recorder = recorder
+
+    def _fail(*args, **kwargs):
+        raise RuntimeError("snapshot down")
+
+    monkeypatch.setattr(recorder, "finish_run", _fail)
+    result = manager.execute_workflow("你好", {"last_user_input": "你好"})
+    assert result["type"] == "general_response"
+
+
 def test_search_datasets_for_agent_records_run():
     """主路径 search_datasets_for_agent 应 start→finish 记录闭环。"""
     manager = _make_spy_manager()
