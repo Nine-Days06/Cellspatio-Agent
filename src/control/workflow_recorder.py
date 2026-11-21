@@ -144,8 +144,8 @@ class WorkflowRecorder:
         self,
         run_id: str,
         step_id: str,
-        step_type: str,
-        tool: str,
+        step_type: StepType | str,
+        tool: str | None,
         params: dict[str, Any],
         output: dict[str, Any] | None = None,
     ) -> None:

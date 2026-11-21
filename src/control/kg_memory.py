@@ -101,7 +101,7 @@ class KGMemory:
 
         # 2. 写入步骤实体
         for step in execution.steps:
-            step_text = f"Step {step.step_id}: {step.tool} {step.params}"
+            step_text = f"Step {step.step_id}: {step.tool or '无工具'} {step.params}"
             async_runtime.run(
                 self._rag.ainsert(step_text, ids=[f"step:{execution.run_id}:{step.step_id}"])
             )

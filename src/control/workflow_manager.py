@@ -16,6 +16,7 @@ from src.control.kb_coverage import (
     KnowledgeCoverage,
 )
 from src.data.tenx import validate_tenx
+from src.schemas.workflow import StepType
 from src.ui.analysis_roots import AnalysisRoots
 from src.ui.session_store import SessionStore
 
@@ -807,8 +808,8 @@ class WorkflowManager:
         self._record_step(
             run_id,
             step_id="general_workflow",
-            step_type="general",
-            tool="none",
+            step_type=StepType.GENERAL,
+            tool=None,
             params={},
             output={"status": "success", "message": "通用响应"},
         )
@@ -902,8 +903,8 @@ class WorkflowManager:
         run_id: str | None,
         *,
         step_id: str,
-        step_type: str,
-        tool: str,
+        step_type: StepType | str,
+        tool: str | None,
         params: dict[str, Any],
         output: dict[str, Any] | None = None,
     ) -> None:
