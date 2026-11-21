@@ -10,7 +10,6 @@ from typing import Any, Literal
 from fastapi import APIRouter, HTTPException, Query, Request, Response
 from pydantic import BaseModel, ConfigDict, Field
 
-from src.analysis.qc_preview import _identity
 from src.analysis.sc_marker_reviews import review_view
 from src.analysis.sc_markers import (
     MARKER_FIELDS,
@@ -28,6 +27,7 @@ from src.api.routes_clusters import EVIDENCE_ERRORS, require_cluster
 from src.api.routes_pca import PcaRequest, require_parent, require_pca
 from src.api.routes_qc import require_run, run_qc_root
 from src.api.stage_runtime import has_other_marker_running, has_running
+from src.api.verified_artifact import read_verified_artifact
 from src.ui.run_snapshot import RunSnapshot
 
 router = APIRouter(prefix="/api/sessions/{session_id}/qc/{run_id}/markers", tags=["markers"])
@@ -314,16 +314,18 @@ def diagnostic(
         if not attempt or attempt["status"] != "completed":
             raise HTTPException(404, "marker 图未完成或不存在")
         checked_completed_marker(run, attempt, run_qc_root(request.app.state.analysis_roots, run))
-        path = Path(attempt["directory"]).resolve() / "marker_dotplot.png"
-        data = path.read_bytes()
-        if {"path": str(path), **_identity(data)} != attempt["result"]["artifacts"][path.name]:
-            raise ValueError("marker 图身份变化")
+        artifact = read_verified_artifact(
+            attempt=attempt,
+            name="marker_dotplot.png",
+            identity_error="marker 图身份变化",
+            magic=b"\x89PNG\r\n\x1a\n",
+        )
     except sqlite3.Error as exc:
         logger.error("marker diagnostic read failed: %s", type(exc).__name__)
         raise HTTPException(409, "marker 状态读取失败") from exc
     except EVIDENCE_ERRORS as exc:
         raise HTTPException(409, "marker 图或来源身份变化；请检查本地证据") from exc
-    return Response(data, media_type="image/png", headers={"Cache-Control": "no-store"})
+    return Response(artifact.data, media_type="image/png", headers={"Cache-Control": "no-store"})
 
 
 @router.get("/{filter_attempt_id}/{pca_attempt_id}/{cluster_attempt_id}/{attempt_id}/candidates")
@@ -350,11 +352,10 @@ def candidates(
         summary = checked_completed_marker(
             run, attempt, run_qc_root(request.app.state.analysis_roots, run)
         )
-        path = Path(attempt["directory"]).resolve() / "markers.csv"
-        data = path.read_bytes()
-        if {"path": str(path), **_identity(data)} != attempt["result"]["artifacts"][path.name]:
-            raise ValueError("marker 候选身份变化")
-        rows = list(csv.DictReader(io.StringIO(data.decode("utf-8-sig"))))
+        artifact = read_verified_artifact(
+            attempt=attempt, name="markers.csv", identity_error="marker 候选身份变化"
+        )
+        rows = list(csv.DictReader(io.StringIO(artifact.data.decode("utf-8-sig"))))
         response.headers["Cache-Control"] = "no-store"
         page = [
             {**{k: r[k] for k in MARKER_FIELDS[:4]}, **{k: float(r[k]) for k in MARKER_FIELDS[4:]}}
