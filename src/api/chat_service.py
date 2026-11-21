@@ -9,12 +9,12 @@ from collections.abc import Callable
 from typing import Any, Literal
 
 from src.api.events import chart_events, make_event, wire_message
-from src.control import compact
-from src.control.chat_messages import (
+from src.chat_messages import (
     build_assistant_message,
     format_script_confirmation,
     make_llm_summarize,
 )
+from src.control import compact
 from src.ui.confirm_protocol import STATUS_PENDING
 from src.ui.session_store import SessionStore
 

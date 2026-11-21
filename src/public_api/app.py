@@ -21,8 +21,6 @@ from src.evidence.accounts import AccountStore, public_user
 from src.evidence.contribution import build_envelope, preview_card
 from src.evidence.errors import ErrorKind, EvidenceError
 from src.evidence.governance import (
-    COMPLIANCE_CHECKLIST,
-    DOMAIN_CHECKLIST,
     ROLE_COMPLIANCE,
     ROLE_CONTRIBUTOR,
     ROLE_DOMAIN,
@@ -147,8 +145,7 @@ _KIND_STATUS: dict[ErrorKind, int] = {
     "permission_denied": 403,
     "duplicate": 409,
     "invalid_state": 409,
-    # shortcut: 配额仍沿用 400 兼容现有客户端，升级到 429 需单独确认
-    "quota_exceeded": 400,
+    "quota_exceeded": 429,
 }
 
 
@@ -260,14 +257,6 @@ def create_public_app(data_root: str | Path) -> FastAPI:
         return {
             "role": role,
             "queue": store.review_queue(viewer_actor=user["id"], viewer_role=role),
-        }
-
-    @app.get("/api/public/evidence/checklists")
-    def checklists(user: Reviewer) -> dict[str, list[str]]:
-        """复核清单键；前端标签自行映射，避免复制治理层常量。"""
-        return {
-            ROLE_DOMAIN: list(DOMAIN_CHECKLIST),
-            ROLE_COMPLIANCE: list(COMPLIANCE_CHECKLIST),
         }
 
     @app.post("/api/public/evidence/preview")

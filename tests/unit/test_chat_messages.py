@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from src.control import chat_messages
+from src import chat_messages
 
 
 def test_summarize_result_knowledge_response_with_references():

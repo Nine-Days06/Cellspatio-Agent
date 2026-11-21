@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any
 
-from src.control.chat_messages import build_assistant_message
+from src.chat_messages import build_assistant_message
 from src.ui.confirm_protocol import (
     ACTION_SCRIPT_CANCEL,
     ACTION_SCRIPT_CONFIRM,
