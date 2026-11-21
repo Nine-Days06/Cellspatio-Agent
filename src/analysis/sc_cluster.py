@@ -11,12 +11,13 @@ from typing import Any
 
 import numpy as np
 
-from src.analysis.evidence import digest, fingerprints, records
+from src.analysis.evidence import digest, records
 from src.analysis.r_executor import RExecutorError
 from src.analysis.r_values import r_value
 from src.analysis.sc_pca import PROTOCOL as PCA_PROTOCOL
 from src.analysis.sc_pca import checked_completed_pca, dimension_binding
 from src.analysis.stage_run import FixedStageRun, PreparedStage, run_fixed_stage
+from src.analysis.stage_verify import CompletedStageCheck, verify_completed
 from src.stage_defs import CLUSTER, stage_directory
 
 CLUSTER_TOOL_VERSION = "1.0.0"
@@ -462,38 +463,37 @@ def checked_completed_cluster(
     ):
         raise ValueError("聚类源证据或协议已变化；本次结果仅为历史")
     directory = Path(attempt["directory"]).resolve()
-    if directory != stage_directory(CLUSTER, root, attempt["attempt_id"])[1]:
-        raise ValueError("聚类目录非法")
-    meta_path = directory / "metadata.json"
-    if meta_path.resolve().parent != directory:
-        raise ValueError("聚类 metadata 路径非法")
-    meta = json.loads(meta_path.read_bytes())
-    if (
-        attempt["status"] != "completed"
-        or attempt["tool_version"] != CLUSTER_TOOL_VERSION
-        or json.loads(attempt["protocol"]) != PROTOCOL
-        or meta != attempt["result"]
-        or meta.get("status") != "completed"
-        or meta.get("returncode") != 0
-        or meta.get("source_before") != source
-        or meta.get("source_after") != source
-        or meta.get("protocol") != PROTOCOL
-        or meta.get("binding_sha256") != attempt["binding_sha256"]
-    ):
-        raise ValueError("聚类权威结果与协议不符")
+    pca_directory = Path(pca["directory"]).resolve()
+    parent_directory = Path(parent["directory"]).resolve()
     names = set(OUTPUT_FILES) | {"stdout.txt", "stderr.txt"}
-    if set(meta["artifacts"]) != names or any(
-        (directory / n).resolve().parent != directory for n in names
-    ):
-        raise ValueError("聚类登记白名单不符")
-    identities = {Path(r["path"]).name: r for r in fingerprints([directory / n for n in names])}
-    if identities != meta["artifacts"]:
-        raise ValueError("聚类文件身份已变化")
-    summary = check_outputs(directory, Path(pca["directory"]).resolve(), source)
-    if any(meta.get(k) != v for k, v in summary.items()) or (directory / "script.R").read_text(
-        encoding="utf-8"
-    ) != cluster_script(
-        Path(pca["directory"]).resolve(), Path(parent["directory"]).resolve(), directory, source
-    ):
-        raise ValueError("聚类固定脚本或汇总不一致")
+    plan = CompletedStageCheck(
+        directory=directory,
+        expected_directory=stage_directory(CLUSTER, root, attempt["attempt_id"])[1],
+        attempt=attempt,
+        tool_version=CLUSTER_TOOL_VERSION,
+        protocol=PROTOCOL,
+        binding=attempt["binding_sha256"],
+        source=source,
+        required_fields={
+            "status": "completed",
+            "returncode": 0,
+            "source_before": source,
+            "source_after": source,
+            "protocol": PROTOCOL,
+            "binding_sha256": attempt["binding_sha256"],
+        },
+        required_files=tuple(names),
+        exact_files=True,
+        summary=lambda: check_outputs(directory, pca_directory, source),
+        script=lambda: cluster_script(pca_directory, parent_directory, directory, source),
+        result_error="聚类权威结果与协议不符",
+        directory_error="聚类目录非法",
+        metadata_path_error="聚类 metadata 路径非法",
+        files_error="聚类登记白名单不符",
+        artifact_error="聚类登记白名单不符",
+        identity_error="聚类文件身份已变化",
+        summary_error="聚类固定脚本或汇总不一致",
+        script_error="聚类固定脚本或汇总不一致",
+    )
+    summary, _ = verify_completed(plan)
     return summary
