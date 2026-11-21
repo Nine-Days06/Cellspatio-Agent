@@ -190,6 +190,20 @@ describe('streamChat 错误分支', () => {
     expect(c.ends).toEqual(['error'])
   })
 
+  it('500 非 JSON body 抛 ApiError 并回退到 HTTP 状态文案', async () => {
+    const c = capture()
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+      new Response('internal error', { status: 500 }),
+    )
+
+    await expect(streamChat(options(c))).rejects.toMatchObject({
+      name: 'ApiError',
+      status: 500,
+      message: '请求失败（HTTP 500）',
+    })
+    expect(c.ends).toEqual(['error'])
+  })
+
   it('已中止的 signal 走 aborted 收尾且不抛错', async () => {
     const c = capture()
     const controller = new AbortController()
