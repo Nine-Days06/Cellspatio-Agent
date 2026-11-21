@@ -275,14 +275,19 @@ class GovernanceStore:
         return path
 
     def _check_supersedes(
-        self, conn: sqlite3.Connection, submission_id: str, supersedes: list[str]
+        self,
+        conn: sqlite3.Connection,
+        submission_id: str,
+        supersedes: list[str],
+        contributor_id: str,
     ) -> None:
-        """supersedes 只能指向已接受的既有提交，且整张引用图必须无环。"""
+        """supersedes 只能指向本人的已接受提交，且整张引用图必须无环。"""
         for target in supersedes:
             if target == submission_id:
                 raise EvidenceError("invalid_input", "supersedes 不能指向自己")
             row = conn.execute(
-                "SELECT status FROM submissions WHERE submission_id=?", (target,)
+                "SELECT status, contributor_id FROM submissions WHERE submission_id=?",
+                (target,),
             ).fetchone()
             if row is None:
                 raise EvidenceError(
@@ -290,6 +295,8 @@ class GovernanceStore:
                 )
             if row["status"] != STATE_ACCEPTED:
                 raise EvidenceError("invalid_state", f"只能取代 accepted 证据：{target}")
+            if row["contributor_id"] != contributor_id:
+                raise EvidenceError("permission_denied", "只能取代自己的证据")
         edges = {
             row["submission_id"]: json.loads(row["supersedes_json"])
             for row in conn.execute("SELECT submission_id, supersedes_json FROM submissions")
@@ -382,7 +389,7 @@ class GovernanceStore:
                     "SELECT 1 FROM submissions WHERE submission_id=?", (submission_id,)
                 ).fetchone():
                     raise EvidenceError("duplicate", "submission_id 已存在")
-                self._check_supersedes(conn, submission_id, env.supersedes)
+                self._check_supersedes(conn, submission_id, env.supersedes, env.contributor_id)
                 if env.revises_submission_id:
                     original = self._row(conn, env.revises_submission_id)
                     if original["contributor_id"] != env.contributor_id:
@@ -447,7 +454,7 @@ class GovernanceStore:
         """记录一次复核；两个 pass 到齐时自动转 accepted。"""
         reason = _clean(reason)
         now = _now()
-        with self._conn() as conn:
+        with self._conn(write=True) as conn:
             row = self._row(conn, submission_id)
             events = [
                 (event["actor_id"], event["action"])
@@ -494,7 +501,7 @@ class GovernanceStore:
         """贡献者撤回自己的 accepted 提交，或合规复核者强制撤销。"""
         reason = _clean(reason)
         now = _now()
-        with self._conn() as conn:
+        with self._conn(write=True) as conn:
             row = self._row(conn, submission_id)
             state = withdraw_decision(
                 status=row["status"],

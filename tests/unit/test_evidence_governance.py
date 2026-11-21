@@ -7,6 +7,7 @@ import json
 import pytest
 
 from src.cli import evidence_governance
+from src.evidence.errors import EvidenceError
 from src.evidence.governance import (
     ACTION_COMPLIANCE_NEEDS_CHANGES,
     ACTION_COMPLIANCE_PASS,
@@ -149,6 +150,23 @@ def test_contributor_cannot_review_own_submission(tmp_path):
             action=ACTION_DOMAIN_PASS,
             checklist=_checks(DOMAIN_CHECKLIST),
         )
+
+
+def test_contributor_cannot_supersede_other_submission(tmp_path):
+    """supersedes 不能作废他人的已接受证据。"""
+    store = GovernanceStore(tmp_path)
+    original = store.submit(_envelope(_card("evc-a"), contributor="alice"))
+    _accept(store, original["evidence_id"])
+
+    with pytest.raises(EvidenceError, match="只能取代自己的证据") as exc:
+        store.submit(
+            _envelope(
+                _card("evc-b"),
+                contributor="bob",
+                supersedes=[original["evidence_id"]],
+            )
+        )
+    assert exc.value.kind == "permission_denied"
 
 
 def test_same_actor_cannot_sign_both_roles(tmp_path):
