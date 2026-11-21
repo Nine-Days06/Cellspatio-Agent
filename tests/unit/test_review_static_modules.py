@@ -32,6 +32,7 @@ def test_review_render_module_contract() -> None:
                     r"|(?:const|let|var)\s+(?:reviewerRole|noticeFor|actionKind)\s*="
                 ),
             ),
+            ("渲染层不得引用已删除的角色推导", re.compile(r"\breviewerRole\b")),
             (
                 "渲染层不得用动作 id 的 _pass/_needs_changes/_reject 后缀判断类型",
                 re.compile(r"_(?:pass|needs_changes|reject)\b"),
