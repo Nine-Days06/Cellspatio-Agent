@@ -3,16 +3,15 @@
 from __future__ import annotations
 
 import csv
-import io
 import json
 import math
 from pathlib import Path
 from typing import Any
 
-from src.analysis.qc_preview import _digest, checked_evidence
+from src.analysis.evidence import digest, fingerprints, records
+from src.analysis.qc_preview import checked_evidence
 from src.analysis.r_executor import RExecutorError
 from src.analysis.sc_filter import FILTER_TOOL_VERSION, filter_script, verified_selection
-from src.analysis.sc_qc import _fingerprints
 from src.analysis.stage_run import executor_streams, finish_stage, start_stage
 
 PCA_TOOL_VERSION = "1.0.0"
@@ -80,11 +79,6 @@ OUTPUT_FILES = (
 )
 
 
-def _records(data: bytes) -> list[dict[str, str]]:
-    """按原顺序读取内部 CSV。"""
-    return list(csv.DictReader(io.StringIO(data.decode("utf-8-sig"))))
-
-
 def checked_parent(run: dict[str, Any], parent: dict[str, Any], root: Path) -> dict[str, Any]:
     """核对数据库结果、受控目录、源证据及当前批准；不启动 R。"""
     if parent["status"] != "completed" or parent["tool_version"] != FILTER_TOOL_VERSION:
@@ -126,7 +120,7 @@ def checked_parent(run: dict[str, Any], parent: dict[str, Any], root: Path) -> d
     paths = [directory / name for name in PARENT_FILES]
     if any(p.resolve().parent != directory or not p.is_file() for p in paths):
         raise ValueError("父过滤文件缺失或路径非法")
-    identities = {Path(r["path"]).name: r for r in _fingerprints(paths)}
+    identities = {Path(r["path"]).name: r for r in fingerprints(paths)}
     if any(identities[n] != result["artifacts"].get(n) for n in PARENT_FILES):
         raise ValueError("父过滤文件身份已变化")
     for name in ("features.csv", "cell_qc.csv"):
@@ -138,8 +132,8 @@ def checked_parent(run: dict[str, Any], parent: dict[str, Any], root: Path) -> d
         run["evidence"]["input_path"], directory
     ):
         raise ValueError("父过滤固定脚本不符")
-    kept = [r["barcode"] for r in _records(selection) if r["keep"] == "1"]
-    barcodes = _records((directory / "barcodes.csv").read_bytes())
+    kept = [r["barcode"] for r in records(selection) if r["keep"] == "1"]
+    barcodes = records((directory / "barcodes.csv").read_bytes())
     dimensions = [int(x) for x in (directory / "dimensions.txt").read_text().splitlines()]
     if (
         barcodes != [{"barcode": b} for b in kept]
@@ -162,7 +156,7 @@ def checked_parent(run: dict[str, Any], parent: dict[str, Any], root: Path) -> d
         "tool_version": PCA_TOOL_VERSION,
     }
     return {
-        "binding_sha256": _digest(json.dumps(payload, sort_keys=True, ensure_ascii=False).encode()),
+        "binding_sha256": digest(json.dumps(payload, sort_keys=True, ensure_ascii=False).encode()),
         "source": payload,
         "cells": result["cells"],
         "features": result["features"],
@@ -277,8 +271,8 @@ def _check_outputs(directory: Path, parent_directory: Path) -> dict[str, Any]:
     ):
         raise ValueError("PCA 产物缺失、空或路径非法")
     summary = json.loads((directory / "summary.json").read_bytes())
-    mapping = _records((directory / "feature_mapping.csv").read_bytes())
-    parents = _records((parent_directory / "features.csv").read_bytes())
+    mapping = records((directory / "feature_mapping.csv").read_bytes())
+    parents = records((parent_directory / "features.csv").read_bytes())
     if len(mapping) != len(parents) or any(
         row
         != {
@@ -289,7 +283,7 @@ def _check_outputs(directory: Path, parent_directory: Path) -> dict[str, Any]:
         for i, (row, original) in enumerate(zip(mapping, parents, strict=True), 1)
     ):
         raise ValueError("PCA feature 映射不一致")
-    variables = _records((directory / "variable_features.csv").read_bytes())
+    variables = records((directory / "variable_features.csv").read_bytes())
     keys = [r["seurat_feature_key"] for r in mapping]
     selected = [r["seurat_feature_key"] for r in variables]
     usable = [r["seurat_feature_key"] for r in variables if r["usable"] == "TRUE"]
@@ -332,7 +326,7 @@ def _check_outputs(directory: Path, parent_directory: Path) -> dict[str, Any]:
         (
             "pca_embeddings.csv",
             "barcode",
-            [r["barcode"] for r in _records((parent_directory / "barcodes.csv").read_bytes())],
+            [r["barcode"] for r in records((parent_directory / "barcodes.csv").read_bytes())],
         ),
         ("pca_loadings.csv", "seurat_feature_key", usable),
     ):
@@ -345,7 +339,7 @@ def _check_outputs(directory: Path, parent_directory: Path) -> dict[str, Any]:
             not math.isfinite(float(v)) for r in rows for k, v in r.items() if k != key
         ):
             raise ValueError("PCA 数值或顺序非法")
-    stdev = _records((directory / "pca_stdev.csv").read_bytes())
+    stdev = records((directory / "pca_stdev.csv").read_bytes())
     if [r["pc"] for r in stdev] != [f"PC_{i}" for i in range(1, expected_pcs + 1)] or any(
         not math.isfinite(float(r["stdev"])) or float(r["stdev"]) <= 0 for r in stdev
     ):
@@ -399,7 +393,7 @@ def checked_completed_pca(
     paths = [directory / name for name in meta["artifacts"]]
     if any(p.resolve().parent != directory or not p.is_file() for p in paths):
         raise ValueError("PCA 登记文件缺失或路径非法")
-    identities = {Path(r["path"]).name: r for r in _fingerprints(paths)}
+    identities = {Path(r["path"]).name: r for r in fingerprints(paths)}
     if identities != meta["artifacts"] or not set(OUTPUT_FILES) <= identities.keys():
         raise ValueError("PCA 文件身份已变化")
     summary = _check_outputs(directory, Path(parent["directory"]).resolve())
@@ -413,7 +407,7 @@ def checked_completed_pca(
         "actual_pcs": summary["actual_pcs"],
         "stdev": [
             {"pc": r["pc"], "stdev": float(r["stdev"])}
-            for r in _records((directory / "pca_stdev.csv").read_bytes())
+            for r in records((directory / "pca_stdev.csv").read_bytes())
         ],
         "artifacts": identities,
     }
@@ -439,7 +433,7 @@ def dimension_binding(
         "artifacts": checked["artifacts"],
         "record_version": version,
     }
-    return _digest(json.dumps(payload, sort_keys=True, ensure_ascii=False).encode())
+    return digest(json.dumps(payload, sort_keys=True, ensure_ascii=False).encode())
 
 
 def current_dimensions(
@@ -515,6 +509,6 @@ def run_sc_pca(
             stdout, stderr = executor_streams(exc)
     finally:
         finish_stage(
-            directory, metadata, started, stdout, stderr, artifacts=True, fingerprints=_fingerprints
+            directory, metadata, started, stdout, stderr, artifacts=True, fingerprints=fingerprints
         )
     return metadata

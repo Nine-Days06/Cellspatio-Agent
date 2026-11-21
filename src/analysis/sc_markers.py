@@ -7,15 +7,15 @@ from collections import Counter
 from pathlib import Path
 from typing import Any
 
-from src.analysis.qc_preview import _digest
+from src.analysis.evidence import digest, fingerprints, records
 from src.analysis.r_executor import RExecutorError
-from src.analysis.sc_cluster import _r_value, checked_completed_cluster
+from src.analysis.r_values import r_value
+from src.analysis.sc_cluster import checked_completed_cluster
 from src.analysis.sc_marker_reviews import (
     CLUSTER_RECORD_VERSION,
     review_binding,
 )
-from src.analysis.sc_pca import DIMENSION_RECORD_VERSION, _records
-from src.analysis.sc_qc import _fingerprints
+from src.analysis.sc_pca import DIMENSION_RECORD_VERSION
 from src.analysis.stage_run import executor_streams, finish_stage, start_stage
 
 MARKER_TOOL_VERSION = "1.0.1"
@@ -163,15 +163,15 @@ def execution_binding(run: dict[str, Any], snapshot: dict[str, Any]) -> str:
         "tool_version": MARKER_TOOL_VERSION,
         "protocol": PROTOCOL,
     }
-    return _digest(json.dumps(payload, sort_keys=True, ensure_ascii=False).encode())
+    return digest(json.dumps(payload, sort_keys=True, ensure_ascii=False).encode())
 
 
 def marker_script(cluster_directory: Path, pca_directory: Path, directory: Path) -> str:
     """只在独立 R 子进程 trace 固定版本快路径；NULL 或后备均立即失败。"""
     args = ",\n    ".join(
-        f"{k}={v if v in ('Inf', '-Inf') else _r_value(v)}"
+        f"{k}={v if v in ('Inf', '-Inf') else r_value(v)}"
         if isinstance(v, str)
-        else f"{k}={_r_value(v)}"
+        else f"{k}={r_value(v)}"
         for k, v in PROTOCOL["markers"].items()
         if k != "norm.method"
     )
@@ -181,11 +181,11 @@ suppressPackageStartupMessages(library(jsonlite))
 cluster_dir <- {json.dumps(cluster_directory.as_posix())}
 pca_dir <- {json.dumps(pca_directory.as_posix())}
 output_dir <- {json.dumps(directory.as_posix())}
-required <- unlist(fromJSON({_r_value(json.dumps(PROTOCOL["packages"]))}))
+required <- unlist(fromJSON({r_value(json.dumps(PROTOCOL["packages"]))}))
 versions <- c(R=as.character(getRversion()), sapply(names(required)[-1], function(p) as.character(packageVersion(p))))
 stopifnot(identical(unname(versions), unname(required)))
 writeLines(paste(names(versions), versions), file.path(output_dir, "versions.txt"))
-future::plan({_r_value(PROTOCOL["threads"]["future"])})
+future::plan({r_value(PROTOCOL["threads"]["future"])})
 Seurat::setThreads({PROTOCOL["threads"]["Seurat"]}L)
 set.seed({PROTOCOL["markers"]["random.seed"]})
 obj <- readRDS(file.path(cluster_dir, "seurat_clustered.rds"))
@@ -271,7 +271,7 @@ stopifnot(unchanged)
 writeLines(capture.output(sessionInfo()), file.path(output_dir, "session_info.txt"))
 write_json(list(cells=ncol(obj), features=nrow(data), clusters=length(groups), marker_rows=nrow(out),
     positive_rows=sum(positive), negative_rows=sum(negative), plot_features=as.list(selected),
-    backend={_r_value(PROTOCOL["backend"])}, fastpath_succeeded=guard$fastpath,
+    backend={r_value(PROTOCOL["backend"])}, fastpath_succeeded=guard$fastpath,
     presto_calls=guard$presto_calls, fallback_calls=guard$fallback_calls, presto_nthreads=as.list(guard$nthreads),
     source_object_unchanged=unchanged, seurat_threads=Seurat::getThreads(), warnings=as.list(warnings)),
     file.path(output_dir, "summary.json"), auto_unbox=TRUE, pretty=TRUE)
@@ -301,7 +301,7 @@ def check_outputs(directory: Path, pca_directory: Path, source: dict[str, Any]) 
         raise ValueError("marker 产物缺失、空或路径非法")
     mapping = {
         r["seurat_feature_key"]: r
-        for r in _records((pca_directory / "feature_mapping.csv").read_bytes())
+        for r in records((pca_directory / "feature_mapping.csv").read_bytes())
     }
     sizes = {r["cluster_id"]: r["cells"] for r in source["cluster_sizes"]}
     rows = _table(directory / "markers.csv", MARKER_FIELDS)
@@ -485,7 +485,7 @@ def run_sc_markers(
             stdout, stderr = executor_streams(exc)
     finally:
         finish_stage(
-            directory, metadata, started, stdout, stderr, artifacts=True, fingerprints=_fingerprints
+            directory, metadata, started, stdout, stderr, artifacts=True, fingerprints=fingerprints
         )
     return metadata
 
@@ -528,7 +528,7 @@ def checked_completed_marker(
         (directory / n).resolve().parent != directory for n in names
     ):
         raise ValueError("marker 产物白名单不符")
-    if {Path(r["path"]).name: r for r in _fingerprints([directory / n for n in names])} != meta[
+    if {Path(r["path"]).name: r for r in fingerprints([directory / n for n in names])} != meta[
         "artifacts"
     ]:
         raise ValueError("marker 产物身份变化")
