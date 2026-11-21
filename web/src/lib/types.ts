@@ -250,6 +250,8 @@ export interface MarkerCandidate {
 
 export interface MarkerPage {
   attempt_id: string
+  binding_sha256: string
+  scientific_status: 'unreviewed'
   total: number
   offset: number
   limit: number
