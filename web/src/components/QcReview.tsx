@@ -125,6 +125,7 @@ export function QcReview({ sessionId, runId, onRecorded }: { sessionId: string; 
     blocked: state ? state.blocked : ['QC 状态未加载'],
     busy,
     running,
+    reasonProvided: false,
   })
   return (
     <section aria-label="QC 阈值选择" className="analysis-stage space-y-3">
