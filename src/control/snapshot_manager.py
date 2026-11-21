@@ -26,8 +26,12 @@ class SnapshotManager:
             raise ValueError(f"run_id 不能包含路径分隔符: {run_id!r}")
         return self.snapshots_dir / run_id
 
-    def create_snapshot(self, run_id: str, commit_msg: str | None = None) -> Path:
-        """创建 worktree：snapshots/<run_id>，基于当前 HEAD"""
+    def create_snapshot(self, run_id: str) -> Path:
+        """创建 worktree：snapshots/<run_id>，基于当前 HEAD。
+
+        shortcut: 只捕获已提交状态；运行目录里的未提交改动不会进入快照，
+        需要在未提交状态下复现时再补 stash/拷贝。
+        """
         snap_path = self._snapshot_path(run_id)
         if snap_path.exists():
             # 快照是不可变证据：同名已存在时直接返回，绝不 reset 覆盖。
@@ -42,24 +46,6 @@ class SnapshotManager:
             check=True,
             capture_output=True,
         )
-        # 可选：提交当前变更作为快照记录（仅当有暂存变更时）
-        if commit_msg:
-            # 检查是否有暂存变更
-            result = subprocess.run(
-                ["git", "diff", "--cached", "--name-only"],
-                cwd=snap_path,
-                capture_output=True,
-                text=True,
-                check=False,
-            )
-            if result.stdout.strip():
-                subprocess.run(["git", "add", "-A"], cwd=snap_path, check=True, capture_output=True)
-                subprocess.run(
-                    ["git", "commit", "-m", commit_msg],
-                    cwd=snap_path,
-                    check=True,
-                    capture_output=True,
-                )
         return snap_path
 
     def delete_snapshot(self, run_id: str, force: bool = False) -> bool:

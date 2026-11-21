@@ -1256,7 +1256,7 @@ def test_run_analysis_for_agent_finish_run_persists_wrroc(tmp_path, monkeypatch)
     """真实 WorkflowRecorder：finish_run 应落盘 .wrroc/<run_id>/workflow.json。"""
     monkeypatch.setattr(
         "src.control.snapshot_manager.SnapshotManager.create_snapshot",
-        lambda self, run_id, commit_msg=None: tmp_path / "snap",
+        lambda self, run_id: tmp_path / "snap",
     )
     manager = _make_manager()
     manager.workflow_recorder = WorkflowRecorder(wrroc_base_dir=str(tmp_path / "wrroc"))
@@ -1278,7 +1278,7 @@ def test_general_workflow_records_with_real_recorder(tmp_path, monkeypatch):
     """真实 recorder 接受 general 回退：step_type=general，tool 为 null。"""
     monkeypatch.setattr(
         "src.control.snapshot_manager.SnapshotManager.create_snapshot",
-        lambda self, run_id, commit_msg=None: tmp_path / "snap",
+        lambda self, run_id: tmp_path / "snap",
     )
     manager = _make_manager()
     manager.intent_parser = FakeIntent(

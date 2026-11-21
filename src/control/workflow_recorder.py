@@ -202,7 +202,7 @@ class WorkflowRecorder:
             from src.control.snapshot_manager import SnapshotManager
 
             mgr = SnapshotManager(self.repo_root)
-            mgr.create_snapshot(run.run_id, commit_msg=f"Snapshot for {run.run_id}")
+            mgr.create_snapshot(run.run_id)
         # 自动写入 LightRAG 知识图谱
         if self.kg_memory:
             self.kg_memory.ingest(exec_)

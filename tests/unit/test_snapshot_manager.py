@@ -24,7 +24,7 @@ def test_snapshot_manager_creates_worktree():
         subprocess.run(["git", "commit", "-m", "init"], cwd=repo, check=True)
 
         mgr = SnapshotManager(repo_root=repo)
-        snap_path = mgr.create_snapshot("run-001", commit_msg="Snapshot for run-001")
+        snap_path = mgr.create_snapshot("run-001")
         assert snap_path.exists()
         assert (snap_path / ".git").exists()  # worktree 有独立 .git
         assert (snap_path / "README.md").exists()
@@ -50,7 +50,7 @@ def test_snapshot_manager_switches_context():
         subprocess.run(["git", "commit", "-m", "init"], cwd=repo, check=True)
 
         mgr = SnapshotManager(repo_root=repo)
-        snap_path = mgr.create_snapshot("run-001", commit_msg="Snap run-001")
+        snap_path = mgr.create_snapshot("run-001")
 
         # 在 worktree 中写入新文件
         (snap_path / "generated.txt").write_text("output")
