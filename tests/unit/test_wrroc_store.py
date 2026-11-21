@@ -71,6 +71,17 @@ def test_wrroc_list_runs():
         assert ids == {"run-001", "run-002"}
 
 
+def test_wrroc_list_runs_skips_deleted_records():
+    """索引残留但文件已删除时，list_runs 不应返回 None 占位。"""
+    with tempfile.TemporaryDirectory() as tmp:
+        store = WRROCStore(base_dir=Path(tmp) / ".wrroc")
+        path = store.persist(_make_run("run-001"))
+        store.persist(_make_run("run-002"))
+        path.unlink()
+        runs = store.list_runs()
+        assert [run.run_id for run in runs] == ["run-002"]
+
+
 def test_wrroc_persist_rejects_path_traversal():
     """run_id 不能把记录写出 .wrroc 目录。"""
     with tempfile.TemporaryDirectory() as tmp:

@@ -48,7 +48,8 @@ class WRROCStore:
         return WorkflowRun.from_json(wf_file.read_text(encoding="utf-8"))
 
     def list_runs(self) -> list[WorkflowRun]:
-        return [self.load(rid) for rid in sorted(self._index.keys())]
+        runs = (self.load(rid) for rid in sorted(self._index.keys()))
+        return [run for run in runs if run is not None]
 
     def build_lineage(self, run_id: str) -> LineageGraph:
         """构建 Lineage 图谱：文件/步骤/运行节点 + 依赖边"""
