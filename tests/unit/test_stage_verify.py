@@ -47,8 +47,6 @@ def _check(directory: Path, *, exact: bool = True, **overrides: Any) -> Complete
         "attempt": attempt,
         "tool_version": "1.0",
         "protocol": PROTOCOL,
-        "binding": "b",
-        "source": {"v": 1},
         "required_fields": {
             "status": "completed",
             "returncode": 0,

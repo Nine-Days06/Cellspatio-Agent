@@ -519,8 +519,6 @@ def checked_completed_marker(
         attempt=attempt,
         tool_version=MARKER_TOOL_VERSION,
         protocol=PROTOCOL,
-        binding=attempt["binding_sha256"],
-        source=source,
         required_fields={
             "status": "completed",
             "returncode": 0,

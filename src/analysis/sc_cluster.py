@@ -472,8 +472,6 @@ def checked_completed_cluster(
         attempt=attempt,
         tool_version=CLUSTER_TOOL_VERSION,
         protocol=PROTOCOL,
-        binding=attempt["binding_sha256"],
-        source=source,
         required_fields={
             "status": "completed",
             "returncode": 0,

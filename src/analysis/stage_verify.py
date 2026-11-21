@@ -18,8 +18,6 @@ class CompletedStageCheck:
     attempt: dict[str, Any]
     tool_version: str
     protocol: dict[str, Any]
-    binding: str
-    source: Any
     required_fields: dict[str, Any]
     required_files: tuple[str, ...]
     exact_files: bool

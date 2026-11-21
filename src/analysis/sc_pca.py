@@ -375,8 +375,6 @@ def checked_completed_pca(
         attempt=attempt,
         tool_version=PCA_TOOL_VERSION,
         protocol=PROTOCOL,
-        binding=source["binding_sha256"],
-        source=source["source"],
         required_fields={
             "tool": "sc_pca",
             "tool_version": PCA_TOOL_VERSION,
