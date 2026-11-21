@@ -67,8 +67,11 @@ class SnapshotManager:
         if not snap_path.exists():
             return False
         branch_name = f"snapshot/{run_id}"
+        remove_args = ["git", "worktree", "remove"]
+        if force:
+            remove_args.append("--force")
         subprocess.run(
-            ["git", "worktree", "remove", "--force" if force else "", str(snap_path)],
+            [*remove_args, str(snap_path)],
             cwd=self.repo_root,
             check=False,
             capture_output=True,

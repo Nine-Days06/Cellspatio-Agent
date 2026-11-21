@@ -2,6 +2,7 @@
 
 import tempfile
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -100,3 +101,23 @@ def test_snapshot_manager_rejects_path_traversal(tmp_path):
             mgr.create_snapshot(run_id)
         with pytest.raises(ValueError):
             mgr.delete_snapshot(run_id)
+
+
+def test_delete_snapshot_omits_empty_force_argument(tmp_path, monkeypatch):
+    """非强制删除不能把空字符串作为 git 参数传入。"""
+    mgr = SnapshotManager(tmp_path / "repo")
+    snap = mgr.snapshots_dir / "run-001"
+    snap.mkdir()
+    calls = []
+    monkeypatch.setattr(
+        "src.control.snapshot_manager.subprocess.run",
+        lambda args, **kwargs: calls.append(args) or SimpleNamespace(stdout=""),
+    )
+
+    assert mgr.delete_snapshot("run-001")
+    assert calls[0] == ["git", "worktree", "remove", str(snap)]
+    assert calls[1] == ["git", "branch", "-D", "snapshot/run-001"]
+
+    calls.clear()
+    assert mgr.delete_snapshot("run-001", force=True)
+    assert calls[0] == ["git", "worktree", "remove", "--force", str(snap)]
