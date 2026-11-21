@@ -42,12 +42,24 @@ def test_review_render_module_contract() -> None:
 
 
 def test_review_render_imports_modules() -> None:
-    """review.js 必须复用拆分后的 API 与模型模块。"""
+    """review.js 必须复用拆分后的 API、模型与选择快照模块。"""
     text = (STATIC / "review.js").read_text(encoding="utf-8")
-    for module in ("review-api.js", "review-model.js"):
+    for module in ("review-api.js", "review-model.js", "evidence-selection.js"):
         assert re.search(rf"""from\s+["']\./{re.escape(module)}["']""", text), (
             f"review.js 缺少对 {module} 的 import"
         )
+
+
+def test_review_reads_selection_snapshot() -> None:
+    """详情与提交只读选择快照，不再缓存独立的 selected/events/review。"""
+    text = (STATIC / "review.js").read_text(encoding="utf-8")
+    for token in ("state.selected", "state.events", "state.review"):
+        assert not re.search(rf"\b{re.escape(token)}\b", text), (
+            f"review.js 仍直接读取 {token}"
+        )
+    assert re.search(r"selection\.current\(\)\?\.id", text), (
+        "review.js 的提交目标必须取 selection.current()?.id"
+    )
 
 
 def test_review_api_has_no_dom() -> None:

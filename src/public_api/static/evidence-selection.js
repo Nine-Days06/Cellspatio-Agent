@@ -6,16 +6,20 @@ export function createEvidenceSelection(load) {
   let token = 0;
   let selectedId = null;
   let snapshot = null;
+  let error = null;
 
   return {
     async select(id) {
       const mine = ++token;
       selectedId = id;
       snapshot = null;
+      error = null;
       let data;
       try {
         data = await load(id);
-      } catch {
+      } catch (failure) {
+        if (mine !== token || id !== selectedId) return null;
+        error = failure;
         return null;
       }
       if (mine !== token || id !== selectedId) return null;
@@ -25,10 +29,14 @@ export function createEvidenceSelection(load) {
     current() {
       return snapshot;
     },
+    lastError() {
+      return error;
+    },
     clear() {
       token++;
       selectedId = null;
       snapshot = null;
+      error = null;
     },
   };
 }
