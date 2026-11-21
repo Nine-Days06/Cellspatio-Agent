@@ -29,6 +29,7 @@ from src.api.routes_qc import require_run, run_qc_root
 from src.api.stage_runtime import has_other_marker_running, has_running
 from src.api.verified_artifact import read_verified_artifact
 from src.ui.run_snapshot import RunSnapshot
+from src.ui.sc_stage_defs import MARKER_STAGE, stage_directory, stage_failure
 
 router = APIRouter(prefix="/api/sessions/{session_id}/qc/{run_id}/markers", tags=["markers"])
 logger = logging.getLogger(__name__)
@@ -223,8 +224,7 @@ def execute_markers(
         snapshot = {"cluster": cluster, "review": review, "source": source}
         if execution_binding(run, snapshot) != body.binding_sha256:
             raise HTTPException(409, "marker 来源绑定已变化，请刷新")
-        directory_parent = root.parent / "sc_markers"
-        directory = directory_parent / attempt_id
+        directory_parent, directory = stage_directory(MARKER_STAGE, root, attempt_id)
         claimed: dict[str, Any] = {}
 
         def execute(attempt: dict[str, Any]) -> dict[str, Any]:
@@ -238,12 +238,7 @@ def execute_markers(
                 raise
             except Exception as exc:  # noqa: BLE001 - 已认领任务必须安全收口，私有异常不进入消息。
                 logger.error("unexpected marker execution failure: %s", type(exc).__name__)
-                return {
-                    "status": "failed",
-                    "stage": "marker_review",
-                    "scientific_status": "unreviewed",
-                    "error": "marker 出现未预期错误；请检查本地证据",
-                }
+                return stage_failure(MARKER_STAGE, "marker 出现未预期错误；请检查本地证据")
 
         def finish(result: dict[str, Any]) -> dict[str, Any]:
             """保存终态并返回数据库权威结果。"""
@@ -266,12 +261,7 @@ def execute_markers(
             ),
             execute=execute,
             finish=finish,
-            on_error=lambda exc: {
-                "status": "failed",
-                "stage": "marker_review",
-                "scientific_status": "unreviewed",
-                "error": "marker 产物落盘失败",
-            },
+            on_error=lambda _exc: stage_failure(MARKER_STAGE, "marker 产物落盘失败"),
         )
 
     def refresh() -> dict[str, Any]:
