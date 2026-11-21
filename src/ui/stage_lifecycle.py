@@ -1,4 +1,9 @@
-"""阶段 attempt 的通用领取与终态事务骨架；阶段差异由描述提供。"""
+"""阶段 attempt 的通用领取与终态事务骨架；阶段差异由描述提供。
+
+``append_review_fact`` 的执行顺序为：可选 ``validate``（``validate_first`` 时）→
+``before_previous`` → previous 幂等/冲突 → ``validate``（默认）→ latest 去重 →
+``before_insert`` → 消息 → 事实 INSERT → revision 推进。
+"""
 
 from __future__ import annotations
 
@@ -66,6 +71,8 @@ class ReviewFactPlan:
 
     ``previous_match`` / ``latest_match`` 是 WHERE 列值映射，标识符只能来自内部阶段描述；
     ``insert_values`` 不含接缝生成的 review_id/created_at/message_id。
+    ``latest_match`` 与 ``same_latest`` 必须成对提供；latest 去重要求插入值含
+    ``source_revision``。消息与 run 都依赖 ``session_id``。
     """
 
     table: str
@@ -78,6 +85,15 @@ class ReviewFactPlan:
     message: Callable[[dict[str, Any]], tuple[str, dict[str, Any]]] | None = None
     run_id: str | None = None
     session_id: str | None = None
+
+    def __post_init__(self) -> None:
+        """拒绝会静默降级或无法绑定会话的无效组合。"""
+        if (self.latest_match is None) != (self.same_latest is None):
+            raise ValueError("latest_match 与 same_latest 必须同时提供")
+        if self.latest_match is not None and "source_revision" not in self.insert_values:
+            raise ValueError("latest 去重需要 insert_values.source_revision")
+        if self.session_id is None and (self.run_id is not None or self.message is not None):
+            raise ValueError("复核 run 或消息需要 session_id")
 
 
 @dataclass(frozen=True)
@@ -101,12 +117,14 @@ def append_review_fact(
 ) -> ReviewFactResult:
     """在单一事务内追加复核事实：previous 幂等/冲突后插入，返回是否新增。
 
-    ``before_previous`` 在幂等早退前检查始终存在的前提；``validate`` 负责 run/父/attempt
-    的存在与身份校验；``validate_first`` 供“旧 revision 先报失效”的路径使用。
-    ``before_insert`` 在 latest 去重之后、消息与 INSERT 之前执行。
+    顺序：可选 ``validate``（``validate_first`` 时）→ ``before_previous`` → previous
+    幂等/冲突 → ``validate``（默认）→ latest 去重 → ``before_insert`` → 消息 →
+    INSERT → revision。``before_previous`` 在幂等早退前检查始终存在的前提；
+    ``validate`` 负责 run/父/attempt 的存在与身份校验；``validate_first`` 供
+    “旧 revision 先报失效”的路径使用，必须同时提供 ``validate``。
     """
-    if plan.session_id is None and (plan.run_id is not None or plan.message is not None):
-        raise ValueError("复核 run 或消息需要 session_id")
+    if validate_first and validate is None:
+        raise ValueError("validate_first 需要 validate")
     with connect() as conn:
         conn.execute("BEGIN IMMEDIATE")
         if validate_first and validate is not None:
@@ -144,8 +162,6 @@ def append_review_fact(
         fact.setdefault("review_id", uuid.uuid4().hex)
         fact.setdefault("created_at", now)
         if plan.message is not None:
-            if plan.session_id is None:
-                raise ValueError("复核消息需要 session_id")
             content, results = plan.message(fact)
             fact["message_id"] = publish_message(
                 conn, plan.session_id, content, results, now, encode_results
