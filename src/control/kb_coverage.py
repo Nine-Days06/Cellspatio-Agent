@@ -7,11 +7,24 @@ from typing import Any
 
 from src.knowledge.knowledge_index import KnowledgeIndex
 
+
+def _env_int(name: str, default: int) -> int:
+    """读取整数环境变量；非法值回退默认并告警，避免导入期崩溃。"""
+    raw = os.environ.get(name)
+    if raw is None:
+        return default
+    try:
+        return int(raw)
+    except ValueError:
+        logging.getLogger(__name__).warning("%s 不是整数，回退 %s", name, default)
+        return default
+
+
 # 按需补库：显式 ID 不在库中时触发；context 过短作为 mock/空库回退
 # （LightRAG 在非空图上几乎总是返回 30k+ 松散匹配，长度阈值不可靠）
-LAZY_INGEST_MIN_CONTEXT = int(os.environ.get("LAZY_INGEST_MIN_CONTEXT", "300"))
+LAZY_INGEST_MIN_CONTEXT = _env_int("LAZY_INGEST_MIN_CONTEXT", 300)
 # 单次提问最多自动入库条数（控延迟与体积）
-LAZY_INGEST_MAX_ASSETS = int(os.environ.get("LAZY_INGEST_MAX_ASSETS", "3"))
+LAZY_INGEST_MAX_ASSETS = _env_int("LAZY_INGEST_MAX_ASSETS", 3)
 # 试点范围：暂不含 GEO（搜索噪声大）
 LAZY_INGEST_SOURCES = ("kegg", "uniprot")
 

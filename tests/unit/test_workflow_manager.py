@@ -270,6 +270,10 @@ def test_de_success_writes_summary_to_knowledge_builder():
     assert result["status"] == "success"
     assert builder.texts, "成功后应写回知识库"
     assert "差异表达" in builder.texts[0]
+    # 共享知识库不应记录本机绝对路径
+    assert "counts.csv" in builder.texts[0]
+    assert str(Path.cwd()) not in builder.texts[0]
+    assert ":\\" not in builder.texts[0]
 
 
 def test_de_failure_does_not_write_knowledge():
@@ -739,6 +743,16 @@ def test_lazy_ingest_max_assets_cap():
     assert len(result["lazy_ingested"]) == LAZY_INGEST_MAX_ASSETS == 3
     assert len(kegg.ingested) == 3
     assert kegg.ingested == ["map00010", "map00020", "map00030"]
+
+
+def test_env_int_falls_back_on_invalid_value(monkeypatch):
+    """非法整数环境变量不能炸导入期。"""
+    from src.control.kb_coverage import _env_int
+
+    monkeypatch.setenv("SOME_TEST_INT", "abc")
+    assert _env_int("SOME_TEST_INT", 7) == 7
+    monkeypatch.delenv("SOME_TEST_INT")
+    assert _env_int("SOME_TEST_INT", 7) == 7
 
 
 def test_lazy_ingest_search_fallback_when_no_explicit_id():

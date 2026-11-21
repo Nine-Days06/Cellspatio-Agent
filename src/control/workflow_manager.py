@@ -559,7 +559,9 @@ class WorkflowManager:
             result.returncode,
         )
         if result.returncode == 0:
-            self._record_analysis_to_kb(analysis_type, input_file, output_file)
+            self._record_analysis_to_kb(
+                analysis_type, input_file, output_file, params.get("question", "")
+            )
         explanation = None
         if self.explainer is not None:
             try:
@@ -640,7 +642,10 @@ class WorkflowManager:
     def _record_analysis_to_kb(
         self, analysis_type: str, input_file: str, output_file: str, user_question: str = ""
     ) -> None:
-        """分析成功后写回主知识库（闭环记忆）；失败仅告警"""
+        """分析成功后写回主知识库（闭环记忆）；失败仅告警。
+
+        只写文件名，不写绝对路径：共享知识库不应记录本机目录结构。
+        """
         if self.knowledge_builder is None:
             return
         zh = {
@@ -651,8 +656,8 @@ class WorkflowManager:
         text = (
             "# 分析实验记录\n"
             f"类型：{zh}（{analysis_type}）\n"
-            f"输入：{input_file}\n"
-            f"输出：{output_file}\n"
+            f"输入：{Path(input_file).name}\n"
+            f"输出：{Path(output_file).name}\n"
             f"触发问题：{user_question}\n"
             "状态：执行成功（returncode=0）\n"
         )
