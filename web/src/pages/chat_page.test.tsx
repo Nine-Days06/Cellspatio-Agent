@@ -521,6 +521,41 @@ describe('ChatPage 约束落点（1/2）', () => {
     expect(screen.getAllByText(/上下文接近压缩阈值/)).toHaveLength(1)
   })
 
+  it('历史在生成期间返回时，结束后仍会 hydrate 一次', async () => {
+    const sid = nextSid()
+    const messages = [makeMsg(sid)]
+    seedMessages(sid, messages)
+    listSessionsMock.mockResolvedValue({ sessions: [makeSummary(sid)] })
+    let release: (() => void) | undefined
+    fetchMock.mockImplementation((url: unknown) => {
+      if (!String(url).includes(`/sessions/${sid}/messages`)) return routeFetch(url)
+      return new Promise((resolve) => {
+        release = () =>
+          resolve({ ok: true, status: 200, json: async () => payloads.get(sid) })
+      })
+    })
+
+    render(
+      <QueryClientProvider
+        client={new QueryClient({
+          defaultOptions: { queries: { retry: false, refetchOnWindowFocus: false } },
+        })}
+      >
+        <ChatPage />
+      </QueryClientProvider>,
+    )
+
+    await waitFor(() => expect(useChatStore.getState().sessionId).toBe(sid))
+    act(() => useChatStore.setState({ busy: true }))
+    await waitFor(() => expect(release).toBeTypeOf('function'))
+    act(() => release?.())
+    await waitFor(() => expect(fetchMock).toHaveBeenCalled())
+    expect(useChatStore.getState().history).toEqual([])
+
+    act(() => useChatStore.setState({ busy: false }))
+    await waitFor(() => expect(useChatStore.getState().history).toEqual(messages))
+  })
+
   it('历史消息的图表渲染进 charts-slot（ChartBlock 接线）', async () => {
     const sid = nextSid()
     const withChart = makeMsg(sid, {

@@ -100,18 +100,22 @@ export function ChatPage() {
   // ② 历史拉取成功 → hydrate：history + soft_warn + 恢复的 pending 脚本卡。
   //    顶层 pending_script 是 restore 的权威结果（后端先取 messages 后置 expired，
   //    messages[].pending_script 状态是旧值），message_id 从携带卡片的消息取。
+  const hydratedQueryRef = useRef<unknown>(null)
   useEffect(() => {
     const data = messagesQuery.data
     if (!data) return
+    if (hydratedQueryRef.current === data) return
     const state = useChatStore.getState()
     if (state.busy || state.sessionId !== data.session.id) return
+    hydratedQueryRef.current = data
     setSession(data.session.id, data.messages)
     if (data.soft_warn) useChatStore.setState({ softWarn: true })
     if (data.pending_script) {
       const holder = [...data.messages].reverse().find((m) => m.pending_script !== null)
       setScriptCard({ ...data.pending_script, message_id: holder?.id ?? -1 })
     }
-  }, [messagesQuery.data, setSession, setScriptCard])
+    // busy 期间跳过后，本轮结束时必须重新尝试，否则历史永远不会 hydrate。
+  }, [messagesQuery.data, setSession, setScriptCard, busy])
 
   // ②-b 当前展示卡的 message_id 变化（恢复出新卡/换卡）→ 丢弃上一张卡的失败/成功态；
   //      同一 message_id 的 status 回写不算换卡。scriptCard 优先，与 ConfirmCard 一致。
