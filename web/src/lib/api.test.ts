@@ -115,7 +115,12 @@ describe('错误处理', () => {
   it('400 → ApiError(status=400)，保留后端动作错误文案', async () => {
     mockFetch(() => jsonResponse(400, { detail: '缺少 source 或 asset_id' }))
     await expect(
-      confirmAction({ session_id: 's1', action: 'data_confirm' }),
+      confirmAction({
+        session_id: 's1',
+        action: 'data_confirm',
+        source: 'geo',
+        asset_id: 'GSE1',
+      }),
     ).rejects.toMatchObject({ status: 400, message: '缺少 source 或 asset_id' })
   })
 
