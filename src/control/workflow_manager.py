@@ -13,7 +13,8 @@ from pathlib import Path
 from typing import Any
 
 from src.data.tenx import validate_tenx
-from src.ui.session_store import project_analysis_root, project_scoped_analysis_root
+from src.ui.analysis_roots import AnalysisRoots
+from src.ui.session_store import SessionStore
 
 logger = logging.getLogger(__name__)
 
@@ -55,6 +56,7 @@ class WorkflowManager:
         require_script_confirmation: bool = False,
         workflow_recorder=None,
         kg_query=None,
+        analysis_roots: AnalysisRoots | None = None,
     ):
         self.intent_parser = intent_parser
         self.knowledge_client = knowledge_client
@@ -73,6 +75,10 @@ class WorkflowManager:
         self.require_script_confirmation = require_script_confirmation
         self.workflow_recorder = workflow_recorder
         self.kg_query = kg_query  # 运行记忆问答（KGQuery），未注入时 query_memory 返回 error
+        self.analysis_roots = analysis_roots or AnalysisRoots(
+            SessionStore(),
+            Path(workflow_recorder.repo_root) if workflow_recorder else Path.cwd(),
+        )
 
     def execute_workflow(
         self, user_input: str, context: dict[str, Any] | None = None
@@ -267,8 +273,7 @@ class WorkflowManager:
 
     def _project_output_root(self, context: dict[str, Any]) -> Path | None:
         """项目会话的产物根；未归类会话返回 None，沿用旧输出位置。"""
-        repo = Path(self.workflow_recorder.repo_root) if self.workflow_recorder else Path.cwd()
-        return project_scoped_analysis_root(context.get("session_id"), repo)
+        return self.analysis_roots.project_scoped(context.get("session_id"))
 
     @staticmethod
     def _de_output_stats(output_file: str) -> dict[str, Any]:
@@ -411,8 +416,7 @@ class WorkflowManager:
 
         from src.analysis.sc_qc import run_sc_qc
 
-        root = Path(self.workflow_recorder.repo_root) if self.workflow_recorder else Path.cwd()
-        analysis_root = project_analysis_root(context.get("session_id"), root)
+        analysis_root = self.analysis_roots.for_session(context.get("session_id"))
         return run_sc_qc(input_file, self.r_executor, analysis_root / "sc_qc", run_id)
 
     def _execute_spatial_analysis(
