@@ -5,12 +5,14 @@ import sqlite3
 import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
 from cleaner.llm_validator import (
     _build_log_rows,
     _build_per_article_prompt,
     _count_verdicts,
+    _download_and_parse_batch,
     _extract_json,
     _normalize_verdict,
 )
@@ -857,6 +859,19 @@ class TestExportArticlesCsv(unittest.TestCase):
         self.assertTrue(rec_path.exists())
         content = rec_path.read_text(encoding="utf-8").strip().splitlines()
         self.assertEqual(sorted(content), ["A", "B"])
+
+
+class TestBatchWithoutOutput(unittest.TestCase):
+    """Batch completed 但没有输出文件时不能静默跳过整批。"""
+
+    @patch("cleaner.llm_validator._run_sync_validation_for_pmids")
+    @patch("cleaner.llm_validator._clear_batch_checkpoint")
+    def test_falls_back_to_sync(self, clear, sync):
+        status = SimpleNamespace(status="completed", output_file_id=None, error_file_id=None)
+        _download_and_parse_batch(None, status, {"batch_id": "b1", "pmid_list": ["1", "2"]})
+
+        clear.assert_called_once()
+        sync.assert_called_once_with(["1", "2"])
 
 
 if __name__ == "__main__":

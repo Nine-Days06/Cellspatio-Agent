@@ -1291,6 +1291,13 @@ def _download_and_parse_batch(client, batch_status, chk: dict):
     output_id = getattr(batch_status, "output_file_id", None)
     error_id = getattr(batch_status, "error_file_id", None)
 
+    if not output_id:
+        # completed 却无输出文件时，整批 PMID 都没有落库；直接同步补验。
+        logger.error("Batch 已完成但没有输出文件，降级为同步模式")
+        _clear_batch_checkpoint()
+        _run_sync_validation_for_pmids(all_pmids)
+        return
+
     if output_id:
         logger.info("下载结果文件...")
         try:
