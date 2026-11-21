@@ -11,7 +11,7 @@ from types import SimpleNamespace
 import pytest
 
 import src.analysis.sc_cluster as sc_cluster
-import src.ui.session_store as session_store
+import src.ui.sc_stages as sc_stages
 from src.analysis.sc_cluster import (
     CLUSTER_TOOL_VERSION,
     PROTOCOL,
@@ -19,7 +19,7 @@ from src.analysis.sc_cluster import (
     dimension_binding,
     epochs_for,
 )
-from src.api import routes_clusters
+from src.api import authorized_run
 from src.api.routes_pca import DIMENSION_RECORD_VERSION
 from tests.unit.test_sc_pca import PARAMS, table
 from tests.unit.test_sc_pca_dimensions import dimensions_ready as _dimensions_ready
@@ -153,6 +153,8 @@ def test_authorize_restore_idempotent_own_revision_and_no_leak(ready):
     exposed = json.dumps(state) + json.dumps(d.store.get_messages(d.sid))
     assert d.body["reason"] not in exposed and str(d.source) not in exposed
     attempt = d.store.get_qc_run(d.sid, d.rid)["cluster_attempts"][0]
+    assert Path(attempt["directory"]).parent == d.root.parent / "sc_clusters"
+    assert Path(attempt["directory"]).name == attempt["attempt_id"]
     assert attempt["reason"] == d.body["reason"]
     assert attempt["snapshot"]["review"]["reason"] == "私有维度依据"
     assert d.body["reason"] not in (Path(attempt["directory"]) / "script.R").read_text()
@@ -231,6 +233,19 @@ def test_running_guards_and_duplicate_post(ready):
     d.executor.execute_script.assert_called_once()
 
 
+def test_lock_conflict_is_busy_without_r(ready):
+    d = ready
+    lock = authorized_run.session_lock(d.sid)
+    assert lock.acquire(blocking=False)
+    try:
+        response = d.client.post(d.path + "/execute", json=d.body)
+    finally:
+        lock.release()
+    assert response.status_code == 409
+    assert response.json()["detail"] == "该会话已有任务在进行"
+    d.executor.execute_script.assert_not_called()
+
+
 def test_previous_attempt_is_rechecked_after_lock(ready, monkeypatch):
     d = ready
     run = d.store.get_qc_run(d.sid, d.rid)
@@ -250,7 +265,7 @@ def test_previous_attempt_is_rechecked_after_lock(ready, monkeypatch):
 
     class RacingLock:
         def acquire(self, blocking=False):
-            claimed = d.store.start_sc_cluster(
+            claimed = d.store.stages.claim_cluster(
                 d.sid,
                 d.rid,
                 d.body["revision"],
@@ -262,13 +277,13 @@ def test_previous_attempt_is_rechecked_after_lock(ready, monkeypatch):
                 str(d.root.parent / "sc_clusters" / attempt_id),
                 attempt_id,
             )
-            d.store.finish_sc_cluster(attempt_id, {"status": "completed"}, claimed)
+            d.store.stages.finish_cluster(attempt_id, {"status": "completed"}, claimed)
             return True
 
         def release(self):
             return None
 
-    monkeypatch.setattr(routes_clusters, "session_lock", lambda _: RacingLock())
+    monkeypatch.setattr(authorized_run, "session_lock", lambda _: RacingLock())
     response = d.client.post(d.path + "/execute", json=d.body)
     assert response.status_code == 200
     assert response.json()["attempts"][0]["attempt_id"] == attempt_id
@@ -308,6 +323,9 @@ def test_live_mutation_fails_finish_without_restoring_revision(ready, mutation):
     state = d.client.post(d.path + "/execute", json=d.body).json()
     assert state["attempts"][0]["status"] == "failed"
     assert state["revision"] == d.body["revision"] + (12 if mutation == "revision" else 2)
+    attempt = d.store.get_qc_run(d.sid, d.rid)["cluster_attempts"][0]
+    metadata = json.loads((Path(attempt["directory"]) / "metadata.json").read_text())
+    assert metadata["status"] == "failed"
     assert d.client.post(d.path + "/execute", json=d.body).status_code == 200
     d.executor.execute_script.assert_called_once()
 
@@ -425,7 +443,7 @@ def test_db_failure_does_not_execute_or_leak(ready, monkeypatch, caplog):
     def fail(*args):
         raise sqlite3.OperationalError("private path and clinical reason")
 
-    monkeypatch.setattr(type(d.store), "start_sc_cluster", fail)
+    monkeypatch.setattr(type(d.store.stages), "claim_cluster", fail)
     response = d.client.post(d.path + "/execute", json=d.body)
     assert response.status_code == 409
     assert "clinical" not in response.text + caplog.text
@@ -442,7 +460,7 @@ def test_finish_message_failure_rolls_back_terminal_state(ready, monkeypatch):
         raise sqlite3.OperationalError("private message encoding failure")
 
     with monkeypatch.context() as scoped:
-        scoped.setattr(session_store, "_encode_results", fail)
+        scoped.setattr(sc_stages, "_encode_results", fail)
         response = d.client.post(d.path + "/execute", json=d.body)
     assert response.status_code == 409
     assert "private message encoding failure" not in response.text
@@ -451,7 +469,7 @@ def test_finish_message_failure_rolls_back_terminal_state(ready, monkeypatch):
     assert run["cluster_attempts"][0]["status"] == "running"
     assert len(d.store.get_messages(d.sid)) == before
 
-    d.store.interrupt_sc_clusters()
+    d.store.stages.interrupt_all()
     run = d.store.get_qc_run(d.sid, d.rid)
     assert run["cluster_attempts"][0]["status"] == "interrupted"
     assert run["revision"] == revision + 2
@@ -499,15 +517,15 @@ def test_interrupted_is_atomic_and_no_auto_resume(ready, monkeypatch):
         raise sqlite3.OperationalError("simulated process loss after claim")
 
     with monkeypatch.context() as scoped:
-        scoped.setattr(type(d.store), "finish_sc_cluster", stop)
+        scoped.setattr(type(d.store.stages), "finish_cluster", stop)
         assert d.client.post(d.path + "/execute", json=d.body).status_code == 409
     messages = len(d.store.get_messages(d.sid))
-    d.store.interrupt_sc_clusters()
+    d.store.stages.interrupt_all()
     state = d.client.get(d.path).json()
     assert state["revision"] == d.body["revision"] + 2
     assert state["attempts"][0]["status"] == "interrupted"
     assert len(d.store.get_messages(d.sid)) == messages + 1
-    d.store.interrupt_sc_clusters()
+    d.store.stages.interrupt_all()
     assert len(d.store.get_messages(d.sid)) == messages + 1
     assert d.client.post(d.path + "/execute", json=d.body).json() == state
     d.executor.execute_script.assert_called_once()

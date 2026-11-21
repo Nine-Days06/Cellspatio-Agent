@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import sqlite3
-import uuid
 from pathlib import Path
 from typing import Any
 
@@ -12,13 +11,16 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from src.analysis.qc_preview import Thresholds, build_preview, check_preview, checked_evidence
 from src.analysis.sc_filter import FILTER_TOOL_VERSION, run_sc_filter, verified_selection
-from src.api.chat_service import session_lock
+from src.api.authorized_run import StageClaim, run_authorized
+from src.api.deps import StoreDep
+from src.api.stage_runtime import running_stages
+from src.ui.run_snapshot import RunSnapshot
 from src.ui.session_store import SessionStore
 
 router = APIRouter(prefix="/api/sessions/{session_id}/qc", tags=["qc"])
 
 
-def run_qc_root(agent: Any, run: dict[str, Any]) -> Path:
+def run_qc_root(agent: Any, run: RunSnapshot) -> Path:
     """校验 run 目录在旧全局根或项目分析根内，返回 QC 根。"""
     root = Path(run["directory"]).resolve().parent
     recorder = getattr(getattr(agent, "workflow_manager", None), "workflow_recorder", None)
@@ -35,7 +37,7 @@ def run_qc_root(agent: Any, run: dict[str, Any]) -> Path:
     return root
 
 
-def require_run(store: SessionStore, session_id: str, run_id: str) -> dict[str, Any]:
+def require_run(store: SessionStore, session_id: str, run_id: str) -> RunSnapshot:
     """关联缺失/跨会话统一 404，不扫描旧消息路径。"""
     run = store.get_qc_run(session_id, run_id)
     if run is None:
@@ -43,20 +45,19 @@ def require_run(store: SessionStore, session_id: str, run_id: str) -> dict[str, 
     return run
 
 
-def view(run: dict[str, Any], blocked: str | None = None) -> dict[str, Any]:
+def view(run: RunSnapshot, blocked: str | None = None) -> dict[str, Any]:
     """只返回界面需要的权威状态，不返回原输入或逐细胞内容。"""
+    running = running_stages(run)
     return {
         "run_id": run["run_id"],
         "revision": run["revision"],
         "qc": run["evidence"]["summary"],
-        "active_preview": next(
-            (p for p in run["previews"] if p["preview_id"] == run["active_preview_id"]), None
-        ),
-        "approvals": [p for p in run["previews"] if p["status"] == "approved"],
+        "active_preview": run.active_preview,
+        "approvals": [p for p in run.previews if p["status"] == "approved"],
         "blocked": [blocked] if blocked else [],
-        "pca_running": any(a["status"] == "running" for a in run.get("pca_attempts", [])),
-        "cluster_running": any(a["status"] == "running" for a in run.get("cluster_attempts", [])),
-        "marker_running": any(a["status"] == "running" for a in run.get("marker_attempts", [])),
+        "pca_running": "pca" in running,
+        "cluster_running": "cluster" in running,
+        "marker_running": "marker" in running,
         "attempts": [
             {
                 **{
@@ -79,20 +80,18 @@ def view(run: dict[str, Any], blocked: str | None = None) -> dict[str, Any]:
                 if attempt["result"]
                 else None,
             }
-            for attempt in run.get("attempts", [])
+            for attempt in run.filter_attempts
         ],
     }
 
 
 @router.get("/{run_id}")
-def get_qc(session_id: str, run_id: str, request: Request) -> dict[str, Any]:
+def get_qc(session_id: str, run_id: str, request: Request, store: StoreDep) -> dict[str, Any]:
     """刷新后仍显示精确批准历史；变化证据显示阻断。"""
-    run = require_run(SessionStore(), session_id, run_id)
+    run = require_run(store, session_id, run_id)
     try:
         checked_evidence(run, run_qc_root(request.app.state.agent, run))
-        active = next(
-            (p for p in run["previews"] if p["preview_id"] == run["active_preview_id"]), None
-        )
+        active = run.active_preview
         if active and active["status"] == "pending":
             check_preview(run, run_qc_root(request.app.state.agent, run), active)
     except (OSError, ValueError) as exc:
@@ -101,9 +100,10 @@ def get_qc(session_id: str, run_id: str, request: Request) -> dict[str, Any]:
 
 
 @router.post("/{run_id}/preview")
-def preview_qc(session_id: str, run_id: str, body: Thresholds, request: Request) -> dict[str, Any]:
+def preview_qc(
+    session_id: str, run_id: str, body: Thresholds, request: Request, store: StoreDep
+) -> dict[str, Any]:
     """生成独立预览，以数据库版本条件替换 active 预览。"""
-    store = SessionStore()
     run = require_run(store, session_id, run_id)
     try:
         preview = build_preview(run, run_qc_root(request.app.state.agent, run), body)
@@ -123,12 +123,11 @@ class ApprovalRequest(BaseModel):
 
 @router.post("/{run_id}/approve")
 def approve_qc(
-    session_id: str, run_id: str, body: ApprovalRequest, request: Request
+    session_id: str, run_id: str, body: ApprovalRequest, request: Request, store: StoreDep
 ) -> dict[str, Any]:
     """验证证据后短事务批准；已批准请求幂等返回历史，不再次计算。"""
-    store = SessionStore()
     run = require_run(store, session_id, run_id)
-    preview = next((p for p in run["previews"] if p["preview_id"] == body.preview_id), None)
+    preview = next((p for p in run.previews if p["preview_id"] == body.preview_id), None)
     if preview is None:
         raise HTTPException(409, "预览不存在，请重新预览")
     try:
@@ -151,9 +150,10 @@ class RejectionRequest(BaseModel):
 
 
 @router.post("/{run_id}/reject")
-def reject_qc(session_id: str, run_id: str, body: RejectionRequest) -> dict[str, Any]:
+def reject_qc(
+    session_id: str, run_id: str, body: RejectionRequest, store: StoreDep
+) -> dict[str, Any]:
     """记录当前待批准预览的拒绝；已批准预览与已执行 run 不可拒绝。"""
-    store = SessionStore()
     require_run(store, session_id, run_id)
     try:
         run = store.record_qc_rejection(session_id, run_id, body.preview_id, body.reason)
@@ -171,27 +171,24 @@ class FilterRequest(BaseModel):
 
 @router.post("/{run_id}/filter")
 def filter_qc(
-    session_id: str, run_id: str, body: FilterRequest, request: Request
+    session_id: str, run_id: str, body: FilterRequest, request: Request, store: StoreDep
 ) -> dict[str, Any]:
     """固定过滤执行；重复授权只返回历史，不调用 R。"""
-    store = SessionStore()
-    run = require_run(store, session_id, run_id)
-    previous = next(
-        (
-            a
-            for a in run.get("attempts", [])
-            if a["preview_id"] == body.preview_id and a["tool_version"] == FILTER_TOOL_VERSION
-        ),
-        None,
-    )
-    if previous:
-        return view(run)
-    lock = session_lock(session_id)
-    if not lock.acquire(blocking=False):
-        raise HTTPException(409, "该会话已有任务在进行")
-    try:
-        run = require_run(store, session_id, run_id)
-        preview = next((p for p in run["previews"] if p["preview_id"] == body.preview_id), None)
+
+    def previous(run: RunSnapshot) -> dict[str, Any] | None:
+        """按预览身份与工具版本查找已落库的过滤尝试。"""
+        return next(
+            (
+                a
+                for a in run.filter_attempts
+                if a["preview_id"] == body.preview_id and a["tool_version"] == FILTER_TOOL_VERSION
+            ),
+            None,
+        )
+
+    def prepare(run: RunSnapshot, attempt_id: str) -> StageClaim:
+        """锁内校验当前批准预览，并给出 attempt 目录与领取计划。"""
+        preview = next((p for p in run.previews if p["preview_id"] == body.preview_id), None)
         if (
             preview is None
             or preview["status"] != "approved"
@@ -200,39 +197,45 @@ def filter_qc(
             raise ValueError("仅可执行当前已批准选择")
         root = run_qc_root(request.app.state.agent, run)
         verified_selection(run, root, preview)
-        attempt_id = uuid.uuid4().hex
-        directory = root.parent / "sc_filter" / attempt_id
-        if directory.parent.resolve() != root.parent / "sc_filter" or directory.exists():
-            raise ValueError("过滤输出目录非法")
-        attempt = store.start_sc_filter(
-            session_id,
-            run_id,
-            run["revision"],
-            body.preview_id,
-            preview["binding_sha256"],
-            FILTER_TOOL_VERSION,
-            str(directory),
-            attempt_id,
+        directory_parent = root.parent / "sc_filter"
+        directory = directory_parent / attempt_id
+        return StageClaim(
+            directory_parent=directory_parent,
+            directory=directory,
+            start=lambda: store.stages.claim_filter(
+                session_id,
+                run_id,
+                run["revision"],
+                body.preview_id,
+                preview["binding_sha256"],
+                FILTER_TOOL_VERSION,
+                str(directory),
+                attempt_id,
+            ),
+            execute=lambda attempt: run_sc_filter(
+                run,
+                preview,
+                root,
+                directory,
+                request.app.state.agent.workflow_manager.r_executor,
+            ),
+            finish=lambda result: store.stages.finish_filter(attempt_id, result),
+            on_error=lambda exc: {
+                "status": "failed",
+                "stage": "filter_review",
+                "scientific_status": "unreviewed",
+                "error": str(exc),
+            },
         )
-        if attempt["claimed"]:
-            try:
-                result = run_sc_filter(
-                    run,
-                    preview,
-                    root,
-                    directory,
-                    request.app.state.agent.workflow_manager.r_executor,
-                )
-            except OSError as exc:
-                result = {
-                    "status": "failed",
-                    "stage": "filter_review",
-                    "scientific_status": "unreviewed",
-                    "error": str(exc),
-                }
-            store.finish_sc_filter(attempt_id, result)
-        return view(require_run(store, session_id, run_id))
+
+    try:
+        return run_authorized(
+            session_id=session_id,
+            load=lambda: require_run(store, session_id, run_id),
+            previous=previous,
+            prepare=prepare,
+            refresh=lambda: view(require_run(store, session_id, run_id)),
+            unsafe_directory="过滤输出目录非法",
+        )
     except (OSError, ValueError, sqlite3.OperationalError) as exc:
         raise HTTPException(409, str(exc)) from exc
-    finally:
-        lock.release()

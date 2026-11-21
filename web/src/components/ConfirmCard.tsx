@@ -1,7 +1,14 @@
-import { useEffect, useState } from 'react'
 import { Database, FileCode2, RefreshCw } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardFooter, CardHeader, CardTitle } from '@/components/ui/card'
+import {
+  ACTION_DATA_CONFIRM,
+  ACTION_SCRIPT_CANCEL,
+  ACTION_SCRIPT_CONFIRM,
+  STATUS_PENDING,
+  STATUS_TEXT,
+  type ConfirmState,
+} from '@/lib/confirmState'
 import type {
   ConfirmRequestBody,
   DataCandidate,
@@ -10,18 +17,12 @@ import type {
 } from '@/lib/types'
 import { useChatStore } from '@/store/chat'
 
-const STATUS_TEXT: Record<string, string> = {
-  confirmed: '已确认执行',
-  cancelled: '已取消',
-  expired: '已过期（会话已恢复，需重新发起）',
-}
-
 export interface ConfirmCardProps {
   scriptCard: ScriptCardPayload | null
   dataCard: DataCardPayload | null
   busy: boolean
-  /** POST /api/confirm 失败的后端中文 detail（400/404/409/502）；非空时卡片恢复可点 */
-  confirmError: string | null
+  /** ChatPage 持有的唯一确认状态；组件不再自行推导提交中/失败 */
+  confirmState: ConfirmState
   /** body 已带 session_id（组件从会话 store 取），ChatPage 直接 confirmAction(body) */
   onConfirm: (body: ConfirmRequestBody) => void
   /** 重新生成：ChatPage 用 pending_script.user_request 再发一次 /api/chat（不是 confirm 动作） */
@@ -32,8 +33,8 @@ export interface ConfirmCardProps {
  * HITL 确认卡片状态机（约束 2/3）：
  * - 初始（pending）：动作按钮可用；busy（会话锁被工具执行持有）时全部 disabled，
  *   避免此刻发 confirm 撞 409「该会话已有任务在进行」。
- * - 已提交（点击后本地 submitting 立即置位）：全部按钮 disabled，防重复提交。
- * - 失败（confirmError 到达，含 409）：卡片保留、原样展示后端 detail、恢复可点。
+ * - 已提交（phase=submitting）：全部按钮 disabled，防重复提交。
+ * - 失败（phase=failed）：卡片保留、原样展示后端 detail、恢复可点。
  * - 成功：T8 通过 store 回写 status（脚本卡显示「已确认执行/已取消」）或清除卡片（数据卡）。
  * 文案不承诺瞬时取消：停止类提示由 T8 输入区负责。
  */
@@ -41,26 +42,20 @@ export function ConfirmCard({
   scriptCard,
   dataCard,
   busy,
-  confirmError,
+  confirmState,
   onConfirm,
   onRegen,
 }: ConfirmCardProps) {
   const sessionId = useChatStore((state) => state.sessionId)
-  const [submitting, setSubmitting] = useState(false)
-
-  // 失败到达（ChatPage 契约：发起新确认前先把 confirmError 置 null）→ 解除已提交态，恢复可点
-  useEffect(() => {
-    if (confirmError !== null) setSubmitting(false)
-  }, [confirmError])
-
+  const submitting = confirmState.phase === 'submitting'
   const locked = busy || submitting
+  const confirmError = confirmState.phase === 'failed' ? confirmState.error : null
   const session_id = sessionId ?? ''
 
   if (scriptCard) {
-    const isPending = scriptCard.status === 'pending'
+    const isPending = scriptCard.status === STATUS_PENDING
     const submit = (action: ConfirmRequestBody['action']) => {
       if (locked) return
-      setSubmitting(true)
       onConfirm({ session_id, action })
     }
     const lines = scriptCard.script.split('\n')
@@ -103,7 +98,7 @@ export function ConfirmCard({
             <Button
               aria-label="执行脚本"
               disabled={locked}
-              onClick={() => submit('script_confirm')}
+              onClick={() => submit(ACTION_SCRIPT_CONFIRM)}
             >
               执行脚本
             </Button>
@@ -111,7 +106,7 @@ export function ConfirmCard({
               aria-label="取消执行"
               variant="outline"
               disabled={locked}
-              onClick={() => submit('script_cancel')}
+              onClick={() => submit(ACTION_SCRIPT_CANCEL)}
             >
               取消执行
             </Button>
@@ -133,10 +128,9 @@ export function ConfirmCard({
   if (dataCard) {
     const submitCandidate = (candidate: DataCandidate) => {
       if (locked) return
-      setSubmitting(true)
       onConfirm({
         session_id,
-        action: 'data_confirm',
+        action: ACTION_DATA_CONFIRM,
         source: candidate.source,
         asset_id: candidate.asset_id,
         query: dataCard.query,

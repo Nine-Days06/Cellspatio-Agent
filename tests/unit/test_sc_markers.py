@@ -13,8 +13,9 @@ import pytest
 
 from src.analysis import sc_markers
 from src.analysis.r_executor import RExecutorError
+from src.api import authorized_run
 from src.evidence.builder import build_marker_card
-from src.ui import session_store
+from src.ui import sc_stages
 from tests.unit.test_qc_preview import PARAMS
 from tests.unit.test_sc_cluster import dimensions_ready as _dimensions_ready
 from tests.unit.test_sc_cluster import execute
@@ -201,6 +202,9 @@ def test_independent_marker_authorization_restores_own_snapshot_and_is_idempoten
     assert saved["attempts"][0]["status"] == "completed", saved
     assert saved["attempts"][0]["invalidated_reason"] is None
     assert saved["attempts"][0]["result"]["marker_rows"] == 1
+    attempt = d.store.get_qc_run(d.sid, d.rid)["marker_attempts"][0]
+    assert Path(attempt["directory"]).parent == d.root.parent / "sc_markers"
+    assert Path(attempt["directory"]).name == attempt["attempt_id"]
     assert d.client.get(d.marker_path).json() == saved
     assert d.client.post(d.marker_path + "/execute", json=body).json() == saved
     aid = saved["attempts"][0]["attempt_id"]
@@ -299,6 +303,19 @@ def test_stale_revision_and_binding_conflict(marker_ready):
     d.executor.execute_script.assert_not_called()
 
 
+def test_lock_conflict_is_busy_without_r(marker_ready):
+    d = marker_ready
+    lock = authorized_run.session_lock(d.sid)
+    assert lock.acquire(blocking=False)
+    try:
+        response = d.client.post(d.marker_path + "/execute", json=d.marker_body)
+    finally:
+        lock.release()
+    assert response.status_code == 409
+    assert response.json()["detail"] == "该会话已有任务在进行"
+    d.executor.execute_script.assert_not_called()
+
+
 def test_running_guards_and_duplicate_request(marker_ready):
     d = marker_ready
     entered, release = Event(), Event()
@@ -377,6 +394,9 @@ def test_running_identity_mutation_is_failed_not_completed(marker_ready, mutatio
     assert response.json()["revision"] == d.marker_body["revision"] + (
         12 if mutation == "revision" else 2
     )
+    attempt = d.store.get_qc_run(d.sid, d.rid)["marker_attempts"][0]
+    metadata = json.loads((Path(attempt["directory"]) / "metadata.json").read_text())
+    assert metadata["status"] == "failed"
     assert d.client.post(d.marker_path + "/execute", json=d.marker_body).status_code == 200
     d.executor.execute_script.assert_called_once()
 
@@ -536,6 +556,23 @@ def test_r_failure_keeps_local_evidence_without_retry_or_private_message(marker_
     d.executor.execute_script.assert_called_once()
 
 
+def test_unexpected_executor_error_is_safely_failed(marker_ready):
+    """未预期执行异常只落为安全失败，不泄漏本地细节。"""
+    d = marker_ready
+
+    def crash(script):
+        raise RuntimeError("private local path")
+
+    d.executor.execute_script.side_effect = crash
+    response = d.client.post(d.marker_path + "/execute", json=d.marker_body)
+    assert response.status_code == 200, response.text
+    state = response.json()
+    assert state["attempts"][0]["status"] == "failed"
+    assert state["attempts"][0]["result"] is None
+    assert "private local path" not in response.text
+    assert state["revision"] == d.marker_body["revision"] + 2
+
+
 @pytest.mark.parametrize("kind", ["artifact", "protocol", "review"])
 def test_history_drift_invalidates_diagnostic(marker_ready, kind):
     d = marker_ready
@@ -572,19 +609,19 @@ def test_terminal_message_failure_rolls_back_and_restart_never_resumes(marker_re
         raise sqlite3.OperationalError("private encoding failure")
 
     with monkeypatch.context() as scoped:
-        scoped.setattr(session_store, "_encode_results", fail)
+        scoped.setattr(sc_stages, "_encode_results", fail)
         response = d.client.post(d.marker_path + "/execute", json=d.marker_body)
     assert response.status_code == 409 and "private encoding failure" not in response.text
     run = d.store.get_qc_run(d.sid, d.rid)
     assert run["marker_attempts"][0]["status"] == "running"
     assert run["revision"] == d.marker_body["revision"] + 1
     assert len(d.store.get_messages(d.sid)) == before
-    d.store.interrupt_sc_markers()
+    d.store.stages.interrupt_all()
     state = d.client.get(d.marker_path).json()
     assert state["attempts"][0]["status"] == "interrupted"
     assert state["revision"] == d.marker_body["revision"] + 2
     assert len(d.store.get_messages(d.sid)) == before + 1
-    d.store.interrupt_sc_markers()
+    d.store.stages.interrupt_all()
     assert len(d.store.get_messages(d.sid)) == before + 1
     assert d.client.post(d.marker_path + "/execute", json=d.marker_body).json() == state
     d.executor.execute_script.assert_called_once()

@@ -22,6 +22,7 @@ from src.api import (
     routes_qc,
     routes_sessions,
 )
+from src.ui.session_store import SessionStore
 
 logger = logging.getLogger(__name__)
 
@@ -44,22 +45,17 @@ async def _unhandled_exception_handler(request: Request, exc: Exception) -> JSON
 
 
 def create_app(agent: Any) -> FastAPI:
-    """构建 FastAPI 应用；agent 挂到 app.state，路由经 request.app.state.agent 取用。
-
-    挂载 routes_sessions + routes_chat + routes_meta；新增路由模块时改这一处。
-    """
+    """挂载全部 API 路由；agent 与 store factory 挂到 app.state。"""
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
         """单进程启动只标记旧过滤任务中断，不恢复执行。"""
-        routes_sessions._store().interrupt_sc_filters()
-        routes_sessions._store().interrupt_sc_pcas()
-        routes_sessions._store().interrupt_sc_clusters()
-        routes_sessions._store().interrupt_sc_markers()
+        app.state.store_factory().stages.interrupt_all()
         yield
 
     app = FastAPI(title="CellSpatio API", lifespan=lifespan)
     app.state.agent = agent
+    app.state.store_factory = SessionStore
     app.include_router(routes_sessions.router)
     app.include_router(routes_projects.router)
     app.include_router(routes_chat.router)

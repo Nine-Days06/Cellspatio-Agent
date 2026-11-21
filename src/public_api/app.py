@@ -19,10 +19,8 @@ from pydantic import BaseModel
 
 from src.evidence.accounts import AccountStore, public_user
 from src.evidence.contribution import build_envelope, preview_card
+from src.evidence.errors import ErrorKind, EvidenceError
 from src.evidence.governance import (
-    ACTION_ROLE,
-    COMPLIANCE_CHECKLIST,
-    DOMAIN_CHECKLIST,
     ROLE_COMPLIANCE,
     ROLE_CONTRIBUTOR,
     ROLE_DOMAIN,
@@ -30,7 +28,16 @@ from src.evidence.governance import (
     GovernanceStore,
     public_evidence_dir,
 )
+from src.evidence.review_protocol import (
+    action_role,
+    action_spec,
+    checklist_for_role,
+    reviewer_role,
+    viewer_access,
+    withdraw_role,
+)
 from src.evidence.schema import EvidenceCard
+from src.evidence.vocabulary import vocabulary
 
 logger = logging.getLogger(__name__)
 
@@ -89,39 +96,6 @@ def _clear_attempts(key: str) -> None:
         _attempts.pop(key, None)
 
 
-def _http_error(exc: ValueError) -> HTTPException:
-    """把治理层的 ValueError 映射成稳定的 HTTP 状态码。"""
-    # shortcut: 依赖治理层错误文案；改文案时必须同步这里，或改为结构化错误码。
-    message = str(exc)
-    if any(
-        marker in message
-        for marker in (
-            "不得审核自己的提交",
-            "不得读取自己的未发布全文",
-            "只有复核者可读取未发布全文",
-            "只有复核者可查看审核队列",
-            "只能撤回自己的提交",
-            "只有贡献者或合规复核者可撤销",
-        )
-    ):
-        return HTTPException(status_code=403, detail=message)
-    if "不存在" in message:
-        return HTTPException(status_code=404, detail=message)
-    if any(
-        marker in message
-        for marker in (
-            "已存在",
-            "只能提交一次",
-            "该角色已经通过",
-            "只能修订",
-            "只有 pending 提交可审核",
-            "只有 accepted 提交可撤销",
-        )
-    ):
-        return HTTPException(status_code=409, detail=message)
-    return HTTPException(status_code=400, detail=message)
-
-
 class LoginRequest(BaseModel):
     """登录请求体。"""
 
@@ -159,11 +133,20 @@ class WithdrawRequest(BaseModel):
 
 def _reviewer_role(user: dict[str, Any]) -> str:
     """取账号的复核角色；优先领域，其次合规。"""
-    if ROLE_DOMAIN in user["roles"]:
-        return ROLE_DOMAIN
-    if ROLE_COMPLIANCE in user["roles"]:
-        return ROLE_COMPLIANCE
-    raise HTTPException(status_code=403, detail="只有复核者可读取未发布全文")
+    role = reviewer_role(user["roles"])
+    if role is None:
+        raise EvidenceError("permission_denied", "只有复核者可读取未发布全文")
+    return role
+
+
+_KIND_STATUS: dict[ErrorKind, int] = {
+    "invalid_input": 400,
+    "submission_not_found": 404,
+    "permission_denied": 403,
+    "duplicate": 409,
+    "invalid_state": 409,
+    "quota_exceeded": 429,
+}
 
 
 def create_public_app(data_root: str | Path) -> FastAPI:
@@ -210,14 +193,22 @@ def create_public_app(data_root: str | Path) -> FastAPI:
 
     @app.exception_handler(ValueError)
     async def value_error_handler(request: Request, exc: ValueError) -> JSONResponse:
-        """路由内未转换的 ValueError 也走稳定的 4xx，而不是 500。"""
-        error = _http_error(exc)
-        return JSONResponse(status_code=error.status_code, content={"detail": error.detail})
+        """领域失败按 kind 映射为稳定 4xx；普通 ValueError 仍兜底为 400。"""
+        kind = exc.kind if isinstance(exc, EvidenceError) else None
+        content: dict[str, str] = {"detail": str(exc)}
+        if kind is not None:
+            content["code"] = kind
+        return JSONResponse(status_code=_KIND_STATUS.get(kind, 400), content=content)
 
     @app.get("/api/health")
     def health() -> dict[str, str]:
         """存活探针。"""
         return {"status": "ok"}
+
+    @app.get("/api/public/vocabulary")
+    def review_vocabulary() -> dict[str, dict[str, str]]:
+        """复核页标签；静态内容，无需登录。"""
+        return vocabulary()
 
     @app.post("/api/auth/login")
     def login(body: LoginRequest, request: Request) -> dict[str, Any]:
@@ -268,23 +259,15 @@ def create_public_app(data_root: str | Path) -> FastAPI:
             "queue": store.review_queue(viewer_actor=user["id"], viewer_role=role),
         }
 
-    @app.get("/api/public/evidence/checklists")
-    def checklists(user: Reviewer) -> dict[str, list[str]]:
-        """复核清单键；前端标签自行映射，避免复制治理层常量。"""
-        return {
-            ROLE_DOMAIN: list(DOMAIN_CHECKLIST),
-            ROLE_COMPLIANCE: list(COMPLIANCE_CHECKLIST),
-        }
-
     @app.post("/api/public/evidence/preview")
     def preview(body: PreviewRequest, user: Contributor, store: Store) -> dict[str, Any]:
         """用服务端身份生成上传前预览；修订归属与隐私校验失败直接 4xx。"""
         if body.revises_submission_id:
             original = store.summary(body.revises_submission_id)
             if original["contributor_id"] != user["id"]:
-                raise ValueError("只能修订自己的提交")
+                raise EvidenceError("permission_denied", "只能修订自己的提交")
             if original["status"] != STATE_NEEDS_CHANGES:
-                raise ValueError("只能修订 needs_changes 的提交")
+                raise EvidenceError("invalid_state", "只能修订 needs_changes 的提交")
         card = EvidenceCard.model_validate(body.card)
         return preview_card(
             card,
@@ -305,11 +288,11 @@ def create_public_app(data_root: str | Path) -> FastAPI:
         store: Store,
     ) -> dict[str, Any]:
         """记录领域或合规复核；动作与角色必须匹配。"""
-        role = ACTION_ROLE.get(body.action)
+        role = action_role(body.action)
         if role is None:
-            raise HTTPException(status_code=400, detail="未知审核动作")
+            raise EvidenceError("invalid_input", "未知审核动作")
         if role not in user["roles"]:
-            raise HTTPException(status_code=403, detail=f"动作 {body.action} 需要角色 {role}")
+            raise EvidenceError("permission_denied", f"动作 {body.action} 需要角色 {role}")
         return store.review(
             evidence_id,
             actor_id=user["id"],
@@ -328,12 +311,11 @@ def create_public_app(data_root: str | Path) -> FastAPI:
     ) -> dict[str, Any]:
         """贡献者撤回自己的提交，或合规复核者强制撤销。"""
         summary = store.summary(evidence_id)
-        if user["id"] == summary["contributor_id"]:
-            role = ROLE_CONTRIBUTOR
-        elif ROLE_COMPLIANCE in user["roles"]:
-            role = ROLE_COMPLIANCE
-        else:
-            raise HTTPException(status_code=403, detail="只能撤回自己的提交")
+        role = withdraw_role(
+            actor_id=user["id"],
+            contributor_id=summary["contributor_id"],
+            roles=user["roles"],
+        )
         return store.withdraw(evidence_id, actor_id=user["id"], role=role, reason=body.reason)
 
     @app.get("/api/public/evidence/search")
@@ -352,7 +334,7 @@ def create_public_app(data_root: str | Path) -> FastAPI:
         data = store.get(evidence_id)
         card = data.get("card")
         if card is None:
-            raise HTTPException(status_code=404, detail="证据已撤销或不可引用")
+            raise EvidenceError("submission_not_found", "证据已撤销或不可引用")
         parsed = EvidenceCard.model_validate(card)
         return {
             "evidence_id": data["evidence_id"],
@@ -375,8 +357,27 @@ def create_public_app(data_root: str | Path) -> FastAPI:
         user: Reviewer,
         store: Store,
     ) -> dict[str, Any]:
-        """复核者查看完整审计事件。"""
-        return {"events": store.events(evidence_id)}
+        """复核者查看审计事件，并一次返回当前查看者的复核能力。"""
+        role = _reviewer_role(user)
+        summary = store.summary(evidence_id)
+        records = store.events(evidence_id)
+        access = viewer_access(
+            status=summary["status"],
+            contributor_id=summary["contributor_id"],
+            viewer_actor=user["id"],
+            viewer_role=role,
+            events=[(event["actor_id"], event["action"]) for event in records],
+        )
+        return {
+            "events": records,
+            "review": {
+                "role": role,
+                "actions": [action_spec(action) for action in access.actions],
+                "blocked_reason": access.blocked_reason,
+                "blocked_code": access.blocked_code,
+                "checklists": {role: list(checklist_for_role(role))},
+            },
+        }
 
     @app.get("/api/public/evidence/{evidence_id}")
     def get_evidence(

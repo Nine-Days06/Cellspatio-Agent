@@ -15,6 +15,7 @@ from fastapi.testclient import TestClient
 from src.analysis.qc_preview import _identity
 from src.analysis.r_executor import RExecutorError
 from src.analysis.sc_filter import FILTER_TOOL_VERSION, verified_selection
+from src.api import authorized_run
 from src.api.app import create_app
 from tests.unit.test_qc_preview import PARAMS
 from tests.unit.test_qc_preview import registered as registered
@@ -58,6 +59,7 @@ def test_filter_once_exact_binding_and_stage_only(ready):
     assert response.status_code == 200, response.text
     attempt = response.json()["attempts"][0]
     assert attempt["status"] == "completed" and attempt["result"]["cells"] == 1
+    assert Path(attempt["directory"]).parent == root.parent / "sc_filter"
     assert attempt["result"]["scientific_status"] == "unreviewed"
     assert source.read_bytes() == before
     assert (
@@ -75,6 +77,19 @@ def test_filter_once_exact_binding_and_stage_only(ready):
         "scientific_status",
     }
     assert client.get(url).json()["attempts"][0]["status"] == "completed"
+
+
+def test_lock_conflict_is_busy_without_r(ready):
+    _, sid, _, _, _, client, url, pid, executor = ready
+    lock = authorized_run.session_lock(sid)
+    assert lock.acquire(blocking=False)
+    try:
+        response = client.post(url + "/filter", json={"preview_id": pid})
+    finally:
+        lock.release()
+    assert response.status_code == 409
+    assert response.json()["detail"] == "该会话已有任务在进行"
+    executor.execute_script.assert_not_called()
 
 
 def test_qc_rejection_is_idempotent_and_blocks_approval(registered):
@@ -203,7 +218,7 @@ def test_store_cas_double_claim_running_blocks_mutation_and_restart(ready):
 
     def claim(index):
         barrier.wait()
-        return store.start_sc_filter(
+        return store.stages.claim_filter(
             sid,
             rid,
             run["revision"],
@@ -248,7 +263,7 @@ def test_selection_recomputed_even_if_artifact_identity_replaced(ready):
 def test_finish_state_message_transaction_rolls_back(ready):
     store, sid, rid, root, source, client, url, pid, executor = ready
     run = store.get_qc_run(sid, rid)
-    store.start_sc_filter(
+    store.stages.claim_filter(
         sid,
         rid,
         run["revision"],
@@ -264,7 +279,7 @@ def test_finish_state_message_transaction_rolls_back(ready):
             "CREATE TRIGGER reject_filter BEFORE UPDATE OF status ON sc_filter_attempts BEGIN SELECT RAISE(ABORT, 'forced rollback'); END;"
         )
     with pytest.raises(sqlite3.IntegrityError, match="forced rollback"):
-        store.finish_sc_filter("fail", {"status": "completed"})
+        store.stages.finish_filter("fail", {"status": "completed"})
     assert len(store.get_messages(sid)) == count
     assert store.get_qc_run(sid, rid)["attempts"][0]["status"] == "running"
 

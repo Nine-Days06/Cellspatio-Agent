@@ -1,23 +1,24 @@
-"""聊天消息构造纯函数：从 app.py 搬移，供 Streamlit 与 API 层共用。
+"""聊天消息构造纯函数：供 UI 与 API 层共用。
 
 无 Streamlit 依赖、无状态，便于单测与跨前端复用。
 """
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from typing import Any
 
-from src.control import compact
 
-
-def make_llm_summarize(agent: Any):
+def make_llm_summarize(agent: Any) -> Callable[[Any, Any], str] | None:
     """按 agent 的 LLM 客户端构造摘要调用器；无客户端时返回 None（跳过压缩）。"""
     client = getattr(agent, "llm_client", None)
     if client is None:
         return None
+    from src.control import compact
+
     model = getattr(agent, "llm_model", "") or ""
 
-    def _summarize(prior, older):
+    def _summarize(prior: Any, older: Any) -> str:
         return compact.summarize(client, model, prior, older)
 
     return _summarize

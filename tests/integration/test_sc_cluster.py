@@ -27,7 +27,7 @@ def test_real_cluster_api_roundtrip_and_repeat(tmp_path, monkeypatch):
     preview = run["previews"][0]
     store.activate_qc_preview(sid, rid, 0, preview)
     store.approve_qc_preview(sid, rid, 1, preview["preview_id"], "技术测试")
-    store.start_sc_filter(
+    store.stages.claim_filter(
         sid,
         rid,
         2,
@@ -37,7 +37,7 @@ def test_real_cluster_api_roundtrip_and_repeat(tmp_path, monkeypatch):
         parent["directory"],
         parent["attempt_id"],
     )
-    store.finish_sc_filter(parent["attempt_id"], parent["result"])
+    store.stages.finish_filter(parent["attempt_id"], parent["result"])
     agent = FakeAgent()
     agent.workflow_manager = SimpleNamespace(
         workflow_recorder=SimpleNamespace(repo_root=tmp_path), r_executor=executor

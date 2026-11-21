@@ -4,6 +4,7 @@ import { Input } from '@/components/ui/input'
 import { Textarea } from '@/components/ui/textarea'
 import { PcaReview } from '@/components/PcaReview'
 import { approveQc, fetchQc, filterQc, previewQc, rejectQc } from '@/lib/api'
+import { evaluateStageGate, isAttemptedByPreview } from '@/lib/stageGate'
 import type { QcReviewState, QcThresholds } from '@/lib/types'
 
 const fields = [
@@ -129,10 +130,17 @@ export function QcReview({ sessionId, runId, onRecorded }: { sessionId: string; 
   const active = state?.active_preview
   const unchanged = previewValues === JSON.stringify(values)
   const blocked = [...(state?.blocked ?? []), ...(active?.summary.blocked ?? [])]
-  const canApprove = active?.status === 'pending' && unchanged && !busy && !running && blocked.length === 0 && reason.trim().length > 0
-  const canReject = active?.status === 'pending' && !busy && !running && reason.trim().length > 0
-  const attempted = state?.attempts?.some((attempt) => attempt.preview_id === active?.preview_id) ?? false
-  const canFilter = active?.status === 'approved' && unchanged && !busy && !running && !attempted && blocked.length === 0
+  const gateFacts = {
+    previewStatus: active?.status ?? null,
+    previewAttempted: isAttemptedByPreview(state?.attempts ?? [], active?.preview_id),
+    blocked,
+    busy,
+    running,
+    reasonProvided: reason.trim().length > 0,
+  }
+  const approveGate = evaluateStageGate({ ...gateFacts, stage: 'qc', action: 'approve', unchanged })
+  const rejectGate = evaluateStageGate({ ...gateFacts, stage: 'qc', action: 'reject' })
+  const filterGate = evaluateStageGate({ ...gateFacts, stage: 'qc', action: 'filter', unchanged })
   return (
     <section aria-label="QC 阈值选择" className="analysis-stage space-y-3">
       <h4 className="font-medium">阈值选择 · 记录与执行分开授权</h4>
@@ -162,14 +170,14 @@ export function QcReview({ sessionId, runId, onRecorded }: { sessionId: string; 
         {active.status === 'pending' && <>
           <label className="block space-y-1"><span>选择依据 / 拒绝原因（仅本地记录）</span><Textarea value={reason} maxLength={2000} disabled={busy || running} onChange={(event) => setReason(event.target.value)} /></label>
           <div className="flex flex-wrap gap-2">
-            <Button type="button" disabled={!canApprove} onClick={() => void perform(() => approveQc(sessionId, runId, active.preview_id, reason.trim()), true)}>记录此过滤选择</Button>
-            <Button type="button" variant="outline" disabled={!canReject} onClick={() => void perform(() => rejectQc(sessionId, runId, active.preview_id, reason.trim()), true)}>拒绝此预览</Button>
+            <span title={approveGate.blockerText || undefined}><Button type="button" disabled={!approveGate.allowed} onClick={() => void perform(() => approveQc(sessionId, runId, active.preview_id, reason.trim()), true)}>记录此过滤选择</Button></span>
+            <span title={rejectGate.blockerText || undefined}><Button type="button" variant="outline" disabled={!rejectGate.allowed} onClick={() => void perform(() => rejectQc(sessionId, runId, active.preview_id, reason.trim()), true)}>拒绝此预览</Button></span>
           </div>
         </>}
         {active.status === 'rejected' && <p role="status">此预览已拒绝；未执行过滤或下游分析。{active.reason && ` 原因：${active.reason}`}</p>}
         {active.status === 'approved' && <>
           <p className="text-xs">独立执行只筛选细胞列并保存内部稀疏 RDS；不归一化、聚类或注释。失败不会自动重跑。</p>
-          <Button type="button" disabled={!canFilter} onClick={() => void executeFilter(active.preview_id)}>执行此已记录选择的过滤</Button>
+          <span title={filterGate.blockerText || undefined}><Button type="button" disabled={!filterGate.allowed} onClick={() => void executeFilter(active.preview_id)}>执行此已记录选择的过滤</Button></span>
         </>}
       </section>}
       </details>

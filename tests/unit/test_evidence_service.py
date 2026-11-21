@@ -13,17 +13,19 @@ from src.evidence.contribution import (
     build_envelope,
     preview_card,
 )
+from src.evidence.errors import EvidenceError
 from src.evidence.governance import (
     ACTION_COMPLIANCE_PASS,
     ACTION_DOMAIN_NEEDS_CHANGES,
     ACTION_DOMAIN_PASS,
+    ACTION_DOMAIN_REJECT,
     COMPLIANCE_CHECKLIST,
     DOMAIN_CHECKLIST,
     ROLE_COMPLIANCE,
     ROLE_CONTRIBUTOR,
     ROLE_DOMAIN,
 )
-from src.evidence.public_client import PublicEvidenceClient
+from src.evidence.public_client import PublicEvidenceClient, PublicEvidenceError
 from src.evidence.schema import (
     Claim,
     EvidenceCard,
@@ -186,6 +188,7 @@ def test_role_guards_self_review_and_duplicate_card(app, client: TestClient):
         headers=_headers(dual_token),
     )
     assert own_review.status_code == 403
+    assert own_review.json()["code"] == "permission_denied"
 
     no_role = client.post(
         f"/api/public/evidence/submissions/{evidence_id}/review",
@@ -207,6 +210,7 @@ def test_role_guards_self_review_and_duplicate_card(app, client: TestClient):
         headers=_headers(dual_token),
     )
     assert duplicate.status_code == 409
+    assert duplicate.json()["code"] == "duplicate"
 
 
 def test_reviewer_queue_unpublished_access_and_events(app, client: TestClient):
@@ -280,6 +284,158 @@ def test_reviewer_queue_unpublished_access_and_events(app, client: TestClient):
         headers=_headers(domain_token),
     )
     assert again.status_code == 409
+
+
+def test_events_returns_review_capability_for_current_viewer(app, client: TestClient):
+    """事件响应一次给足复核能力；签署后本角色不再出现表单动作。"""
+    _account(app, "events-contributor", (ROLE_CONTRIBUTOR,))
+    _account(app, "events-domain", (ROLE_DOMAIN,))
+    contributor_token = _login(client, "events-contributor")
+    domain_token = _login(client, "events-domain")
+
+    uploaded = client.post(
+        "/api/public/evidence/submissions",
+        json={
+            "preview": preview_card(_card("evc-events-1"), contributor_id="local"),
+            "consent": True,
+        },
+        headers=_headers(contributor_token),
+    )
+    evidence_id = uploaded.json()["evidence_id"]
+    url = f"/api/public/evidence/{evidence_id}/events"
+
+    payload = client.get(url, headers=_headers(domain_token)).json()
+    assert payload["review"] == {
+        "role": ROLE_DOMAIN,
+        "actions": [
+            {
+                "id": ACTION_DOMAIN_PASS,
+                "kind": "pass",
+                "requires_checklist": True,
+                "requires_reason": False,
+            },
+            {
+                "id": ACTION_DOMAIN_NEEDS_CHANGES,
+                "kind": "needs_changes",
+                "requires_checklist": False,
+                "requires_reason": True,
+            },
+            {
+                "id": ACTION_DOMAIN_REJECT,
+                "kind": "reject",
+                "requires_checklist": False,
+                "requires_reason": True,
+            },
+        ],
+        "blocked_reason": None,
+        "blocked_code": None,
+        "checklists": {ROLE_DOMAIN: list(DOMAIN_CHECKLIST)},
+    }
+    assert [event["action"] for event in payload["events"]] == ["submit"]
+
+    signed = client.post(
+        f"/api/public/evidence/submissions/{evidence_id}/review",
+        json={"action": ACTION_DOMAIN_PASS, "checklist": _checks(DOMAIN_CHECKLIST)},
+        headers=_headers(domain_token),
+    )
+    assert signed.status_code == 200
+    blocked = client.get(url, headers=_headers(domain_token)).json()["review"]
+    assert blocked["actions"] == []
+    assert blocked["blocked_reason"] == "本角色已签署，等待另一角色复核。"
+    assert blocked["blocked_code"] == "role_signed"
+    assert blocked["checklists"] == {ROLE_DOMAIN: list(DOMAIN_CHECKLIST)}
+
+
+def test_events_capability_blocks_self_review_and_finished_state(app, client: TestClient):
+    """本人提交与非 pending 状态都在协议结果里阻断，页面不再读事件推导。"""
+    _account(app, "events-dual", (ROLE_CONTRIBUTOR, ROLE_DOMAIN))
+    _account(app, "events-other-contributor", (ROLE_CONTRIBUTOR,))
+    _account(app, "events-domain", (ROLE_DOMAIN,))
+    dual_token = _login(client, "events-dual")
+    domain_token = _login(client, "events-domain")
+
+    own = client.post(
+        "/api/public/evidence/submissions",
+        json={
+            "preview": preview_card(_card("evc-events-2"), contributor_id="local"),
+            "consent": True,
+        },
+        headers=_headers(dual_token),
+    ).json()["evidence_id"]
+    own_review = client.get(
+        f"/api/public/evidence/{own}/events", headers=_headers(dual_token)
+    ).json()["review"]
+    assert own_review["actions"] == []
+    assert own_review["blocked_reason"] == "贡献者不得审核自己的提交"
+    assert own_review["blocked_code"] == "self_review"
+
+    other = client.post(
+        "/api/public/evidence/submissions",
+        json={
+            "preview": preview_card(_card("evc-events-3"), contributor_id="local"),
+            "consent": True,
+        },
+        headers=_headers(_login(client, "events-other-contributor")),
+    ).json()["evidence_id"]
+    changed = client.post(
+        f"/api/public/evidence/submissions/{other}/review",
+        json={"action": ACTION_DOMAIN_NEEDS_CHANGES, "reason": "补充限制"},
+        headers=_headers(domain_token),
+    )
+    assert changed.status_code == 200
+    finished = client.get(
+        f"/api/public/evidence/{other}/events", headers=_headers(domain_token)
+    ).json()["review"]
+    assert finished["actions"] == []
+    assert finished["blocked_reason"] == "该提交已结束审核。"
+    assert finished["blocked_code"] == "finished"
+
+
+def test_withdraw_role_blocks_domain_and_allows_compliance_override(app, client: TestClient):
+    """撤回角色只看协议：非本人领域角色 403，合规角色可强撤。"""
+    _account(app, "withdraw-contributor", (ROLE_CONTRIBUTOR,))
+    _account(app, "withdraw-domain", (ROLE_DOMAIN,))
+    _account(app, "withdraw-compliance", (ROLE_COMPLIANCE,))
+    contributor_token = _login(client, "withdraw-contributor")
+    domain_token = _login(client, "withdraw-domain")
+    compliance_token = _login(client, "withdraw-compliance")
+
+    evidence_id = client.post(
+        "/api/public/evidence/submissions",
+        json={
+            "preview": preview_card(_card("evc-withdraw-1"), contributor_id="local"),
+            "consent": True,
+        },
+        headers=_headers(contributor_token),
+    ).json()["evidence_id"]
+    for token, action, checklist in (
+        (domain_token, ACTION_DOMAIN_PASS, DOMAIN_CHECKLIST),
+        (compliance_token, ACTION_COMPLIANCE_PASS, COMPLIANCE_CHECKLIST),
+    ):
+        assert (
+            client.post(
+                f"/api/public/evidence/submissions/{evidence_id}/review",
+                json={"action": action, "checklist": _checks(checklist)},
+                headers=_headers(token),
+            ).status_code
+            == 200
+        )
+
+    denied = client.post(
+        f"/api/public/evidence/submissions/{evidence_id}/withdraw",
+        json={"reason": "越权"},
+        headers=_headers(domain_token),
+    )
+    assert denied.status_code == 403
+    assert denied.json()["code"] == "permission_denied"
+
+    forced = client.post(
+        f"/api/public/evidence/submissions/{evidence_id}/withdraw",
+        json={"reason": "合规强撤"},
+        headers=_headers(compliance_token),
+    )
+    assert forced.status_code == 200
+    assert forced.json()["status"] == "withdrawn"
 
 
 def test_revision_preview_carries_original_submission(app, client: TestClient):
@@ -435,32 +591,80 @@ def test_client_upload_and_citation_use_real_http_path(app, client: TestClient):
         assert evidence["status"] == "pending"
         assert public.search("QC")[0]["evidence_id"] == evidence_id
         assert public.citation(evidence_id)["claim"]
+        with pytest.raises(PublicEvidenceError) as missing:
+            public.citation("evs-missing")
+        assert missing.value.status == 404
+        assert missing.value.code == "submission_not_found"
     finally:
         public.close()
 
 
-def test_review_ui_is_served_and_checklists_come_from_governance(app, client: TestClient):
-    """复核页可访问；清单端点需登录且与治理层常量一致。"""
+def test_review_ui_is_served_and_queue_uses_governance_role(app, client: TestClient):
+    """复核页可访问；页面只渲染服务端下发的动作规格与阻断文案。"""
     page = client.get("/review/")
     assert page.status_code == 200
     assert "公共证据" in page.text
     assert "登录" in page.text
-    assert client.get("/review/review.js").status_code == 200
+    review_js = client.get("/review/review.js")
+    assert review_js.status_code == 200
+    assert 'blocked_code === "self_review"' not in review_js.text
+    assert "requires_checklist" in review_js.text
+    assert 'endsWith("_pass")' not in review_js.text
 
-    assert client.get("/api/public/evidence/checklists").status_code == 401
-    _account(app, "ui-contributor", (ROLE_CONTRIBUTOR,))
     _account(app, "ui-domain", (ROLE_DOMAIN,))
-    token = _login(client, "ui-contributor")
-    assert client.get("/api/public/evidence/checklists", headers=_headers(token)).status_code == 403
-    data = client.get(
-        "/api/public/evidence/checklists", headers=_headers(_login(client, "ui-domain"))
-    ).json()
-    assert data[ROLE_DOMAIN] == list(DOMAIN_CHECKLIST)
-    assert data[ROLE_COMPLIANCE] == list(COMPLIANCE_CHECKLIST)
     queue = client.get(
         "/api/public/evidence/queue", headers=_headers(_login(client, "ui-domain"))
     ).json()
     assert queue["role"] == ROLE_DOMAIN
+
+
+def test_missing_submission_returns_structured_code(client: TestClient):
+    """缺失提交返回 404，并携带稳定 code。"""
+    response = client.get("/api/public/evidence/evs-missing")
+    assert response.status_code == 404
+    assert response.json()["code"] == "submission_not_found"
+
+
+def test_error_kinds_cover_validation_state_and_quota(app, client: TestClient):
+    """校验失败、状态冲突与配额都带稳定 code。"""
+    contributor = _account(app, "codes-contributor", (ROLE_CONTRIBUTOR,))
+    token = _login(client, "codes-contributor")
+
+    bad_card = _card("evc-codes-0")
+    bad_card = bad_card.model_copy(
+        update={
+            "license": bad_card.license.model_copy(update={"attribution": r"C:\secret\raw.h5ad"})
+        }
+    )
+    with pytest.raises(EvidenceError) as invalid:
+        preview_card(bad_card, contributor_id=contributor)
+    assert invalid.value.kind == "invalid_input"
+
+    preview = preview_card(_card("evc-codes-1"), contributor_id=contributor)
+    uploaded = client.post(
+        "/api/public/evidence/submissions",
+        json={"preview": preview, "consent": True},
+        headers=_headers(token),
+    )
+    assert uploaded.status_code == 200, uploaded.text
+    evidence_id = uploaded.json()["evidence_id"]
+    withdrawn = client.post(
+        f"/api/public/evidence/submissions/{evidence_id}/withdraw",
+        json={"reason": "测试"},
+        headers=_headers(token),
+    )
+    assert withdrawn.status_code == 409
+    assert withdrawn.json()["code"] == "invalid_state"
+
+    app.state.governance.max_daily_submissions = 0
+    quota_preview = preview_card(_card("evc-codes-2"), contributor_id=contributor)
+    quota = client.post(
+        "/api/public/evidence/submissions",
+        json={"preview": quota_preview, "consent": True},
+        headers=_headers(token),
+    )
+    assert quota.status_code == 429
+    assert quota.json()["code"] == "quota_exceeded"
 
 
 def test_contributor_browser_preview_mine_and_withdraw(app, client: TestClient):
@@ -538,7 +742,8 @@ def test_contributor_browser_preview_mine_and_withdraw(app, client: TestClient):
         },
         headers=_headers(_login(client, "web-contributor-2")),
     )
-    assert other.status_code == 409
+    assert other.status_code == 403
+    assert other.json()["code"] == "permission_denied"
 
     revised = client.post(
         "/api/public/evidence/preview",
