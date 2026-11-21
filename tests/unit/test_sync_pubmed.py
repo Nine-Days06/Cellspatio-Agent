@@ -9,13 +9,26 @@ def test_run_etl_export_returns_latest_csv(tmp_path):
     output_dir = tmp_path / "data" / "output"
     output_dir.mkdir(parents=True)
     (output_dir / "articles_20260921_100000.csv").write_text("a", encoding="utf-8")
-    (output_dir / "articles_20260921_110000.csv").write_text("b", encoding="utf-8")
 
-    with mock.patch("sync_pubmed.subprocess.run") as m_run:
+    def _write(*args, **kwargs):
+        (output_dir / "articles_20260921_110000.csv").write_text("b", encoding="utf-8")
+
+    with mock.patch("sync_pubmed.subprocess.run", side_effect=_write) as m_run:
         latest = sync_pubmed.run_etl_export(tmp_path)
 
     m_run.assert_called_once()
     assert latest.name == "articles_20260921_110000.csv"
+
+
+def test_run_etl_export_existing_batch_is_not_new(tmp_path):
+    """导出没有产生新文件时不能把旧批次当成本次结果。"""
+    output_dir = tmp_path / "data" / "output"
+    output_dir.mkdir(parents=True)
+    (output_dir / "articles_20260921_100000.csv").write_text("a", encoding="utf-8")
+
+    with mock.patch("sync_pubmed.subprocess.run"):
+        latest = sync_pubmed.run_etl_export(tmp_path)
+    assert latest is None
 
 
 def test_run_etl_export_no_csv_returns_none(tmp_path):
@@ -35,11 +48,14 @@ def test_run_etl_export_ignores_raw_csv(tmp_path):
     (output_dir / "articles_20260921_110000.csv").write_text("filtered", encoding="utf-8")
     (output_dir / "articles_raw_20260921_120000.csv").write_text("raw", encoding="utf-8")
 
-    with mock.patch("sync_pubmed.subprocess.run"):
+    def _write(*args, **kwargs):
+        (output_dir / "articles_20260921_130000.csv").write_text("filtered", encoding="utf-8")
+
+    with mock.patch("sync_pubmed.subprocess.run", side_effect=_write):
         latest = sync_pubmed.run_etl_export(tmp_path)
 
     assert latest is not None
-    assert latest.name == "articles_20260921_110000.csv"
+    assert latest.name == "articles_20260921_130000.csv"
 
 
 def test_run_etl_export_only_raw_csv_returns_none(tmp_path):
@@ -66,7 +82,9 @@ def test_copy_to_import(tmp_path):
 def test_sync_and_import_full(tmp_path):
     output_dir = tmp_path / "data" / "output"
     output_dir.mkdir(parents=True)
-    (output_dir / "articles_20260921_130000.csv").write_text("x", encoding="utf-8")
+
+    def _write(*args, **kwargs):
+        (output_dir / "articles_20260921_130000.csv").write_text("x", encoding="utf-8")
 
     import_dir = tmp_path / "import"
     fake_import = {
@@ -78,7 +96,7 @@ def test_sync_and_import_full(tmp_path):
     }
 
     with (
-        mock.patch("sync_pubmed.subprocess.run"),
+        mock.patch("sync_pubmed.subprocess.run", side_effect=_write),
         mock.patch("sync_pubmed.import_via_cli", return_value=fake_import) as m_cli,
     ):
         result = sync_pubmed.sync_and_import(etl_dir=tmp_path, import_dir=import_dir)
@@ -92,7 +110,9 @@ def test_sync_and_import_only_imports_the_new_csv(tmp_path):
     """默认路径只导入本次复制的单个 CSV，不扫描整个目录"""
     output_dir = tmp_path / "data" / "output"
     output_dir.mkdir(parents=True)
-    (output_dir / "articles_20260921_140000.csv").write_text("x", encoding="utf-8")
+
+    def _write(*args, **kwargs):
+        (output_dir / "articles_20260921_140000.csv").write_text("x", encoding="utf-8")
 
     import_dir = tmp_path / "import"
     # 历史 CSV 已在台账中，目录里也真实存在
@@ -108,7 +128,7 @@ def test_sync_and_import_only_imports_the_new_csv(tmp_path):
     }
 
     with (
-        mock.patch("sync_pubmed.subprocess.run"),
+        mock.patch("sync_pubmed.subprocess.run", side_effect=_write),
         mock.patch("sync_pubmed.import_via_cli", return_value=fake_import) as m_cli,
     ):
         sync_pubmed.sync_and_import(etl_dir=tmp_path, import_dir=import_dir)
@@ -122,7 +142,9 @@ def test_sync_and_import_imported_is_new_count_not_scanned(tmp_path):
     """imported 反映新批次文章数，而非本次扫描提交的总数"""
     output_dir = tmp_path / "data" / "output"
     output_dir.mkdir(parents=True)
-    (output_dir / "articles_20260921_150000.csv").write_text("x", encoding="utf-8")
+
+    def _write(*args, **kwargs):
+        (output_dir / "articles_20260921_150000.csv").write_text("x", encoding="utf-8")
 
     fake_import = {
         "success": True,
@@ -133,7 +155,7 @@ def test_sync_and_import_imported_is_new_count_not_scanned(tmp_path):
     }
 
     with (
-        mock.patch("sync_pubmed.subprocess.run"),
+        mock.patch("sync_pubmed.subprocess.run", side_effect=_write),
         mock.patch("sync_pubmed.import_via_cli", return_value=fake_import),
     ):
         result = sync_pubmed.sync_and_import(etl_dir=tmp_path, import_dir=tmp_path / "import")
@@ -145,7 +167,9 @@ def test_sync_and_import_reimport_all_scans_whole_directory(tmp_path):
     """--reimport-all 时忽略台账，改为全量导入目录"""
     output_dir = tmp_path / "data" / "output"
     output_dir.mkdir(parents=True)
-    (output_dir / "articles_20260921_160000.csv").write_text("x", encoding="utf-8")
+
+    def _write(*args, **kwargs):
+        (output_dir / "articles_20260921_160000.csv").write_text("x", encoding="utf-8")
 
     fake_import = {
         "success": True,
@@ -156,7 +180,7 @@ def test_sync_and_import_reimport_all_scans_whole_directory(tmp_path):
     }
 
     with (
-        mock.patch("sync_pubmed.subprocess.run"),
+        mock.patch("sync_pubmed.subprocess.run", side_effect=_write),
         mock.patch("sync_pubmed.import_via_cli", return_value=fake_import) as m_cli,
     ):
         result = sync_pubmed.sync_and_import(
@@ -172,11 +196,13 @@ def test_sync_and_import_reimport_all_scans_whole_directory(tmp_path):
 def test_sync_and_import_skips_import_when_requested(tmp_path):
     output_dir = tmp_path / "data" / "output"
     output_dir.mkdir(parents=True)
-    (output_dir / "articles_20260921_130001.csv").write_text("x", encoding="utf-8")
+
+    def _write(*args, **kwargs):
+        (output_dir / "articles_20260921_130001.csv").write_text("x", encoding="utf-8")
 
     import_dir = tmp_path / "import"
     with (
-        mock.patch("sync_pubmed.subprocess.run"),
+        mock.patch("sync_pubmed.subprocess.run", side_effect=_write),
         mock.patch("sync_pubmed.import_via_cli") as m_cli,
     ):
         result = sync_pubmed.sync_and_import(

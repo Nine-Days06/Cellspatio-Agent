@@ -15,7 +15,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-from src.article_batches import latest_batch
+from src.article_batches import discover_batches
 
 REPO_ROOT = Path(__file__).resolve().parent
 
@@ -28,12 +28,24 @@ def run_etl_export(etl_dir: Path, python: str | None = None) -> Path | None:
     且按字典序恒定排在筛选版之后，必须显式排除。
     """
     python = python or sys.executable
+    output_dir = etl_dir / "data" / "output"
+    before = _batch_stamps(output_dir)
     subprocess.run(
         [python, str(etl_dir / "main.py"), "--step", "export"],
         cwd=str(etl_dir),
         check=True,
     )
-    return latest_batch(etl_dir / "data" / "output")
+    after = _batch_stamps(output_dir)
+    changed = [name for name, stamp in after.items() if before.get(name) != stamp]
+    return output_dir / max(changed) if changed else None
+
+
+def _batch_stamps(output_dir: Path) -> dict[str, tuple[int, int]]:
+    """记录批次文件的修改时间与大小，用来判断导出是否真的产生新批次。"""
+    return {
+        path.name: (path.stat().st_mtime_ns, path.stat().st_size)
+        for path in discover_batches(output_dir)
+    }
 
 
 def copy_to_import(csv_path: Path, import_dir: Path) -> Path:
