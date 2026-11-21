@@ -56,7 +56,6 @@ FILTER_STAGE = StageSpec(
     label="过滤",
     directory_name="sc_filter",
     failure_stage="filter_review",
-    failure_error="过滤产物落盘失败",
 )
 
 
@@ -91,7 +90,6 @@ PCA_STAGE = StageSpec(
     label="PCA",
     directory_name="sc_pca",
     failure_stage="pca_review",
-    failure_error="PCA 产物落盘失败",
 )
 
 
@@ -126,7 +124,6 @@ CLUSTER_STAGE = StageSpec(
     label="聚类",
     directory_name="sc_clusters",
     failure_stage="cluster_review",
-    failure_error="聚类产物落盘失败",
     interrupt_result={
         "status": "interrupted",
         "stage": "cluster_review",
@@ -166,7 +163,6 @@ MARKER_STAGE = StageSpec(
     label="marker",
     directory_name="sc_markers",
     failure_stage="marker_review",
-    failure_error="marker 产物落盘失败",
     interrupt_result={
         "status": "interrupted",
         "stage": "marker_review",

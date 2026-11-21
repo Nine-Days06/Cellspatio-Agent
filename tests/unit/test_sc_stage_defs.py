@@ -29,22 +29,21 @@ def row(**values: str) -> sqlite3.Row:
 
 
 @pytest.mark.parametrize(
-    ("spec", "directory_name", "failure_stage", "failure_error"),
+    ("spec", "directory_name", "failure_stage"),
     [
-        (FILTER_STAGE, "sc_filter", "filter_review", "过滤产物落盘失败"),
-        (PCA_STAGE, "sc_pca", "pca_review", "PCA 产物落盘失败"),
-        (CLUSTER_STAGE, "sc_clusters", "cluster_review", "聚类产物落盘失败"),
-        (MARKER_STAGE, "sc_markers", "marker_review", "marker 产物落盘失败"),
+        (FILTER_STAGE, "sc_filter", "filter_review"),
+        (PCA_STAGE, "sc_pca", "pca_review"),
+        (CLUSTER_STAGE, "sc_clusters", "cluster_review"),
+        (MARKER_STAGE, "sc_markers", "marker_review"),
     ],
 )
 def test_stage_specs_fill_output_directory_and_failure_projection(
-    spec: StageSpec, directory_name: str, failure_stage: str, failure_error: str
+    spec: StageSpec, directory_name: str, failure_stage: str
 ) -> None:
-    """四个阶段各自拥有目录名与固定失败文案。"""
-    assert (spec.directory_name, spec.failure_stage, spec.failure_error) == (
+    """四个阶段各自拥有目录名与失败阶段标识。"""
+    assert (spec.directory_name, spec.failure_stage) == (
         directory_name,
         failure_stage,
-        failure_error,
     )
 
 
@@ -59,11 +58,11 @@ def test_stage_directory_keeps_outputs_beside_run_root() -> None:
 @pytest.mark.parametrize("spec", STAGE_SPECS)
 def test_stage_failure_reports_technical_failure_only(spec: StageSpec) -> None:
     """失败结果固定为技术失败，科学状态保持未复核。"""
-    assert stage_failure(spec, spec.failure_error) == {
+    assert stage_failure(spec, "产物落盘失败") == {
         "status": "failed",
         "stage": spec.failure_stage,
         "scientific_status": "unreviewed",
-        "error": spec.failure_error,
+        "error": "产物落盘失败",
     }
 
 

@@ -30,7 +30,6 @@ class StageSpec:
     not_running: str
     directory_name: str
     failure_stage: str
-    failure_error: str
     message: Callable[[sqlite3.Row, dict[str, Any]], tuple[str, dict[str, Any]]]
     interrupt_result: dict[str, Any] | None = None
 

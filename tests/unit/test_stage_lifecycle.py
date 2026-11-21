@@ -32,7 +32,6 @@ FAKE_STAGE = StageSpec(
     not_running="fake 任务不在运行状态",
     directory_name="sc_fake",
     failure_stage="fake_review",
-    failure_error="fake 产物落盘失败",
     message=fake_message,
 )
 
