@@ -9,7 +9,14 @@ from pathlib import Path
 import pytest
 
 from src.cli import evidence_governance
-from src.evidence.contribution import build_envelope, preview_card
+from src.evidence.contribution import (
+    Admission,
+    ContributionPreview,
+    WillSend,
+    WillSendSubmission,
+    build_envelope,
+    preview_card,
+)
 from src.evidence.governance import (
     ACTION_COMPLIANCE_PASS,
     ACTION_DOMAIN_PASS,
@@ -84,6 +91,16 @@ def test_preview_only_contains_card_fields():
     assert "C:\\" not in sent
     assert "barcode" not in sent
     assert "counts_matrix" not in sent
+
+
+def test_preview_keys_match_typed_dicts():
+    """运行时形状必须与 TypedDict 完全一致，防止字段漂移。"""
+    preview = preview_card(_example_card(), contributor_id="alice")
+
+    assert set(preview) == set(ContributionPreview.__annotations__)
+    assert set(preview["admission"]) == set(Admission.__annotations__)
+    assert set(preview["will_send"]) == set(WillSend.__annotations__)
+    assert set(preview["will_send"]["submission"]) == set(WillSendSubmission.__annotations__)
 
 
 def test_preview_rejects_raw_paths():
