@@ -1,6 +1,6 @@
 import * as api from "./review-api.js";
 import { createEvidenceSelection } from "./evidence-selection.js";
-import { normalizeActions, noticeFor, reviewerRole } from "./review-model.js";
+import { normalizeActions, noticeFor } from "./review-model.js";
 
 const TOKEN_KEY = "cellspatio_review_token";
 
@@ -130,9 +130,10 @@ api.setUnauthorizedHandler(() => clearSession("登录已失效，请重新登录
 
 function setUser(user) {
   state.user = user;
-  state.role = reviewerRole(user.roles);
-  state.canReview = Boolean(state.role);
-  state.canContribute = user.roles.includes("contributor");
+  const principal = user.principal;
+  state.role = principal.role;
+  state.canReview = Boolean(principal.can_review);
+  state.canContribute = Boolean(principal.can_contribute);
   const roleText = state.role
     ? label("roles", state.role)
     : state.canContribute
