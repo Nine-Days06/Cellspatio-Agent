@@ -4,13 +4,7 @@ import {
   actionSpec,
   normalizeActions,
   noticeFor,
-  reviewerRole,
 } from "../../src/public_api/static/review-model.js";
-
-assert.equal(reviewerRole(["compliance_reviewer", "domain_reviewer"]), "domain_reviewer");
-assert.equal(reviewerRole(["compliance_reviewer"]), "compliance_reviewer");
-assert.equal(reviewerRole(["contributor"]), null);
-assert.equal(reviewerRole([]), null);
 
 assert.equal(
   noticeFor({ blocked_code: "self_review", blocked_reason: "贡献者不得审核自己的提交" }),

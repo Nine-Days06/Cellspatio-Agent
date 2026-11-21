@@ -2,22 +2,23 @@ import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { MarkerReview } from '@/components/MarkerReview'
 import { executeMarkers, fetchClusterAcceptance, fetchMarkerCandidates, fetchMarkers, recordClusterAcceptance, recordClusterRejection, reviewMarkers } from '@/lib/api'
-import type { ClusterAcceptanceState, MarkerState } from '@/lib/types'
+import type { ClusterAcceptanceState, ClusterReviewState, MarkerState } from '@/lib/types'
 
 vi.mock('@/lib/api', () => ({ executeMarkers: vi.fn(), fetchClusterAcceptance: vi.fn(), fetchMarkerCandidates: vi.fn(), fetchMarkers: vi.fn(), recordClusterAcceptance: vi.fn(), recordClusterRejection: vi.fn(), reviewMarkers: vi.fn(), markerDiagnosticPath: () => '/local/marker.png' }))
 const source = { sessionId: 's1', runId: 'r1', filterAttemptId: 'f1', pcaAttemptId: 'p1', clusterAttemptId: 'c1' }
-const initialReview: ClusterAcceptanceState = { revision: 9, record_version: '1', binding_sha256: 'cluster-binding', blocked: [], current: null, history: [], latest_decision: null }
+const initialAcceptance: ClusterAcceptanceState = { revision: 9, record_version: '1', binding_sha256: 'cluster-binding', blocked: [], current: null, history: [], latest_decision: null }
+const initialReview: ClusterReviewState = { run_id: 'r1', cluster_attempt_id: 'c1', stage: 'cluster_review', scientific_status: 'unreviewed', evidence: null, ...initialAcceptance }
 const record = { review_id: 'review1', cluster_attempt_id: 'c1', binding_sha256: 'cluster-binding', record_version: '1', source_revision: 9, accepted: true as const, reason: '私有接受', created_at: 'now' }
-const acceptedReview = { ...initialReview, revision: 10, current: record, history: [record] }
-const initial: MarkerState = { run_id: 'r1', cluster_attempt_id: 'c1', revision: 9, stage: 'marker_review', scientific_status: 'unreviewed', binding_sha256: null, review: null, protocol: { full: true }, tool_version: '1', blocked: ['需要独立聚类接受'], attempts: [] }
-const authorized: MarkerState = { ...initial, revision: 10, binding_sha256: 'marker-binding', review: { review_id: 'review1', record_version: '1', accepted: true }, blocked: [] }
+const acceptedAcceptance: ClusterAcceptanceState = { ...initialAcceptance, revision: 10, current: record, history: [record] }
+const acceptedReview: ClusterReviewState = { ...initialReview, ...acceptedAcceptance }
+const initial: MarkerState = { run_id: 'r1', cluster_attempt_id: 'c1', revision: 9, stage: 'marker_review', scientific_status: 'unreviewed', binding_sha256: null, review: null, cluster_review: initialReview, protocol: { full: true }, tool_version: '1', blocked: ['需要独立聚类接受'], attempts: [] }
+const authorized: MarkerState = { ...initial, revision: 10, binding_sha256: 'marker-binding', review: { review_id: 'review1', record_version: '1', accepted: true }, cluster_review: acceptedReview, blocked: [] }
 const completed: MarkerState = { ...authorized, revision: 12, binding_sha256: null, review: null, attempts: [{ attempt_id: 'm1', review_id: 'review1', binding_sha256: 'marker-binding', status: 'completed', created_at: '2026-11-21T00:00:00Z', finished_at: null, source_revision: 10, claim_revision: 11, invalidated_reason: null, error: null, review: null, result: { cells: 31, features: 3, clusters: 2, marker_rows: 1, positive_rows: 1, negative_rows: 0, versions: ['presto 1.1.0'], plot_features: ['F00000002'], backend: 'Seurat-FindAllMarkers-Presto-full', cluster_summary: [{ cluster_id: '0', cells: '16', rest_cells: '15', result_status: 'candidates_returned', positive_markers: '1', negative_markers: '0' }, { cluster_id: '1', cells: '15', rest_cells: '16', result_status: 'no_returned_candidates', positive_markers: '0', negative_markers: '0' }] } }] }
 const page = { attempt_id: 'm1', binding_sha256: 'marker-binding', scientific_status: 'unreviewed' as const, total: 1, offset: 0, limit: 100, rows: [{ cluster_id: '0', feature_key: 'F00000002', feature_id: 'original-A', symbol: 'A_B', p_val: 0.0001, avg_log2FC: 1, 'pct.1': 0.8, 'pct.2': 0.2, p_val_adj: 0.0003 }] }
 beforeEach(() => {
   vi.resetAllMocks()
-  vi.mocked(fetchClusterAcceptance).mockResolvedValue(initialReview)
   vi.mocked(fetchMarkers).mockResolvedValue(initial)
-  vi.mocked(recordClusterAcceptance).mockResolvedValue(acceptedReview)
+  vi.mocked(recordClusterAcceptance).mockResolvedValue(acceptedAcceptance)
   vi.mocked(executeMarkers).mockResolvedValue(completed)
   vi.mocked(fetchMarkerCandidates).mockResolvedValue(page)
 })
@@ -38,6 +39,7 @@ describe('聚类接受与 marker 独立授权', () => {
     const recorded = vi.fn()
     const view = render(<MarkerReview {...source} revision={11} onRecorded={recorded} />)
     await act(async () => {})
+    expect(fetchClusterAcceptance).not.toHaveBeenCalled()
     await act(async () => { await vi.advanceTimersByTimeAsync(1500) })
     expect(screen.getByRole('alert')).toHaveTextContent('临时断联')
     await act(async () => { await vi.advanceTimersByTimeAsync(1500) })
@@ -45,6 +47,7 @@ describe('聚类接受与 marker 独立授权', () => {
     expect(screen.getByText('A_B')).toBeInTheDocument()
     expect(screen.queryByText('临时断联')).not.toBeInTheDocument()
     expect(recorded).toHaveBeenCalledTimes(1)
+    expect(fetchClusterAcceptance).not.toHaveBeenCalled()
     await act(async () => { await vi.advanceTimersByTimeAsync(6000) })
     expect(fetchMarkers).toHaveBeenCalledTimes(3)
     view.unmount()
@@ -109,6 +112,7 @@ describe('聚类接受与 marker 独立授权', () => {
     expect(screen.getByRole('button', { name: '下一页候选' })).toBeDisabled()
     fireEvent.click(screen.getByRole('button', { name: '只读刷新 marker 与接受记录' }))
     await screen.findByText('A_B')
+    expect(fetchClusterAcceptance).not.toHaveBeenCalled()
     expect(executeMarkers).not.toHaveBeenCalled()
     expect(recordClusterAcceptance).not.toHaveBeenCalled()
   })
@@ -132,7 +136,6 @@ describe('聚类接受与 marker 独立授权', () => {
   })
 
   it('运行立即通知上游，切换身份清除未保存依据并丢弃旧 POST', async () => {
-    vi.mocked(fetchClusterAcceptance).mockResolvedValue(acceptedReview)
     vi.mocked(fetchMarkers).mockResolvedValue(authorized)
     let resolve!: (next: MarkerState) => void
     vi.mocked(executeMarkers).mockImplementationOnce(() => new Promise((done) => { resolve = done }))
@@ -140,6 +143,7 @@ describe('聚类接受与 marker 独立授权', () => {
     const view = render(<MarkerReview {...source} revision={10} onRunning={running} onRecorded={recorded} />)
     await authorize()
     expect(running).toHaveBeenLastCalledWith(true)
+    expect(running.mock.calls.filter(([active]) => active)).toHaveLength(1)
     view.rerender(<MarkerReview {...source} sessionId="s2" runId="r2" revision={10} onRunning={running} onRecorded={recorded} />)
     await waitFor(() => expect(fetchMarkers).toHaveBeenCalledWith({ ...source, sessionId: 's2', runId: 'r2' }))
     await act(async () => { resolve(completed) })
@@ -149,7 +153,6 @@ describe('聚类接受与 marker 独立授权', () => {
   })
 
   it('POST 失联仅 GET 恢复已完成结果，不重复执行', async () => {
-    vi.mocked(fetchClusterAcceptance).mockResolvedValue(acceptedReview)
     vi.mocked(fetchMarkers).mockResolvedValueOnce(authorized).mockResolvedValue(completed)
     vi.mocked(executeMarkers).mockRejectedValue(new Error('连接断开'))
     render(<MarkerReview {...source} revision={10} />)
@@ -157,12 +160,11 @@ describe('聚类接受与 marker 独立授权', () => {
     await screen.findByText('A_B')
     expect(executeMarkers).toHaveBeenCalledOnce()
     expect(fetchMarkers).toHaveBeenCalledTimes(2)
-    expect(fetchClusterAcceptance).toHaveBeenCalledTimes(2)
+    expect(fetchClusterAcceptance).not.toHaveBeenCalled()
     expect(executeButton()).toBeDisabled()
   })
 
   it('上游运行 disabled 时不能接受或授权', async () => {
-    vi.mocked(fetchClusterAcceptance).mockResolvedValue(acceptedReview)
     vi.mocked(fetchMarkers).mockResolvedValue(authorized)
     render(<MarkerReview {...source} revision={10} disabled />)
     await screen.findByText('已记录探索性接受；marker 仍需独立授权。')
@@ -171,10 +173,9 @@ describe('聚类接受与 marker 独立授权', () => {
   })
 
   it('记录聚类拒绝后不授权 marker', async () => {
-    vi.mocked(fetchClusterAcceptance).mockResolvedValue(initialReview)
     vi.mocked(fetchMarkers).mockResolvedValue(initial)
     const rejectedReview: ClusterAcceptanceState = {
-      ...initialReview, revision: 10,
+      ...initialAcceptance, revision: 10,
       latest_decision: { decision: 'rejected', reason: '簇结构不稳', created_at: 'now', source_revision: 9, invalidated_reason: null },
     }
     vi.mocked(recordClusterRejection).mockResolvedValue(rejectedReview)
@@ -188,7 +189,6 @@ describe('聚类接受与 marker 独立授权', () => {
   })
 
   it('记录 marker 拒绝并显示最新复核事实', async () => {
-    vi.mocked(fetchClusterAcceptance).mockResolvedValue(acceptedReview)
     vi.mocked(fetchMarkers).mockResolvedValue(completed)
     const reviewed: MarkerState = {
       ...completed, revision: 13,
@@ -207,7 +207,6 @@ describe('聚类接受与 marker 独立授权', () => {
   })
 
   it('marker 阶段 blocked 时禁用复核文本框与按钮', async () => {
-    vi.mocked(fetchClusterAcceptance).mockResolvedValue(acceptedReview)
     vi.mocked(fetchMarkers).mockResolvedValue({ ...completed, blocked: ['阶段前置条件未满足'] })
     render(<MarkerReview {...source} revision={12} />)
     await screen.findByText('A_B')

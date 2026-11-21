@@ -4,6 +4,7 @@ import { Input } from '@/components/ui/input'
 import { Textarea } from '@/components/ui/textarea'
 import { PcaReview } from '@/components/PcaReview'
 import { approveQc, fetchQc, filterQc, previewQc, rejectQc } from '@/lib/api'
+import { stageActivity } from '@/lib/stageActivity'
 import { evaluateStageGate, isAttemptedByPreview } from '@/lib/stageGate'
 import { useStageReview } from '@/lib/useStageReview'
 import type { QcReviewState, QcThresholds } from '@/lib/types'
@@ -21,11 +22,6 @@ const reasonNames: Record<string, string> = {
   n_feature_below_min: 'features 低于下限', n_feature_above_max: 'features 高于上限',
   n_count_below_min: 'counts 低于下限', n_count_above_max: 'counts 高于上限',
   mt_above_max: 'percent.mt 超过上限', mt_unavailable: 'percent.mt 不可定义',
-}
-
-function runningOf(state: QcReviewState | null, executing: boolean, pcaRunning: string[]) {
-  return executing || (state?.attempts?.some((attempt) => attempt.status === 'running') ?? false) ||
-    !!state?.pca_running || !!state?.cluster_running || !!state?.marker_running || pcaRunning.length > 0
 }
 
 /** 只批准已展示的精确预览；编辑阈值立即禁用旧批准。 */
@@ -54,11 +50,15 @@ export function QcReview({ sessionId, runId, onRecorded }: { sessionId: string; 
     deps: [sessionId, runId],
     // 只轮询 QC 自身执行；子级运行由 pcaRecorded 显式刷新，避免双发。
     isRunning: (current, isExecuting) =>
-      isExecuting || (current?.attempts?.some((attempt) => attempt.status === 'running') ?? false),
+      stageActivity({ attempts: current?.attempts, executing: isExecuting }).selfRunning,
     onLoaded: accept,
     onRecorded,
   })
-  const running = runningOf(state, executing, pcaRunning)
+  const running = stageActivity({
+    attempts: state?.attempts,
+    executing,
+    downstream: !!state?.pca_running || !!state?.cluster_running || !!state?.marker_running || pcaRunning,
+  }).running
 
   useEffect(() => {
     setValues(empty)
@@ -134,7 +134,7 @@ export function QcReview({ sessionId, runId, onRecorded }: { sessionId: string; 
       {message && <p role="alert" className="text-destructive">{message}</p>}
       {filtering && <p role="status">过滤运行中；只保存细胞列选择，不执行下游分析。</p>}
       {state?.blocked.map((text) => <p role="alert" key={text}>{text}</p>)}
-      <details open={!state?.attempts?.some((a) => a.status === 'completed')}>
+      <details open={!state?.attempts.some((a) => a.status === 'completed')}>
       <summary>阈值与过滤选择</summary>
       <form onSubmit={preview} className="space-y-3">
         <div className="grid gap-3 sm:grid-cols-2">
@@ -167,9 +167,9 @@ export function QcReview({ sessionId, runId, onRecorded }: { sessionId: string; 
         </>}
       </section>}
       </details>
-      {(state?.attempts?.length ?? 0) > 0 && <section aria-label="过滤执行记录" className="space-y-2">
+      {state && state.attempts.length > 0 && <section aria-label="过滤执行记录" className="space-y-2">
         <h4 className="font-medium">过滤执行 · 科学未复核</h4>
-        {state!.attempts!.map((attempt) => <div key={attempt.attempt_id} className="space-y-1 text-xs">
+        {state.attempts.map((attempt) => <div key={attempt.attempt_id} className="space-y-1 text-xs">
           <p role="status">{({ running: '过滤运行中', completed: '过滤产物已保存，等待审阅', failed: '过滤失败，需要人工处理', interrupted: '过滤中断，需要新预览和批准' })[attempt.status]}</p>
           {attempt.result?.cells !== undefined && <p>实际保留 {attempt.result.cells.toLocaleString()} 个 barcode · {attempt.result.features?.toLocaleString()} 个 RNA features</p>}
           {attempt.result?.error && <p role="alert">{attempt.result.error}</p>}
@@ -179,14 +179,14 @@ export function QcReview({ sessionId, runId, onRecorded }: { sessionId: string; 
             <p className="break-all">本地目录：{attempt.directory}</p>
             {attempt.result?.artifacts && <ul>{Object.entries(attempt.result.artifacts).map(([name, artifact]) => <li key={name} className="break-all">{name} · {artifact.bytes.toLocaleString()} bytes · SHA256 {artifact.sha256}</li>)}</ul>}
           </details>
-          {attempt.status === 'completed' && <PcaReview sessionId={sessionId} runId={runId} filterAttemptId={attempt.attempt_id} revision={state!.revision}
+          {attempt.status === 'completed' && <PcaReview sessionId={sessionId} runId={runId} filterAttemptId={attempt.attempt_id} revision={state.revision}
             onRunning={(value) => setPcaRunning((ids) => value ? (ids.includes(attempt.attempt_id) ? ids : [...ids, attempt.attempt_id]) : (ids.includes(attempt.attempt_id) ? ids.filter((id) => id !== attempt.attempt_id) : ids))}
             onRecorded={pcaRecorded} />}
         </div>)}
       </section>}
-      {(state?.approvals.length ?? 0) > 0 && <section aria-label="已批准选择" className="space-y-2">
+      {state && state.approvals.length > 0 && <section aria-label="已批准选择" className="space-y-2">
         <h4 className="font-medium">已记录选择（不代表科学认可或下游授权）</h4>
-        {state!.approvals.map((item) => <div key={item.preview_id} className="space-y-1 text-xs">
+        {state.approvals.map((item) => <div key={item.preview_id} className="space-y-1 text-xs">
           <p>{item.approved_at} · 保留 {item.summary.kept.toLocaleString()} · {item.reason}</p>
           <code className="block break-all">{item.preview_id} · {JSON.stringify(item.params)}</code>
         </div>)}

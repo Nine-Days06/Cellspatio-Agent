@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { ApiError } from '@/lib/api'
 import { streamChat, type EndReason, type SseEvent } from '@/lib/sse'
-import { useChatStore } from '@/store/chat'
+import { createChatStore, useChatStore } from '@/store/chat'
 import type { DataCardPayload, ScriptCardPayload, WireMessage } from '@/lib/types'
 
 // 只替换 streamChat（send 依赖它），其余 sse 导出保持真实实现
@@ -128,6 +128,109 @@ describe('turn 生命周期', () => {
     useChatStore.getState().endTurn('aborted')
 
     expect(useChatStore.getState().busy).toBe(false)
+  })
+})
+
+describe('createChatStore：实例隔离', () => {
+  it('两个实例的本地负 id 各自独立递增', () => {
+    const storeA = createChatStore()
+    const storeB = createChatStore()
+    storeA.getState().setSession('sa', [])
+    storeB.getState().setSession('sb', [])
+
+    storeA.getState().beginTurn('a1')
+    storeA.getState().beginTurn('a2')
+    storeB.getState().beginTurn('b1')
+
+    expect(storeA.getState().history.map((message) => message.id)).toEqual([-1, -2])
+    expect(storeB.getState().history.map((message) => message.id)).toEqual([-1])
+    expect(storeA.getState().sessionId).toBe('sa')
+    expect(storeB.getState().sessionId).toBe('sb')
+  })
+
+  it('stop 只中止本实例的活动流', async () => {
+    const storeA = createChatStore()
+    const storeB = createChatStore()
+    storeA.getState().setSession('sa', [])
+    storeB.getState().setSession('sb', [])
+
+    const streamA = holdStream()
+    const pendingA = storeA.getState().send('a')
+    const streamB = holdStream()
+    const pendingB = storeB.getState().send('b')
+
+    storeB.getState().stop()
+
+    expect(streamB.ctl.signal?.aborted).toBe(true)
+    expect(streamA.ctl.signal?.aborted).toBe(false)
+
+    streamA.ctl.onEnd?.('aborted')
+    streamB.ctl.onEnd?.('aborted')
+    streamA.release()
+    streamB.release()
+    await Promise.all([pendingA, pendingB])
+  })
+
+  it('setSession 切会话时中止旧流并重置状态', async () => {
+    const store = createChatStore()
+    store.getState().setSession('s1', [])
+    const { ctl, release } = holdStream()
+    const pending = store.getState().send('hi')
+
+    store.getState().setSession('s2', [])
+
+    expect(ctl.signal?.aborted).toBe(true)
+    expect(store.getState().busy).toBe(false)
+    expect(store.getState().sessionId).toBe('s2')
+
+    ctl.onEnd?.('aborted')
+    release()
+    await pending
+  })
+
+  it('切会话后旧流迟到事件与收尾不污染新会话', async () => {
+    const store = createChatStore()
+    store.getState().setSession('s1', [])
+    const { ctl, release } = holdStream()
+    const pending = store.getState().send('old')
+
+    store.getState().setSession('s2', [])
+    store.getState().beginTurn('new')
+
+    ctl.onEvent?.({ type: 'delta', text: '旧草稿' })
+    ctl.onEvent?.({ type: 'done', message_id: 9, message: assistant({ id: 9 }) })
+    ctl.onEnd?.('aborted')
+
+    const s = store.getState()
+    expect(s.busy).toBe(true)
+    expect(s.draft).toBe('')
+    expect(s.history).toHaveLength(1)
+    expect(s.history[0].content).toBe('new')
+
+    release()
+    await pending
+  })
+
+  it('切会话后旧流拒绝不写新会话错误提示', async () => {
+    const store = createChatStore()
+    let rejectStream: (err: unknown) => void = () => {}
+    vi.mocked(streamChat).mockImplementationOnce(
+      () =>
+        new Promise((_, reject) => {
+          rejectStream = reject
+        }),
+    )
+    store.getState().setSession('s1', [])
+    const pending = store.getState().send('old')
+
+    store.getState().setSession('s2', [])
+    store.getState().beginTurn('new')
+    rejectStream(new ApiError(500, '旧流失败'))
+    await pending
+
+    const s = store.getState()
+    expect(s.busy).toBe(true)
+    expect(s.notice).toBeNull()
   })
 })
 

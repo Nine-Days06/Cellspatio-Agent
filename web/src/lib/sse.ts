@@ -25,8 +25,8 @@ export interface SseEvent {
 /** 流结束原因：done/error 由事件收尾，aborted = 本地取消，closed = 连接被对端关闭 */
 export type EndReason = 'done' | 'error' | 'aborted' | 'closed'
 
-// ApiError 单一实现住在 api.ts：sse 只 re-export，避免两个同名类导致 instanceof 判断分裂。
-import { ApiError } from '@/lib/api'
+// ApiError 单一实现住在 http.ts：sse 只 re-export，避免两个同名类导致 instanceof 判断分裂。
+import { ApiError, jsonHeaders, requestResponse } from '@/lib/http'
 import type { ChatMode } from '@/lib/types'
 export { ApiError }
 
@@ -41,17 +41,6 @@ export interface StreamChatOptions {
 
 export function isAbortError(err: unknown): boolean {
   return err instanceof DOMException && err.name === 'AbortError'
-}
-
-async function toApiError(response: Response): Promise<ApiError> {
-  let detail = ''
-  try {
-    const body = (await response.json()) as { detail?: string }
-    detail = body.detail ?? ''
-  } catch {
-    detail = ''
-  }
-  return new ApiError(response.status, detail || `请求失败（HTTP ${response.status}）`)
 }
 
 /**
@@ -72,25 +61,20 @@ export async function streamChat(options: StreamChatOptions): Promise<void> {
 
   let response: Response
   try {
-    response = await fetch('/api/chat', {
+    response = await requestResponse('/api/chat', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: jsonHeaders,
       body: JSON.stringify({ session_id: sessionId, prompt, mode }),
       signal,
     })
   } catch (err) {
-    if (isAbortError(err)) {
+    if (signal?.aborted || isAbortError(err)) {
       finish('aborted')
       return
     }
-    finish('closed')
+    // requestResponse 已把非 2xx 转成 ApiError；status>0 表示后端 HTTP 错误
+    finish(err instanceof ApiError && err.status > 0 ? 'error' : 'closed')
     throw err
-  }
-
-  if (!response.ok) {
-    const error = await toApiError(response)
-    finish('error')
-    throw error
   }
   if (!response.body) {
     finish('closed')

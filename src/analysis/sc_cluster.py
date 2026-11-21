@@ -5,8 +5,6 @@ from __future__ import annotations
 import csv
 import json
 import math
-import subprocess
-import time
 from collections import Counter
 from pathlib import Path
 from typing import Any
@@ -18,6 +16,7 @@ from src.analysis.r_executor import RExecutorError
 from src.analysis.sc_pca import PROTOCOL as PCA_PROTOCOL
 from src.analysis.sc_pca import _records, checked_completed_pca, dimension_binding
 from src.analysis.sc_qc import _fingerprints
+from src.analysis.stage_run import executor_streams, finish_stage, start_stage
 
 CLUSTER_TOOL_VERSION = "1.0.0"
 PROTOCOL = {
@@ -389,8 +388,7 @@ def run_sc_cluster(
     snapshot = attempt["snapshot"]
     parent, pca, review = snapshot["parent"], snapshot["pca"], snapshot["review"]
     directory = Path(attempt["directory"]).resolve()
-    directory.mkdir(parents=True, exist_ok=False)
-    started = time.perf_counter()
+    started = start_stage(directory)
     metadata = {
         "tool": "sc_cluster",
         "tool_version": CLUSTER_TOOL_VERSION,
@@ -447,22 +445,10 @@ def run_sc_cluster(
         # 异常可能含私有路径；只保存到本地 stderr，不进入响应、消息或日志。
         stderr = f"{stderr}\n{exc}"
         if isinstance(exc, RExecutorError):
-            stdout, stderr = exc.stdout, exc.stderr
-            if isinstance(exc.__cause__, subprocess.TimeoutExpired):
-                stdout, stderr = exc.__cause__.stdout or "", exc.__cause__.stderr or ""
+            stdout, stderr = executor_streams(exc)
     finally:
-        for name, text in (("stdout.txt", stdout), ("stderr.txt", stderr)):
-            (directory / name).write_text(
-                text.decode("utf-8", errors="replace") if isinstance(text, bytes) else text,
-                encoding="utf-8",
-            )
-        metadata["elapsed_seconds"] = time.perf_counter() - started
-        metadata["artifacts"] = {
-            Path(r["path"]).name: r
-            for r in _fingerprints([p for p in directory.iterdir() if p.is_file()])
-        }
-        (directory / "metadata.json").write_text(
-            json.dumps(metadata, ensure_ascii=False, indent=2), encoding="utf-8"
+        finish_stage(
+            directory, metadata, started, stdout, stderr, artifacts=True, fingerprints=_fingerprints
         )
     return metadata
 

@@ -6,13 +6,12 @@ import hashlib
 import json
 import math
 import statistics
-import subprocess
-import time
 import uuid
 from pathlib import Path
 from typing import Any
 
 from src.analysis.r_executor import RExecutorError
+from src.analysis.stage_run import executor_streams, finish_stage, start_stage
 from src.control.r_script_generator import RScriptGenerator
 from src.data.tenx import _open_text, tenx_files
 
@@ -232,7 +231,7 @@ def run_sc_qc(
         "timeout_seconds": 300,
         "status": "error",
     }
-    started = time.perf_counter()
+    started = start_stage(directory, create=False)
     stdout = stderr = ""
     result: dict[str, Any] = {
         "status": "error",
@@ -279,24 +278,14 @@ def run_sc_qc(
     except (RExecutorError, OSError, ValueError, KeyError, StopIteration) as exc:
         metadata["error"] = str(exc)
         if isinstance(exc, RExecutorError):
-            stdout, stderr = exc.stdout, exc.stderr
-            if isinstance(exc.__cause__, subprocess.TimeoutExpired):
-                stdout, stderr = exc.__cause__.stdout or "", exc.__cause__.stderr or ""
+            stdout, stderr = executor_streams(exc)
     finally:
         if "inputs_before" in metadata and "inputs_after" not in metadata:
             try:
                 metadata["inputs_after"] = _fingerprints(paths)
             except OSError as exc:
                 metadata["input_recheck_error"] = str(exc)
-        for name, text in (("stdout.txt", stdout), ("stderr.txt", stderr)):
-            (directory / name).write_text(
-                text.decode("utf-8", errors="replace") if isinstance(text, bytes) else text,
-                encoding="utf-8",
-            )
-        metadata["elapsed_seconds"] = time.perf_counter() - started
-        (directory / "metadata.json").write_text(
-            json.dumps(metadata, ensure_ascii=False, indent=2), encoding="utf-8"
-        )
+        finish_stage(directory, metadata, started, stdout, stderr, artifacts=False)
     artifacts = {file.name: str(file.resolve()) for file in directory.iterdir() if file.is_file()}
     result.setdefault("results", {})["qc_artifacts"] = artifacts
     return result

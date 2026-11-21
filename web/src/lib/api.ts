@@ -17,43 +17,13 @@ import type {
   Project,
   UsageSummary,
 } from '@/lib/types'
+import { jsonHeaders, requestJson } from '@/lib/http'
 
-/** 统一 HTTP 错误：message 直接用后端 detail（已是中文），UI 可直接展示。 */
-export class ApiError extends Error {
-  readonly status: number
-
-  constructor(status: number, message: string) {
-    super(message)
-    this.name = 'ApiError'
-    this.status = status
-  }
-}
-
-async function toApiError(response: Response): Promise<ApiError> {
-  let detail = ''
-  try {
-    const body = (await response.json()) as { detail?: string }
-    detail = body.detail ?? ''
-  } catch {
-    detail = ''
-  }
-  return new ApiError(response.status, detail || `请求失败（HTTP ${response.status}）`)
-}
-
-async function request<T>(path: string, init?: RequestInit): Promise<T> {
-  let response: Response
-  try {
-    response = await fetch(path, init)
-  } catch (err) {
-    throw new ApiError(0, err instanceof Error ? err.message : '网络请求失败')
-  }
-  if (!response.ok) throw await toApiError(response)
-  return (await response.json()) as T
-}
+export { ApiError } from '@/lib/http'
 
 const jsonInit = (method: string, body?: unknown): RequestInit => ({
   method,
-  headers: { 'Content-Type': 'application/json' },
+  headers: jsonHeaders,
   ...(body === undefined ? {} : { body: JSON.stringify(body) }),
 })
 
@@ -61,18 +31,18 @@ const archivedQuery = (includeArchived: boolean) =>
   includeArchived ? '?include_archived=1' : ''
 
 export function listSessions(includeArchived = false): Promise<{ sessions: SessionSummary[] }> {
-  return request(`/api/sessions${archivedQuery(includeArchived)}`, { method: 'GET' })
+  return requestJson(`/api/sessions${archivedQuery(includeArchived)}`, { method: 'GET' })
 }
 
 export function createSession(title?: string, projectId?: string | null): Promise<{ session: Session }> {
   const body: Record<string, unknown> = {}
   if (title) body.title = title
   if (projectId !== undefined) body.project_id = projectId
-  return request('/api/sessions', jsonInit('POST', body))
+  return requestJson('/api/sessions', jsonInit('POST', body))
 }
 
 export function deleteSession(sessionId: string): Promise<{ deleted: string }> {
-  return request(`/api/sessions/${encodeURIComponent(sessionId)}`, jsonInit('DELETE'))
+  return requestJson(`/api/sessions/${encodeURIComponent(sessionId)}`, jsonInit('DELETE'))
 }
 
 export interface UpdateSessionBody {
@@ -82,22 +52,22 @@ export interface UpdateSessionBody {
 }
 
 export function updateSession(sessionId: string, body: UpdateSessionBody): Promise<{ session: Session }> {
-  return request(`/api/sessions/${encodeURIComponent(sessionId)}`, jsonInit('PATCH', body))
+  return requestJson(`/api/sessions/${encodeURIComponent(sessionId)}`, jsonInit('PATCH', body))
 }
 
 export function fetchSessionUsage(sessionId: string): Promise<UsageSummary> {
-  return request(`/api/sessions/${encodeURIComponent(sessionId)}/usage`)
+  return requestJson(`/api/sessions/${encodeURIComponent(sessionId)}/usage`)
 }
 
 export function listProjects(includeArchived = false): Promise<{ projects: Project[] }> {
-  return request(`/api/projects${archivedQuery(includeArchived)}`, { method: 'GET' })
+  return requestJson(`/api/projects${archivedQuery(includeArchived)}`, { method: 'GET' })
 }
 
 export function createProject(
   label: string | null,
   rootPath?: string | null,
 ): Promise<{ project: Project }> {
-  return request('/api/projects', jsonInit('POST', { label, root_path: rootPath || null }))
+  return requestJson('/api/projects', jsonInit('POST', { label, root_path: rootPath || null }))
 }
 
 export interface UpdateProjectBody {
@@ -107,15 +77,15 @@ export interface UpdateProjectBody {
 }
 
 export function updateProject(projectId: string, body: UpdateProjectBody): Promise<{ project: Project }> {
-  return request(`/api/projects/${encodeURIComponent(projectId)}`, jsonInit('PATCH', body))
+  return requestJson(`/api/projects/${encodeURIComponent(projectId)}`, jsonInit('PATCH', body))
 }
 
 export function fetchProjectUsage(projectId: string): Promise<UsageSummary> {
-  return request(`/api/projects/${encodeURIComponent(projectId)}/usage`)
+  return requestJson(`/api/projects/${encodeURIComponent(projectId)}/usage`)
 }
 
 export function registerLocalInput(sessionId: string, path: string): Promise<LocalInputResponse> {
-  return request(
+  return requestJson(
     `/api/sessions/${encodeURIComponent(sessionId)}/local-input`,
     jsonInit('POST', { path }),
   )
@@ -132,7 +102,7 @@ const restoredSessions = new Set<string>()
 
 export async function fetchMessages(sessionId: string): Promise<MessagesResponse> {
   const restore = restoredSessions.has(sessionId) ? '' : '?restore=1'
-  const body = await request<MessagesResponse>(
+  const body = await requestJson<MessagesResponse>(
     `/api/sessions/${encodeURIComponent(sessionId)}/messages${restore}`,
   )
   restoredSessions.add(sessionId)
@@ -141,45 +111,45 @@ export async function fetchMessages(sessionId: string): Promise<MessagesResponse
 
 export function fetchSidebar(sessionId?: string): Promise<SidebarResponse> {
   const query = sessionId ? `?session_id=${encodeURIComponent(sessionId)}` : ''
-  return request(`/api/sidebar${query}`)
+  return requestJson(`/api/sidebar${query}`)
 }
 
 export function confirmAction(body: ConfirmRequestBody): Promise<{ message: WireMessage }> {
-  return request('/api/confirm', jsonInit('POST', body))
+  return requestJson('/api/confirm', jsonInit('POST', body))
 }
 
 const qcPath = (sessionId: string, runId: string) =>
   `/api/sessions/${encodeURIComponent(sessionId)}/qc/${encodeURIComponent(runId)}`
 
 export function fetchQc(sessionId: string, runId: string): Promise<QcReviewState> {
-  return request(qcPath(sessionId, runId))
+  return requestJson(qcPath(sessionId, runId))
 }
 
 export function previewQc(sessionId: string, runId: string, params: QcThresholds): Promise<QcReviewState> {
-  return request(`${qcPath(sessionId, runId)}/preview`, jsonInit('POST', params))
+  return requestJson(`${qcPath(sessionId, runId)}/preview`, jsonInit('POST', params))
 }
 
 export function approveQc(sessionId: string, runId: string, previewId: string, reason: string): Promise<QcReviewState> {
-  return request(`${qcPath(sessionId, runId)}/approve`, jsonInit('POST', { preview_id: previewId, reason }))
+  return requestJson(`${qcPath(sessionId, runId)}/approve`, jsonInit('POST', { preview_id: previewId, reason }))
 }
 
 export function rejectQc(sessionId: string, runId: string, previewId: string, reason: string): Promise<QcReviewState> {
-  return request(`${qcPath(sessionId, runId)}/reject`, jsonInit('POST', { preview_id: previewId, reason }))
+  return requestJson(`${qcPath(sessionId, runId)}/reject`, jsonInit('POST', { preview_id: previewId, reason }))
 }
 
 export function filterQc(sessionId: string, runId: string, previewId: string): Promise<QcReviewState> {
-  return request(`${qcPath(sessionId, runId)}/filter`, jsonInit('POST', { preview_id: previewId }))
+  return requestJson(`${qcPath(sessionId, runId)}/filter`, jsonInit('POST', { preview_id: previewId }))
 }
 
 const pcaPath = (sessionId: string, runId: string, filterAttemptId: string) =>
   `${qcPath(sessionId, runId)}/pca/${encodeURIComponent(filterAttemptId)}`
 
 export function fetchPca(sessionId: string, runId: string, filterAttemptId: string): Promise<PcaState> {
-  return request(pcaPath(sessionId, runId, filterAttemptId))
+  return requestJson(pcaPath(sessionId, runId, filterAttemptId))
 }
 
 export function executePca(sessionId: string, runId: string, filterAttemptId: string, binding: string, reason: string): Promise<PcaState> {
-  return request(pcaPath(sessionId, runId, filterAttemptId), jsonInit('POST', { binding_sha256: binding, reason }))
+  return requestJson(pcaPath(sessionId, runId, filterAttemptId), jsonInit('POST', { binding_sha256: binding, reason }))
 }
 
 export function pcaDiagnosticPath(sessionId: string, runId: string, filterAttemptId: string, attemptId: string): string {
@@ -187,22 +157,22 @@ export function pcaDiagnosticPath(sessionId: string, runId: string, filterAttemp
 }
 
 export function fetchPcaDimensions(sessionId: string, runId: string, filterAttemptId: string, attemptId: string): Promise<PcaDimensionsState> {
-  return request(`${pcaPath(sessionId, runId, filterAttemptId)}/${encodeURIComponent(attemptId)}/dimensions`)
+  return requestJson(`${pcaPath(sessionId, runId, filterAttemptId)}/${encodeURIComponent(attemptId)}/dimensions`)
 }
 
 export function recordPcaDimensions(sessionId: string, runId: string, filterAttemptId: string, attemptId: string, binding: string, revision: number, nDims: number, reason: string): Promise<PcaDimensionsState> {
-  return request(`${pcaPath(sessionId, runId, filterAttemptId)}/${encodeURIComponent(attemptId)}/dimensions`, jsonInit('POST', { binding_sha256: binding, revision, n_dims: nDims, reason }))
+  return requestJson(`${pcaPath(sessionId, runId, filterAttemptId)}/${encodeURIComponent(attemptId)}/dimensions`, jsonInit('POST', { binding_sha256: binding, revision, n_dims: nDims, reason }))
 }
 
 const clusterPath = (sessionId: string, runId: string, filterAttemptId: string, pcaAttemptId: string) =>
   `${qcPath(sessionId, runId)}/clusters/${encodeURIComponent(filterAttemptId)}/${encodeURIComponent(pcaAttemptId)}`
 
 export function fetchClusters(sessionId: string, runId: string, filterAttemptId: string, pcaAttemptId: string): Promise<ClusterState> {
-  return request(clusterPath(sessionId, runId, filterAttemptId, pcaAttemptId))
+  return requestJson(clusterPath(sessionId, runId, filterAttemptId, pcaAttemptId))
 }
 
 export function executeClusters(sessionId: string, runId: string, filterAttemptId: string, pcaAttemptId: string, binding: string, reviewId: string, revision: number, reason: string): Promise<ClusterState> {
-  return request(`${clusterPath(sessionId, runId, filterAttemptId, pcaAttemptId)}/execute`, jsonInit('POST', { binding_sha256: binding, dimension_review_id: reviewId, revision, reason }))
+  return requestJson(`${clusterPath(sessionId, runId, filterAttemptId, pcaAttemptId)}/execute`, jsonInit('POST', { binding_sha256: binding, dimension_review_id: reviewId, revision, reason }))
 }
 
 export function clusterDiagnosticPath(sessionId: string, runId: string, filterAttemptId: string, pcaAttemptId: string, attemptId: string): string {
@@ -215,23 +185,23 @@ const acceptancePath = (source: MarkerSource) => `${clusterPath(source.sessionId
 const markerPath = (source: MarkerSource) => `${qcPath(source.sessionId, source.runId)}/markers/${encodeURIComponent(source.filterAttemptId)}/${encodeURIComponent(source.pcaAttemptId)}/${encodeURIComponent(source.clusterAttemptId)}`
 
 export function fetchClusterAcceptance(source: MarkerSource): Promise<ClusterAcceptanceState> {
-  return request(acceptancePath(source))
+  return requestJson(acceptancePath(source))
 }
 
 export function recordClusterAcceptance(source: MarkerSource, binding: string, revision: number, reason: string): Promise<ClusterAcceptanceState> {
-  return request(acceptancePath(source), jsonInit('POST', { binding_sha256: binding, revision, accepted: true, reason }))
+  return requestJson(acceptancePath(source), jsonInit('POST', { binding_sha256: binding, revision, accepted: true, reason }))
 }
 
 export function recordClusterRejection(source: MarkerSource, binding: string, revision: number, reason: string): Promise<ClusterAcceptanceState> {
-  return request(`${clusterPath(source.sessionId, source.runId, source.filterAttemptId, source.pcaAttemptId)}/${encodeURIComponent(source.clusterAttemptId)}/reject`, jsonInit('POST', { binding_sha256: binding, revision, reason }))
+  return requestJson(`${clusterPath(source.sessionId, source.runId, source.filterAttemptId, source.pcaAttemptId)}/${encodeURIComponent(source.clusterAttemptId)}/reject`, jsonInit('POST', { binding_sha256: binding, revision, reason }))
 }
 
 export function fetchMarkers(source: MarkerSource): Promise<MarkerState> {
-  return request(markerPath(source))
+  return requestJson(markerPath(source))
 }
 
 export function executeMarkers(source: MarkerSource, binding: string, reviewId: string, revision: number, reason: string): Promise<MarkerState> {
-  return request(`${markerPath(source)}/execute`, jsonInit('POST', { binding_sha256: binding, cluster_review_id: reviewId, revision, reason }))
+  return requestJson(`${markerPath(source)}/execute`, jsonInit('POST', { binding_sha256: binding, cluster_review_id: reviewId, revision, reason }))
 }
 
 export function markerDiagnosticPath(source: MarkerSource, attemptId: string): string {
@@ -239,9 +209,9 @@ export function markerDiagnosticPath(source: MarkerSource, attemptId: string): s
 }
 
 export function fetchMarkerCandidates(source: MarkerSource, attemptId: string, offset: number): Promise<MarkerPage> {
-  return request(`${markerPath(source)}/${encodeURIComponent(attemptId)}/candidates?offset=${offset}&limit=100`)
+  return requestJson(`${markerPath(source)}/${encodeURIComponent(attemptId)}/candidates?offset=${offset}&limit=100`)
 }
 
 export function reviewMarkers(source: MarkerSource, attemptId: string, decision: 'accepted' | 'rejected', revision: number, reason: string): Promise<MarkerState> {
-  return request(`${markerPath(source)}/${encodeURIComponent(attemptId)}/review`, jsonInit('POST', { decision, revision, reason }))
+  return requestJson(`${markerPath(source)}/${encodeURIComponent(attemptId)}/review`, jsonInit('POST', { decision, revision, reason }))
 }

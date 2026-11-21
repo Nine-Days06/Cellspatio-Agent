@@ -1,10 +1,11 @@
 import { useEffect, useState } from 'react'
 import { Button } from '@/components/ui/button'
 import { Textarea } from '@/components/ui/textarea'
-import { executeMarkers, fetchClusterAcceptance, fetchMarkerCandidates, fetchMarkers, markerDiagnosticPath, recordClusterAcceptance, recordClusterRejection, reviewMarkers } from '@/lib/api'
+import { executeMarkers, fetchMarkerCandidates, fetchMarkers, markerDiagnosticPath, recordClusterAcceptance, recordClusterRejection, reviewMarkers } from '@/lib/api'
+import { stageActivity } from '@/lib/stageActivity'
 import { evaluateStageGate, isAttemptedByBinding } from '@/lib/stageGate'
 import { useStageReview } from '@/lib/useStageReview'
-import type { ClusterAcceptanceState, MarkerPage, MarkerState } from '@/lib/types'
+import type { MarkerPage, MarkerState } from '@/lib/types'
 import { AnalysisImage } from '@/components/AnalysisImage'
 
 type Source = { sessionId: string; runId: string; filterAttemptId: string; pcaAttemptId: string; clusterAttemptId: string }
@@ -50,24 +51,17 @@ export function MarkerReview({ sessionId, runId, filterAttemptId, pcaAttemptId, 
   const [reviewReason, setReviewReason] = useState('')
   const [reason, setReason] = useState('')
   const [markerReasons, setMarkerReasons] = useState<Record<string, string>>({})
-  const stage = useStageReview<{ review: ClusterAcceptanceState; state: MarkerState }>({
-    load: async () => {
-      const [review, state] = await Promise.all([fetchClusterAcceptance(source), fetchMarkers(source)])
-      return { review, state }
-    },
-    pollLoad: async (current) => ({
-      review: current?.review ?? await fetchClusterAcceptance(source),
-      state: await fetchMarkers(source),
-    }),
+  const stage = useStageReview<MarkerState>({
+    load: () => fetchMarkers(source),
     deps: [sessionId, runId, filterAttemptId, pcaAttemptId, clusterAttemptId, revision],
-    isRunning: (snapshot, executing) => executing || (snapshot?.state.attempts.some((a) => a.status === 'running') ?? false),
+    isRunning: (snapshot, executing) => stageActivity({ attempts: snapshot?.attempts, executing }).selfRunning,
     onRunning,
     onRecorded,
   })
-  const review = stage.state?.review ?? null
-  const state = stage.state?.state ?? null
+  const state = stage.state
+  const review = state?.cluster_review ?? null
   const { busy, executing, error } = stage
-  const running = executing || (state?.attempts.some((a) => a.status === 'running') ?? false)
+  const running = stageActivity({ attempts: state?.attempts, executing }).running
 
   useEffect(() => {
     setAccepted(false); setReviewReason(''); setReason(''); setMarkerReasons({})
@@ -81,10 +75,7 @@ export function MarkerReview({ sessionId, runId, filterAttemptId, pcaAttemptId, 
   }
 
   async function recoverSnapshot() {
-    await stage.recover(async () => {
-      const [nextReview, next] = await Promise.all([fetchClusterAcceptance(source), fetchMarkers(source)])
-      return { review: nextReview, state: next }
-    })
+    await stage.recover(() => fetchMarkers(source))
   }
 
   async function submit(kind: 'accept' | 'reject' | 'execute') {
@@ -100,15 +91,16 @@ export function MarkerReview({ sessionId, runId, filterAttemptId, pcaAttemptId, 
     const result = await stage.perform(async () => {
       try {
         if (kind === 'accept') {
-          const nextReview = await recordClusterAcceptance(source, current.review.binding_sha256!, current.review.revision, reasonText)
-          return { review: nextReview, state: await fetchMarkers(source) }
+          const nextReview = await recordClusterAcceptance(source, current.cluster_review.binding_sha256!, current.cluster_review.revision, reasonText)
+          const next = await fetchMarkers(source)
+          return { ...next, cluster_review: { ...next.cluster_review, ...nextReview } }
         }
         if (kind === 'reject') {
-          const nextReview = await recordClusterRejection(source, current.review.binding_sha256!, current.review.revision, reasonText)
-          return { review: nextReview, state: await fetchMarkers(source) }
+          const nextReview = await recordClusterRejection(source, current.cluster_review.binding_sha256!, current.cluster_review.revision, reasonText)
+          const next = await fetchMarkers(source)
+          return { ...next, cluster_review: { ...next.cluster_review, ...nextReview } }
         }
-        const next = await executeMarkers(source, current.state.binding_sha256!, current.state.review!.review_id, current.state.revision, executeReason)
-        return { review: current.review, state: next }
+        return await executeMarkers(source, current.binding_sha256!, current.review!.review_id, current.revision, executeReason)
       } catch (err) {
         // 失败只读恢复；generation 已变化时 hook 不会落地旧结果。
         await recoverSnapshot()
@@ -128,8 +120,7 @@ export function MarkerReview({ sessionId, runId, filterAttemptId, pcaAttemptId, 
     if (!current) return
     const result = await stage.perform(async () => {
       try {
-        const next = await reviewMarkers(source, attemptId, decision, current.state.revision, reviewReasonText)
-        return { review: current.review, state: next }
+        return await reviewMarkers(source, attemptId, decision, current.revision, reviewReasonText)
       } catch (err) {
         await recoverSnapshot()
         throw err
