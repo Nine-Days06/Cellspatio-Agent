@@ -41,7 +41,7 @@ async def _unhandled_exception_handler(request: Request, exc: Exception) -> JSON
     logger.exception("unhandled API error on %s %s", request.method, request.url.path)
     return JSONResponse(
         status_code=500,
-        content={"detail": str(exc) or type(exc).__name__},
+        content={"detail": "服务内部错误"},
     )
 
 

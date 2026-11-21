@@ -320,7 +320,7 @@ def test_soft_warn_uses_offset_window_across_rest_sidebar_and_chat(client, monke
 
 
 def test_unhandled_store_error_returns_structured_500(monkeypatch):
-    """Important#1：端点内部异常 → 500 且为 {"detail":...} JSON，不再泄漏 text/plain。"""
+    """端点内部异常 → 500 JSON，且不把异常原文/本地路径回给客户端。"""
     client = TestClient(create_app(FakeAgent()), raise_server_exceptions=False)
     sid = client.post("/api/sessions", json={}).json()["session"]["id"]
 
@@ -333,7 +333,8 @@ def test_unhandled_store_error_returns_structured_500(monkeypatch):
 
     assert response.status_code == 500
     assert response.headers["content-type"].startswith("application/json")
-    assert "db down" in response.json()["detail"]
+    assert response.json()["detail"] == "服务内部错误"
+    assert "db down" not in response.text
 
 
 def test_create_app_mounts_web_dist_only_when_present(monkeypatch, tmp_path):
