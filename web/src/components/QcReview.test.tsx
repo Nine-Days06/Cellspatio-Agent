@@ -1,5 +1,5 @@
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
-import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { QcReview } from '@/components/QcReview'
 import { approveQc, fetchQc, filterQc, previewQc, rejectQc } from '@/lib/api'
 import type { QcReviewState } from '@/lib/types'
@@ -24,6 +24,10 @@ beforeEach(() => {
   vi.mocked(fetchQc).mockResolvedValue(initial)
   vi.mocked(previewQc).mockResolvedValue(preview)
   vi.mocked(approveQc).mockResolvedValue(approved)
+})
+
+afterEach(() => {
+  vi.useRealTimers()
 })
 
 async function enterPreview() {
@@ -158,6 +162,31 @@ describe('QC review', () => {
     fireEvent.click(screen.getByRole('button', { name: '拒绝此预览' }))
     await screen.findByText(/此预览已拒绝/)
     expect(rejectQc).toHaveBeenCalledWith('s1', 'r1', 'p1', '阈值过宽')
+    expect(recorded).toHaveBeenCalledOnce()
+  })
+
+  it('refreshes the parent only once when the filter run finishes', async () => {
+    vi.useFakeTimers()
+    const running: QcReviewState = {
+      ...approved,
+      attempts: [{ attempt_id: 'a1', preview_id: 'p1', status: 'running', directory: '/local/a1', created_at: 'now', finished_at: null, result: null }],
+    }
+    const completed: QcReviewState = {
+      ...running,
+      attempts: [{ ...running.attempts![0], status: 'completed', finished_at: 'later', result: { cells: 1, features: 2 } }],
+    }
+    vi.mocked(fetchQc).mockResolvedValueOnce(approved).mockResolvedValue(completed)
+    vi.mocked(filterQc).mockResolvedValue(running)
+    const recorded = vi.fn()
+    render(<QcReview sessionId="s1" runId="r1" onRecorded={recorded} />)
+    await act(async () => { await vi.advanceTimersByTimeAsync(0) })
+    fireEvent.click(screen.getByRole('button', { name: '执行此已记录选择的过滤' }))
+    await act(async () => { await vi.advanceTimersByTimeAsync(0) })
+    expect(filterQc).toHaveBeenCalledOnce()
+    expect(recorded).not.toHaveBeenCalled()
+    await act(async () => { await vi.advanceTimersByTimeAsync(1500) })
+    expect(recorded).toHaveBeenCalledOnce()
+    await act(async () => { await vi.advanceTimersByTimeAsync(6000) })
     expect(recorded).toHaveBeenCalledOnce()
   })
 })
