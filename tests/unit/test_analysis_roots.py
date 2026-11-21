@@ -85,6 +85,24 @@ def test_project_scoped_rejects_unknown_session(tmp_path):
         roots.project_scoped("nope")
 
 
+def test_project_scoped_follows_store_factory_each_call(tmp_path):
+    empty_store = _store(tmp_path / "empty")
+    project_store = _store(tmp_path / "project")
+    project_id = project_store.create_project("项目")
+    project_session = project_store.create_session(project_id=project_id)
+    current = {"store": empty_store}
+    roots = AnalysisRoots(lambda: current["store"], tmp_path)
+
+    with pytest.raises(ValueError, match="^会话不存在，不能确定分析产物根$"):
+        roots.project_scoped(project_session)
+
+    current["store"] = project_store
+    assert (
+        roots.project_scoped(project_session)
+        == (tmp_path / "data" / "projects" / project_id / "analysis").resolve()
+    )
+
+
 def test_qc_root_accepts_legacy_and_project_roots(tmp_path):
     roots = AnalysisRoots(_store(tmp_path), tmp_path)
     legacy = tmp_path / "data" / "analysis" / "sc_qc"
@@ -135,3 +153,7 @@ def test_qc_root_rejects_sc_qc_name_in_wrong_location(tmp_path):
 
     with pytest.raises(ValueError, match="^QC 目录非法，请重新 QC$"):
         roots.qc_root({"directory": str(misplaced)})
+
+    almost_project = tmp_path / "data" / "wrong" / "analysis" / "sc_qc" / "run-2"
+    with pytest.raises(ValueError, match="^QC 目录非法，请重新 QC$"):
+        roots.qc_root({"directory": str(almost_project)})
