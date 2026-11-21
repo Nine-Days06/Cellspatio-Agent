@@ -107,6 +107,9 @@ class AgentRuntime:
                 dispatched = result
                 status = result.get("status")
                 if result.get("analysis_type") == "single_cell":
+                    # 固定单细胞链自带人工审批，不再回灌模型；但流式过程条必须收尾。
+                    if on_event is not None:
+                        on_event({"type": "tool_status", "name": name, "phase": "end"})
                     return result
 
                 # 非流式：所有 TERMINAL_STATUSES 即刻返回（保持原有行为）
