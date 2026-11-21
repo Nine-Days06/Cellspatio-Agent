@@ -16,7 +16,7 @@ from src.analysis.sc_marker_reviews import (
     review_binding,
 )
 from src.analysis.sc_pca import DIMENSION_RECORD_VERSION
-from src.analysis.stage_run import executor_streams, finish_stage, start_stage
+from src.analysis.stage_run import FixedStageRun, PreparedStage, run_fixed_stage
 
 MARKER_TOOL_VERSION = "1.0.1"
 MARKER_REVIEW_VERSION = "sc-marker-review/1.0.0"
@@ -417,7 +417,6 @@ def run_sc_markers(
     cluster, review = snapshot["cluster"], snapshot["review"]
     pca = next(a for a in run["pca_attempts"] if a["attempt_id"] == cluster["pca_attempt_id"])
     directory = Path(attempt["directory"]).resolve()
-    started = start_stage(directory)
     metadata = {
         "tool": "sc_markers",
         "tool_version": MARKER_TOOL_VERSION,
@@ -442,52 +441,54 @@ def run_sc_markers(
         "status": "failed",
         "timeout_seconds": PROTOCOL["timeout_seconds"],
     }
-    stdout = stderr = ""
-    try:
+
+    def prepare() -> PreparedStage:
+        """校验 marker 授权来源并返回执行上下文。"""
         before = checked_source(run, cluster, review, root)
         if (
             before != snapshot["source"]
             or execution_binding(run, snapshot) != attempt["binding_sha256"]
         ):
             raise ValueError("marker 授权来源变化")
-        metadata["source_before"] = before
-        script = directory / "script.R"
-        code = marker_script(
-            Path(cluster["directory"]).resolve(), Path(pca["directory"]).resolve(), directory
+        return PreparedStage(
+            source=before,
+            data=(Path(cluster["directory"]).resolve(), Path(pca["directory"]).resolve()),
         )
-        script.write_text(code, encoding="utf-8")
-        completed = executor.execute_script(str(script))
-        stdout, stderr = completed.stdout or "", completed.stderr or ""
-        metadata["returncode"] = completed.returncode
-        if completed.returncode != 0:
-            raise ValueError("marker R 执行失败")
-        summary = check_outputs(directory, Path(pca["directory"]).resolve(), before)
-        if script.read_text(encoding="utf-8") != code:
-            raise ValueError("marker 固定脚本变化")
+
+    def check(prepared: PreparedStage) -> dict[str, Any]:
+        """校验 marker 产物并返回汇总。"""
+        _, pca_directory = prepared.data
+        return check_outputs(directory, pca_directory, prepared.source)
+
+    def after(prepared: PreparedStage) -> dict[str, Any]:
+        """重读 marker 父身份并返回当前来源。"""
         after = checked_source(run, cluster, review, root)
-        metadata["source_after"] = after
-        if before != after:
-            raise ValueError("marker 运行中父证据变化")
-        metadata.update(summary, status="completed")
-    except (
-        RExecutorError,
-        OSError,
-        ValueError,
-        KeyError,
-        TypeError,
-        OverflowError,
-        StopIteration,
-        IndexError,
-    ) as exc:
-        metadata["error"] = "marker 执行或证据校验失败；请检查本地证据，不会自动重跑"
-        stderr = f"{stderr}\n{exc}"
-        if isinstance(exc, RExecutorError):
-            stdout, stderr = executor_streams(exc)
-    finally:
-        finish_stage(
-            directory, metadata, started, stdout, stderr, artifacts=True, fingerprints=fingerprints
-        )
-    return metadata
+        return after
+
+    plan = FixedStageRun(
+        directory=directory,
+        metadata=metadata,
+        prepare=prepare,
+        script=lambda prepared: marker_script(prepared.data[0], prepared.data[1], directory),
+        check=check,
+        after=after,
+        returncode_error="marker R 执行失败",
+        script_error="marker 固定脚本变化",
+        errors=(
+            RExecutorError,
+            OSError,
+            ValueError,
+            KeyError,
+            TypeError,
+            OverflowError,
+            StopIteration,
+            IndexError,
+        ),
+        source_keys=("source_before", "source_after"),
+        source_error="marker 运行中父证据变化",
+        failure_error="marker 执行或证据校验失败；请检查本地证据，不会自动重跑",
+    )
+    return run_fixed_stage(plan, executor)
 
 
 def checked_completed_marker(
