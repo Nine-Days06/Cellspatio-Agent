@@ -8,6 +8,7 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from threading import Barrier, Event
 from types import SimpleNamespace
+from typing import Any
 from unittest.mock import Mock
 
 import pytest
@@ -32,6 +33,28 @@ def table(path, fields, rows):
         writer = csv.writer(handle)
         writer.writerow(fields)
         writer.writerows(rows)
+
+
+def duplicate_attempt(
+    store: SessionStore,
+    table_name: str,
+    attempt_id: str,
+    new_id: str,
+    **changes: Any,
+) -> None:
+    """复制阶段行并改主键，制造父 ID 错配的路由测试数据。"""
+    with store._conn() as conn:
+        row = conn.execute(
+            f"SELECT * FROM {table_name} WHERE attempt_id = ?", (attempt_id,)
+        ).fetchone()
+        assert row is not None
+        values = {**dict(row), "attempt_id": new_id, **changes}
+        columns = ", ".join(values)
+        placeholders = ", ".join("?" for _ in values)
+        conn.execute(
+            f"INSERT INTO {table_name} ({columns}) VALUES ({placeholders})",
+            tuple(values.values()),
+        )
 
 
 def outputs(script):
@@ -279,6 +302,31 @@ def test_cross_session_parameters_and_binding_rejected(parent_ready):
         assert client.post(path, json=body).status_code == 422
     assert client.post(path, json={"binding_sha256": "0" * 64, "reason": "test"}).status_code == 409
     executor.execute_script.assert_not_called()
+
+
+def test_child_attempt_with_wrong_parent_is_404(parent_ready):
+    """子 PCA 存在但其父过滤 ID 不匹配时，仍返回原 404 文案。"""
+    store, sid, rid, root, source, client, url, pid, fid, path, binding, executor = parent_ready
+    response = client.post(path, json={"binding_sha256": binding, "reason": "测试"})
+    assert response.status_code == 200
+    aid = response.json()["attempts"][0]["attempt_id"]
+    parent = next(a for a in store.get_qc_run(sid, rid)["attempts"] if a["attempt_id"] == fid)
+    duplicate_attempt(
+        store,
+        "sc_filter_attempts",
+        fid,
+        "other-filter",
+        binding_sha256="f" * 64,
+        directory=str(Path(parent["directory"]).parent / "other-filter"),
+    )
+    wrong = f"{url}/pca/other-filter/{aid}"
+    dimensions = client.get(wrong + "/dimensions")
+    assert dimensions.status_code == 404
+    assert dimensions.json()["detail"] == "PCA 关联不存在"
+    diagnostic = client.get(wrong + "/diagnostic")
+    assert diagnostic.status_code == 404
+    assert diagnostic.json()["detail"] == "PCA 诊断未完成或不存在"
+    executor.execute_script.assert_called_once()
 
 
 @pytest.mark.parametrize(

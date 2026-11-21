@@ -128,7 +128,6 @@ def test_attempt_locates_by_id_and_optional_parent() -> None:
     assert marker_attempt is not None and marker_attempt["attempt_id"] == "ma"
     assert run.attempt("marker", "ma", "cz") is None
     assert run.attempt("pca", "missing") is None
-    assert run.attempt("filter", "fa", "fa") is None
     assert RunSnapshot({"run_id": "empty"}).attempt("pca", "pa") is None
 
     duplicated = RunSnapshot(
@@ -145,6 +144,25 @@ def test_attempt_locates_by_id_and_optional_parent() -> None:
         run.attempt("unknown", "fa")
     with pytest.raises(ValueError):
         run.attempt("unknown", "fa", "fz")
+    with pytest.raises(ValueError):
+        run.attempt("filter", "fa", "fa")
+
+
+def test_attempt_parent_column_is_strict() -> None:
+    """损坏的子行缺少父列时不能伪装成未找到。"""
+    run = RunSnapshot({"pca_attempts": [{"attempt_id": "pa"}]})
+    with pytest.raises(KeyError):
+        run.attempt("pca", "pa", "fa")
+
+
+def test_coerce_wraps_mapping_and_keeps_snapshot_identity() -> None:
+    """普通 Mapping 统一包装，已是快照时原样返回。"""
+    raw = {"run_id": "r1", "attempts": [{"attempt_id": "f1"}]}
+    wrapped = RunSnapshot.coerce(raw)
+    assert isinstance(wrapped, RunSnapshot)
+    assert wrapped["run_id"] == "r1"
+    assert wrapped.stage_attempts("filter")[0]["attempt_id"] == "f1"
+    assert RunSnapshot.coerce(wrapped) is wrapped
 
 
 def test_stage_dirs_follow_run_dirs_order_and_skip_empty() -> None:

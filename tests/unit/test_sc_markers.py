@@ -21,7 +21,7 @@ from tests.unit.test_sc_cluster import dimensions_ready as _dimensions_ready
 from tests.unit.test_sc_cluster import execute
 from tests.unit.test_sc_cluster import parent_ready as _parent_ready
 from tests.unit.test_sc_cluster import ready as _cluster_ready
-from tests.unit.test_sc_pca import table
+from tests.unit.test_sc_pca import duplicate_attempt, table
 
 parent_ready = _parent_ready
 dimensions_ready = _dimensions_ready
@@ -317,6 +317,33 @@ def test_stale_revision_and_binding_conflict(marker_ready):
             == status
         )
     d.executor.execute_script.assert_not_called()
+
+
+def test_marker_attempt_with_wrong_cluster_parent_is_404(marker_ready):
+    """子 marker 存在但路径聚类父 ID 不匹配时，仍返回原 404 文案。"""
+    d = marker_ready
+    d.executor.execute_script.side_effect = marker_outputs
+    state = d.client.post(d.marker_path + "/execute", json=d.marker_body).json()
+    mid = state["attempts"][0]["attempt_id"]
+    cluster = d.store.get_qc_run(d.sid, d.rid)["cluster_attempts"][0]
+    duplicate_attempt(
+        d.store,
+        "sc_cluster_attempts",
+        d.cid,
+        "other-cluster",
+        binding_sha256="f" * 64,
+        directory=str(Path(cluster["directory"]).parent / "other-cluster"),
+    )
+    wrong = f"{d.url}/markers/{d.fid}/{d.aid}/other-cluster/{mid}"
+    diagnostic = d.client.get(wrong + "/diagnostic")
+    assert diagnostic.status_code == 404
+    assert diagnostic.json()["detail"] == "marker 图未完成或不存在"
+    review = d.client.post(
+        wrong + "/review",
+        json={"decision": "accepted", "revision": 0, "reason": "x"},
+    )
+    assert review.status_code == 404
+    assert review.json()["detail"] == "marker 关联不存在"
 
 
 def test_lock_conflict_is_busy_without_r(marker_ready):

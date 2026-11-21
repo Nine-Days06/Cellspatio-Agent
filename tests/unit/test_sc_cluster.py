@@ -21,7 +21,7 @@ from src.analysis.sc_cluster import (
 )
 from src.api import authorized_run
 from src.api.routes_pca import DIMENSION_RECORD_VERSION
-from tests.unit.test_sc_pca import PARAMS, table
+from tests.unit.test_sc_pca import PARAMS, duplicate_attempt, table
 from tests.unit.test_sc_pca_dimensions import dimensions_ready as _dimensions_ready
 from tests.unit.test_sc_pca_dimensions import parent_ready as _parent_ready
 
@@ -204,6 +204,29 @@ def test_revision_and_association_conflicts(ready):
     assert missing_review.status_code == 404
     assert missing_review.json()["detail"] == "聚类关联不存在"
     d.executor.execute_script.assert_not_called()
+
+
+def test_cluster_attempt_with_wrong_pca_parent_is_404(ready):
+    """子聚类存在但路径 PCA 父 ID 不匹配时，仍返回原 404 文案。"""
+    d = ready
+    state = execute(d)
+    cid = state["attempts"][0]["attempt_id"]
+    pca = d.store.get_qc_run(d.sid, d.rid)["pca_attempts"][0]
+    duplicate_attempt(
+        d.store,
+        "sc_pca_attempts",
+        d.aid,
+        "other-pca",
+        binding_sha256="f" * 64,
+        directory=str(Path(pca["directory"]).parent / "other-pca"),
+    )
+    wrong = f"{d.url}/clusters/{d.fid}/other-pca/{cid}"
+    diagnostic = d.client.get(wrong + "/diagnostic")
+    assert diagnostic.status_code == 404
+    assert diagnostic.json()["detail"] == "聚类图未完成或不存在"
+    review = d.client.get(wrong + "/review")
+    assert review.status_code == 404
+    assert review.json()["detail"] == "聚类关联不存在"
 
 
 def test_running_guards_and_duplicate_post(ready):
