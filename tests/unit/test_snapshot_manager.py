@@ -103,6 +103,28 @@ def test_snapshot_manager_rejects_path_traversal(tmp_path):
             mgr.delete_snapshot(run_id)
 
 
+def test_create_snapshot_rejects_non_directory(tmp_path):
+    """同名路径是普通文件时不能用它冒充快照。"""
+    mgr = SnapshotManager(tmp_path / "repo")
+    (mgr.snapshots_dir / "run-001").write_text("not a snapshot", encoding="utf-8")
+    with pytest.raises(ValueError):
+        mgr.create_snapshot("run-001")
+
+
+def test_create_snapshot_rejects_symlink(tmp_path):
+    """同名路径是符号链接时不得沿用它写产物。"""
+    mgr = SnapshotManager(tmp_path / "repo")
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    link = mgr.snapshots_dir / "run-001"
+    try:
+        link.symlink_to(outside, target_is_directory=True)
+    except OSError:
+        pytest.skip("当前环境不允许创建符号链接")
+    with pytest.raises(ValueError):
+        mgr.create_snapshot("run-001")
+
+
 def test_delete_snapshot_omits_empty_force_argument(tmp_path, monkeypatch):
     """非强制删除不能把空字符串作为 git 参数传入。"""
     mgr = SnapshotManager(tmp_path / "repo")

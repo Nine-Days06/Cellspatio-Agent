@@ -31,16 +31,17 @@ class SnapshotManager:
         snap_path = self._snapshot_path(run_id)
         if snap_path.exists():
             # 快照是不可变证据：同名已存在时直接返回，绝不 reset 覆盖。
+            if snap_path.is_symlink() or not snap_path.is_dir():
+                raise ValueError(f"快照路径不是安全目录: {snap_path}")
             return snap_path
-        else:
-            # 新建 worktree
-            branch_name = f"snapshot/{run_id}"
-            subprocess.run(
-                ["git", "worktree", "add", "-b", branch_name, str(snap_path)],
-                cwd=self.repo_root,
-                check=True,
-                capture_output=True,
-            )
+        # 新建 worktree
+        branch_name = f"snapshot/{run_id}"
+        subprocess.run(
+            ["git", "worktree", "add", "-b", branch_name, str(snap_path)],
+            cwd=self.repo_root,
+            check=True,
+            capture_output=True,
+        )
         # 可选：提交当前变更作为快照记录（仅当有暂存变更时）
         if commit_msg:
             # 检查是否有暂存变更
