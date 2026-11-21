@@ -17,7 +17,8 @@ ROOT = Path(__file__).resolve().parent
 sys.path.insert(0, str(ROOT))
 
 # 噪声判定模式（纯正则，无第三方依赖）
-FAKE_ID_RE = re.compile(r"^NCBIGene:[^0-9]")
+# 实体名经 KnowledgeIndex 统一为小写，判定需大小写不敏感
+FAKE_ID_RE = re.compile(r"^NCBIGene:[^0-9]", re.IGNORECASE)
 # CJK 统一表意 + 扩展A + 兼容表意 + 假名 + 谚文
 CJK_RE = re.compile(r"[\u3040-\u30ff\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff\uac00-\ud7af]")
 BIBLIO_PATTERNS = (re.compile(r"^\d{7,9}$"), re.compile(r"^10\.\d{3,9}/"))
@@ -63,13 +64,15 @@ def _load_articles(n: int) -> list[dict]:
     return articles
 
 
-def _read_entity_names(working_dir: str) -> list[str]:
-    """读金丝雀库 vdb_entities.json 的实体名列表（文件缺失按空处理）"""
-    vdb_path = Path(working_dir) / "vdb_entities.json"
-    if not vdb_path.exists():
-        return []
-    payload = json.loads(vdb_path.read_text(encoding="utf-8"))
-    return [str(r.get("entity_name") or r.get("__id__") or "") for r in (payload.get("data") or [])]
+def _read_entity_names(client: Any) -> list[str] | None:
+    """读金丝雀库实体名；后端不可读时返回 None，不能当作空库放行。"""
+    from src.knowledge.knowledge_index import KnowledgeIndex
+
+    index = KnowledgeIndex.from_client(client)
+    if index is None:
+        return None
+    names = index.entity_names()
+    return None if names is None else sorted(names)
 
 
 def run_canary(n: int = 15, working_dir: str = ".canary_kb") -> dict[str, Any]:
@@ -87,8 +90,11 @@ def run_canary(n: int = 15, working_dir: str = ".canary_kb") -> dict[str, Any]:
     # 禁词只收标题：`作者：/期刊：` 已从抽取文本移除，不会再成为实体；且期刊名常与
     # 生物学术语同名（如期刊 "Cytokine" vs 术语 "Cytokine"），精确匹配会误报。
     banned = [row["title"] for row in articles if row.get("title")]
-    LightRAGClient(working_dir=working_dir).insert_documents(texts)
-    names = _read_entity_names(working_dir)
+    client = LightRAGClient(working_dir=working_dir)
+    client.insert_documents(texts)
+    names = _read_entity_names(client)
+    if names is None:
+        raise RuntimeError("无法读取金丝雀知识库实体，不能判定质量门")
     report = judge_entities(names, banned)
     print(f"金丝雀：{len(texts)} 篇入库，抽取实体 {len(names)} 个")
     print(json.dumps(report, ensure_ascii=False, indent=2))
@@ -105,7 +111,7 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     try:
         report = run_canary(n=args.n, working_dir=args.working_dir)
-    except (ArticleBatchError, OSError) as exc:
+    except (ArticleBatchError, OSError, RuntimeError) as exc:
         print(f"金丝雀无法运行: {exc}", file=sys.stderr)
         return 1
     return 0 if report["ok"] else 1

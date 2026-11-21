@@ -3,7 +3,7 @@
 import pytest
 
 import canary_extract
-from canary_extract import _load_articles, judge_entities
+from canary_extract import _load_articles, _read_entity_names, judge_entities, main
 from src.article_batches import ArticleBatchError
 
 
@@ -66,3 +66,28 @@ def test_load_articles_rejects_empty_contract_set(tmp_path, monkeypatch):
 
     with pytest.raises(ArticleBatchError, match="没有可读的契约文献批次"):
         _load_articles(5)
+
+
+def test_read_entity_names_returns_none_without_backend():
+    """无法确定后端时返回 None，调用方不能当成空库放行。"""
+    client = type("Stub", (), {"working_dir": None, "workspace": None})()
+    assert _read_entity_names(client) is None
+
+
+def test_read_entity_names_reads_file_backend(tmp_path):
+    """文件后端应读到实体名，并统一为小写。"""
+    (tmp_path / "kv_store_full_entities.json").write_text(
+        '{"e1": {"entity_names": ["CD34", "TP53"]}}', encoding="utf-8"
+    )
+    client = type("Stub", (), {"working_dir": tmp_path, "workspace": "canary"})()
+    assert _read_entity_names(client) == ["cd34", "tp53"]
+
+
+def test_canary_fails_when_entities_unreadable(monkeypatch):
+    """实体不可读时质量门必须失败，不能以空样本报 ok。"""
+
+    def _boom(**kwargs):
+        raise RuntimeError("无法读取金丝雀知识库实体，不能判定质量门")
+
+    monkeypatch.setattr(canary_extract, "run_canary", _boom)
+    assert main(["--n", "1"]) == 1
