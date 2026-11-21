@@ -7,7 +7,7 @@ from collections import Counter
 from pathlib import Path
 from typing import Any
 
-from src.analysis.evidence import digest, fingerprints, records
+from src.analysis.evidence import digest, records
 from src.analysis.r_executor import RExecutorError
 from src.analysis.r_values import r_value
 from src.analysis.sc_cluster import checked_completed_cluster
@@ -17,6 +17,7 @@ from src.analysis.sc_marker_reviews import (
 )
 from src.analysis.sc_pca import DIMENSION_RECORD_VERSION
 from src.analysis.stage_run import FixedStageRun, PreparedStage, run_fixed_stage
+from src.analysis.stage_verify import CompletedStageCheck, verify_completed
 from src.stage_defs import MARKER, stage_directory
 
 MARKER_TOOL_VERSION = "1.0.1"
@@ -503,43 +504,45 @@ def checked_completed_marker(
     if cluster != snapshot["cluster"]:
         raise ValueError("marker 聚类权威身份已变化")
     source = checked_source(run, cluster, snapshot["review"], root)
-    directory = Path(attempt["directory"]).resolve()
-    if directory != stage_directory(MARKER, root, attempt["attempt_id"])[1]:
-        raise ValueError("marker 目录非法")
-    meta_path = directory / "metadata.json"
-    if meta_path.resolve().parent != directory:
-        raise ValueError("marker metadata 路径非法")
-    meta = json.loads(meta_path.read_bytes())
     if (
-        attempt["status"] != "completed"
-        or attempt["tool_version"] != MARKER_TOOL_VERSION
-        or json.loads(attempt["protocol"]) != PROTOCOL
-        or execution_binding(run, snapshot) != attempt["binding_sha256"]
+        execution_binding(run, snapshot) != attempt["binding_sha256"]
         or snapshot["source"] != source
-        or meta != attempt["result"]
-        or meta.get("status") != "completed"
-        or meta.get("returncode") != 0
-        or meta.get("source_before") != source
-        or meta.get("source_after") != source
-        or meta.get("protocol") != PROTOCOL
-        or meta.get("binding_sha256") != attempt["binding_sha256"]
     ):
         raise ValueError("marker 权威结果或协议不符")
-    names = set(OUTPUT_FILES) | {"stdout.txt", "stderr.txt"}
-    if set(meta["artifacts"]) != names or any(
-        (directory / n).resolve().parent != directory for n in names
-    ):
-        raise ValueError("marker 产物白名单不符")
-    if {Path(r["path"]).name: r for r in fingerprints([directory / n for n in names])} != meta[
-        "artifacts"
-    ]:
-        raise ValueError("marker 产物身份变化")
+    directory = Path(attempt["directory"]).resolve()
     pca = next(a for a in run["pca_attempts"] if a["attempt_id"] == cluster["pca_attempt_id"])
-    summary = check_outputs(directory, Path(pca["directory"]).resolve(), source)
-    if any(meta.get(k) != v for k, v in summary.items()) or (directory / "script.R").read_text(
-        encoding="utf-8"
-    ) != marker_script(
-        Path(cluster["directory"]).resolve(), Path(pca["directory"]).resolve(), directory
-    ):
-        raise ValueError("marker 固定脚本或汇总不符")
+    pca_directory = Path(pca["directory"]).resolve()
+    names = set(OUTPUT_FILES) | {"stdout.txt", "stderr.txt"}
+    plan = CompletedStageCheck(
+        directory=directory,
+        expected_directory=stage_directory(MARKER, root, attempt["attempt_id"])[1],
+        attempt=attempt,
+        tool_version=MARKER_TOOL_VERSION,
+        protocol=PROTOCOL,
+        binding=attempt["binding_sha256"],
+        source=source,
+        required_fields={
+            "status": "completed",
+            "returncode": 0,
+            "source_before": source,
+            "source_after": source,
+            "protocol": PROTOCOL,
+            "binding_sha256": attempt["binding_sha256"],
+        },
+        required_files=tuple(names),
+        exact_files=True,
+        summary=lambda: check_outputs(directory, pca_directory, source),
+        script=lambda: marker_script(
+            Path(cluster["directory"]).resolve(), pca_directory, directory
+        ),
+        result_error="marker 权威结果或协议不符",
+        directory_error="marker 目录非法",
+        metadata_path_error="marker metadata 路径非法",
+        files_error="marker 产物白名单不符",
+        artifact_error="marker 产物白名单不符",
+        identity_error="marker 产物身份变化",
+        summary_error="marker 固定脚本或汇总不符",
+        script_error="marker 固定脚本或汇总不符",
+    )
+    summary, _ = verify_completed(plan)
     return summary

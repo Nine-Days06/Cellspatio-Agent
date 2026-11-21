@@ -13,6 +13,7 @@ from src.analysis.qc_preview import checked_evidence
 from src.analysis.r_executor import RExecutorError
 from src.analysis.sc_filter import FILTER_TOOL_VERSION, filter_script, verified_selection
 from src.analysis.stage_run import FixedStageRun, PreparedStage, run_fixed_stage
+from src.analysis.stage_verify import CompletedStageCheck, verify_completed
 from src.stage_defs import FILTER, PCA, stage_directory
 
 PCA_TOOL_VERSION = "1.0.0"
@@ -367,15 +368,16 @@ def checked_completed_pca(
     ):
         raise ValueError("PCA 未完成或当前父绑定、协议、版本不符")
     directory = Path(attempt["directory"]).resolve()
-    if directory != stage_directory(PCA, root, attempt["attempt_id"])[1]:
-        raise ValueError("PCA 目录非法")
-    meta_path = directory / "metadata.json"
-    if meta_path.resolve().parent != directory:
-        raise ValueError("PCA metadata 路径非法")
-    meta = json.loads(meta_path.read_bytes())
-    if meta != attempt["result"] or any(
-        meta.get(k) != v
-        for k, v in {
+    parent_directory = Path(parent["directory"]).resolve()
+    plan = CompletedStageCheck(
+        directory=directory,
+        expected_directory=stage_directory(PCA, root, attempt["attempt_id"])[1],
+        attempt=attempt,
+        tool_version=PCA_TOOL_VERSION,
+        protocol=PROTOCOL,
+        binding=source["binding_sha256"],
+        source=source["source"],
+        required_fields={
             "tool": "sc_pca",
             "tool_version": PCA_TOOL_VERSION,
             "protocol": PROTOCOL,
@@ -388,22 +390,21 @@ def checked_completed_pca(
             "returncode": 0,
             "source_before": source["source"],
             "source_after": source["source"],
-        }.items()
-    ):
-        raise ValueError("PCA metadata 与权威结果不一致")
-    paths = [directory / name for name in meta["artifacts"]]
-    if any(p.resolve().parent != directory or not p.is_file() for p in paths):
-        raise ValueError("PCA 登记文件缺失或路径非法")
-    identities = {Path(r["path"]).name: r for r in fingerprints(paths)}
-    if identities != meta["artifacts"] or not set(OUTPUT_FILES) <= identities.keys():
-        raise ValueError("PCA 文件身份已变化")
-    summary = _check_outputs(directory, Path(parent["directory"]).resolve())
-    if any(meta.get(k) != v for k, v in summary.items()):
-        raise ValueError("PCA 汇总与产物不一致")
-    if (directory / "script.R").read_text(encoding="utf-8") != pca_script(
-        Path(parent["directory"]).resolve(), directory
-    ):
-        raise ValueError("PCA 固定脚本不符")
+        },
+        required_files=OUTPUT_FILES,
+        exact_files=False,
+        summary=lambda: _check_outputs(directory, parent_directory),
+        script=lambda: pca_script(parent_directory, directory),
+        result_error="PCA metadata 与权威结果不一致",
+        directory_error="PCA 目录非法",
+        metadata_path_error="PCA metadata 路径非法",
+        files_error="PCA 登记文件缺失或路径非法",
+        artifact_error="PCA 文件身份已变化",
+        identity_error="PCA 文件身份已变化",
+        summary_error="PCA 汇总与产物不一致",
+        script_error="PCA 固定脚本不符",
+    )
+    summary, identities = verify_completed(plan)
     return {
         "actual_pcs": summary["actual_pcs"],
         "stdev": [
