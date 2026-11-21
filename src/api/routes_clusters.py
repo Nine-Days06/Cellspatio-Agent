@@ -23,9 +23,16 @@ from src.analysis.sc_marker_reviews import CLUSTER_RECORD_VERSION, review_view
 from src.api import routes_pca
 from src.api.authorized_run import StageClaim, run_authorized
 from src.api.deps import StoreDep
-from src.api.routes_pca import dimension_view, require_parent, require_pca
-from src.api.routes_qc import require_run, run_qc_root
+from src.api.errors import EVIDENCE_ERRORS
+from src.api.routes_pca import dimension_view
 from src.api.stage_history import history_entry
+from src.api.stage_lookup import (
+    require_cluster,
+    require_parent,
+    require_pca,
+    require_run,
+    run_qc_root,
+)
 from src.api.stage_runtime import RUNNING, has_running, running_stages
 from src.api.verified_artifact import read_verified_artifact
 from src.stage_defs import CLUSTER, stage_directory, stage_failure
@@ -34,15 +41,6 @@ from src.ui.session_store import SessionStore
 
 router = APIRouter(prefix="/api/sessions/{session_id}/qc/{run_id}/clusters", tags=["clusters"])
 logger = logging.getLogger(__name__)
-EVIDENCE_ERRORS = (
-    OSError,
-    ValueError,
-    KeyError,
-    TypeError,
-    OverflowError,
-    StopIteration,
-    IndexError,
-)
 
 
 def view(
@@ -306,14 +304,6 @@ def diagnostic(
     except EVIDENCE_ERRORS as exc:
         raise HTTPException(409, "聚类图或来源身份已变化；请检查本地证据") from exc
     return Response(data, media_type="image/png", headers={"Cache-Control": "no-store"})
-
-
-def require_cluster(run: RunSnapshot, pca_attempt_id: str, attempt_id: str) -> dict[str, Any]:
-    """只定位本 run 与 PCA 下的确切聚类尝试。"""
-    cluster = run.attempt("cluster", attempt_id, pca_attempt_id)
-    if cluster is None:
-        raise HTTPException(404, "聚类关联不存在")
-    return cluster
 
 
 class ClusterReviewRequest(routes_pca.PcaRequest):

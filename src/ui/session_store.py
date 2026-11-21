@@ -17,6 +17,7 @@ from src.ui.sc_stage_defs import STAGE_SPECS
 from src.ui.sc_stages import ScStages
 from src.ui.session_codec import _encode_results, _now
 from src.ui.stage_lifecycle import ReviewFactPlan, advance_run, append_review_fact, publish_message
+from src.ui.store_errors import StoreError
 
 logger = logging.getLogger(__name__)
 
@@ -282,9 +283,9 @@ class SessionStore:
         if project_id is not None:
             project = self.get_project(project_id)
             if project is None:
-                raise ValueError("项目不存在")
+                raise StoreError("not_found", "项目不存在")
             if project["archived_at"]:
-                raise ValueError("项目已归档")
+                raise StoreError("conflict", "项目已归档")
         sid = uuid.uuid4().hex
         now = _now()
         with self._conn() as conn:
@@ -379,7 +380,7 @@ class SessionStore:
             for row in rows:
                 running = self.running_stage(row["id"])
                 if running:
-                    raise ValueError(f"{running}运行中，不能归档项目")
+                    raise StoreError("conflict", f"{running}运行中，不能归档项目")
         sets, vals = [], []
         if label is not None:
             sets.append("label=?")
@@ -397,7 +398,7 @@ class SessionStore:
         with self._conn() as conn:
             cursor = conn.execute(f"UPDATE projects SET {', '.join(sets)} WHERE id=?", vals)
             if cursor.rowcount == 0:
-                raise ValueError("项目不存在")
+                raise StoreError("not_found", "项目不存在")
 
     def delete_project(self, project_id: str) -> None:
         """只删除空项目；非空项目须先移动或归档会话。"""
@@ -417,9 +418,9 @@ class SessionStore:
         if project_id is not None:
             project = self.get_project(project_id)
             if project is None:
-                raise ValueError("项目不存在")
+                raise StoreError("not_found", "项目不存在")
             if project["archived_at"]:
-                raise ValueError("项目已归档")
+                raise StoreError("conflict", "项目已归档")
         with self._conn() as conn:
             previous = conn.execute(
                 "SELECT project_id FROM sessions WHERE id=?", (session_id,)
@@ -429,7 +430,7 @@ class SessionStore:
                 (project_id, _now(), session_id),
             )
             if cursor.rowcount == 0:
-                raise ValueError("会话不存在")
+                raise StoreError("not_found", "会话不存在")
             for touched in {previous["project_id"], project_id} - {None}:
                 conn.execute("UPDATE projects SET updated_at=? WHERE id=?", (_now(), touched))
 
@@ -441,27 +442,27 @@ class SessionStore:
                 (1 if pinned else 0, _now(), session_id),
             )
             if cursor.rowcount == 0:
-                raise ValueError("会话不存在")
+                raise StoreError("not_found", "会话不存在")
 
     def archive_session(self, session_id: str, archived: bool = True) -> None:
         """归档或恢复会话；运行中的受控阶段拒绝归档。"""
         if archived:
             running = self.running_stage(session_id)
             if running:
-                raise ValueError(f"{running}运行中，不能归档会话")
+                raise StoreError("conflict", f"{running}运行中，不能归档会话")
         with self._conn() as conn:
             cursor = conn.execute(
                 "UPDATE sessions SET archived_at=?, updated_at=? WHERE id=?",
                 (_now() if archived else None, _now(), session_id),
             )
             if cursor.rowcount == 0:
-                raise ValueError("会话不存在")
+                raise StoreError("not_found", "会话不存在")
 
     def delete_session(self, session_id: str) -> None:
         """删除会话及其消息；运行中的受控阶段拒绝删除。"""
         running = self.running_stage(session_id)
         if running:
-            raise ValueError(f"{running}运行中，不能删除会话")
+            raise StoreError("conflict", f"{running}运行中，不能删除会话")
         with self._conn() as conn:
             conn.execute("BEGIN IMMEDIATE")
             conn.execute("DELETE FROM messages WHERE session_id = ?", (session_id,))

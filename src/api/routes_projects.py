@@ -9,8 +9,10 @@ from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
 from src.api.deps import StoreDep
+from src.api.errors import store_status
 from src.api.session_locks import lock_for
 from src.ui.record_files import writable_dir
+from src.ui.store_errors import StoreError
 from src.ui.usage import project_usage
 
 router = APIRouter(prefix="/api", tags=["projects"])
@@ -111,9 +113,8 @@ def update_project(project_id: str, body: ProjectUpdateRequest, store: StoreDep)
             clear_root_path="root_path" in body.model_fields_set and root_path is None,
             archived=body.archived,
         )
-    except ValueError as exc:
-        status = 409 if "运行中" in str(exc) else 404
-        raise HTTPException(status_code=status, detail=str(exc)) from exc
+    except StoreError as exc:
+        raise HTTPException(status_code=store_status(exc), detail=str(exc)) from exc
     finally:
         for held in locks:
             held.release()

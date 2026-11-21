@@ -157,6 +157,19 @@ def test_delete_while_task_running_returns_409(client):
     assert client.get(f"/api/sessions/{sid}/messages").status_code == 200
 
 
+def test_delete_while_controlled_stage_running_returns_409(
+    client, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """store 的阶段运行冲突走 StoreError→409，不依赖中文文案推断。"""
+    sid = client.post("/api/sessions", json={}).json()["session"]["id"]
+    monkeypatch.setattr(SessionStore, "running_stage", lambda _self, _sid: "过滤")
+
+    response = client.delete(f"/api/sessions/{sid}")
+
+    assert response.status_code == 409
+    assert response.json()["detail"] == "过滤运行中，不能删除会话"
+
+
 def test_messages_of_unknown_session_returns_404(client):
     assert client.get("/api/sessions/nope/messages").status_code == 404
 

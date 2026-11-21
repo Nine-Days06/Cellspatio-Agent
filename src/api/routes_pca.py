@@ -23,8 +23,8 @@ from src.analysis.sc_pca import (
 )
 from src.api.authorized_run import StageClaim, run_authorized
 from src.api.deps import StoreDep
-from src.api.routes_qc import require_run, run_qc_root
 from src.api.stage_history import history_entry
+from src.api.stage_lookup import require_parent, require_pca, require_run, run_qc_root
 from src.api.stage_runtime import has_running
 from src.api.verified_artifact import ArtifactError, read_verified_artifact
 from src.stage_defs import PCA, stage_directory, stage_failure
@@ -33,14 +33,6 @@ from src.ui.session_store import SessionStore
 
 router = APIRouter(prefix="/api/sessions/{session_id}/qc/{run_id}/pca", tags=["pca"])
 logger = logging.getLogger(__name__)
-
-
-def require_parent(run: RunSnapshot, filter_attempt_id: str) -> dict[str, Any]:
-    """仅定位已关联父记录；路径不能来自客户端。"""
-    parent = run.attempt("filter", filter_attempt_id)
-    if parent is None:
-        raise HTTPException(404, "父过滤关联不存在")
-    return parent
 
 
 def view(run: RunSnapshot, parent: dict[str, Any], root: Path) -> dict[str, Any]:
@@ -183,14 +175,6 @@ def execute_pca(
     except (OSError, ValueError, KeyError, TypeError, sqlite3.OperationalError) as exc:
         logger.error("PCA execution rejected: %s", type(exc).__name__)
         raise HTTPException(409, str(exc)) from exc
-
-
-def require_pca(run: RunSnapshot, filter_attempt_id: str, attempt_id: str) -> dict[str, Any]:
-    """只定位本会话关联的 PCA，不能借用其他父记录。"""
-    attempt = run.attempt("pca", attempt_id, filter_attempt_id)
-    if attempt is None:
-        raise HTTPException(404, "PCA 关联不存在")
-    return attempt
 
 
 def dimension_view(

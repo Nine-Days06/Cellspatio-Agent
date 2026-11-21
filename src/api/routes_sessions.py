@@ -12,6 +12,7 @@ from pydantic import BaseModel
 
 from src.api.chat_service import soft_warn_for
 from src.api.deps import StoreDep
+from src.api.errors import store_status
 from src.api.events import wire_message
 from src.api.session_locks import session_guard
 from src.ui.confirm_flow import (
@@ -26,6 +27,7 @@ from src.ui.confirm_flow import (
 )
 from src.ui.confirm_protocol import ACTION_DATA_CONFIRM, SCRIPT_ACTIONS
 from src.ui.session_store import SessionStore
+from src.ui.store_errors import StoreError
 from src.ui.usage import session_usage
 
 logger = logging.getLogger(__name__)
@@ -66,9 +68,8 @@ def create_session(store: StoreDep, body: CreateSessionRequest | None = None) ->
     title = body.title if body and body.title else "新会话"
     try:
         session_id = store.create_session(title, body.project_id if body else None)
-    except ValueError as exc:
-        status = 409 if "归档" in str(exc) else 404
-        raise HTTPException(status_code=status, detail=str(exc)) from exc
+    except StoreError as exc:
+        raise HTTPException(status_code=store_status(exc), detail=str(exc)) from exc
     return {"session": store.get_session(session_id)}
 
 
@@ -102,9 +103,8 @@ def update_session(session_id: str, body: UpdateSessionRequest, store: StoreDep)
                 store.set_session_pinned(session_id, body.pinned)
             if body.archived is not None:
                 store.archive_session(session_id, body.archived)
-        except ValueError as exc:
-            status = 409 if "归档" in str(exc) else 404
-            raise HTTPException(status_code=status, detail=str(exc)) from exc
+        except StoreError as exc:
+            raise HTTPException(status_code=store_status(exc), detail=str(exc)) from exc
     return {"session": store.get_session(session_id)}
 
 
@@ -116,8 +116,8 @@ def delete_session(session_id: str, store: StoreDep) -> dict[str, Any]:
     with session_guard(session_id):
         try:
             store.delete_session(session_id)
-        except ValueError as exc:
-            raise HTTPException(409, str(exc)) from exc
+        except StoreError as exc:
+            raise HTTPException(status_code=store_status(exc), detail=str(exc)) from exc
     return {"deleted": session_id}
 
 

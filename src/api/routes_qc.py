@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import sqlite3
-from pathlib import Path
 from typing import Any
 
 from fastapi import APIRouter, HTTPException, Request
@@ -14,26 +13,12 @@ from src.analysis.sc_filter import FILTER_TOOL_VERSION, run_sc_filter, verified_
 from src.api.authorized_run import StageClaim, run_authorized
 from src.api.deps import StoreDep
 from src.api.stage_history import history_entry
+from src.api.stage_lookup import require_run, run_qc_root
 from src.api.stage_runtime import running_stages
 from src.stage_defs import FILTER, stage_directory, stage_failure
-from src.ui.analysis_roots import AnalysisRoots
 from src.ui.run_snapshot import RunSnapshot
-from src.ui.session_store import SessionStore
 
 router = APIRouter(prefix="/api/sessions/{session_id}/qc", tags=["qc"])
-
-
-def run_qc_root(roots: AnalysisRoots, run: RunSnapshot) -> Path:
-    """由应用注入的 roots 校验并返回 run 的 QC 根。"""
-    return roots.qc_root(run)
-
-
-def require_run(store: SessionStore, session_id: str, run_id: str) -> RunSnapshot:
-    """关联缺失/跨会话统一 404，不扫描旧消息路径。"""
-    run = store.get_qc_run(session_id, run_id)
-    if run is None:
-        raise HTTPException(404, "QC 关联不存在；旧证据需重新 QC 才能交互")
-    return run
 
 
 def view(run: RunSnapshot, blocked: str | None = None) -> dict[str, Any]:
