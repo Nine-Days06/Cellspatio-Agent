@@ -69,7 +69,7 @@ export function PcaReview({ sessionId, runId, filterAttemptId, revision, onRunni
     <p className="text-xs text-muted-foreground">实际 PC 数 = min(30, 细胞数 − 1, 可用特征数 − 1)。至少 3 细胞和 3 可用特征；不足失败，不放宽 QC。完成停在 pca_review / unreviewed；下游维度与聚类须分别明确授权，本工具不执行 marker 或注释。</p>
     {state?.source_summary && <p>父过滤：{state.source_summary.cells.toLocaleString()} 细胞 · {state.source_summary.features.toLocaleString()} features</p>}
     {state && <details><summary>完整固定协议与绑定</summary><pre className="whitespace-pre-wrap break-all text-xs">{JSON.stringify(state.protocol, null, 2)}</pre><code className="block break-all text-xs">工具 {state.tool_version} · 父过滤 {filterAttemptId} · 绑定 {state.binding_sha256 ?? '不可授权'}</code></details>}
-    <label className="block space-y-1"><span>PCA 授权依据（仅本地记录）</span><Textarea maxLength={2000} value={reason} disabled={busy || running || attempted || !state} onChange={(event) => setReason(event.target.value)} /></label>
+    <label className="block space-y-1"><span>PCA 授权依据（仅本地记录）</span><Textarea maxLength={2000} value={reason} disabled={!gate.available} onChange={(event) => setReason(event.target.value)} /></label>
     <span title={gate.blockerText || undefined}><Button type="button" disabled={!gate.allowed} onClick={() => void execute()}>{clusterRunning.length > 0 && !pcaRunning ? '聚类或 marker 运行中…' : running ? 'PCA 运行中…' : '独立授权并执行归一化与 PCA'}</Button></span>
     <p className="text-xs text-muted-foreground">授权不是科学认可；刷新不执行，失败和中断不自动重跑。原始 counts 与父 QC 不改写；诊断图仅本地读取。</p>
     </details>

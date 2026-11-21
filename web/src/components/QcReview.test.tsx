@@ -40,6 +40,17 @@ async function enterPreview() {
 }
 
 describe('QC review', () => {
+  it('disables threshold inputs while the initial read is busy', async () => {
+    let resolve!: (value: QcReviewState) => void
+    vi.mocked(fetchQc).mockImplementationOnce(() => new Promise((done) => { resolve = done }))
+    render(<QcReview sessionId="s1" runId="r1" />)
+    expect(screen.getByLabelText('RNA features 下限')).toBeDisabled()
+    expect(screen.getByRole('button', { name: '正在读取或执行…' })).toBeDisabled()
+    await act(async () => { resolve(initial) })
+    await waitFor(() => expect(screen.getByLabelText('RNA features 下限')).toBeEnabled())
+    expect(screen.getByRole('button', { name: '生成排除预览' })).toBeEnabled()
+  })
+
   it.each(['pca_running', 'cluster_running', 'marker_running'] as const)('disables QC changes while %s is running in another view', async (stage) => {
     vi.mocked(fetchQc).mockResolvedValue({ ...preview, [stage]: true })
     render(<QcReview sessionId="s1" runId="r1" />)
@@ -84,14 +95,16 @@ describe('QC review', () => {
     fireEvent.submit(screen.getByRole('button', { name: '生成排除预览' }).closest('form')!)
     expect(screen.getByRole('alert')).toHaveTextContent('请输入合法阈值')
     expect(previewQc).not.toHaveBeenCalled()
-    vi.mocked(previewQc).mockResolvedValue({ ...preview, active_preview: { ...preview.active_preview!, summary: { ...preview.active_preview!.summary, blocked: ['NA 不能批准'] } } })
     await enterPreview()
-    fireEvent.change(screen.getByLabelText('选择依据 / 拒绝原因（仅本地记录）'), { target: { value: 'review' } })
-    expect(screen.getByRole('button', { name: '记录此过滤选择' })).toBeDisabled()
     vi.mocked(previewQc).mockRejectedValue(new Error('证据变化，请重新 QC'))
     fireEvent.click(screen.getByRole('button', { name: '生成排除预览' }))
     await screen.findByText('证据变化，请重新 QC')
     expect(screen.getByRole('button', { name: '记录此过滤选择' })).toBeDisabled()
+    vi.mocked(previewQc).mockResolvedValue({ ...preview, active_preview: { ...preview.active_preview!, summary: { ...preview.active_preview!.summary, blocked: ['NA 不能批准'] } } })
+    await enterPreview()
+    fireEvent.change(screen.getByLabelText('选择依据 / 拒绝原因（仅本地记录）'), { target: { value: 'review' } })
+    expect(screen.getByRole('button', { name: '记录此过滤选择' })).toBeDisabled()
+    expect(screen.getByRole('button', { name: '生成排除预览' })).toBeDisabled()
   })
 
   it('discards async response after switching run', async () => {
