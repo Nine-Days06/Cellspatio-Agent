@@ -199,25 +199,36 @@ export function MarkerReview({ sessionId, runId, filterAttemptId, pcaAttemptId, 
     <Button variant="outline" disabled={busy} onClick={() => void refresh()}>只读刷新 marker 与接受记录</Button>
     {running && <p role="status">marker 运行中；该 run 上游修改、再次接受与删除暂不可用。</p>}
     <p className="text-xs text-muted-foreground">停在 marker_review / unreviewed。失败、中断、刷新不自动重跑；新执行必须重新明确记录聚类接受并独立授权。不调用 LLM 或 KG，不改写父对象。</p>
-    {state?.attempts.map((a) => <div key={a.attempt_id} className="space-y-2">
-      <p role="status">{({ running: 'marker 运行中', completed: 'marker 候选已保存，科学未复核', failed: 'marker 失败，需要人工处理', interrupted: 'marker 中断，需要人工处理' })[a.status]}</p>
-      {a.error && <p role="alert">{a.error}</p>}{a.invalidated_reason && <p role="alert">{a.invalidated_reason}</p>}
-      {a.result && !a.invalidated_reason && <>
-        <p>{a.result.marker_rows.toLocaleString()} 条候选（正向 {a.result.positive_rows.toLocaleString()} / 负向 {a.result.negative_rows.toLocaleString()}） · {a.result.cells.toLocaleString()} 全细胞</p>
-        <details><summary>查看每簇候选摘要</summary><ul className="space-y-2 text-sm">{a.result.cluster_summary.map((g) => <li key={g.cluster_id}>簇 {g.cluster_id} · {g.cells} vs 其余 {g.rest_cells} · 正 {g.positive_markers} / 负 {g.negative_markers} · {g.result_status === 'no_returned_candidates' ? '检验完成，无通过固定阈值候选' : '已返回候选'}</li>)}</ul></details>
-        <details><summary>marker 执行身份与版本</summary><code className="block break-all text-xs">{a.attempt_id}</code><p className="break-all text-xs">{a.result.versions.join(' / ')}</p></details>
-        <AnalysisImage src={markerDiagnosticPath(source, a.attempt_id)} alt="未复核正向 marker 候选点图：面积为表达比例，颜色为平均归一化表达的 log1p；不是细胞类型注释" />
-        <MarkerTable key={`${sessionId}:${runId}:${clusterAttemptId}:${a.attempt_id}`} source={source} attemptId={a.attempt_id} />
-        <div className="space-y-1 border-t border-border pt-2">
-          <p className="text-xs">marker 结果复核（仅本地事实，不改变科学状态）</p>
-          {a.review && <p className="text-xs">最新：{a.review.decision === 'accepted' ? '接受' : '拒绝'} · {a.review.reason}{a.review.invalidated_reason ? ` · ${a.review.invalidated_reason}` : ''}</p>}
-          <label className="block space-y-1"><span>marker 复核理由（仅本地）</span><Textarea maxLength={2000} disabled={busy || running || disabled} value={markerReasons[a.attempt_id] ?? ''} onChange={(event) => setMarkerReasons((previous) => ({ ...previous, [a.attempt_id]: event.target.value }))} /></label>
-          <div className="flex flex-wrap gap-2">
-            <Button disabled={busy || running || disabled || !markerReasons[a.attempt_id]?.trim()} onClick={() => void submitMarkerReview(a.attempt_id, 'accepted')}>记录 marker 接受</Button>
-            <Button variant="outline" disabled={busy || running || disabled || !markerReasons[a.attempt_id]?.trim()} onClick={() => void submitMarkerReview(a.attempt_id, 'rejected')}>记录 marker 拒绝</Button>
+    {state?.attempts.map((a) => {
+      const reviewGate = evaluateStageGate({
+        stage: 'marker',
+        action: 'review',
+        disabled,
+        blocked: state.blocked,
+        busy,
+        running,
+        reasonProvided: !!markerReasons[a.attempt_id]?.trim(),
+      })
+      return <div key={a.attempt_id} className="space-y-2">
+        <p role="status">{({ running: 'marker 运行中', completed: 'marker 候选已保存，科学未复核', failed: 'marker 失败，需要人工处理', interrupted: 'marker 中断，需要人工处理' })[a.status]}</p>
+        {a.error && <p role="alert">{a.error}</p>}{a.invalidated_reason && <p role="alert">{a.invalidated_reason}</p>}
+        {a.result && !a.invalidated_reason && <>
+          <p>{a.result.marker_rows.toLocaleString()} 条候选（正向 {a.result.positive_rows.toLocaleString()} / 负向 {a.result.negative_rows.toLocaleString()}） · {a.result.cells.toLocaleString()} 全细胞</p>
+          <details><summary>查看每簇候选摘要</summary><ul className="space-y-2 text-sm">{a.result.cluster_summary.map((g) => <li key={g.cluster_id}>簇 {g.cluster_id} · {g.cells} vs 其余 {g.rest_cells} · 正 {g.positive_markers} / 负 {g.negative_markers} · {g.result_status === 'no_returned_candidates' ? '检验完成，无通过固定阈值候选' : '已返回候选'}</li>)}</ul></details>
+          <details><summary>marker 执行身份与版本</summary><code className="block break-all text-xs">{a.attempt_id}</code><p className="break-all text-xs">{a.result.versions.join(' / ')}</p></details>
+          <AnalysisImage src={markerDiagnosticPath(source, a.attempt_id)} alt="未复核正向 marker 候选点图：面积为表达比例，颜色为平均归一化表达的 log1p；不是细胞类型注释" />
+          <MarkerTable key={`${sessionId}:${runId}:${clusterAttemptId}:${a.attempt_id}`} source={source} attemptId={a.attempt_id} />
+          <div className="space-y-1 border-t border-border pt-2">
+            <p className="text-xs">marker 结果复核（仅本地事实，不改变科学状态）</p>
+            {a.review && <p className="text-xs">最新：{a.review.decision === 'accepted' ? '接受' : '拒绝'} · {a.review.reason}{a.review.invalidated_reason ? ` · ${a.review.invalidated_reason}` : ''}</p>}
+            <label className="block space-y-1"><span>marker 复核理由（仅本地）</span><Textarea maxLength={2000} disabled={!reviewGate.available} value={markerReasons[a.attempt_id] ?? ''} onChange={(event) => setMarkerReasons((previous) => ({ ...previous, [a.attempt_id]: event.target.value }))} /></label>
+            <div className="flex flex-wrap gap-2">
+              <Button disabled={!reviewGate.allowed} onClick={() => void submitMarkerReview(a.attempt_id, 'accepted')}>记录 marker 接受</Button>
+              <Button variant="outline" disabled={!reviewGate.allowed} onClick={() => void submitMarkerReview(a.attempt_id, 'rejected')}>记录 marker 拒绝</Button>
+            </div>
           </div>
-        </div>
-      </>}
-    </div>)}
+        </>}
+      </div>
+    })}
   </section>
 }

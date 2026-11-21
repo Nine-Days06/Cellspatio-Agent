@@ -60,7 +60,7 @@ describe('PCA independent authorization', () => {
     vi.mocked(fetchPca).mockResolvedValue({ ...initial, binding_sha256: null, blocked: ['父文件变化'] })
     render(<PcaReview sessionId="s1" runId="r1" filterAttemptId="f1" revision={4} />)
     await screen.findByText('父文件变化')
-    fireEvent.change(screen.getByLabelText('PCA 授权依据（仅本地记录）'), { target: { value: '技术验证' } })
+    expect(screen.getByLabelText('PCA 授权依据（仅本地记录）')).toBeDisabled()
     expect(screen.getByRole('button', { name: '独立授权并执行归一化与 PCA' })).toBeDisabled()
     expect(executePca).not.toHaveBeenCalled()
   })

@@ -118,6 +118,7 @@ export function QcReview({ sessionId, runId, onRecorded }: { sessionId: string; 
   const approveGate = evaluateStageGate({ ...gateFacts, stage: 'qc', action: 'approve', unchanged })
   const rejectGate = evaluateStageGate({ ...gateFacts, stage: 'qc', action: 'reject' })
   const filterGate = evaluateStageGate({ ...gateFacts, stage: 'qc', action: 'filter', unchanged })
+  const previewGate = evaluateStageGate({ ...gateFacts, stage: 'qc', action: 'preview' })
   return (
     <section aria-label="QC 阈值选择" className="analysis-stage space-y-3">
       <h4 className="font-medium">阈值选择 · 记录与执行分开授权</h4>
@@ -131,10 +132,10 @@ export function QcReview({ sessionId, runId, onRecorded }: { sessionId: string; 
         <div className="grid gap-3 sm:grid-cols-2">
           {fields.map(([name, label, required]) => <label key={name} className="space-y-1 text-xs">
             <span>{label}</span>
-            <Input type="number" min="0" max={name === 'percent_mt_max' ? 100 : undefined} step={name === 'percent_mt_max' ? 'any' : 1} required={required} disabled={busy || running || !state || state.blocked.length > 0} value={values[name]} onChange={(event) => setValues({ ...values, [name]: event.target.value })} />
+            <Input type="number" min="0" max={name === 'percent_mt_max' ? 100 : undefined} step={name === 'percent_mt_max' ? 'any' : 1} required={required} disabled={!previewGate.available} value={values[name]} onChange={(event) => setValues({ ...values, [name]: event.target.value })} />
           </label>)}
         </div>
-        <Button type="submit" disabled={busy || running || !state || state.blocked.length > 0}>{busy ? '正在读取或执行…' : '生成排除预览'}</Button>
+        <Button type="submit" disabled={!previewGate.allowed}>{busy ? '正在读取或执行…' : '生成排除预览'}</Button>
       </form>
       {active && <section className="space-y-2" aria-label="排除预览">
         <p className="break-all text-xs">本预览参数：{JSON.stringify(active.params)}</p>
@@ -145,7 +146,7 @@ export function QcReview({ sessionId, runId, onRecorded }: { sessionId: string; 
         <details><summary>预览身份与绑定</summary><code className="block break-all text-xs text-muted-foreground">预览 {active.preview_id} · 绑定 {active.binding_sha256}</code></details>
         {!unchanged && <p role="status">阈值已编辑，请重新生成预览后批准。</p>}
         {active.status === 'pending' && <>
-          <label className="block space-y-1"><span>选择依据 / 拒绝原因（仅本地记录）</span><Textarea value={reason} maxLength={2000} disabled={busy || running} onChange={(event) => setReason(event.target.value)} /></label>
+          <label className="block space-y-1"><span>选择依据 / 拒绝原因（仅本地记录）</span><Textarea value={reason} maxLength={2000} disabled={!rejectGate.available} onChange={(event) => setReason(event.target.value)} /></label>
           <div className="flex flex-wrap gap-2">
             <span title={approveGate.blockerText || undefined}><Button type="button" disabled={!approveGate.allowed} onClick={() => void perform(() => approveQc(sessionId, runId, active.preview_id, reason.trim()), true)}>记录此过滤选择</Button></span>
             <span title={rejectGate.blockerText || undefined}><Button type="button" variant="outline" disabled={!rejectGate.allowed} onClick={() => void perform(() => rejectQc(sessionId, runId, active.preview_id, reason.trim()), true)}>拒绝此预览</Button></span>
