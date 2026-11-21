@@ -14,9 +14,21 @@ class SnapshotManager:
         self.snapshots_dir = self.repo_root / "snapshots"
         self.snapshots_dir.mkdir(parents=True, exist_ok=True)
 
+    def _snapshot_path(self, run_id: str) -> Path:
+        """快照目录只能位于 snapshots/ 下，run_id 必须是单个路径段。"""
+        if (
+            not run_id
+            or run_id in {".", ".."}
+            or "/" in run_id
+            or "\\" in run_id
+            or Path(run_id).is_absolute()
+        ):
+            raise ValueError(f"run_id 不能包含路径分隔符: {run_id!r}")
+        return self.snapshots_dir / run_id
+
     def create_snapshot(self, run_id: str, commit_msg: str | None = None) -> Path:
         """创建 worktree：snapshots/<run_id>，基于当前 HEAD"""
-        snap_path = self.snapshots_dir / run_id
+        snap_path = self._snapshot_path(run_id)
         if snap_path.exists():
             # 快照是不可变证据：同名已存在时直接返回，绝不 reset 覆盖。
             return snap_path
@@ -51,7 +63,7 @@ class SnapshotManager:
 
     def delete_snapshot(self, run_id: str, force: bool = False) -> bool:
         """删除 worktree 与分支"""
-        snap_path = self.snapshots_dir / run_id
+        snap_path = self._snapshot_path(run_id)
         if not snap_path.exists():
             return False
         branch_name = f"snapshot/{run_id}"
@@ -78,5 +90,5 @@ class SnapshotManager:
         return result
 
     def get_snapshot_path(self, run_id: str) -> Path | None:
-        snap_path = self.snapshots_dir / run_id
+        snap_path = self._snapshot_path(run_id)
         return snap_path if snap_path.exists() else None

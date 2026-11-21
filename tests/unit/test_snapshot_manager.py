@@ -3,6 +3,8 @@
 import tempfile
 from pathlib import Path
 
+import pytest
+
 from src.control.snapshot_manager import SnapshotManager
 
 
@@ -86,3 +88,15 @@ def test_snapshot_manager_does_not_reset_existing_snapshot():
 
         assert mgr.create_snapshot("run-001") == snap_path
         assert generated.read_text() == "keep me"
+
+
+def test_snapshot_manager_rejects_path_traversal(tmp_path):
+    """run_id 不能把快照路径带出 snapshots/。"""
+    mgr = SnapshotManager(tmp_path / "repo")
+    for run_id in ("../outside", "a/b", "a\\b", str(tmp_path / "abs")):
+        with pytest.raises(ValueError):
+            mgr.get_snapshot_path(run_id)
+        with pytest.raises(ValueError):
+            mgr.create_snapshot(run_id)
+        with pytest.raises(ValueError):
+            mgr.delete_snapshot(run_id)
