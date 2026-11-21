@@ -1,5 +1,7 @@
 """WorkflowRecorder 行为测试。"""
 
+import json
+
 from src.control.workflow_recorder import WorkflowRecorder
 from src.schemas.workflow import (
     IntentRecord,
@@ -195,9 +197,13 @@ def test_recorder_finish_run_returns_path():
     recorder.record_step(
         run_id, "step-1", "analysis", "run_analysis", {}, output={"status": "success"}
     )
+    recorder.record_output(run_id, name="de.csv", path="data/de.csv", type="csv")
+    recorder.record_output(run_id, name="de.csv", path="data/de.csv", type="csv")
     path = recorder.finish_run(run_id)
     assert path.name == "workflow.json"
     assert path.parent.name == run_id
+    outputs = json.loads(path.read_text(encoding="utf-8"))["outputs"]
+    assert outputs == [{"name": "de.csv", "path": "data/de.csv", "type": "csv", "meta": {}}]
 
 
 def test_finish_run_skips_snapshot_in_local_mode(tmp_path, monkeypatch):

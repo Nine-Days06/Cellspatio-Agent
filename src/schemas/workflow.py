@@ -105,11 +105,16 @@ class WorkflowExecution(BaseModel):
     intent: IntentRecord
     parameters: ParameterRecord
     steps: list[WorkflowStep] = Field(default_factory=list)
+    outputs: list[WorkflowOutput] = Field(default_factory=list)
     meta: dict[str, Any] = Field(default_factory=dict)
 
     def add_step(self, step: WorkflowStep) -> None:
         """追加步骤记录。"""
         self.steps.append(step)
+
+    def add_output(self, output: WorkflowOutput) -> None:
+        """追加产物记录。"""
+        self.outputs.append(output)
 
     def to_json(self, indent: int = 2) -> str:
         """序列化为 JSON 字符串。"""

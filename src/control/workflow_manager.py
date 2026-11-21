@@ -113,7 +113,22 @@ class WorkflowManager:
             else:
                 result = self._execute_general_workflow(intent, params, context, run_id)
 
+            self._record_outputs(run_id, result)
+
         return result
+
+    def _record_outputs(self, run_id: str, result: dict[str, Any]) -> None:
+        """把分析结果中的输出文件写入本次运行记录。"""
+        if self.workflow_recorder is None:
+            return
+        path = (result.get("results") or {}).get("output_file")
+        if not path:
+            return
+        suffix = Path(path).suffix.lower().lstrip(".")
+        file_type = suffix if suffix in {"csv", "json", "txt", "png", "rds"} else "other"
+        self.workflow_recorder.record_output(
+            run_id, name=Path(path).name, path=str(path), type=file_type
+        )
 
     def _resolve_input_file(self, params: dict[str, Any], context: dict[str, Any]) -> str | None:
         """解析输入文件：优先 params.input_files，其次 context.downloaded_assets"""
