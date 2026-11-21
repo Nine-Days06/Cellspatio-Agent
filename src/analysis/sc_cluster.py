@@ -17,6 +17,7 @@ from src.analysis.r_values import r_value
 from src.analysis.sc_pca import PROTOCOL as PCA_PROTOCOL
 from src.analysis.sc_pca import checked_completed_pca, dimension_binding
 from src.analysis.stage_run import FixedStageRun, PreparedStage, run_fixed_stage
+from src.stage_defs import CLUSTER, stage_directory
 
 CLUSTER_TOOL_VERSION = "1.0.0"
 PROTOCOL = {
@@ -461,7 +462,7 @@ def checked_completed_cluster(
     ):
         raise ValueError("聚类源证据或协议已变化；本次结果仅为历史")
     directory = Path(attempt["directory"]).resolve()
-    if directory != root.parent / "sc_clusters" / attempt["attempt_id"]:
+    if directory != stage_directory(CLUSTER, root, attempt["attempt_id"])[1]:
         raise ValueError("聚类目录非法")
     meta_path = directory / "metadata.json"
     if meta_path.resolve().parent != directory:

@@ -17,6 +17,7 @@ from src.analysis.sc_marker_reviews import (
 )
 from src.analysis.sc_pca import DIMENSION_RECORD_VERSION
 from src.analysis.stage_run import FixedStageRun, PreparedStage, run_fixed_stage
+from src.stage_defs import MARKER, stage_directory
 
 MARKER_TOOL_VERSION = "1.0.1"
 MARKER_REVIEW_VERSION = "sc-marker-review/1.0.0"
@@ -503,7 +504,7 @@ def checked_completed_marker(
         raise ValueError("marker 聚类权威身份已变化")
     source = checked_source(run, cluster, snapshot["review"], root)
     directory = Path(attempt["directory"]).resolve()
-    if directory != root.parent / "sc_markers" / attempt["attempt_id"]:
+    if directory != stage_directory(MARKER, root, attempt["attempt_id"])[1]:
         raise ValueError("marker 目录非法")
     meta_path = directory / "metadata.json"
     if meta_path.resolve().parent != directory:

@@ -15,6 +15,8 @@ from contextlib import AbstractContextManager
 from dataclasses import dataclass
 from typing import Any
 
+from src.stage_defs import StageDefinition
+
 
 @dataclass(frozen=True)
 class StageSpec:
@@ -28,10 +30,19 @@ class StageSpec:
     revision_error: str
     invalid_terminal: str
     not_running: str
-    directory_name: str
-    failure_stage: str
+    definition: StageDefinition
     message: Callable[[sqlite3.Row, dict[str, Any]], tuple[str, dict[str, Any]]]
     interrupt_result: dict[str, Any] | None = None
+
+    @property
+    def directory_name(self) -> str:
+        """阶段产物目录名；委托领域定义。"""
+        return self.definition.directory_name
+
+    @property
+    def failure_stage(self) -> str:
+        """失败响应中的阶段名；委托领域定义。"""
+        return self.definition.failure_stage
 
 
 def publish_message(
