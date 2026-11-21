@@ -34,7 +34,8 @@ from src.ui.run_snapshot import RunSnapshot
 from src.ui.session_store import SessionStore
 
 SCHEMA_VERSION = "cellspatio-record/1.1.0"
-_PATH_RE = re.compile(r'(?:[A-Za-z]:[\\/][^\s"\'<>]*|/(?:Users|home|data|mnt|tmp)/[^\s"\'<>]*)')
+# 路径可能含空格；宁可多吞同行文本，也不能只脱敏空格前的目录而泄露用户名/文件名。
+_PATH_RE = re.compile(r'(?:[A-Za-z]:[\\/][^\n\r"\'<>]*|/(?:Users|home|data|mnt|tmp)/[^\n\r"\'<>]*)')
 _PATH_KEYS = {
     "access_path",
     "directory",

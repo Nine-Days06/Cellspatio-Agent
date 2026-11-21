@@ -149,6 +149,15 @@ def test_export_redacts_paths(store, root):
     assert "<redacted-path>" in csv_text
 
 
+def test_redact_does_not_leak_suffix_after_space_path():
+    """含空格的路径必须整体脱敏，不能只剩空格后的文件名。"""
+    from src.cli.records import _redact_text
+
+    text = _redact_text(r"读取 C:\Users\Jane Doe\results.csv 完成")
+    assert "Doe" not in text
+    assert "results.csv" not in text
+
+
 def test_export_project_nests_sessions(store, root):
     pid = store.create_project("肝癌项目")
     sid, _ = _seed_session(store, root)
