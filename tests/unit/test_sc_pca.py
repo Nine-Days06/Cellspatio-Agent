@@ -202,7 +202,9 @@ def test_get_never_executes_post_once_and_private_stage_only(parent_ready):
     image = Path(attempt["directory"]) / "pca_diagnostics.png"
     image.write_bytes(image.read_bytes() + b"changed")
     assert client.get(image_path).status_code == 409
-    assert client.get(path + "/unknown/diagnostic").status_code == 404
+    missing = client.get(path + "/unknown/diagnostic")
+    assert missing.status_code == 404
+    assert missing.json()["detail"] == "PCA 诊断未完成或不存在"
 
 
 @pytest.mark.parametrize(
@@ -260,7 +262,14 @@ def test_cross_session_parameters_and_binding_rejected(parent_ready):
         ).status_code
         == 404
     )
-    assert client.get(path.replace(fid, "unknown")).status_code == 404
+    missing_parent = client.get(path.replace(fid, "unknown"))
+    assert missing_parent.status_code == 404
+    assert missing_parent.json()["detail"] == "父过滤关联不存在"
+    missing_parent_post = client.post(
+        path.replace(fid, "unknown"), json={"binding_sha256": binding, "reason": "test"}
+    )
+    assert missing_parent_post.status_code == 404
+    assert missing_parent_post.json()["detail"] == "父过滤关联不存在"
     for body in (
         {"binding_sha256": binding, "reason": " "},
         {"binding_sha256": "x", "reason": "test"},

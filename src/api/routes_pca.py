@@ -35,7 +35,7 @@ logger = logging.getLogger(__name__)
 
 def require_parent(run: RunSnapshot, filter_attempt_id: str) -> dict[str, Any]:
     """仅定位已关联父记录；路径不能来自客户端。"""
-    parent = next((a for a in run.filter_attempts if a["attempt_id"] == filter_attempt_id), None)
+    parent = run.attempt("filter", filter_attempt_id)
     if parent is None:
         raise HTTPException(404, "父过滤关联不存在")
     return parent
@@ -214,10 +214,7 @@ def execute_pca(
 
 def require_pca(run: RunSnapshot, filter_attempt_id: str, attempt_id: str) -> dict[str, Any]:
     """只定位本会话关联的 PCA，不能借用其他父记录。"""
-    attempt = next(
-        (a for a in run.pca_attempts(filter_attempt_id) if a["attempt_id"] == attempt_id),
-        None,
-    )
+    attempt = run.attempt("pca", attempt_id, filter_attempt_id)
     if attempt is None:
         raise HTTPException(404, "PCA 关联不存在")
     return attempt
@@ -377,10 +374,7 @@ def diagnostic(
     """验证登记 PNG 的同一份字节后返回，不接受任意路径。"""
     run = require_run(store, session_id, run_id)
     require_parent(run, filter_attempt_id)
-    attempt = next(
-        (a for a in run.pca_attempts(filter_attempt_id) if a["attempt_id"] == attempt_id),
-        None,
-    )
+    attempt = run.attempt("pca", attempt_id, filter_attempt_id)
     if attempt is None or attempt["status"] != "completed":
         raise HTTPException(404, "PCA 诊断未完成或不存在")
     directory = Path(attempt["directory"]).resolve()

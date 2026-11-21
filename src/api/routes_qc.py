@@ -80,7 +80,7 @@ def view(run: RunSnapshot, blocked: str | None = None) -> dict[str, Any]:
                 if attempt["result"]
                 else None,
             }
-            for attempt in run.filter_attempts
+            for attempt in run.stage_attempts("filter")
         ],
     }
 
@@ -180,7 +180,7 @@ def filter_qc(
         return next(
             (
                 a
-                for a in run.filter_attempts
+                for a in run.stage_attempts("filter")
                 if a["preview_id"] == body.preview_id and a["tool_version"] == FILTER_TOOL_VERSION
             ),
             None,
@@ -188,11 +188,11 @@ def filter_qc(
 
     def prepare(run: RunSnapshot, attempt_id: str) -> StageClaim:
         """锁内校验当前批准预览，并给出 attempt 目录与领取计划。"""
-        preview = next((p for p in run.previews if p["preview_id"] == body.preview_id), None)
+        preview = run.active_preview
         if (
             preview is None
+            or preview["preview_id"] != body.preview_id
             or preview["status"] != "approved"
-            or run["active_preview_id"] != body.preview_id
         ):
             raise ValueError("仅可执行当前已批准选择")
         root = run_qc_root(request.app.state.agent, run)

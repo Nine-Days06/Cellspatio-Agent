@@ -190,6 +190,19 @@ def test_revision_and_association_conflicts(ready):
         assert d.client.post(d.path + "/execute", json=body).status_code == code
     other = d.store.create_session()
     assert d.client.get(d.path.replace(d.sid, other)).status_code == 404
+    for target, detail in (
+        (d.path.replace(d.fid, "unknown"), "父过滤关联不存在"),
+        (d.path.replace(d.aid, "unknown"), "PCA 关联不存在"),
+    ):
+        response = d.client.get(target)
+        assert response.status_code == 404
+        assert response.json()["detail"] == detail
+    missing_cluster = d.client.get(f"{d.path}/unknown/diagnostic")
+    assert missing_cluster.status_code == 404
+    assert missing_cluster.json()["detail"] == "聚类图未完成或不存在"
+    missing_review = d.client.get(f"{d.path}/unknown/review")
+    assert missing_review.status_code == 404
+    assert missing_review.json()["detail"] == "聚类关联不存在"
     d.executor.execute_script.assert_not_called()
 
 

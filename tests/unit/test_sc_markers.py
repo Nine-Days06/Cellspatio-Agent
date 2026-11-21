@@ -184,6 +184,20 @@ def test_independent_marker_authorization_restores_own_snapshot_and_is_idempoten
     assert response.status_code == 200, response.text
     state = response.json()
     assert not state["blocked"] and not state["attempts"] and state["binding_sha256"]
+    missing = f"{d.marker_path}/{'0' * 32}"
+    for suffix, detail in (
+        ("/diagnostic", "marker 图未完成或不存在"),
+        ("/candidates", "marker 候选未完成或不存在"),
+    ):
+        absent = d.client.get(missing + suffix)
+        assert absent.status_code == 404
+        assert absent.json()["detail"] == detail
+    absent_review = d.client.post(
+        missing + "/review",
+        json={"decision": "accepted", "revision": state["revision"], "reason": "x"},
+    )
+    assert absent_review.status_code == 404
+    assert absent_review.json()["detail"] == "marker 关联不存在"
     d.executor.execute_script.assert_not_called()
     d.executor.execute_script.side_effect = marker_outputs
     body = {
@@ -283,7 +297,9 @@ def test_missing_review_and_wrong_associations_do_not_execute(reviewed_source):
     )
     other = d.store.create_session()
     assert d.client.get(path.replace(d.sid, other)).status_code == 404
-    assert d.client.get(path.replace(d.cid, "0" * 32)).status_code == 404
+    missing_cluster = d.client.get(path.replace(d.cid, "0" * 32))
+    assert missing_cluster.status_code == 404
+    assert missing_cluster.json()["detail"] == "聚类关联不存在"
     d.executor.execute_script.assert_not_called()
 
 
