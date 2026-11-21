@@ -9,6 +9,8 @@ from types import SimpleNamespace
 
 import pytest
 
+import src.ui.sc_stages as sc_stages
+from src.api.routes_pca import DIMENSION_RECORD_VERSION
 from tests.unit.test_sc_pca import PARAMS
 from tests.unit.test_sc_pca import parent_ready as _parent_ready
 
@@ -132,6 +134,56 @@ def test_association_and_stale_binding_revision(dimensions_ready):
         {"revision": 2**63 - 1},
     ):
         assert d.client.post(d.target, json={**d.body, **payload}).status_code == 409
+
+
+def test_dimension_record_uses_review_fact_seam(dimensions_ready, monkeypatch):
+    """维度记录由统一接缝追加，阶段只提供匹配键与身份校验。"""
+    d = dimensions_ready
+    calls = []
+    real = sc_stages.append_review_fact
+
+    def spy(connect, encode_results, plan, **kwargs):
+        calls.append((plan, kwargs))
+        return real(connect, encode_results, plan, **kwargs)
+
+    monkeypatch.setattr(sc_stages, "append_review_fact", spy)
+    response = d.client.post(d.target, json=d.body)
+    assert response.status_code == 200
+    assert response.json()["current"]["dims"] == [1]
+    assert len(calls) == 1
+    plan, kwargs = calls[0]
+    assert plan.table == "sc_pca_dimension_reviews"
+    assert plan.previous_match == {
+        "pca_attempt_id": d.aid,
+        "binding_sha256": d.body["binding_sha256"],
+        "record_version": DIMENSION_RECORD_VERSION,
+        "source_revision": d.body["revision"],
+    }
+    assert plan.latest_match == {"pca_attempt_id": d.aid}
+    assert plan.insert_values["dims"] == json.dumps([1])
+    assert plan.run_id == d.rid and plan.session_id == d.sid
+    assert plan.message is not None
+    assert kwargs["validate"] is not None
+
+
+def test_missing_run_is_rejected_before_existing_dimension_fact(dimensions_ready):
+    """previous 命中也不掩盖跨会话的 QC 关联缺失。"""
+    d = dimensions_ready
+    assert d.client.post(d.target, json=d.body).status_code == 200
+    run = d.store.get_qc_run(d.sid, d.rid)
+    review = run["dimension_reviews"][0]
+    with pytest.raises(ValueError, match="QC 关联不存在"):
+        d.store.stages.record_dimensions(
+            d.store.create_session(),
+            run,
+            next(a for a in run["attempts"] if a["attempt_id"] == d.fid),
+            next(a for a in run["pca_attempts"] if a["attempt_id"] == d.aid),
+            review["binding_sha256"],
+            review["record_version"],
+            review["source_revision"],
+            review["dims"],
+            review["reason"],
+        )
 
 
 def test_database_write_failure_logged_without_exposing_details(

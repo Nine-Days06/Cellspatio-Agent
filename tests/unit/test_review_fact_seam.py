@@ -126,6 +126,21 @@ def test_previous_conflict_is_rejected_without_writing(
         assert conn.execute("SELECT COUNT(*) FROM fake_reviews").fetchone()[0] == 1
 
 
+def test_before_previous_runs_before_idempotent_return(
+    world: tuple[SessionStore, str],
+) -> None:
+    """previous 命中前仍可强制检查 run 存在等前置条件。"""
+    store, _ = world
+    append(store, review_plan())
+
+    def missing(conn: sqlite3.Connection) -> None:
+        """模拟 previous 命中但 run 已被删除。"""
+        raise ValueError("QC 关联不存在")
+
+    with pytest.raises(ValueError, match="QC 关联不存在"):
+        append(store, review_plan(), before_previous=missing)
+
+
 def test_latest_next_revision_duplicate_is_suppressed(
     world: tuple[SessionStore, str],
 ) -> None:

@@ -93,6 +93,7 @@ def append_review_fact(
     encode_results: Callable[[dict[str, Any]], str],
     plan: ReviewFactPlan,
     *,
+    before_previous: Callable[[sqlite3.Connection], None] | None = None,
     validate: Callable[[sqlite3.Connection], None] | None = None,
     before_insert: Callable[[sqlite3.Connection], None] | None = None,
     validate_first: bool = False,
@@ -100,8 +101,9 @@ def append_review_fact(
 ) -> ReviewFactResult:
     """在单一事务内追加复核事实：previous 幂等/冲突后插入，返回是否新增。
 
-    ``validate`` 负责 run/父/attempt 的存在与身份校验；``validate_first`` 供“旧 revision
-    先报失效”的路径使用。``before_insert`` 在 latest 去重之后、消息与 INSERT 之前执行。
+    ``before_previous`` 在幂等早退前检查始终存在的前提；``validate`` 负责 run/父/attempt
+    的存在与身份校验；``validate_first`` 供“旧 revision 先报失效”的路径使用。
+    ``before_insert`` 在 latest 去重之后、消息与 INSERT 之前执行。
     """
     if plan.session_id is None and (plan.run_id is not None or plan.message is not None):
         raise ValueError("复核 run 或消息需要 session_id")
@@ -109,6 +111,8 @@ def append_review_fact(
         conn.execute("BEGIN IMMEDIATE")
         if validate_first and validate is not None:
             validate(conn)
+        if before_previous is not None:
+            before_previous(conn)
         where = " AND ".join(f"{column} = ?" for column in plan.previous_match)
         previous = conn.execute(
             f"SELECT * FROM {plan.table} WHERE {where}", tuple(plan.previous_match.values())
