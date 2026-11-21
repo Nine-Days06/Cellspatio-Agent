@@ -182,10 +182,10 @@ export interface QcReviewState {
   active_preview: QcPreview | null
   approvals: QcPreview[]
   blocked: string[]
-  attempts?: FilterAttempt[]
-  pca_running?: boolean
-  cluster_running?: boolean
-  marker_running?: boolean
+  attempts: FilterAttempt[]
+  pca_running: boolean
+  cluster_running: boolean
+  marker_running: boolean
 }
 
 export interface PcaState {
