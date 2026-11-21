@@ -110,7 +110,10 @@ def judge_one(client: OpenAI, system_prompt: str, rec: dict, retries: int = 3) -
 def _eval_model() -> str:
     import os
 
-    return os.environ["OPENAI_MODEL"]
+    model = os.environ.get("OPENAI_MODEL")
+    if not model:
+        raise RuntimeError("未设置 OPENAI_MODEL，无法运行提示词评测")
+    return model
 
 
 def main() -> None:
@@ -161,6 +164,11 @@ def main() -> None:
     todo = [r for r in records if r["sample_id"] not in done]
     print(f"金标 {len(records)} 条，已完成 {len(done)}，待跑 {len(todo)}")
 
+    # 先校验模型配置：缺配置时应在开跑前失败，而不是每条样本都记成 ERROR
+    try:
+        _eval_model()
+    except RuntimeError as exc:
+        raise SystemExit(str(exc)) from exc
     client = OpenAI()  # OPENAI_API_KEY / OPENAI_BASE_URL / OPENAI_MODEL 来自 .env
     with open(out_path, "a", encoding="utf-8") as fout:
         with ThreadPoolExecutor(max_workers=args.concurrency) as pool:
