@@ -243,6 +243,70 @@ def test_build_cluster_card_keeps_only_aggregates():
     assert "secret" not in card.to_json()
 
 
+def test_builders_reject_stale_reviews(tmp_path):
+    """复核事实的 revision 不是当前 revision 时不得出卡。"""
+    qc = _Store(
+        {
+            "session_id": "s",
+            "run_id": "r",
+            "directory": str(tmp_path),
+            "revision": 3,
+            "evidence": {"tool_version": "1", "summary": {"versions": []}},
+            "previews": [],
+        }
+    )
+    with pytest.raises(ValueError, match="QC 尚未人工复核"):
+        build_qc_card(qc, "s", "r")
+
+    cluster = _cluster_run(
+        {"cells": 11, "dims": 5, "n_epochs": 1, "clusters": 2, "cluster_sizes": [], "artifacts": {}}
+    )
+    cluster["cluster_rejections"][0]["source_revision"] = 1
+    with pytest.raises(ValueError, match="聚类复核已失效"):
+        build_cluster_card(_Store(cluster), "s", "r")
+
+    pca = _pca_run(tmp_path)
+    pca["dimension_reviews"][0]["source_revision"] = 3
+    with pytest.raises(ValueError, match="维度记录"):
+        build_pca_dimensions_card(_Store(pca), "s", "r")
+
+    marker = _marker_run()
+    marker["marker_reviews"][0]["source_revision"] = 5
+    with pytest.raises(ValueError, match="marker 复核已失效"):
+        build_marker_card(_Store(marker), "s", "r")
+
+
+def test_build_qc_card_rejects_superseded_preview(tmp_path):
+    """只有当前激活的 QC 预览才能出卡。"""
+    run = {
+        "session_id": "s",
+        "run_id": "r",
+        "directory": str(tmp_path),
+        "revision": 4,
+        "active_preview_id": "p2",
+        "evidence": {"tool_version": "1", "summary": {"versions": []}},
+        "previews": [
+            {
+                "preview_id": "p1",
+                "status": "approved",
+                "binding_sha256": "a" * 64,
+                "params": {},
+                "schema": "qc-thresholds/1",
+                "tool_version": "qc-preview/1",
+                "summary": {
+                    "kept": 9,
+                    "excluded": 1,
+                    "total": 10,
+                    "excluded_percent": 10.0,
+                    "reason_counts": {},
+                },
+            }
+        ],
+    }
+    with pytest.raises(ValueError, match="已被更新的预览替代"):
+        build_qc_card(_Store(run), "s", "r")
+
+
 def test_build_qa_card_hashes_question():
     package = {
         "answer_id": "qa1",

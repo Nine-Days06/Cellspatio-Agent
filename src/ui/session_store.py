@@ -576,7 +576,11 @@ class SessionStore:
                 raise ValueError("QC 状态已变化，请刷新后重新预览")
             conn.execute(
                 "INSERT INTO qc_previews (preview_id, run_id, payload) VALUES (?, ?, ?)",
-                (preview["preview_id"], run_id, json.dumps(preview, ensure_ascii=False)),
+                (
+                    preview["preview_id"],
+                    run_id,
+                    json.dumps({**preview, "source_revision": revision}, ensure_ascii=False),
+                ),
             )
 
     def approve_qc_preview(
