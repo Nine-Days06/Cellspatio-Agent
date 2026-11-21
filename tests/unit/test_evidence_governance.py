@@ -105,6 +105,24 @@ def test_submit_and_dual_sign_make_accepted(tmp_path):
     assert results[0]["evidence_id"] == submitted["evidence_id"]
 
 
+def test_view_returns_summary_and_events_in_one_read(tmp_path):
+    """复核页一次读取摘要与事件，字段与分开读取一致。"""
+    store = GovernanceStore(tmp_path)
+    sid = store.submit(_envelope(_card()))["evidence_id"]
+    store.review(
+        sid,
+        actor_id="r1",
+        role=ROLE_DOMAIN,
+        action=ACTION_DOMAIN_PASS,
+        checklist=_checks(DOMAIN_CHECKLIST),
+    )
+
+    view = store.view(sid)
+
+    assert view["summary"] == store.summary(sid)
+    assert view["events"] == store.events(sid)
+
+
 def test_contributor_cannot_review_own_submission(tmp_path):
     store = GovernanceStore(tmp_path)
     sid = store.submit(_envelope(_card(), contributor="alice"))["evidence_id"]

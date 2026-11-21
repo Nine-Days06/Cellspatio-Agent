@@ -537,6 +537,18 @@ class GovernanceStore:
         with self._conn() as conn:
             return self._summary(self._row(conn, submission_id), self._superseded_map(conn))
 
+    def view(self, submission_id: str) -> dict[str, Any]:
+        """同一连接读取摘要与审计事件，供复核页一次取齐。"""
+        with self._conn() as conn:
+            row = self._row(conn, submission_id)
+            summary = self._summary(row, self._superseded_map(conn))
+            events = conn.execute(
+                "SELECT actor_id, role, action, checklist_json, reason, card_sha256, created_at "
+                "FROM events WHERE submission_id=? ORDER BY id",
+                (submission_id,),
+            ).fetchall()
+        return {"summary": summary, "events": [self._event_record(event) for event in events]}
+
     def submissions_by_contributor(self, contributor_id: str) -> list[dict[str, Any]]:
         """本人的全部提交摘要，附带最近一次带原因的动作。"""
         if not _clean(contributor_id):
