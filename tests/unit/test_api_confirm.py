@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import ast
+import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -438,3 +440,15 @@ def test_session_store_does_not_import_confirm_flow_or_fastapi():
 
 def test_confirm_protocol_has_no_third_party_imports():
     assert _module_imports("src/ui/confirm_protocol.py") <= {"__future__", "typing"}
+
+
+def test_importing_confirm_flow_does_not_load_control_layer():
+    """确认状态机导入不应拉起 control 包（agent_runtime/LightRAG）。"""
+    repo = Path(__file__).resolve().parents[2]
+    code = (
+        "import sys, src.ui.confirm_flow; "
+        "assert 'src.control' not in sys.modules, sorted(sys.modules)"
+    )
+    subprocess.run(
+        [sys.executable, "-c", code], cwd=repo, check=True, capture_output=True, timeout=60
+    )

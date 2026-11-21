@@ -13,7 +13,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from src.api.chat_service import _persist, is_qc_stage, register_qc_result, session_lock
 from src.api.deps import StoreDep
 from src.api.events import wire_message
-from src.control.chat_messages import build_assistant_message
+from src.chat_messages import build_assistant_message
 
 router = APIRouter(prefix="/api/sessions/{session_id}", tags=["input"])
 logger = logging.getLogger(__name__)

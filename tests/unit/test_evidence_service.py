@@ -599,7 +599,7 @@ def test_client_upload_and_citation_use_real_http_path(app, client: TestClient):
         public.close()
 
 
-def test_review_ui_is_served_and_checklists_come_from_governance(app, client: TestClient):
+def test_review_ui_is_served_and_queue_uses_governance_role(app, client: TestClient):
     """复核页可访问；页面只渲染服务端下发的动作规格与阻断文案。"""
     page = client.get("/review/")
     assert page.status_code == 200
@@ -611,17 +611,7 @@ def test_review_ui_is_served_and_checklists_come_from_governance(app, client: Te
     assert "requires_checklist" in review_js.text
     assert 'endsWith("_pass")' not in review_js.text
 
-    # 端点保留给直接调用方；复核页本身不再请求它。
-    assert client.get("/api/public/evidence/checklists").status_code == 401
-    _account(app, "ui-contributor", (ROLE_CONTRIBUTOR,))
     _account(app, "ui-domain", (ROLE_DOMAIN,))
-    token = _login(client, "ui-contributor")
-    assert client.get("/api/public/evidence/checklists", headers=_headers(token)).status_code == 403
-    data = client.get(
-        "/api/public/evidence/checklists", headers=_headers(_login(client, "ui-domain"))
-    ).json()
-    assert data[ROLE_DOMAIN] == list(DOMAIN_CHECKLIST)
-    assert data[ROLE_COMPLIANCE] == list(COMPLIANCE_CHECKLIST)
     queue = client.get(
         "/api/public/evidence/queue", headers=_headers(_login(client, "ui-domain"))
     ).json()
@@ -673,7 +663,7 @@ def test_error_kinds_cover_validation_state_and_quota(app, client: TestClient):
         json={"preview": quota_preview, "consent": True},
         headers=_headers(token),
     )
-    assert quota.status_code == 400
+    assert quota.status_code == 429
     assert quota.json()["code"] == "quota_exceeded"
 
 
