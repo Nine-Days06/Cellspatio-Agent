@@ -26,6 +26,7 @@ from src.api.deps import StoreDep
 from src.api.routes_clusters import EVIDENCE_ERRORS, require_cluster
 from src.api.routes_pca import PcaRequest, require_parent, require_pca
 from src.api.routes_qc import require_run, run_qc_root
+from src.api.stage_history import history_entry
 from src.api.stage_runtime import has_other_marker_running, has_running
 from src.api.verified_artifact import read_verified_artifact
 from src.ui.run_snapshot import RunSnapshot
@@ -66,42 +67,12 @@ def view(run: RunSnapshot, cluster: dict[str, Any], root: Path) -> dict[str, Any
             except EVIDENCE_ERRORS:
                 invalid = "来源、最新聚类接受、协议或产物变化；本次 marker 仅为历史"
         history.append(
-            {
-                **{
-                    k: a[k]
-                    for k in (
-                        "attempt_id",
-                        "review_id",
-                        "binding_sha256",
-                        "status",
-                        "created_at",
-                        "finished_at",
-                        "source_revision",
-                        "claim_revision",
-                    )
-                },
-                "invalidated_reason": invalid,
-                "result": {
-                    k: checked[k]
-                    for k in (
-                        "cells",
-                        "features",
-                        "clusters",
-                        "marker_rows",
-                        "positive_rows",
-                        "negative_rows",
-                        "cluster_summary",
-                        "plot_features",
-                        "backend",
-                        "versions",
-                    )
-                }
-                if checked
-                else None,
-                "error": "执行失败，本地证据保留；不会自动重跑"
-                if a["status"] == "failed"
-                else None,
-                "review": next(
+            history_entry(
+                "marker",
+                a,
+                result=checked,
+                invalidated_reason=invalid,
+                review=next(
                     (
                         {
                             "decision": d["decision"],
@@ -116,7 +87,7 @@ def view(run: RunSnapshot, cluster: dict[str, Any], root: Path) -> dict[str, Any
                     ),
                     None,
                 ),
-            }
+            )
         )
     return {
         "run_id": run["run_id"],

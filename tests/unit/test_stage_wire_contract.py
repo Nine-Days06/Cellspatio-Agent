@@ -30,6 +30,89 @@ CONTRACTS = [
 Shape = dict[str, Any] | list[Any] | None
 
 
+REVIEW_BASE = {
+    "attempt_id": None,
+    "review_id": None,
+    "binding_sha256": None,
+    "status": None,
+    "created_at": None,
+    "finished_at": None,
+    "source_revision": None,
+    "claim_revision": None,
+}
+
+# contract 期望独立于实现字段表，避免实现缩水时测试同步缩水。
+HISTORY_SHAPES: dict[str, dict[str, Shape]] = {
+    "filter": {
+        "attempt_id": None,
+        "preview_id": None,
+        "status": None,
+        "directory": None,
+        "created_at": None,
+        "finished_at": None,
+        "result": {
+            "cells": None,
+            "features": None,
+            "error": None,
+            "versions": None,
+            "artifacts": None,
+            "scientific_status": None,
+        },
+    },
+    "pca": {
+        "attempt_id": None,
+        "binding_sha256": None,
+        "status": None,
+        "created_at": None,
+        "finished_at": None,
+        "result": {
+            "cells": None,
+            "features": None,
+            "selected_features": None,
+            "usable_features": None,
+            "actual_pcs": None,
+            "pc_reduction_reason": None,
+            "versions": None,
+            "error": None,
+            "elapsed_seconds": None,
+            "scientific_status": None,
+        },
+    },
+    "cluster": {
+        **REVIEW_BASE,
+        "dims": None,
+        "invalidated_reason": None,
+        "result": {
+            "cells": None,
+            "clusters": None,
+            "cluster_sizes": None,
+            "n_epochs": None,
+            "versions": None,
+            "seurat_threads": None,
+        },
+        "error": None,
+    },
+    "marker": {
+        **REVIEW_BASE,
+        "invalidated_reason": None,
+        "result": {
+            "cells": None,
+            "features": None,
+            "clusters": None,
+            "marker_rows": None,
+            "positive_rows": None,
+            "negative_rows": None,
+            "cluster_summary": None,
+            "plot_features": None,
+            "backend": None,
+            "versions": None,
+        },
+        "error": None,
+        "review": None,
+    },
+}
+
+
 def _returns(node: ast.AST) -> list[ast.Return]:
     """收集函数体内 return，跳过嵌套函数/类。"""
     found: list[ast.Return] = []
@@ -194,6 +277,10 @@ class _BackendShape:
         if isinstance(node, ast.Name):
             return self._name(node.id, fn, seen)
         if isinstance(node, ast.Call) and isinstance(node.func, ast.Name):
+            if node.func.id == "history_entry" and node.args:
+                stage = node.args[0]
+                if isinstance(stage, ast.Constant) and isinstance(stage.value, str):
+                    return HISTORY_SHAPES.get(stage.value)
             helper = self.functions.get(node.func.id)
             if helper is not None and node.func.id not in seen:
                 seen = seen | {node.func.id}
@@ -394,3 +481,20 @@ def test_stage_response_keys_match_frontend_type(
     drift: list[str] = []
     _compare(interface, backend, frontend, drift)
     assert not drift, f"{module}::{function} 与 {interface} 漂移：\n" + "\n".join(drift)
+
+
+@pytest.mark.parametrize(
+    ("module", "stage"),
+    [
+        ("src/api/routes_qc.py", "filter"),
+        ("src/api/routes_pca.py", "pca"),
+        ("src/api/routes_clusters.py", "cluster"),
+        ("src/api/routes_markers.py", "marker"),
+    ],
+)
+def test_view_attempts_use_stage_history_shape(module: str, stage: str) -> None:
+    """四个视图的 attempts 必须保留 history_entry 的嵌套响应形状。"""
+    tree = ast.parse((ROOT / module).read_text(encoding="utf-8"), filename=str(ROOT / module))
+    backend = _BackendShape(tree, BACKEND_CONSTANTS).shape("view")
+
+    assert backend["attempts"] == [HISTORY_SHAPES[stage]]
