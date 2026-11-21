@@ -7,7 +7,6 @@ exit 0 = ok（四类噪声皆空，可进入全量导入），1 = 有噪声。
 """
 
 import argparse
-import csv
 import json
 import re
 import sys
@@ -50,14 +49,17 @@ def judge_entities(names: list[str], banned: list[str] | None = None) -> dict[st
 
 
 def _load_articles(n: int) -> list[dict]:
-    """读 data/import/*.csv 前 n 篇文献（按 CSV 行序，不看有无基因映射）"""
+    """读 data/import/articles_<ts>.csv 前 n 篇文献（不看有无基因映射）"""
+    from src.article_batches import ArticleBatchError, discover_batches, iter_rows
+
     articles: list[dict] = []
-    for csv_path in sorted((ROOT / "data" / "import").glob("*.csv")):
-        with open(csv_path, encoding="utf-8-sig", newline="") as fh:
-            for row in csv.DictReader(fh):
-                articles.append(row)
-                if len(articles) >= n:
-                    return articles
+    for csv_path in discover_batches(ROOT / "data" / "import"):
+        for row in iter_rows(csv_path, required=("pmid", "title")):
+            articles.append(row)
+            if len(articles) >= n:
+                return articles
+    if not articles:
+        raise ArticleBatchError("data/import 没有可读的契约文献批次")
     return articles
 
 
@@ -71,7 +73,7 @@ def _read_entity_names(working_dir: str) -> list[str]:
 
 
 def run_canary(n: int = 15, working_dir: str = ".canary_kb") -> dict[str, Any]:
-    """取 data/import/*.csv 前 n 篇文献 → 注入基因映射文本 → 抽取入库 → 收集禁词并判定"""
+    """取契约批次前 n 篇文献 → 注入基因映射文本 → 抽取入库 → 收集禁词并判定"""
     from src.data.pubtator import load_pmid_genes
     from src.knowledge.article_text import convert_article_to_text
     from src.knowledge.lightrag_client import LightRAGClient
@@ -95,11 +97,17 @@ def run_canary(n: int = 15, working_dir: str = ".canary_kb") -> dict[str, Any]:
 
 def main(argv: list[str] | None = None) -> int:
     """解析命令行参数并运行金丝雀，返回退出码（0=ok，1=有噪声）"""
+    from src.article_batches import ArticleBatchError
+
     parser = argparse.ArgumentParser(description="真实抽取金丝雀质量门（需 LLM/Embedding）")
     parser.add_argument("--n", type=int, default=15, help="抽样篇数")
     parser.add_argument("--working-dir", default=".canary_kb", help="金丝雀知识库目录")
     args = parser.parse_args(argv)
-    report = run_canary(n=args.n, working_dir=args.working_dir)
+    try:
+        report = run_canary(n=args.n, working_dir=args.working_dir)
+    except (ArticleBatchError, OSError) as exc:
+        print(f"金丝雀无法运行: {exc}", file=sys.stderr)
+        return 1
     return 0 if report["ok"] else 1
 
 

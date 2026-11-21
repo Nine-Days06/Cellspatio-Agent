@@ -1,10 +1,11 @@
-import json
 import logging
 import os
 import re
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
+
+from src.knowledge.knowledge_index import KnowledgeIndex
 
 # 按需补库：显式 ID 不在库中时触发；context 过短作为 mock/空库回退
 # （LightRAG 在非空图上几乎总是返回 30k+ 松散匹配，长度阈值不可靠）
@@ -34,6 +35,7 @@ class KnowledgeCoverage:
         registry: Any,
         ingest_asset: Callable[[str, str], dict[str, Any]],
         logger: logging.Logger = logger,
+        index: KnowledgeIndex | None = None,
     ) -> None:
         """保存知识库、构建器、注册表与入库回调。"""
         self.knowledge_client = knowledge_client
@@ -41,6 +43,7 @@ class KnowledgeCoverage:
         self.registry = registry
         self.ingest_asset = ingest_asset
         self.logger = logger
+        self.index = index if index is not None else KnowledgeIndex.from_client(knowledge_client)
 
     def should_ingest(self, query: str, params: dict[str, Any]) -> bool:
         """是否触发按需补库。
@@ -55,16 +58,22 @@ class KnowledgeCoverage:
         explicit = self.extract_ids(query)
         genes = [str(g) for g in (params.get("genes") or [])]
 
-        asset_ids = self.kb_asset_ids()
-        entities = self.kb_entity_names()
-        if asset_ids is not None and entities is not None:
-            if any(aid.lower() not in asset_ids for _src, aid in explicit):
+        unknown = False
+        if explicit:
+            asset_ids = self.index.asset_ids() if self.index is not None else None
+            if asset_ids is None:
+                unknown = True
+            elif any(aid.lower() not in asset_ids for _src, aid in explicit):
                 return True
-            if any(g.lower() not in entities for g in genes):
+        if genes:
+            entities = self.index.entity_names() if self.index is not None else None
+            if entities is None:
+                unknown = True
+            elif any(g.lower() not in entities for g in genes):
                 return True
-            # 显式 ID / genes 均已命中，不因 context 短而重复入库
-            if explicit or genes:
-                return False
+        # 显式 ID / genes 均已命中，不因 context 短而重复入库
+        if (explicit or genes) and not unknown:
+            return False
 
         ctx = self.context_for_miss_check(query)
         if ctx is None:
@@ -98,58 +107,18 @@ class KnowledgeCoverage:
         仅认 `# KEGG 通路: map…` / `# UniProt 蛋白: P…` 这类入库头，
         不把实体交叉引用当作「已有该通路/蛋白文档」。
         """
-        base = self.kb_working_dir()
-        if base is None:
-            return None
-        docs_path = base / "kv_store_full_docs.json"
-        if not docs_path.exists():
-            return set()
-        try:
-            docs = json.loads(docs_path.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError) as e:
-            self.logger.warning("read full_docs for miss-check failed: %s", e)
-            return set()
-
-        asset_ids: set[str] = set()
-        header_re = re.compile(
-            r"^#\s*(?:KEGG\s+通路|UniProt\s+蛋白):\s*(\S+)",
-            re.IGNORECASE | re.MULTILINE,
-        )
-        for item in docs.values():
-            content = item.get("content", "") if isinstance(item, dict) else str(item)
-            for mid in header_re.findall(content):
-                asset_ids.add(mid.lower())
-        return asset_ids
+        return self.index.asset_ids() if self.index is not None else None
 
     def kb_entity_names(self) -> set[str] | None:
         """实体表实体名（小写）；用于 genes 是否已在图中"""
-        base = self.kb_working_dir()
-        if base is None:
-            return None
-        entities_path = base / "kv_store_full_entities.json"
-        if not entities_path.exists():
-            return set()
-        try:
-            data = json.loads(entities_path.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError) as e:
-            self.logger.warning("read full_entities for miss-check failed: %s", e)
-            return set()
-
-        known: set[str] = set()
-        for item in data.values():
-            if not isinstance(item, dict):
-                continue
-            for name in item.get("entity_names") or []:
-                known.add(str(name).lower())
-        return known
+        return self.index.entity_names() if self.index is not None else None
 
     def kb_known_ids(self) -> set[str] | None:
         """兼容旧调用：文档头资产 ID ∪ 实体名（小写）"""
-        assets = self.kb_asset_ids()
-        entities = self.kb_entity_names()
-        if assets is None or entities is None:
+        snapshot = self.index.snapshot() if self.index is not None else None
+        if snapshot is None:
             return None
-        return assets | entities
+        return snapshot[0] | snapshot[1]
 
     def context_for_miss_check(self, query: str) -> str | None:
         """取 only_need_context 文本；无法检查时返回 None（跳过补库）"""

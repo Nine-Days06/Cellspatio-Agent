@@ -3,26 +3,21 @@
 用法：
     python sync_pubmed.py                 # 导出 + 增量导入本次新 CSV（默认）
     python sync_pubmed.py --no-import     # 只导出不导入
-    python sync_pubmed.py --reimport-all  # 忽略台账，全量重导 data/import/ 下所有文件
+    python sync_pubmed.py --reimport-all  # 忽略台账，全量重导 data/import/ 下的契约批次
 
 导入侧为增量：每次只导入本次复制的那一个 CSV，data/import/import_ledger.json
 记录已导入批次，重复运行为空操作；删除该台账文件即触发一次有意的全量重导。
 """
 
 import argparse
-import re
 import shutil
 import subprocess
 import sys
 from pathlib import Path
 
-REPO_ROOT = Path(__file__).resolve().parent
+from src.article_batches import latest_batch
 
-#: 主项目兼容 CSV 的文件名契约：articles_YYYYMMDD_HHMMSS.csv。
-#: output 目录里同时存在 articles_raw_<ts>.csv（ETL 导出侧的未筛选版，不得导入），
-#: 松散 glob "articles_*.csv" 会连它一起匹配，且 'r' > 数字使其在 sorted()
-#: 里恒定排最后——必须按契约模式精确过滤，只认筛选后的导出文件。
-_ARTICLES_CSV_RE = re.compile(r"articles_\d{8}_\d{6}\.csv")
+REPO_ROOT = Path(__file__).resolve().parent
 
 
 def run_etl_export(etl_dir: Path, python: str | None = None) -> Path | None:
@@ -38,15 +33,7 @@ def run_etl_export(etl_dir: Path, python: str | None = None) -> Path | None:
         cwd=str(etl_dir),
         check=True,
     )
-    output_dir = etl_dir / "data" / "output"
-    if not output_dir.exists():
-        return None
-    csvs = sorted(
-        p for p in output_dir.glob("articles_*.csv") if _ARTICLES_CSV_RE.fullmatch(p.name)
-    )
-    if not csvs:
-        return None
-    return csvs[-1]
+    return latest_batch(etl_dir / "data" / "output")
 
 
 def copy_to_import(csv_path: Path, import_dir: Path) -> Path:
@@ -65,7 +52,7 @@ def import_via_cli(
     Args:
         import_dir: 导入目录（台账位于该目录下 import_ledger.json）
         csv_name: 本次复制的文件名，只导入这一个文件；None 表示扫描整个目录
-        reimport_all: True 时忽略台账过滤，全量重导目录下所有文件
+        reimport_all: True 时忽略台账过滤，全量重导目录下的契约批次
     """
     if str(REPO_ROOT) not in sys.path:
         sys.path.insert(0, str(REPO_ROOT))
@@ -121,7 +108,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--reimport-all",
         action="store_true",
-        help="忽略台账，全量重导 data/import 下所有文件（默认只导入本次新 CSV）",
+        help="忽略台账，全量重导 data/import 下的契约批次（默认只导入本次新 CSV）",
     )
     args = parser.parse_args(argv)
 
