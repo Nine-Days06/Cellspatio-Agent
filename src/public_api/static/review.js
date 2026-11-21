@@ -1,4 +1,5 @@
 import * as api from "./review-api.js";
+import { normalizeActions, noticeFor, reviewerRole } from "./review-model.js";
 
 const TOKEN_KEY = "cellspatio_review_token";
 
@@ -128,11 +129,7 @@ api.setUnauthorizedHandler(() => clearSession("登录已失效，请重新登录
 
 function setUser(user) {
   state.user = user;
-  state.role = user.roles.includes("domain_reviewer")
-    ? "domain_reviewer"
-    : user.roles.includes("compliance_reviewer")
-      ? "compliance_reviewer"
-      : null;
+  state.role = reviewerRole(user.roles);
   state.canReview = Boolean(state.role);
   state.canContribute = user.roles.includes("contributor");
   const roleText = state.role
@@ -508,7 +505,7 @@ function contextBlock(card) {
 
 function reviewForm() {
   const review = state.review;
-  const actions = review?.actions || [];
+  const actions = normalizeActions(review?.actions);
   if (!actions.length) return null;
   const role = review.role;
   const required = review.checklists?.[role] || [];
@@ -578,10 +575,6 @@ function reviewForm() {
     el("label", {}, el("span", { class: "muted", text: "说明" }), reason),
     el("div", { class: "actions" }, ...controls.map(({ button }) => button)),
   );
-}
-
-function noticeText() {
-  return state.review?.blocked_reason || "该提交不在当前角色的待审范围。";
 }
 
 function eventList() {
@@ -669,6 +662,7 @@ function renderDetail() {
   const sources = sourcesSection(card);
 
   const form = reviewForm();
+  const notice = noticeFor(state.review);
   view.detail.append(
     el(
       "article",
@@ -684,7 +678,7 @@ function renderDetail() {
         : null,
       limitations,
       sources,
-      form || el("p", { class: "muted", text: noticeText() }),
+      form || (notice ? el("p", { class: "muted", text: notice }) : null),
       section("审计事件", eventList()),
     ),
   );
