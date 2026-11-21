@@ -22,6 +22,7 @@ from src.api import (
     routes_qc,
     routes_sessions,
 )
+from src.ui.analysis_roots import AnalysisRoots
 from src.ui.session_store import SessionStore
 
 logger = logging.getLogger(__name__)
@@ -56,6 +57,10 @@ def create_app(agent: Any) -> FastAPI:
     app = FastAPI(title="CellSpatio API", lifespan=lifespan)
     app.state.agent = agent
     app.state.store_factory = SessionStore
+    recorder = getattr(getattr(agent, "workflow_manager", None), "workflow_recorder", None)
+    app.state.analysis_roots = AnalysisRoots(
+        app.state.store_factory(), Path(recorder.repo_root) if recorder else Path.cwd()
+    )
     app.include_router(routes_sessions.router)
     app.include_router(routes_projects.router)
     app.include_router(routes_chat.router)

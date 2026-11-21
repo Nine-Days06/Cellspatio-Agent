@@ -159,7 +159,7 @@ def get_markers(
         return view(
             run,
             _associated(run, filter_attempt_id, pca_attempt_id, cluster_attempt_id),
-            run_qc_root(request.app.state.agent, run),
+            run_qc_root(request.app.state.analysis_roots, run),
         )
     except sqlite3.Error as exc:
         logger.error("marker read failed: %s", type(exc).__name__)
@@ -188,7 +188,7 @@ def execute_markers(
 
     def locate(run: RunSnapshot) -> tuple[dict[str, Any], Path]:
         """按完整父链定位聚类并读取 QC 根目录。"""
-        root = run_qc_root(request.app.state.agent, run)
+        root = run_qc_root(request.app.state.analysis_roots, run)
         return _associated(run, filter_attempt_id, pca_attempt_id, cluster_attempt_id), root
 
     def previous(run: RunSnapshot) -> dict[str, Any] | None:
@@ -313,7 +313,7 @@ def diagnostic(
         attempt = run.attempt("marker", attempt_id, cluster_attempt_id)
         if not attempt or attempt["status"] != "completed":
             raise HTTPException(404, "marker 图未完成或不存在")
-        checked_completed_marker(run, attempt, run_qc_root(request.app.state.agent, run))
+        checked_completed_marker(run, attempt, run_qc_root(request.app.state.analysis_roots, run))
         path = Path(attempt["directory"]).resolve() / "marker_dotplot.png"
         data = path.read_bytes()
         if {"path": str(path), **_identity(data)} != attempt["result"]["artifacts"][path.name]:
@@ -347,7 +347,9 @@ def candidates(
         attempt = run.attempt("marker", attempt_id, cluster_attempt_id)
         if not attempt or attempt["status"] != "completed":
             raise HTTPException(404, "marker 候选未完成或不存在")
-        summary = checked_completed_marker(run, attempt, run_qc_root(request.app.state.agent, run))
+        summary = checked_completed_marker(
+            run, attempt, run_qc_root(request.app.state.analysis_roots, run)
+        )
         path = Path(attempt["directory"]).resolve() / "markers.csv"
         data = path.read_bytes()
         if {"path": str(path), **_identity(data)} != attempt["result"]["artifacts"][path.name]:
@@ -412,7 +414,7 @@ def review_markers(
             revision=body.revision,
         )
         current = require_run(store, session_id, run_id)
-        return view(current, cluster, run_qc_root(request.app.state.agent, current))
+        return view(current, cluster, run_qc_root(request.app.state.analysis_roots, current))
     except sqlite3.Error as exc:
         logger.error("marker review database write failed: %s", type(exc).__name__)
         raise HTTPException(409, "marker 复核写入失败，请只读刷新") from exc
