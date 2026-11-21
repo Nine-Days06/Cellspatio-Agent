@@ -30,6 +30,13 @@ REPORT_SECONDS = 60
 STUCK_STATUSES = ("processing", "parsing", "analyzing")
 
 
+def _idle(counts: dict[str, int]) -> bool:
+    """No queued work and nothing left in an in-flight status."""
+    return counts.get("pending", 0) == 0 and not any(
+        counts.get(status, 0) for status in STUCK_STATUSES
+    )
+
+
 async def _connect():
     """Open a connection to the PG backend of the knowledge base."""
     import asyncpg
@@ -117,7 +124,7 @@ async def run(client: LightRAGClient) -> None:
             print(
                 f"{time.strftime('%H:%M:%S')} {counts} total+{done} rate={rate:.0f}/h", flush=True
             )
-            if counts.get("pending", 0) == 0:
+            if _idle(counts):
                 print("done: no pending documents", flush=True)
                 return
     finally:
