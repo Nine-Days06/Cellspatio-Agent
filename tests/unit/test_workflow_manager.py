@@ -5,6 +5,8 @@ from src.control.intent_parser import IntentParser
 from src.control.workflow_manager import WorkflowManager
 from src.control.workflow_recorder import WorkflowRecorder
 from src.data.fetchers.base import AssetInfo, AssetMeta
+from src.ui.analysis_roots import AnalysisRoots
+from src.ui.session_store import SessionStore
 from tests.unit.fakes import FakeExec, FakeGen, FakeIntent
 
 
@@ -1066,6 +1068,7 @@ def test_de_explanation_receives_real_stats(tmp_path):
 
     csv_file = tmp_path / "in.csv"
     csv_file.write_text("gene,s1,s2\nG1,1,2\nG2,3,4\nG3,5,6\n", encoding="utf-8")
+    gen = FakeGen(return_value="# s")
 
     class CapturingExplainer:
         def __init__(self):
@@ -1076,7 +1079,7 @@ def test_de_explanation_receives_real_stats(tmp_path):
             return "ok"
 
     def exec_side_effect(code: str):
-        out = str(csv_file.with_suffix(".de_results.csv"))
+        out = gen.last["params"]["output_file"]
         with open(out, "w", encoding="utf-8") as f:
             f.write("gene,padj\nG1,0.001\nG2,0.2\nG3,0.8\n")
 
@@ -1091,9 +1094,10 @@ def test_de_explanation_receives_real_stats(tmp_path):
         knowledge_client=None,
         r_executor=FakeExec(side_effect=exec_side_effect),
         visualizer=None,
-        r_script_generator=FakeGen(return_value="# s"),
+        r_script_generator=gen,
         explainer=exp,
         require_script_confirmation=False,
+        analysis_roots=AnalysisRoots(SessionStore(), tmp_path),
     )
     context = {"downloaded_assets": [{"access_path": str(csv_file)}]}
     result = wm.execute_workflow("做差异表达", context=context)
@@ -1247,9 +1251,10 @@ def test_run_analysis_for_agent_records_outputs(tmp_path):
     """Agent 入口也必须记录产物，否则 lineage / KG 输出节点缺失。"""
     counts = tmp_path / "counts.csv"
     counts.write_text("gene,s1,s2\nG1,1,2\n", encoding="utf-8")
+    gen = FakeGen(return_value="# s")
 
     def exec_side_effect(code: str):
-        counts.with_suffix(".de_results.csv").write_text("gene,padj\nG1,0.01\n", encoding="utf-8")
+        Path(gen.last["params"]["output_file"]).write_text("gene,padj\nG1,0.01\n", encoding="utf-8")
 
         class R:
             returncode = 0
@@ -1258,6 +1263,8 @@ def test_run_analysis_for_agent_records_outputs(tmp_path):
 
     manager = _make_spy_manager()
     manager.r_executor = FakeExec(side_effect=exec_side_effect)
+    manager.r_script_generator = gen
+    manager.analysis_roots = AnalysisRoots(SessionStore(), tmp_path)
     result = manager.run_analysis_for_agent(
         "differential_expression",
         {"input_files": [str(counts)], "question": "差异表达"},
@@ -1266,7 +1273,8 @@ def test_run_analysis_for_agent_records_outputs(tmp_path):
 
     spy = manager.workflow_recorder
     assert result["status"] == "success"
-    assert [o["name"] for o in spy.outputs] == ["counts.de_results.csv"]
+    assert [o["name"] for o in spy.outputs] == ["run-spy-1.de_results.csv"]
+    assert Path(spy.outputs[0]["path"]).parent == tmp_path / "data" / "analysis" / "de"
     assert spy.outputs[0]["run_id"] == spy.starts[0]["run_id"]
 
 

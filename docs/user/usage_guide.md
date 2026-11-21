@@ -305,14 +305,17 @@ counts 必须是有限的非负整数，不能缺失或四舍五入；不支持 
 
 | 分析 | 主要产物 |
 |---|---|
-| 差异表达 | `<输入名>.de_results.csv`（gene、log2FoldChange、pvalue、padj 等） |
+| 差异表达 | `de/<run_id>.de_results.csv`（gene、log2FoldChange、pvalue、padj 等） |
 | 单细胞 QC | `sc_qc/<run_id>/`：`cell_qc.csv`、`summary.json`、`qc.png`、脚本、版本与元数据 |
 | 单细胞过滤 | `sc_filter/<attempt_id>/`：`filtered_counts.rds`、映射、选择、日志与元数据 |
 | PCA | `sc_pca/<attempt_id>/`：`seurat_pca.rds`、embeddings/loadings、诊断图、脚本与版本 |
 | 聚类/UMAP | `sc_clusters/<attempt_id>/`：`seurat_clustered.rds`、clusters/UMAP、UMAP 图与元数据 |
 | marker | `sc_markers/<attempt_id>/`：`markers.csv`、候选汇总、点图数据、脚本与 `sessionInfo` |
-| 空间 | `spatial_clusters.csv`、`spatial_plot.png` |
-| 复现胶囊 | `output/capsules/<时间戳>/`：原始问题、脚本、意图与元数据 |
+| 空间 | `<run_id>.spatial_clusters.csv`、`<run_id>.spatial_plot.png` |
+| 复现胶囊 | `capsules/<时间戳>/`：原始问题、脚本、意图与元数据 |
+
+差异表达/空间/胶囊都写在上述会话根下（`de/`、`spatial/`、`capsules/`），
+不再写回输入文件所在目录或仓库根 `output/`。
 
 页面展示的是校验后的摘要与关键图；完整表格和对象留在本地磁盘，不提供任意文件下载接口。
 
@@ -320,7 +323,7 @@ counts 必须是有限的非负整数，不能缺失或四舍五入；不支持 
 
 - 运行记录：`.wrroc/<run_id>/workflow.json`；
 - 代码快照：`snapshots/<run_id>/`（Git worktree）；
-- 复现胶囊：`output/capsules/<时间戳>/`；
+- 复现胶囊：`data/analysis/capsules/<时间戳>/`（项目会话在 `data/projects/<id>/analysis/capsules/`）；
 - 数据血缘：`data/lineage.jsonl`。
 
 ```bash

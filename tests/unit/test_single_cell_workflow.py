@@ -87,8 +87,6 @@ def test_injected_analysis_roots_route_qc_and_project_output(tmp_path, monkeypat
 
     expected = (tmp_path / "data" / "projects" / pid / "analysis").resolve()
     assert qc.call_args.args[2] == expected / "sc_qc"
-    assert wm._project_output_root({"session_id": sid}) == expected
-    assert wm._project_output_root({}) is None
     assert not (tmp_path / "unused.db").exists()
 
 
@@ -237,6 +235,31 @@ def test_project_de_and_spatial_outputs_under_project_root(tmp_path):
         / "spatial"
         / "run-spatial.spatial_clusters.csv"
     )
+
+
+def test_unprojected_de_and_spatial_outputs_under_analysis_root(tmp_path):
+    """未归类会话的产物落 data/analysis，不再写回用户输入所在目录。"""
+    store = SessionStore(tmp_path / "sessions.db")
+    sid = store.create_session()
+    source = tmp_path / "counts.csv"
+    source.write_text("gene,c1,c2\nG1,1,2\n", encoding="utf-8")
+    roots = AnalysisRoots(store, tmp_path)
+    context = {"downloaded_assets": [{"access_path": str(source)}], "session_id": sid}
+    base = tmp_path / "data" / "analysis"
+
+    wm, gen = _wm(FakeIntent(), require=False, analysis_roots=roots)
+    result = wm._execute_de_analysis({}, context, "run-de")
+    assert result["status"] == "success"
+    assert gen.last["params"]["output_file"] == str(base / "de" / "run-de.de_results.csv")
+    assert not (tmp_path / "counts.de_results.csv").exists()
+
+    wm, gen = _wm(FakeIntent(), require=False, analysis_roots=roots)
+    result = wm._execute_spatial_analysis({}, context, "run-spatial")
+    assert result["status"] == "success"
+    assert gen.last["params"]["output_file"] == str(
+        base / "spatial" / "run-spatial.spatial_clusters.csv"
+    )
+    assert gen.last["params"]["plot_file"] == str(base / "spatial" / "run-spatial.spatial_plot.png")
 
 
 def test_execute_confirmed_script_still_accepts_spatial():

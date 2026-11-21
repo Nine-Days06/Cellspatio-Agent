@@ -290,10 +290,6 @@ class WorkflowManager:
         ctx = self.methods_kb.query_context(question)
         return ctx or None
 
-    def _project_output_root(self, context: dict[str, Any]) -> Path | None:
-        """项目会话的产物根；未归类会话返回 None，沿用旧输出位置。"""
-        return self.analysis_roots.project_scoped(context.get("session_id"))
-
     @staticmethod
     def _de_output_stats(output_file: str) -> dict[str, Any]:
         """读取 DE 输出 CSV，统计总基因数与 padj<0.05 显著数；失败返回 0/0"""
@@ -351,13 +347,9 @@ class WorkflowManager:
             )
             return result
 
-        project_root = self._project_output_root(context)
-        if project_root is None:
-            output_file = str(Path(input_file).with_suffix(".de_results.csv"))
-        else:
-            output_dir = project_root / "de"
-            output_dir.mkdir(parents=True, exist_ok=True)
-            output_file = str(output_dir / f"{run_id or 'de'}.de_results.csv")
+        output_dir = self.analysis_roots.for_session(context.get("session_id")) / "de"
+        output_dir.mkdir(parents=True, exist_ok=True)
+        output_file = str(output_dir / f"{run_id or 'de'}.de_results.csv")
         method_context = self._method_context_for("differential_expression", params)
         de_params = {"input_file": input_file, "output_file": output_file}
         if params.get("group_csv"):
@@ -480,29 +472,13 @@ class WorkflowManager:
             )
             return result
 
-        project_root = self._project_output_root(context)
-        if project_root is not None:
-            output_dir = project_root / "spatial"
-            output_dir.mkdir(parents=True, exist_ok=True)
-            run_params = {
-                "input_file": input_file,
-                "output_file": str(output_dir / f"{run_id or 'spatial'}.spatial_clusters.csv"),
-                "plot_file": str(output_dir / f"{run_id or 'spatial'}.spatial_plot.png"),
-            }
-        elif Path(input_file).is_dir():
-            base = Path(input_file)
-            run_params = {
-                "input_file": input_file,
-                "output_file": str(base / ".spatial_clusters.csv"),
-                "plot_file": str(base / ".spatial_plot.png"),
-            }
-        else:
-            base = Path(input_file)
-            run_params = {
-                "input_file": input_file,
-                "output_file": str(base.with_suffix(".spatial_clusters.csv")),
-                "plot_file": str(base.with_suffix(".spatial_plot.png")),
-            }
+        output_dir = self.analysis_roots.for_session(context.get("session_id")) / "spatial"
+        output_dir.mkdir(parents=True, exist_ok=True)
+        run_params = {
+            "input_file": input_file,
+            "output_file": str(output_dir / f"{run_id or 'spatial'}.spatial_clusters.csv"),
+            "plot_file": str(output_dir / f"{run_id or 'spatial'}.spatial_plot.png"),
+        }
         method_context = self._method_context_for("spatial", params)
         return self._generate_or_finish("spatial", run_params, method_context, context)
 
@@ -593,6 +569,8 @@ class WorkflowManager:
                     params={"input_file": input_file, "output_file": output_file},
                     script_code=current_code,
                     results={"returncode": result.returncode, "output_file": output_file},
+                    out_root=self.analysis_roots.for_session(context.get("session_id"))
+                    / "capsules",
                 )
             )
         except Exception as e:  # noqa: BLE001
