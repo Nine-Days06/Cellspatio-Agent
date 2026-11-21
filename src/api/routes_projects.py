@@ -8,8 +8,8 @@ from typing import Any
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
-from src.api.chat_service import session_lock
 from src.api.deps import StoreDep
+from src.api.session_locks import lock_for
 from src.ui.record_files import writable_dir
 from src.ui.usage import project_usage
 
@@ -97,7 +97,7 @@ def update_project(project_id: str, body: ProjectUpdateRequest, store: StoreDep)
             if session["project_id"] == project_id
         ]
         for session in sessions:
-            lock = session_lock(session["id"])
+            lock = lock_for(session["id"])
             if not lock.acquire(blocking=False):
                 for held in locks:
                     held.release()

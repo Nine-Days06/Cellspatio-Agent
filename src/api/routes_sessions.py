@@ -3,15 +3,17 @@
 from __future__ import annotations
 
 import logging
+from contextlib import nullcontext
 from pathlib import Path
 from typing import Any
 
 from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel
 
-from src.api.chat_service import session_lock, soft_warn_for
+from src.api.chat_service import soft_warn_for
 from src.api.deps import StoreDep
 from src.api.events import wire_message
+from src.api.session_locks import session_guard
 from src.ui.confirm_flow import (
     ERR_MISSING_SOURCE,
     ERR_NO_PENDING_SCRIPT,
@@ -91,24 +93,18 @@ class UpdateSessionRequest(BaseModel):
 def update_session(session_id: str, body: UpdateSessionRequest, store: StoreDep) -> dict[str, Any]:
     """更新归属/置顶/归档；归档前先拿会话锁，避免误藏运行中的对话。"""
     _require_session(store, session_id)
-    lock = None
-    if body.archived:
-        lock = session_lock(session_id)
-        if not lock.acquire(blocking=False):
-            raise HTTPException(status_code=409, detail="该会话已有任务在进行")
-    try:
-        if "project_id" in body.model_fields_set:
-            store.move_session(session_id, body.project_id)
-        if body.pinned is not None:
-            store.set_session_pinned(session_id, body.pinned)
-        if body.archived is not None:
-            store.archive_session(session_id, body.archived)
-    except ValueError as exc:
-        status = 409 if "归档" in str(exc) else 404
-        raise HTTPException(status_code=status, detail=str(exc)) from exc
-    finally:
-        if lock is not None:
-            lock.release()
+    guard = session_guard(session_id) if body.archived else nullcontext()
+    with guard:
+        try:
+            if "project_id" in body.model_fields_set:
+                store.move_session(session_id, body.project_id)
+            if body.pinned is not None:
+                store.set_session_pinned(session_id, body.pinned)
+            if body.archived is not None:
+                store.archive_session(session_id, body.archived)
+        except ValueError as exc:
+            status = 409 if "归档" in str(exc) else 404
+            raise HTTPException(status_code=status, detail=str(exc)) from exc
     return {"session": store.get_session(session_id)}
 
 
@@ -117,15 +113,11 @@ def delete_session(session_id: str, store: StoreDep) -> dict[str, Any]:
     """删除会话；先取非阻塞会话锁，避免删掉生成中的会话。"""
     _require_session(store, session_id)
     # 生成中删除会让 worker 落库失败 → 与 chat/confirm 同一把非阻塞会话锁
-    lock = session_lock(session_id)
-    if not lock.acquire(blocking=False):
-        raise HTTPException(status_code=409, detail="该会话已有任务在进行")
-    try:
-        store.delete_session(session_id)
-    except ValueError as exc:
-        raise HTTPException(409, str(exc)) from exc
-    finally:
-        lock.release()
+    with session_guard(session_id):
+        try:
+            store.delete_session(session_id)
+        except ValueError as exc:
+            raise HTTPException(409, str(exc)) from exc
     return {"deleted": session_id}
 
 
@@ -162,33 +154,29 @@ def confirm(body: ConfirmRequest, request: Request, store: StoreDep) -> dict[str
     """
     agent = request.app.state.agent
     _require_session(store, body.session_id)
-    lock = session_lock(body.session_id)
-    if not lock.acquire(blocking=False):
-        raise HTTPException(status_code=409, detail="该会话已有任务在进行")
-    try:
-        if body.action == ACTION_DATA_CONFIRM:
-            last = confirm_data(
-                agent,
-                store,
-                body.session_id,
-                source=body.source,
-                asset_id=body.asset_id,
-                query=body.query,
-            )
-        elif body.action in SCRIPT_ACTIONS:
-            last = confirm_script(agent, store, body.session_id, body.action)
-        else:
-            raise HTTPException(status_code=400, detail=f"未知动作: {body.action}")
-        return {"message": wire_message(last)}
-    except ConfirmFlowError as exc:
-        status = _CONFIRM_ERROR_STATUS.get(exc.code, 502)
-        if status == 502:
+    with session_guard(body.session_id):
+        try:
+            if body.action == ACTION_DATA_CONFIRM:
+                last = confirm_data(
+                    agent,
+                    store,
+                    body.session_id,
+                    source=body.source,
+                    asset_id=body.asset_id,
+                    query=body.query,
+                )
+            elif body.action in SCRIPT_ACTIONS:
+                last = confirm_script(agent, store, body.session_id, body.action)
+            else:
+                raise HTTPException(status_code=400, detail=f"未知动作: {body.action}")
+            return {"message": wire_message(last)}
+        except ConfirmFlowError as exc:
+            status = _CONFIRM_ERROR_STATUS.get(exc.code, 502)
+            if status == 502:
+                logger.exception("confirm action failed: %s", body.action)
+            raise HTTPException(status_code=status, detail=str(exc)) from exc
+        except HTTPException:
+            raise  # 已结构化的 4xx 直接透传，勿吞成 502
+        except Exception as exc:  # 兜底：任意失败都保持 {"detail":...} JSON 契约
             logger.exception("confirm action failed: %s", body.action)
-        raise HTTPException(status_code=status, detail=str(exc)) from exc
-    except HTTPException:
-        raise  # 已结构化的 4xx 直接透传，勿吞成 502
-    except Exception as exc:  # 兜底：任意失败都保持 {"detail":...} JSON 契约
-        logger.exception("confirm action failed: %s", body.action)
-        raise HTTPException(status_code=502, detail=str(exc) or type(exc).__name__) from exc
-    finally:
-        lock.release()
+            raise HTTPException(status_code=502, detail=str(exc) or type(exc).__name__) from exc
