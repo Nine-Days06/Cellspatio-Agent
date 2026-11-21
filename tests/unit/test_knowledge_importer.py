@@ -103,39 +103,42 @@ def _write_csv(path, pmids: list[str]) -> None:
 def test_import_incremental_imports_only_named_new_file(tmp_path):
     client = MockLightRAGClient()
     importer = KnowledgeImporter(client)
-    _write_csv(tmp_path / "articles_a.csv", ["1", "2"])
-    _write_csv(tmp_path / "articles_b.csv", ["3"])
+    _write_csv(tmp_path / "articles_20260921_100000.csv", ["1", "2"])
+    _write_csv(tmp_path / "articles_20260921_110000.csv", ["3"])
 
-    result = importer.import_incremental(str(tmp_path), files=["articles_b.csv"])
+    result = importer.import_incremental(str(tmp_path), files=["articles_20260921_110000.csv"])
 
     assert result["success"] is True
     assert result["total_count"] == 1
     assert result["new_count"] == 1
-    assert result["imported_files"] == [str(tmp_path / "articles_b.csv")]
+    assert result["imported_files"] == [str(tmp_path / "articles_20260921_110000.csv")]
     assert len(client.inserted_documents) == 1  # 目录里的历史 CSV 未被读取
 
 
 def test_import_incremental_rerun_is_noop(tmp_path):
     client = MockLightRAGClient()
     importer = KnowledgeImporter(client)
-    _write_csv(tmp_path / "articles_a.csv", ["1", "2"])
+    _write_csv(tmp_path / "articles_20260921_100000.csv", ["1", "2"])
 
-    first = importer.import_incremental(str(tmp_path), files=["articles_a.csv"])
-    second = importer.import_incremental(str(tmp_path), files=["articles_a.csv"])
+    name = "articles_20260921_100000.csv"
+    first = importer.import_incremental(str(tmp_path), files=[name])
+    second = importer.import_incremental(str(tmp_path), files=[name])
 
     assert first["new_count"] == 2
     assert second["success"] is True
     assert second["total_count"] == 0
     assert second["new_count"] == 0
-    assert second["skipped_files"] == ["articles_a.csv"]
+    assert second["skipped_files"] == [name]
     assert len(client.inserted_documents) == 2  # 未重复提交
 
 
 def test_import_incremental_directory_scan_updates_ledger(tmp_path):
     client = MockLightRAGClient()
     importer = KnowledgeImporter(client)
-    _write_csv(tmp_path / "articles_a.csv", ["1", "2"])
-    _write_csv(tmp_path / "articles_b.csv", ["3"])
+    first_name = "articles_20260921_100000.csv"
+    second_name = "articles_20260921_110000.csv"
+    _write_csv(tmp_path / first_name, ["1", "2"])
+    _write_csv(tmp_path / second_name, ["3"])
 
     first = importer.import_incremental(str(tmp_path))
     second = importer.import_incremental(str(tmp_path))
@@ -143,11 +146,11 @@ def test_import_incremental_directory_scan_updates_ledger(tmp_path):
     assert first["total_count"] == 3
     assert first["new_count"] == 3
     assert second["total_count"] == 0
-    assert sorted(second["skipped_files"]) == ["articles_a.csv", "articles_b.csv"]
+    assert sorted(second["skipped_files"]) == [first_name, second_name]
 
     ledger_data = json.loads((tmp_path / "import_ledger.json").read_text(encoding="utf-8"))
-    assert set(ledger_data["files"]) == {"articles_a.csv", "articles_b.csv"}
-    entry = ledger_data["files"]["articles_a.csv"]
+    assert set(ledger_data["files"]) == {first_name, second_name}
+    entry = ledger_data["files"][first_name]
     assert entry["count"] == 2
     assert len(entry["sha256"]) == 64
 
@@ -156,7 +159,7 @@ def test_import_incremental_ledger_file_not_treated_as_article(tmp_path):
     """目录扫描必须排除台账本身，否则会把台账 JSON 当文献导入"""
     client = MockLightRAGClient()
     importer = KnowledgeImporter(client)
-    _write_csv(tmp_path / "articles_a.csv", ["1"])
+    _write_csv(tmp_path / "articles_20260921_100000.csv", ["1"])
 
     result = importer.import_incremental(str(tmp_path))
 
@@ -169,57 +172,62 @@ def test_import_incremental_corrupt_ledger_reimports(tmp_path):
     """台账损坏时按空台账处理（宁可重复导入也不崩溃）"""
     client = MockLightRAGClient()
     importer = KnowledgeImporter(client)
-    _write_csv(tmp_path / "articles_a.csv", ["1"])
+    name = "articles_20260921_100000.csv"
+    _write_csv(tmp_path / name, ["1"])
     (tmp_path / "import_ledger.json").write_text("{not json", encoding="utf-8")
 
-    result = importer.import_incremental(str(tmp_path), files=["articles_a.csv"])
+    result = importer.import_incremental(str(tmp_path), files=[name])
 
     assert result["success"] is True
     assert result["new_count"] == 1
     assert len(client.inserted_documents) == 1
     # 重导成功后台账被重写为合法 JSON
     repaired = json.loads((tmp_path / "import_ledger.json").read_text(encoding="utf-8"))
-    assert "articles_a.csv" in repaired["files"]
+    assert name in repaired["files"]
 
 
 def test_import_incremental_ledger_entry_for_deleted_csv(tmp_path):
     """台账残留已删除 CSV 的条目不影响流程"""
     client = MockLightRAGClient()
     importer = KnowledgeImporter(client)
-    _write_csv(tmp_path / "articles_a.csv", ["1"])
-    importer.import_incremental(str(tmp_path), files=["articles_a.csv"])
-    (tmp_path / "articles_a.csv").unlink()
-    _write_csv(tmp_path / "articles_b.csv", ["2"])
+    first_name = "articles_20260921_100000.csv"
+    second_name = "articles_20260921_110000.csv"
+    _write_csv(tmp_path / first_name, ["1"])
+    importer.import_incremental(str(tmp_path), files=[first_name])
+    (tmp_path / first_name).unlink()
+    _write_csv(tmp_path / second_name, ["2"])
 
-    result = importer.import_incremental(str(tmp_path), files=["articles_b.csv"])
+    result = importer.import_incremental(str(tmp_path), files=[second_name])
 
     assert result["success"] is True
     assert result["new_count"] == 1
     ledger = ImportLedger(tmp_path / "import_ledger.json")
-    assert ledger.is_imported("articles_a.csv")
+    assert ledger.is_imported(first_name)
 
 
 def test_import_incremental_modified_csv_not_reimported(tmp_path, caplog):
     """策略：文件名是台账唯一键，导入后被修改的 CSV 不自动重导（仅告警）"""
     client = MockLightRAGClient()
     importer = KnowledgeImporter(client)
-    _write_csv(tmp_path / "articles_a.csv", ["1"])
-    importer.import_incremental(str(tmp_path), files=["articles_a.csv"])
-    _write_csv(tmp_path / "articles_a.csv", ["1", "2"])
+    name = "articles_20260921_100000.csv"
+    _write_csv(tmp_path / name, ["1"])
+    importer.import_incremental(str(tmp_path), files=[name])
+    _write_csv(tmp_path / name, ["1", "2"])
 
     with caplog.at_level(logging.WARNING, logger="src.knowledge.knowledge_importer"):
-        result = importer.import_incremental(str(tmp_path), files=["articles_a.csv"])
+        result = importer.import_incremental(str(tmp_path), files=[name])
 
     assert result["total_count"] == 0
-    assert result["skipped_files"] == ["articles_a.csv"]
+    assert result["skipped_files"] == [name]
     assert any("修改" in r.message for r in caplog.records)
 
 
 def test_import_incremental_reimport_all_ignores_ledger(tmp_path):
     client = MockLightRAGClient()
     importer = KnowledgeImporter(client)
-    _write_csv(tmp_path / "articles_a.csv", ["1", "2"])
-    importer.import_incremental(str(tmp_path), files=["articles_a.csv"])
+    name = "articles_20260921_100000.csv"
+    _write_csv(tmp_path / name, ["1", "2"])
+    importer.import_incremental(str(tmp_path), files=[name])
 
     result = importer.import_incremental(str(tmp_path), reimport_all=True)
 
@@ -229,14 +237,56 @@ def test_import_incremental_reimport_all_ignores_ledger(tmp_path):
     assert len(client.inserted_documents) == 4
 
 
+def test_import_incremental_directory_ignores_non_contract_csv(tmp_path):
+    """目录扫描只认 articles_<ts>.csv，raw 与手工 CSV 不进入导入。"""
+    client = MockLightRAGClient()
+    importer = KnowledgeImporter(client)
+    _write_csv(tmp_path / "articles_20260921_100000.csv", ["1"])
+    _write_csv(tmp_path / "articles_raw_20260921_110000.csv", ["2"])
+    _write_csv(tmp_path / "manual.csv", ["3"])
+
+    result = importer.import_incremental(str(tmp_path))
+
+    assert result["imported_files"] == [str(tmp_path / "articles_20260921_100000.csv")]
+    assert result["total_count"] == 1
+
+
+def test_import_incremental_rejects_missing_required_columns(tmp_path):
+    """契约批次缺少必需列时在提交给 LightRAG 前失败。"""
+    client = MockLightRAGClient()
+    importer = KnowledgeImporter(client)
+    path = tmp_path / "articles_20260921_100000.csv"
+    path.write_text("pmid,title\n1,Title\n", encoding="utf-8-sig")
+
+    result = importer.import_incremental(str(tmp_path))
+
+    assert result["success"] is False
+    assert result["failed_files"] == [path.name]
+    assert client.inserted_documents == []
+
+
+def test_import_incremental_rejects_explicit_non_contract_csv(tmp_path):
+    """显式 files= 也不能绕过高交接契约导入手工 CSV。"""
+    client = MockLightRAGClient()
+    importer = KnowledgeImporter(client)
+    _write_csv(tmp_path / "manual.csv", ["1"])
+
+    result = importer.import_incremental(str(tmp_path), files=["manual.csv"])
+
+    assert result["success"] is False
+    assert result["failed_files"] == ["manual.csv"]
+    assert client.inserted_documents == []
+
+
 def test_import_incremental_missing_named_file_reports_failure(tmp_path):
     client = MockLightRAGClient()
     importer = KnowledgeImporter(client)
 
-    result = importer.import_incremental(str(tmp_path), files=["nope.csv"])
+    missing = "articles_19990101_000000.csv"
+    result = importer.import_incremental(str(tmp_path), files=[missing])
 
     assert result["success"] is False
-    assert "nope.csv" in result["failed_files"]
+    assert missing in result["failed_files"]
 
 
 def test_ledger_corrupt_file_returns_empty(tmp_path):

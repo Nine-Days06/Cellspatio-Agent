@@ -8,7 +8,6 @@
 """
 
 import argparse
-import csv
 import sys
 from collections.abc import Callable
 from pathlib import Path
@@ -16,17 +15,17 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent
 sys.path.insert(0, str(ROOT))
 
+from src.article_batches import iter_rows
 from src.data.pubtator import CACHE_PATH, fetch_pmid_genes, save_pmid_genes
 
 
 def read_pmids(csv_path: Path) -> list[str]:
     """读 ETL 导出 CSV 的 pmid 列（去重保序）"""
     seen: dict[str, None] = {}
-    with open(csv_path, encoding="utf-8-sig", newline="") as fh:
-        for row in csv.DictReader(fh):
-            pmid = (row.get("pmid") or "").strip()
-            if pmid:
-                seen.setdefault(pmid, None)
+    for row in iter_rows(csv_path, required=("pmid",)):
+        pmid = (row.get("pmid") or "").strip()
+        if pmid:
+            seen.setdefault(pmid, None)
     return list(seen)
 
 
