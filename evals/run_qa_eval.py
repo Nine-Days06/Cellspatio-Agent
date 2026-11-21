@@ -238,6 +238,14 @@ def run_cases(
     }
 
 
+def exit_code(report: dict[str, Any]) -> int:
+    """全部用例都执行失败时返回非零，避免把基础设施故障当成成功跑批。"""
+    summary = report.get("summary") or {}
+    count = int(summary.get("case_count") or 0)
+    errors = int((summary.get("status_counts") or {}).get("error") or 0)
+    return 1 if count and errors == count else 0
+
+
 def main(argv: list[str] | None = None) -> int:
     """解析命令行参数，初始化知识库并写出 JSON 跑批报告。"""
     parser = argparse.ArgumentParser(description="Run the knowledge QA eval set.")
@@ -304,7 +312,7 @@ def main(argv: list[str] | None = None) -> int:
             indent=2,
         )
     )
-    return 0
+    return exit_code(report)
 
 
 if __name__ == "__main__":
