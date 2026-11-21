@@ -115,13 +115,17 @@ def test_strict_request_rejected(dimensions_ready, payload):
 def test_association_and_stale_binding_revision(dimensions_ready):
     """跨会话/父/PCA 404，陈旧绑定或 revision 409。"""
     d = dimensions_ready
-    for target in (
-        d.target.replace(d.sid, d.store.create_session()),
-        d.target.replace(d.fid, "unknown"),
-        d.target.replace(d.aid, "unknown"),
+    for target, detail in (
+        (
+            d.target.replace(d.sid, d.store.create_session()),
+            "QC 关联不存在；旧证据需重新 QC 才能交互",
+        ),
+        (d.target.replace(d.fid, "unknown"), "父过滤关联不存在"),
+        (d.target.replace(d.aid, "unknown"), "PCA 关联不存在"),
     ):
-        assert d.client.get(target).status_code == 404
-        assert d.client.post(target, json=d.body).status_code == 404
+        for response in (d.client.get(target), d.client.post(target, json=d.body)):
+            assert response.status_code == 404
+            assert response.json()["detail"] == detail
     for payload in (
         {"binding_sha256": "0" * 64},
         {"revision": d.body["revision"] - 1},

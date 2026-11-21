@@ -310,10 +310,7 @@ def diagnostic(
     try:
         run = require_run(store, session_id, run_id)
         _associated(run, filter_attempt_id, pca_attempt_id, cluster_attempt_id)
-        attempt = next(
-            (a for a in run.marker_attempts(cluster_attempt_id) if a["attempt_id"] == attempt_id),
-            None,
-        )
+        attempt = run.attempt("marker", attempt_id, cluster_attempt_id)
         if not attempt or attempt["status"] != "completed":
             raise HTTPException(404, "marker 图未完成或不存在")
         checked_completed_marker(run, attempt, run_qc_root(request.app.state.agent, run))
@@ -347,10 +344,7 @@ def candidates(
     try:
         run = require_run(store, session_id, run_id)
         _associated(run, filter_attempt_id, pca_attempt_id, cluster_attempt_id)
-        attempt = next(
-            (a for a in run.marker_attempts(cluster_attempt_id) if a["attempt_id"] == attempt_id),
-            None,
-        )
+        attempt = run.attempt("marker", attempt_id, cluster_attempt_id)
         if not attempt or attempt["status"] != "completed":
             raise HTTPException(404, "marker 候选未完成或不存在")
         summary = checked_completed_marker(run, attempt, run_qc_root(request.app.state.agent, run))
@@ -405,10 +399,7 @@ def review_markers(
     try:
         run = require_run(store, session_id, run_id)
         cluster = _associated(run, filter_attempt_id, pca_attempt_id, cluster_attempt_id)
-        attempt = next(
-            (a for a in run.marker_attempts(cluster_attempt_id) if a["attempt_id"] == attempt_id),
-            None,
-        )
+        attempt = run.attempt("marker", attempt_id, cluster_attempt_id)
         if attempt is None:
             raise HTTPException(404, "marker 关联不存在")
         store.stages.record_marker_review(

@@ -322,10 +322,7 @@ def diagnostic(
         run = require_run(store, session_id, run_id)
         require_parent(run, filter_attempt_id)
         require_pca(run, filter_attempt_id, pca_attempt_id)
-        attempt = next(
-            (a for a in run.cluster_attempts(pca_attempt_id) if a["attempt_id"] == attempt_id),
-            None,
-        )
+        attempt = run.attempt("cluster", attempt_id, pca_attempt_id)
         if attempt is None or attempt["status"] != "completed":
             raise HTTPException(404, "聚类图未完成或不存在")
         checked_completed_cluster(
@@ -348,10 +345,7 @@ def diagnostic(
 
 def require_cluster(run: RunSnapshot, pca_attempt_id: str, attempt_id: str) -> dict[str, Any]:
     """只定位本 run 与 PCA 下的确切聚类尝试。"""
-    cluster = next(
-        (a for a in run.cluster_attempts(pca_attempt_id) if a["attempt_id"] == attempt_id),
-        None,
-    )
+    cluster = run.attempt("cluster", attempt_id, pca_attempt_id)
     if cluster is None:
         raise HTTPException(404, "聚类关联不存在")
     return cluster
