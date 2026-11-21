@@ -269,14 +269,20 @@ export interface MarkerState {
   blocked: string[]
   attempts: {
     attempt_id: string
+    review_id: string
     binding_sha256: string
     status: FilterAttempt['status']
+    created_at: string
+    finished_at: string | null
+    source_revision: number
+    claim_revision: number
     invalidated_reason: string | null
     error: string | null
     review: ReviewFact | null
     result: {
       cells: number; features: number; clusters: number; marker_rows: number
       positive_rows: number; negative_rows: number; versions: string[]
+      plot_features: string[]; backend: string
       cluster_summary: { cluster_id: string; cells: string; rest_cells: string; result_status: string; positive_markers: string; negative_markers: string }[]
     } | null
   }[]
@@ -345,7 +351,7 @@ export interface FilterAttempt {
   directory: string
   created_at: string
   finished_at: string | null
-  result: { cells?: number; features?: number; error?: string; versions?: string[]; artifacts?: Record<string, { path: string; bytes: number; sha256: string }> } | null
+  result: { cells?: number; features?: number; error?: string; versions?: string[]; scientific_status?: string; artifacts?: Record<string, { path: string; bytes: number; sha256: string }> } | null
 }
 
 export type PendingScriptStatus = 'pending' | 'confirmed' | 'cancelled' | 'expired'
