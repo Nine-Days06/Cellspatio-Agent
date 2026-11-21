@@ -142,6 +142,31 @@ def test_claimed_oserror_finishes_failed_and_releases_lock(tmp_path: Path) -> No
     session_lock("s1").release()
 
 
+def test_finish_failure_retries_with_failed_result(tmp_path: Path) -> None:
+    """收尾写冲突不能把 attempt 留在 running；改用失败结果重试收口。"""
+    finished: list[dict[str, Any]] = []
+    attempts: list[int] = []
+
+    def finish(result: dict[str, Any]) -> None:
+        attempts.append(1)
+        if len(attempts) == 1:
+            raise RuntimeError("database is locked")
+        finished.append(result)
+
+    def prepare(run: dict[str, Any], attempt_id: str) -> StageClaim:
+        return _claim(
+            tmp_path,
+            attempt_id,
+            finish=finish,
+            on_error=lambda exc: {"status": "failed", "error": str(exc)},
+        )
+
+    _call(tmp_path, prepare=prepare)
+
+    assert len(attempts) == 2
+    assert finished == [{"status": "failed", "error": "database is locked"}]
+
+
 def test_unclaimed_attempt_skips_execution(tmp_path: Path) -> None:
     executed: list[str] = []
 

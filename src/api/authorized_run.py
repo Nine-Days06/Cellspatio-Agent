@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import uuid
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
@@ -14,6 +15,7 @@ from fastapi import HTTPException
 from src.api.session_locks import lock_for as session_lock
 
 RunT = TypeVar("RunT", bound=Mapping[str, Any])
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -70,7 +72,13 @@ def run_authorized(
                 result = claim.execute(attempt)
             except OSError as exc:
                 result = claim.on_error(exc)
-            saved = claim.finish(result)
+            try:
+                saved = claim.finish(result)
+            except Exception as exc:
+                # 收尾失败若直接抛出，attempt 会永久停在 running 并锁死后续阶段。
+                logger.exception("阶段收尾失败，改落失败终态")
+                result = claim.on_error(exc)
+                saved = claim.finish(result)
             if saved is not None and saved != result:
                 (directory / "metadata.json").write_text(
                     json.dumps(saved, ensure_ascii=False, indent=2), encoding="utf-8"
