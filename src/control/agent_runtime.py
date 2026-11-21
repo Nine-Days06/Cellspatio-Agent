@@ -70,6 +70,7 @@ class AgentRuntime:
 
         hint = self._route_hint(user_input)
         messages = self._build_messages(user_input, context, hint=hint)
+        dispatched: dict[str, Any] | None = None
         try:
             for _ in range(MAX_ROUNDS):
                 if on_event is None:
@@ -103,6 +104,7 @@ class AgentRuntime:
                 ):
                     return dict(ABORTED_RESULT)
                 result = self._dispatch(tool_calls[0], user_input, context)
+                dispatched = result
                 status = result.get("status")
                 if result.get("analysis_type") == "single_cell":
                     return result
@@ -132,7 +134,16 @@ class AgentRuntime:
                 "type": "general_response",
                 "message": f"已达最大工具调用轮数（{MAX_ROUNDS}），请简化请求后重试。",
             }
-        except Exception as e:  # noqa: BLE001 - SDK/网络异常一律回退旧工作流
+        except Exception as e:  # noqa: BLE001 - SDK/网络异常
+            if dispatched is not None:
+                # 工具已执行（可能已落盘/入库），不能再跑旧工作流重复副作用。
+                logger.warning("tool-calling failed after dispatch: %s", e)
+                return {
+                    "status": "error",
+                    "type": dispatched.get("type", "general_response"),
+                    "message": "工具已执行，但后续回复生成失败；请勿直接重复执行，先检查已有结果。",
+                    "results": dispatched.get("results", {}),
+                }
             logger.warning("tool-calling failed, fallback to legacy workflow: %s", e)
             return self.workflow_manager.execute_workflow(user_input, context)
 
