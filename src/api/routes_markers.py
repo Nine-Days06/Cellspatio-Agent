@@ -130,6 +130,7 @@ def view(run: RunSnapshot, cluster: dict[str, Any], root: Path) -> dict[str, Any
         "review": {k: displayed["review"][k] for k in ("review_id", "record_version", "accepted")}
         if displayed
         else None,
+        "cluster_review": state,
         "blocked": blocked,
         "attempts": history,
     }
