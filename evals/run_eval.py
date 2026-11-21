@@ -92,6 +92,10 @@ class _RecordingWM:
         self.last = ("query_knowledge", {"query": query})
         return {"status": "success", "type": "knowledge_response", "response": "scripted", "references": []}
 
+    def query_memory_for_agent(self, query, context):
+        self.last = ("query_memory", {"query": query})
+        return {"status": "success", "type": "memory_response", "response": "scripted", "references": []}
+
     def execute_workflow(self, user_input, context=None):
         self.last = ("fallback", {"input": user_input})
         return {"status": "success", "type": "general_response", "message": "fallback"}
