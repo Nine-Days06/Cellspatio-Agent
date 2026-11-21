@@ -1190,6 +1190,7 @@ class SpyRecorder:
         self.starts = []
         self.steps = []
         self.finishes = []
+        self.outputs = []
 
     def start_execution(self, intent, parameters, user_input, context, run_id=None):
         rid = run_id or f"run-spy-{len(self.starts) + 1}"
@@ -1210,6 +1211,9 @@ class SpyRecorder:
     def finish_run(self, run_id):
         self.finishes.append(run_id)
         return Path("spy") / run_id / "workflow.json"
+
+    def record_output(self, run_id, name, path, type):
+        self.outputs.append({"run_id": run_id, "name": name, "path": path, "type": type})
 
 
 def _make_spy_manager(**kwargs):
@@ -1237,6 +1241,33 @@ def test_run_analysis_for_agent_records_run():
     assert any(s["tool"] == "run_analysis" for s in spy.steps)
     # 无输入文件 → needs_input 终态（finish 仍应执行，镜像 legacy）
     assert result["status"] == "needs_input"
+
+
+def test_run_analysis_for_agent_records_outputs(tmp_path):
+    """Agent 入口也必须记录产物，否则 lineage / KG 输出节点缺失。"""
+    counts = tmp_path / "counts.csv"
+    counts.write_text("gene,s1,s2\nG1,1,2\n", encoding="utf-8")
+
+    def exec_side_effect(code: str):
+        counts.with_suffix(".de_results.csv").write_text("gene,padj\nG1,0.01\n", encoding="utf-8")
+
+        class R:
+            returncode = 0
+
+        return R()
+
+    manager = _make_spy_manager()
+    manager.r_executor = FakeExec(side_effect=exec_side_effect)
+    result = manager.run_analysis_for_agent(
+        "differential_expression",
+        {"input_files": [str(counts)], "question": "差异表达"},
+        {"last_user_input": "做差异表达分析"},
+    )
+
+    spy = manager.workflow_recorder
+    assert result["status"] == "success"
+    assert [o["name"] for o in spy.outputs] == ["counts.de_results.csv"]
+    assert spy.outputs[0]["run_id"] == spy.starts[0]["run_id"]
 
 
 def test_execute_workflow_records_single_run():

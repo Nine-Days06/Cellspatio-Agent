@@ -1009,4 +1009,6 @@ class WorkflowManager:
             "original_input": context.get("last_user_input", "") or params.get("question", ""),
         }
         with self._record_run(intent, params, context) as run_id:
-            return self._execute_analysis_workflow(intent, params, context, run_id)
+            result = self._execute_analysis_workflow(intent, params, context, run_id)
+            self._record_outputs(run_id, result)
+        return result
