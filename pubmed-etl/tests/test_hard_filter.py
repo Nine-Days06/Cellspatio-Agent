@@ -153,6 +153,12 @@ class TestFindDuplicateTitles(_TempDbTestCase):
         self.assertEqual(find_duplicate_titles(self.db_path), {second})
         self.assertNotIn(first, find_duplicate_titles(self.db_path))
 
+    def test_smallest_pmid_is_kept_regardless_of_insert_order(self):
+        later = self._insert(pmid="40000699", journal="Nature", pub_year=2020)
+        earlier = self._insert(pmid="40000698", journal="Nature", pub_year=2020)
+        self.assertEqual(find_duplicate_titles(self.db_path), {later})
+        self.assertNotIn(earlier, find_duplicate_titles(self.db_path))
+
     def test_same_title_different_journal_is_not_duplicate(self):
         self._insert(pmid="40000603", journal="Nature", pub_year=2020)
         other = self._insert(pmid="40000604", journal="Cell", pub_year=2020)

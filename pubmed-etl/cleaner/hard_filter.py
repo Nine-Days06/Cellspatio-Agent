@@ -72,7 +72,13 @@ def find_duplicate_titles(db_path: Path = DB_PATH, conn: sqlite3.Connection = No
     for row in rows:
         key = (row["norm_title"], row["journal"] or "", row["pub_year"])
         if key in seen:
-            duplicates.add(row["pmid"])
+            first = seen[key]
+            if int(row["pmid"]) < int(first):
+                duplicates.discard(row["pmid"])
+                duplicates.add(first)
+                seen[key] = row["pmid"]
+            else:
+                duplicates.add(row["pmid"])
         else:
             seen[key] = row["pmid"]
 
