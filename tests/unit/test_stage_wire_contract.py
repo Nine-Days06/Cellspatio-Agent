@@ -18,6 +18,7 @@ CONTRACTS = [
     ("src/api/routes_pca.py", "dimension_view", "PcaDimensionsState"),
     ("src/api/routes_clusters.py", "view", "ClusterState"),
     ("src/api/routes_markers.py", "view", "MarkerState"),
+    ("src/api/routes_markers.py", "candidates", "MarkerPage"),
 ]
 
 # 边界：以下类型无法静态解析，递归到此跳过，只保留外层键校验。
@@ -42,8 +43,16 @@ def _returns(node: ast.AST) -> list[ast.Return]:
     return found
 
 
-def _const_keys(node: ast.AST | None) -> list[str] | None:
-    """元组/列表字面量中的字符串键；其它表达式返回 None。"""
+def _const_keys(
+    node: ast.AST | None, constants: dict[str, list[str]] | None = None
+) -> list[str] | None:
+    """元组/列表字面量（或常量列表切片）中的字符串键；其它表达式返回 None。"""
+    if isinstance(node, ast.Subscript) and isinstance(node.value, ast.Name):
+        base = (constants or {}).get(node.value.id)
+        index = _slice_index(node.slice)
+        if base is not None and index is not None:
+            return base[index]
+        return None
     if not isinstance(node, (ast.Tuple, ast.List)):
         return None
     keys: list[str] = []
@@ -54,10 +63,45 @@ def _const_keys(node: ast.AST | None) -> list[str] | None:
     return keys
 
 
-def _dictcomp_keys(node: ast.DictComp) -> list[str] | None:
+def _slice_index(node: ast.AST) -> slice | int | None:
+    """解析列表切片或整数下标中的常量边界。"""
+    if isinstance(node, ast.Constant) and isinstance(node.value, int):
+        return node.value
+    if not isinstance(node, ast.Slice):
+        return None
+    bounds: list[int | None] = []
+    for part in (node.lower, node.upper, node.step):
+        if part is None:
+            bounds.append(None)
+        elif isinstance(part, ast.Constant) and isinstance(part.value, int):
+            bounds.append(part.value)
+        else:
+            return None
+    return slice(*bounds)
+
+
+def _string_lists(path: Path, names: tuple[str, ...]) -> dict[str, list[str]]:
+    """读取模块顶层字符串列表常量，供字典推导式切片解析。"""
+    tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+    found: dict[str, list[str]] = {}
+    for node in tree.body:
+        if not isinstance(node, ast.Assign):
+            continue
+        keys = _const_keys(node.value)
+        if keys is None:
+            continue
+        for target in node.targets:
+            if isinstance(target, ast.Name) and target.id in names:
+                found[target.id] = keys
+    return found
+
+
+def _dictcomp_keys(
+    node: ast.DictComp, constants: dict[str, list[str]] | None = None
+) -> list[str] | None:
     """解析 `{k: v for k in (...)}` 或 `.items()` 后按元组过滤的键集合。"""
     for gen in node.generators:
-        keys = _const_keys(gen.iter)
+        keys = _const_keys(gen.iter, constants)
         if keys is not None:
             return keys
         if isinstance(gen.iter, ast.Call) and isinstance(gen.iter.func, ast.Attribute):
@@ -69,7 +113,7 @@ def _dictcomp_keys(node: ast.DictComp) -> list[str] | None:
                     and len(check.ops) == 1
                     and isinstance(check.ops[0], ast.In)
                 ):
-                    keys = _const_keys(check.comparators[0])
+                    keys = _const_keys(check.comparators[0], constants)
                     if keys is not None:
                         return keys
     return None
@@ -78,10 +122,11 @@ def _dictcomp_keys(node: ast.DictComp) -> list[str] | None:
 class _BackendShape:
     """从路由函数 AST 递归提取 return 字典的结构键。"""
 
-    def __init__(self, tree: ast.Module) -> None:
+    def __init__(self, tree: ast.Module, constants: dict[str, list[str]] | None = None) -> None:
         self.functions = {
             node.name: node for node in tree.body if isinstance(node, ast.FunctionDef)
         }
+        self.constants = constants or {}
 
     def shape(self, function: str) -> dict[str, Shape]:
         fn = self.functions.get(function)
@@ -131,7 +176,7 @@ class _BackendShape:
         if isinstance(node, ast.Dict):
             return self._dict(node, fn, seen)
         if isinstance(node, ast.DictComp):
-            keys = _dictcomp_keys(node)
+            keys = _dictcomp_keys(node, self.constants)
             return None if keys is None else {key: None for key in keys}
         if isinstance(node, ast.List):
             elements = [self._shape(item, fn, seen) for item in node.elts]
@@ -231,7 +276,7 @@ class _FrontendShape:
         pytest.fail(f"{TYPES} 中存在未闭合的花括号")
 
     def _fields(self, body: str) -> dict[str, tuple[bool, Any]]:
-        pattern = re.compile(r"([A-Za-z_$][\w$]*)(\?)?\s*:")
+        pattern = re.compile(r"(?:'([^']+)'|\"([^\"]+)\"|([A-Za-z_$][\w$]*)(\?)?)\s*:")
         fields: dict[str, tuple[bool, Any]] = {}
         index = 0
         while index < len(body):
@@ -241,7 +286,8 @@ class _FrontendShape:
             if not match:
                 index += 1
                 continue
-            name, optional = match.group(1), bool(match.group(2))
+            name = match.group(1) or match.group(2) or match.group(3)
+            optional = bool(match.group(4))
             end = self._type_end(body, match.end())
             fields[name] = (optional, self._type(body[match.end() : end].strip()))
             index = end
@@ -333,13 +379,16 @@ def _compare(path: str, backend: Shape, frontend: Any, drift: list[str]) -> None
         _compare(f"{path}.{key}", backend[key], frontend[key][1], drift)
 
 
+BACKEND_CONSTANTS = _string_lists(ROOT / "src" / "analysis" / "sc_markers.py", ("MARKER_FIELDS",))
+
+
 @pytest.mark.parametrize(("module", "function", "interface"), CONTRACTS)
 def test_stage_response_keys_match_frontend_type(
     module: str, function: str, interface: str
 ) -> None:
     """后端键必须先在前端类型声明；前端必需字段后端必须返回，可选字段不强制。"""
     tree = ast.parse((ROOT / module).read_text(encoding="utf-8"), filename=str(ROOT / module))
-    backend = _BackendShape(tree).shape(function)
+    backend = _BackendShape(tree, BACKEND_CONSTANTS).shape(function)
     frontend = _FrontendShape(TYPES).interface(interface)
 
     drift: list[str] = []
