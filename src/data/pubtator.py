@@ -117,6 +117,9 @@ def load_pmid_genes(path: Path | None = None) -> dict[str, dict[str, str]]:
     except (OSError, UnicodeDecodeError, json.JSONDecodeError):
         logger.warning("PubTator 缓存损坏，按空处理: %s", path)
         return {}
+    if not isinstance(data, dict):
+        logger.warning("PubTator 缓存结构无效，按空处理: %s", path)
+        return {}
     return {
         str(k): {str(m): str(c) for m, c in v.items() if isinstance(m, str) and isinstance(c, str)}
         for k, v in data.items()

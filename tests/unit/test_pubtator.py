@@ -106,6 +106,9 @@ def test_load_cache_missing_or_corrupt_returns_empty(tmp_path):
     bad = tmp_path / "bad.json"
     bad.write_text("{not json", encoding="utf-8")
     assert pubtator.load_pmid_genes(bad) == {}
+    wrong_type = tmp_path / "list.json"
+    wrong_type.write_text("[]", encoding="utf-8")
+    assert pubtator.load_pmid_genes(wrong_type) == {}
 
 
 def test_load_cache_drops_non_string_entries(tmp_path):
