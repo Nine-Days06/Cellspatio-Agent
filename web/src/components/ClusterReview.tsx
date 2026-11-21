@@ -43,7 +43,7 @@ export function ClusterReview({ sessionId, runId, filterAttemptId, pcaAttemptId,
 
   async function refresh() {
     setReason('')
-    await stage.refresh()
+    await stage.refresh({ clearError: true })
   }
 
   async function execute() {

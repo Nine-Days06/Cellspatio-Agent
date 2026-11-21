@@ -163,7 +163,32 @@ describe('useStageReview', () => {
     load.mockResolvedValue(view(3))
     await act(async () => { await result.current.refresh() })
     expect(result.current.state).toEqual(view(3))
+    expect(result.current.error).toBe('执行失联')
+
+    await act(async () => { await result.current.refresh({ clearError: true }) })
     expect(result.current.error).toBe('')
+  })
+
+  it('轮询可用 pollLoad 读取较轻状态，recordOnPoll=false 不通知父级', async () => {
+    vi.useFakeTimers()
+    const load = vi.fn().mockResolvedValue(view(0, true))
+    const pollLoad = vi.fn().mockResolvedValue(view(2, false))
+    const recorded = vi.fn()
+    const { result } = renderHook(() =>
+      useStageReview<View>({
+        load,
+        pollLoad,
+        deps: [],
+        isRunning,
+        onRecorded: recorded,
+        recordOnPoll: false,
+      }))
+
+    await act(async () => { await vi.advanceTimersByTimeAsync(0) })
+    await act(async () => { await vi.advanceTimersByTimeAsync(1500) })
+    expect(result.current.state).toEqual(view(2, false))
+    expect(pollLoad).toHaveBeenCalledTimes(1)
+    expect(recorded).not.toHaveBeenCalled()
   })
 
   it('卸载清理定时器并发布 onRunning(false)', async () => {

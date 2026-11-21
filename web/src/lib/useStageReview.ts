@@ -18,6 +18,10 @@ export interface StageReviewOptions<T> {
   onLoaded?: (state: T) => void
   /** 运行结束后的父级刷新信号；每轮运行最多一次。 */
   onRecorded?: () => void
+  /** 轮询结束是否触发 onRecorded；QC 由子级显式通知时为 false。 */
+  recordOnPoll?: boolean
+  /** 轮询专用读取；Markers 用它避免每轮重复读取接受记录。 */
+  pollLoad?: (state: T | null) => Promise<T>
   onRunning?: (running: boolean) => void
   pollMs?: number
 }
@@ -31,7 +35,7 @@ export interface StageReview<T> {
   /** 身份变化：清空并重新读取。 */
   reload: () => Promise<void>
   /** 只读刷新：保留当前状态，成功后再替换。 */
-  refresh: () => Promise<void>
+  refresh: (options?: { clearError?: boolean }) => Promise<void>
   /**
    * 显式动作。返回 false 表示失败或已被更新的 generation 取代；
    * 失败后不自动重发，调用方可自行读取 load 恢复。
@@ -59,6 +63,7 @@ export function useStageReview<T>(options: StageReviewOptions<T>): StageReview<T
   const mounted = useRef(true)
   const recordedNotified = useRef(false)
   const pollMs = options.pollMs ?? 1500
+  const recordOnPoll = options.recordOnPoll ?? true
 
   const callbacks = useRef({
     onLoaded: options.onLoaded,
@@ -72,6 +77,8 @@ export function useStageReview<T>(options: StageReviewOptions<T>): StageReview<T
   }
   const loadRef = useRef(options.load)
   loadRef.current = options.load
+  const pollLoadRef = useRef(options.pollLoad)
+  pollLoadRef.current = options.pollLoad
   const isRunningRef = useRef(options.isRunning)
   isRunningRef.current = options.isRunning
 
@@ -82,11 +89,11 @@ export function useStageReview<T>(options: StageReviewOptions<T>): StageReview<T
     callbacks.current.onLoaded?.(next)
   }, [])
 
-  const load = useCallback(async (reset: boolean): Promise<void> => {
+  const load = useCallback(async (reset: boolean, clearError = true): Promise<void> => {
     const ticket = ++generation.current
     if (reset) setState(null)
     setExecuting(false)
-    setError('')
+    if (clearError) setError('')
     setBusy(true)
     try {
       const next = await loadRef.current()
@@ -101,7 +108,7 @@ export function useStageReview<T>(options: StageReviewOptions<T>): StageReview<T
   }, [apply])
 
   const reload = useCallback(() => load(true), [load])
-  const refresh = useCallback(() => load(false), [load])
+  const refresh = useCallback((opts?: { clearError?: boolean }) => load(false, opts?.clearError ?? false), [load])
 
   const perform = useCallback<StageReview<T>['perform']>(async (action, opts = {}) => {
     const ticket = ++generation.current
@@ -159,13 +166,13 @@ export function useStageReview<T>(options: StageReviewOptions<T>): StageReview<T
     const tick = async () => {
       const ticket = generation.current
       try {
-        const next = await loadRef.current()
+        const next = await (pollLoadRef.current?.(state) ?? loadRef.current())
         if (cancelled || !mounted.current || ticket !== generation.current) return
         apply(next)
         setError('')
         if (isRunningRef.current(next, false)) {
           timer = window.setTimeout(() => void tick(), pollMs)
-        } else if (!recordedNotified.current) {
+        } else if (recordOnPoll && !recordedNotified.current) {
           recordedNotified.current = true
           callbacks.current.onRecorded?.()
         }
@@ -180,7 +187,7 @@ export function useStageReview<T>(options: StageReviewOptions<T>): StageReview<T
       cancelled = true
       if (timer !== undefined) window.clearTimeout(timer)
     }
-  }, [running, busy, pollMs, state, executing, apply])
+  }, [running, busy, pollMs, recordOnPoll, state, executing, apply])
 
   return { state, setState, busy, executing, error, reload, refresh, perform }
 }

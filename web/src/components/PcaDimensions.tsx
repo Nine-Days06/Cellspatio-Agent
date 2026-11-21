@@ -69,7 +69,7 @@ export function PcaDimensions({ sessionId, runId, filterAttemptId, attemptId, re
       <span title={gate.blockerText || undefined}><Button type="button" disabled={!gate.allowed} onClick={() => void record()}>记录选择（不执行）</Button></span>
     </div>
     </details>
-    <Button type="button" variant="outline" disabled={busy} onClick={() => void review.refresh()}>只读刷新维度记录</Button>
+    <Button type="button" variant="outline" disabled={busy} onClick={() => void review.refresh({ clearError: true })}>只读刷新维度记录</Button>
     {!!state?.history.length && <details><summary>人工记录历史（{state.history.length}）</summary>
       {state.history.map((entry) => <div key={entry.review_id} className="my-2 space-y-1 break-words">
         <p>[{entry.dims.join(', ')}] · {entry.created_at}</p>

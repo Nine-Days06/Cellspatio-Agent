@@ -58,6 +58,10 @@ export function MarkerReview({ sessionId, runId, filterAttemptId, pcaAttemptId, 
       const [review, state] = await Promise.all([fetchClusterAcceptance(source), fetchMarkers(source)])
       return { review, state }
     },
+    pollLoad: async (current) => ({
+      review: current?.review ?? await fetchClusterAcceptance(source),
+      state: await fetchMarkers(source),
+    }),
     deps: [sessionId, runId, filterAttemptId, pcaAttemptId, clusterAttemptId, revision],
     isRunning: (snapshot, executing) => executing || (snapshot?.state.attempts.some((a) => a.status === 'running') ?? false),
     onRunning,
@@ -76,7 +80,7 @@ export function MarkerReview({ sessionId, runId, filterAttemptId, pcaAttemptId, 
 
   async function refresh() {
     setAccepted(false); setReviewReason(''); setReason(''); setMarkerReasons({})
-    await stage.refresh()
+    await stage.refresh({ clearError: true })
   }
 
   async function recoverSnapshot() {

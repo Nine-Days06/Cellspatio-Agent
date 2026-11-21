@@ -52,7 +52,9 @@ export function QcReview({ sessionId, runId, onRecorded }: { sessionId: string; 
   const { state, busy, executing, error, refresh, perform: runAction } = useStageReview<QcReviewState>({
     load: () => fetchQc(sessionId, runId),
     deps: [sessionId, runId],
-    isRunning: (current, isExecuting) => runningOf(current, isExecuting, pcaRunning),
+    // 只轮询 QC 自身执行；子级运行由 pcaRecorded 显式刷新，避免双发。
+    isRunning: (current, isExecuting) =>
+      isExecuting || (current?.attempts?.some((attempt) => attempt.status === 'running') ?? false),
     onLoaded: accept,
     onRecorded,
   })
