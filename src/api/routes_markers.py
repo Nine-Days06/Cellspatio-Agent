@@ -10,6 +10,7 @@ from typing import Any, Literal
 from fastapi import APIRouter, HTTPException, Query, Request, Response
 from pydantic import BaseModel, ConfigDict, Field
 
+from src.analysis.review_standing import review_is_current
 from src.analysis.sc_marker_reviews import review_view
 from src.analysis.sc_markers import (
     MARKER_FIELDS,
@@ -80,7 +81,7 @@ def view(run: RunSnapshot, cluster: dict[str, Any], root: Path) -> dict[str, Any
                             "created_at": d["created_at"],
                             "source_revision": d["source_revision"],
                             "invalidated_reason": None
-                            if d["source_revision"] + 1 == run["revision"]
+                            if review_is_current(d, run["revision"], attempt_valid=invalid is None)
                             else "记录已失效；请刷新后重新复核",
                         }
                         for d in reversed(run.marker_reviews(a["attempt_id"]))

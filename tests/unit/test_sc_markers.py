@@ -790,3 +790,9 @@ def test_marker_review_records_accept_reject_and_rejects_stale_revision(marker_r
     assert accepted.json()["attempts"][0]["review"]["decision"] == "accepted"
     stale = {**accepted_body, "revision": completed["revision"]}
     assert d.client.post(review_path, json=stale).status_code == 409
+
+    attempt = d.store.get_qc_run(d.sid, d.rid)["marker_attempts"][0]
+    (Path(attempt["directory"]) / "markers.csv").write_text("tampered", encoding="utf-8")
+    history = d.client.get(d.marker_path).json()["attempts"][0]
+    assert history["invalidated_reason"]
+    assert history["review"]["invalidated_reason"]
