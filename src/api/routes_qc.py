@@ -16,6 +16,7 @@ from src.api.deps import StoreDep
 from src.api.stage_runtime import running_stages
 from src.ui.analysis_roots import AnalysisRoots
 from src.ui.run_snapshot import RunSnapshot
+from src.ui.sc_stage_defs import FILTER_STAGE, stage_directory, stage_failure
 from src.ui.session_store import SessionStore
 
 router = APIRouter(prefix="/api/sessions/{session_id}/qc", tags=["qc"])
@@ -186,8 +187,7 @@ def filter_qc(
             raise ValueError("仅可执行当前已批准选择")
         root = run_qc_root(request.app.state.analysis_roots, run)
         verified_selection(run, root, preview)
-        directory_parent = root.parent / "sc_filter"
-        directory = directory_parent / attempt_id
+        directory_parent, directory = stage_directory(FILTER_STAGE, root, attempt_id)
         return StageClaim(
             directory_parent=directory_parent,
             directory=directory,
@@ -209,12 +209,7 @@ def filter_qc(
                 request.app.state.agent.workflow_manager.r_executor,
             ),
             finish=lambda result: store.stages.finish_filter(attempt_id, result),
-            on_error=lambda exc: {
-                "status": "failed",
-                "stage": "filter_review",
-                "scientific_status": "unreviewed",
-                "error": str(exc),
-            },
+            on_error=lambda exc: stage_failure(FILTER_STAGE, str(exc)),
         )
 
     try:

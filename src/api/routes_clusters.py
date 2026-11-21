@@ -28,6 +28,7 @@ from src.api.routes_qc import require_run, run_qc_root
 from src.api.stage_runtime import RUNNING, has_running, running_stages
 from src.api.verified_artifact import read_verified_artifact
 from src.ui.run_snapshot import RunSnapshot
+from src.ui.sc_stage_defs import CLUSTER_STAGE, stage_directory, stage_failure
 from src.ui.session_store import SessionStore
 
 router = APIRouter(prefix="/api/sessions/{session_id}/qc/{run_id}/clusters", tags=["clusters"])
@@ -235,8 +236,7 @@ def execute_clusters(
         }
         if execution_binding(run, snapshot) != body.binding_sha256:
             raise HTTPException(409, "聚类来源绑定已变化，请刷新")
-        directory_parent = root.parent / "sc_clusters"
-        directory = directory_parent / attempt_id
+        directory_parent, directory = stage_directory(CLUSTER_STAGE, root, attempt_id)
         claimed: dict[str, Any] = {}
 
         def execute(attempt: dict[str, Any]) -> dict[str, Any]:
@@ -250,12 +250,9 @@ def execute_clusters(
                 raise
             except Exception as exc:
                 logger.error("unexpected cluster execution failure: %s", type(exc).__name__)
-                return {
-                    "status": "failed",
-                    "stage": "cluster_review",
-                    "scientific_status": "unreviewed",
-                    "error": "聚类执行出现未预期错误；本地证据保留，请人工检查",
-                }
+                return stage_failure(
+                    CLUSTER_STAGE, "聚类执行出现未预期错误；本地证据保留，请人工检查"
+                )
 
         def finish(result: dict[str, Any]) -> dict[str, Any]:
             """保存终态并返回数据库权威结果。"""
@@ -278,12 +275,7 @@ def execute_clusters(
             ),
             execute=execute,
             finish=finish,
-            on_error=lambda exc: {
-                "status": "failed",
-                "stage": "cluster_review",
-                "scientific_status": "unreviewed",
-                "error": "聚类产物落盘失败",
-            },
+            on_error=lambda _exc: stage_failure(CLUSTER_STAGE, "聚类产物落盘失败"),
         )
 
     def refresh() -> dict[str, Any]:
