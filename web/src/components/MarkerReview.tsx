@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react'
 import { Button } from '@/components/ui/button'
 import { Textarea } from '@/components/ui/textarea'
 import { executeMarkers, fetchMarkerCandidates, fetchMarkers, markerDiagnosticPath, recordClusterAcceptance, recordClusterRejection, reviewMarkers } from '@/lib/api'
+import { stageActivity } from '@/lib/stageActivity'
 import { evaluateStageGate, isAttemptedByBinding } from '@/lib/stageGate'
 import { useStageReview } from '@/lib/useStageReview'
 import type { MarkerPage, MarkerState } from '@/lib/types'
@@ -53,14 +54,14 @@ export function MarkerReview({ sessionId, runId, filterAttemptId, pcaAttemptId, 
   const stage = useStageReview<MarkerState>({
     load: () => fetchMarkers(source),
     deps: [sessionId, runId, filterAttemptId, pcaAttemptId, clusterAttemptId, revision],
-    isRunning: (snapshot, executing) => executing || (snapshot?.attempts.some((a) => a.status === 'running') ?? false),
+    isRunning: (snapshot, executing) => stageActivity({ attempts: snapshot?.attempts, executing }).selfRunning,
     onRunning,
     onRecorded,
   })
   const state = stage.state
   const review = state?.cluster_review ?? null
   const { busy, executing, error } = stage
-  const running = executing || (state?.attempts.some((a) => a.status === 'running') ?? false)
+  const running = stageActivity({ attempts: state?.attempts, executing }).running
 
   useEffect(() => {
     setAccepted(false); setReviewReason(''); setReason(''); setMarkerReasons({})

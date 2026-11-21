@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react'
 import { Button } from '@/components/ui/button'
 import { Textarea } from '@/components/ui/textarea'
 import { executePca, fetchPca, pcaDiagnosticPath } from '@/lib/api'
+import { stageActivity } from '@/lib/stageActivity'
 import { evaluateStageGate, isAttemptedByBinding } from '@/lib/stageGate'
 import type { PcaState } from '@/lib/types'
 import { useStageReview } from '@/lib/useStageReview'
@@ -23,12 +24,13 @@ export function PcaReview({ sessionId, runId, filterAttemptId, revision, onRunni
     load: () => fetchPca(sessionId, runId, filterAttemptId),
     deps: [sessionId, runId, filterAttemptId, revision],
     isRunning: (current, executing) =>
-      executing || (current?.attempts.some((a) => a.status === 'running') ?? false),
+      stageActivity({ attempts: current?.attempts, executing }).selfRunning,
     onRecorded,
   })
   const { state, busy, executing, error } = review
-  const pcaRunning = executing || (state?.attempts.some((a) => a.status === 'running') ?? false)
-  const running = pcaRunning || clusterRunning.length > 0
+  const activity = stageActivity({ attempts: state?.attempts, executing, downstream: clusterRunning })
+  const pcaRunning = activity.selfRunning
+  const running = activity.running
 
   useEffect(() => { setReason(''); setClusterRunning([]) }, [sessionId, runId, filterAttemptId, revision])
 
