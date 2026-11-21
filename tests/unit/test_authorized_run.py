@@ -142,6 +142,27 @@ def test_claimed_oserror_finishes_failed_and_releases_lock(tmp_path: Path) -> No
     session_lock("s1").release()
 
 
+def test_unenumerated_execution_error_still_finishes_failed(tmp_path: Path) -> None:
+    """未枚举异常也必须收口，否则 attempt 永久停在 running。"""
+    finished: list[dict[str, Any]] = []
+
+    def prepare(run: dict[str, Any], attempt_id: str) -> StageClaim:
+        def execute(attempt: dict[str, Any]) -> dict[str, Any]:
+            raise RuntimeError("boom")
+
+        return _claim(
+            tmp_path,
+            attempt_id,
+            execute=execute,
+            finish=finished.append,
+            on_error=lambda exc: {"status": "failed", "error": str(exc)},
+        )
+
+    _call(tmp_path, prepare=prepare)
+
+    assert finished == [{"status": "failed", "error": "未预期错误: RuntimeError"}]
+
+
 def test_finish_failure_retries_with_failed_result(tmp_path: Path) -> None:
     """收尾写冲突不能把 attempt 留在 running；改用失败结果重试收口。"""
     finished: list[dict[str, Any]] = []

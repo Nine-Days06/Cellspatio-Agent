@@ -70,8 +70,16 @@ def run_authorized(
         if attempt["claimed"]:
             try:
                 result = claim.execute(attempt)
-            except OSError as exc:
-                result = claim.on_error(exc)
+            except Exception as exc:
+                # 未枚举异常若逃逸，attempt 会永久停在 running 并锁死下游阶段。
+                logger.exception("阶段执行失败，改落失败终态")
+                # 非 OSError 的原文可能含私有细节，只把异常类型交给阶段文案。
+                safe = (
+                    exc
+                    if isinstance(exc, OSError)
+                    else RuntimeError(f"未预期错误: {type(exc).__name__}")
+                )
+                result = claim.on_error(safe)
             try:
                 saved = claim.finish(result)
             except Exception as exc:
