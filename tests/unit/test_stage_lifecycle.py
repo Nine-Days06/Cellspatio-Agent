@@ -30,6 +30,9 @@ FAKE_STAGE = StageSpec(
     revision_error="阶段 revision 已变化，请刷新",
     invalid_terminal="fake 终态非法",
     not_running="fake 任务不在运行状态",
+    directory_name="sc_fake",
+    failure_stage="fake_review",
+    failure_error="fake 产物落盘失败",
     message=fake_message,
 )
 

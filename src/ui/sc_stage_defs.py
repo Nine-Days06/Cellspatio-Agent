@@ -3,9 +3,26 @@
 from __future__ import annotations
 
 import sqlite3
+from pathlib import Path
 from typing import Any
 
 from src.ui.stage_lifecycle import StageSpec
+
+
+def stage_directory(spec: StageSpec, root: Path, attempt_id: str) -> tuple[Path, Path]:
+    """返回阶段产物父目录与本次 attempt 目录。"""
+    parent = root.parent / spec.directory_name
+    return parent, parent / attempt_id
+
+
+def stage_failure(spec: StageSpec, error: str) -> dict[str, Any]:
+    """统一失败投影：技术失败，科学状态仍未复核。"""
+    return {
+        "status": "failed",
+        "stage": spec.failure_stage,
+        "scientific_status": "unreviewed",
+        "error": error,
+    }
 
 
 def _filter_message(attempt: sqlite3.Row, result: dict[str, Any]) -> tuple[str, dict[str, Any]]:
@@ -37,6 +54,9 @@ FILTER_STAGE = StageSpec(
     not_running="过滤任务不在运行状态",
     message=_filter_message,
     label="过滤",
+    directory_name="sc_filter",
+    failure_stage="filter_review",
+    failure_error="过滤产物落盘失败",
 )
 
 
@@ -69,6 +89,9 @@ PCA_STAGE = StageSpec(
     not_running="PCA 任务不在运行状态",
     message=_pca_message,
     label="PCA",
+    directory_name="sc_pca",
+    failure_stage="pca_review",
+    failure_error="PCA 产物落盘失败",
 )
 
 
@@ -101,6 +124,9 @@ CLUSTER_STAGE = StageSpec(
     not_running="聚类任务不在运行状态",
     message=_cluster_message,
     label="聚类",
+    directory_name="sc_clusters",
+    failure_stage="cluster_review",
+    failure_error="聚类产物落盘失败",
     interrupt_result={
         "status": "interrupted",
         "stage": "cluster_review",
@@ -138,6 +164,9 @@ MARKER_STAGE = StageSpec(
     not_running="marker 任务不在运行状态",
     message=_marker_message,
     label="marker",
+    directory_name="sc_markers",
+    failure_stage="marker_review",
+    failure_error="marker 产物落盘失败",
     interrupt_result={
         "status": "interrupted",
         "stage": "marker_review",
