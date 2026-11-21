@@ -218,7 +218,7 @@ def run_sc_qc(
 ) -> dict[str, Any]:
     """运行一次固定 QC，成功停在审阅；失败保留原脚本、日志和元数据。"""
     directory = output_root / (run_id or f"qc-{uuid.uuid4().hex}")
-    started = start_stage(directory)
+    directory.mkdir(parents=True, exist_ok=False)
     path = Path(input_file).resolve()
     script_path = directory / "script.R"
     script_path.write_text(qc_script(str(path), directory.resolve()), encoding="utf-8")
@@ -231,6 +231,7 @@ def run_sc_qc(
         "timeout_seconds": 300,
         "status": "error",
     }
+    started = start_stage(directory, create=False)
     stdout = stderr = ""
     result: dict[str, Any] = {
         "status": "error",

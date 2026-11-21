@@ -701,42 +701,14 @@ class WorkflowManager:
 
         return result
 
-    def _should_lazy_ingest(self, query: str, params: dict[str, Any]) -> bool:
-        return self._current_coverage().should_ingest(query, params)
-
-    def _extract_explicit_ids(self, query: str) -> list[tuple[str, str]]:
-        return self._current_coverage().extract_ids(query)
-
-    def _kb_working_dir(self) -> Path | None:
-        return self._current_coverage().kb_working_dir()
-
-    def _kb_asset_ids(self) -> set[str] | None:
-        return self._current_coverage().kb_asset_ids()
-
-    def _kb_entity_names(self) -> set[str] | None:
-        return self._current_coverage().kb_entity_names()
-
-    def _kb_known_ids(self) -> set[str] | None:
-        return self._current_coverage().kb_known_ids()
-
-    def _context_for_miss_check(self, query: str) -> str | None:
-        return self._current_coverage().context_for_miss_check(query)
-
     def _lazy_ingest_missing(
         self, query: str, params: dict[str, Any] | None = None
     ) -> list[dict[str, Any]]:
+        """兼容测试入口：委托当前知识覆盖对象按需补库。"""
         return self._current_coverage().ingest_missing(query, params)
 
-    def _collect_lazy_candidates(self, query: str, params: dict[str, Any]) -> list[tuple[str, str]]:
-        return self._current_coverage().collect_candidates(query, params)
-
-    def _registry_has(self, source: str) -> bool:
-        return self._current_coverage().registry_has(source)
-
-    def _search_term_for(self, source: str, query: str, params: dict[str, Any]) -> str:
-        return self._current_coverage().search_term_for(source, query, params)
-
     def _build_coverage(self) -> KnowledgeCoverage:
+        """按当前知识库依赖构造覆盖检查对象。"""
         return KnowledgeCoverage(
             self.knowledge_client,
             self.knowledge_builder,
@@ -746,6 +718,7 @@ class WorkflowManager:
         )
 
     def _current_coverage(self) -> KnowledgeCoverage:
+        """依赖被测试替换时重建覆盖对象，避免旧绑定。"""
         coverage = self._coverage
         if (
             coverage.knowledge_client is not self.knowledge_client

@@ -232,19 +232,25 @@ export function createChatStore() {
         get().beginTurn(prompt)
         const controller = new AbortController()
         activeStream = controller
+        // 切会话或已换流后，迟到事件/收尾不得改写新会话状态。
+        const isCurrent = (): boolean => activeStream === controller
         try {
           await streamChat({
             sessionId,
             prompt,
             mode,
             signal: controller.signal,
-            onEvent: dispatch,
+            onEvent: (event) => {
+              if (isCurrent()) dispatch(event)
+            },
             onEnd: (reason) => {
+              if (!isCurrent()) return
               // error 的收尾由 error 事件或 catch 完成，这里不覆盖其 notice（约束 2）
               if (reason !== 'error') get().endTurn(reason)
             },
           })
         } catch (err) {
+          if (!isCurrent()) return
           const text = err instanceof Error ? err.message : String(err)
           if (get().busy) {
             get().failTurn(text)
@@ -253,7 +259,7 @@ export function createChatStore() {
             get().setNotice({ kind: 'error', text })
           }
         } finally {
-          if (activeStream === controller) activeStream = null
+          if (isCurrent()) activeStream = null
         }
       },
 

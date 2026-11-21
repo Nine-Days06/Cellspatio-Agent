@@ -19,9 +19,10 @@ def _text(value: str | bytes | None) -> str:
     return value or ""
 
 
-def start_stage(directory: Path) -> float:
-    """创建唯一阶段目录并返回计时起点；已存在则抛 FileExistsError。"""
-    directory.mkdir(parents=True, exist_ok=False)
+def start_stage(directory: Path, *, create: bool = True) -> float:
+    """创建唯一阶段目录并返回计时起点；create=False 时用于已建目录的阶段。"""
+    if create:
+        directory.mkdir(parents=True, exist_ok=False)
     return time.perf_counter()
 
 

@@ -187,6 +187,51 @@ describe('createChatStore：实例隔离', () => {
     release()
     await pending
   })
+
+  it('切会话后旧流迟到事件与收尾不污染新会话', async () => {
+    const store = createChatStore()
+    store.getState().setSession('s1', [])
+    const { ctl, release } = holdStream()
+    const pending = store.getState().send('old')
+
+    store.getState().setSession('s2', [])
+    store.getState().beginTurn('new')
+
+    ctl.onEvent?.({ type: 'delta', text: '旧草稿' })
+    ctl.onEvent?.({ type: 'done', message_id: 9, message: assistant({ id: 9 }) })
+    ctl.onEnd?.('aborted')
+
+    const s = store.getState()
+    expect(s.busy).toBe(true)
+    expect(s.draft).toBe('')
+    expect(s.history).toHaveLength(1)
+    expect(s.history[0].content).toBe('new')
+
+    release()
+    await pending
+  })
+
+  it('切会话后旧流拒绝不写新会话错误提示', async () => {
+    const store = createChatStore()
+    let rejectStream: (err: unknown) => void = () => {}
+    vi.mocked(streamChat).mockImplementationOnce(
+      () =>
+        new Promise((_, reject) => {
+          rejectStream = reject
+        }),
+    )
+    store.getState().setSession('s1', [])
+    const pending = store.getState().send('old')
+
+    store.getState().setSession('s2', [])
+    store.getState().beginTurn('new')
+    rejectStream(new ApiError(500, '旧流失败'))
+    await pending
+
+    const s = store.getState()
+    expect(s.busy).toBe(true)
+    expect(s.notice).toBeNull()
+  })
 })
 
 describe('finalizeTurn', () => {
