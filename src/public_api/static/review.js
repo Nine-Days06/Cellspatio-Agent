@@ -337,6 +337,8 @@ async function uploadPreview() {
 
 async function loadCardFile(event) {
   const file = event.target.files?.[0];
+  state.preview = null;
+  renderContribute();
   if (!file) return;
   if (file.size > MAX_CARD_BYTES) return toast("证据卡 JSON 不能超过 512 KB。");
   let card;

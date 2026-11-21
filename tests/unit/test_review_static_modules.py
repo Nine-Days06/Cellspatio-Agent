@@ -62,6 +62,14 @@ def test_review_reads_selection_snapshot() -> None:
     assert not re.search(r"\bPromise\.all\b", text), "证据详情与事件必须来自同一次读取"
 
 
+def test_load_card_clears_previous_preview_before_reading() -> None:
+    """选择新卡时先清空旧 preview，避免预览失败后仍可上传上一张卡。"""
+    text = (STATIC / "review.js").read_text(encoding="utf-8")
+    start = text.index("async function loadCardFile")
+    body = text[start : text.index("\nfunction previewBlock", start)]
+    assert body.index("state.preview = null") < body.index("api.preview")
+
+
 def test_review_api_has_no_dom() -> None:
     """review-api.js 只封装 HTTP，不读写 document/window。"""
     path = STATIC / "review-api.js"
