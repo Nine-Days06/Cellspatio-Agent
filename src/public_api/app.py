@@ -30,14 +30,12 @@ from src.evidence.governance import (
 )
 from src.evidence.review_protocol import (
     action_role,
-    action_spec,
-    checklist_for_role,
-    reviewer_role,
-    viewer_access,
     withdraw_role,
 )
 from src.evidence.schema import EvidenceCard
 from src.evidence.vocabulary import vocabulary
+from src.public_api.context import reviewer_context
+from src.public_api.evidence_service import PublicEvidenceService
 
 logger = logging.getLogger(__name__)
 
@@ -131,14 +129,6 @@ class WithdrawRequest(BaseModel):
     reason: str
 
 
-def _reviewer_role(user: dict[str, Any]) -> str:
-    """取账号的复核角色；优先领域，其次合规。"""
-    role = reviewer_role(user["roles"])
-    if role is None:
-        raise EvidenceError("permission_denied", "只有复核者可读取未发布全文")
-    return role
-
-
 _KIND_STATUS: dict[ErrorKind, int] = {
     "invalid_input": 400,
     "submission_not_found": 404,
@@ -155,6 +145,7 @@ def create_public_app(data_root: str | Path) -> FastAPI:
     app = FastAPI(title="CellSpatio Public Evidence API")
     app.state.governance = GovernanceStore(public_dir)
     app.state.accounts = AccountStore(public_dir)
+    app.state.evidence_service_factory = PublicEvidenceService
 
     def governance(request: Request) -> GovernanceStore:
         """取当前应用的治理库。"""
@@ -190,6 +181,12 @@ def create_public_app(data_root: str | Path) -> FastAPI:
     Contributor = Annotated[dict[str, Any], Depends(require_roles(ROLE_CONTRIBUTOR))]
     Reviewer = Annotated[dict[str, Any], Depends(require_roles(ROLE_DOMAIN, ROLE_COMPLIANCE))]
     Store = Annotated[GovernanceStore, Depends(governance)]
+
+    def evidence_service(request: Request, store: Store) -> PublicEvidenceService:
+        """按工厂构造读服务；测试可替换 `app.state.evidence_service_factory`。"""
+        return request.app.state.evidence_service_factory(store)
+
+    EvidenceServiceDep = Annotated[PublicEvidenceService, Depends(evidence_service)]
 
     @app.exception_handler(ValueError)
     async def value_error_handler(request: Request, exc: ValueError) -> JSONResponse:
@@ -250,14 +247,10 @@ def create_public_app(data_root: str | Path) -> FastAPI:
     @app.get("/api/public/evidence/queue")
     def queue(
         user: Reviewer,
-        store: Store,
+        service: EvidenceServiceDep,
     ) -> dict[str, Any]:
         """复核队列：待审、本角色未签、本人未审，排除自己的提交。"""
-        role = _reviewer_role(user)
-        return {
-            "role": role,
-            "queue": store.review_queue(viewer_actor=user["id"], viewer_role=role),
-        }
+        return service.queue(user)
 
     @app.post("/api/public/evidence/preview")
     def preview(body: PreviewRequest, user: Contributor, store: Store) -> dict[str, Any]:
@@ -329,55 +322,18 @@ def create_public_app(data_root: str | Path) -> FastAPI:
         return {"count": len(results), "results": results}
 
     @app.get("/api/public/evidence/{evidence_id}/citation")
-    def citation(evidence_id: str, store: Store) -> dict[str, Any]:
+    def citation(evidence_id: str, service: EvidenceServiceDep) -> dict[str, Any]:
         """引用索引：只对 accepted 证据给出可引用条目；撤销后 404。"""
-        data = store.get(evidence_id)
-        card = data.get("card")
-        if card is None:
-            raise EvidenceError("submission_not_found", "证据已撤销或不可引用")
-        parsed = EvidenceCard.model_validate(card)
-        return {
-            "evidence_id": data["evidence_id"],
-            "card_id": data["card_id"],
-            "gate": data["gate"],
-            "claim": parsed.claim.text,
-            "source_ids": list(parsed.provenance.source_ids),
-            "license": parsed.license.model_dump(),
-            "accepted_at": data["accepted_at"],
-            "superseded_by": data["superseded_by"],
-            "citation": (
-                f"{parsed.claim.text} "
-                f"[{parsed.license.attribution}; CellSpatio evidence {data['evidence_id']}]"
-            ),
-        }
+        return service.citation(evidence_id)
 
     @app.get("/api/public/evidence/{evidence_id}/events")
     def events(
         evidence_id: str,
         user: Reviewer,
-        store: Store,
+        service: EvidenceServiceDep,
     ) -> dict[str, Any]:
         """复核者查看审计事件，并一次返回当前查看者的复核能力。"""
-        role = _reviewer_role(user)
-        summary = store.summary(evidence_id)
-        records = store.events(evidence_id)
-        access = viewer_access(
-            status=summary["status"],
-            contributor_id=summary["contributor_id"],
-            viewer_actor=user["id"],
-            viewer_role=role,
-            events=[(event["actor_id"], event["action"]) for event in records],
-        )
-        return {
-            "events": records,
-            "review": {
-                "role": role,
-                "actions": [action_spec(action) for action in access.actions],
-                "blocked_reason": access.blocked_reason,
-                "blocked_code": access.blocked_code,
-                "checklists": {role: list(checklist_for_role(role))},
-            },
-        }
+        return service.events(evidence_id, user)
 
     @app.get("/api/public/evidence/{evidence_id}")
     def get_evidence(
@@ -390,12 +346,12 @@ def create_public_app(data_root: str | Path) -> FastAPI:
         if not unpublished:
             return store.get(evidence_id)
         user = current_user(request)
-        role = _reviewer_role(user)
+        ctx = reviewer_context(user)
         return store.get(
             evidence_id,
             include_unaccepted=True,
-            viewer_actor=user["id"],
-            viewer_role=role,
+            viewer_actor=ctx.actor_id,
+            viewer_role=ctx.role,
         )
 
     @app.exception_handler(Exception)
