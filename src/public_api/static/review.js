@@ -232,6 +232,7 @@ async function selectEvidence(evidenceId, { updateUrl = true } = {}) {
   const failure = selection.lastError();
   if (failure) {
     toast(failure.message);
+    renderDetail();
     return;
   }
   renderDetail();
