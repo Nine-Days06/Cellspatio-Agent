@@ -1281,7 +1281,7 @@ def _poll_until_done(client, batch_id: str, chk: dict):
         time.sleep(LLM_BATCH_POLL_INTERVAL)
 
 
-def _download_and_parse_batch(client, batch_status, chk: dict):
+def _download_and_parse_batch(client, batch_status, chk: dict, db_path: Path = DB_PATH):
     """下载 Batch 结果并解析写入 DB，处理 error_file 降级"""
     all_pmids = chk.get("pmid_list", [])
 
@@ -1306,7 +1306,7 @@ def _download_and_parse_batch(client, batch_status, chk: dict):
             tmp_path.parent.mkdir(parents=True, exist_ok=True)
             content.write_to_file(str(tmp_path))
 
-            success_total, error_pmids = _parse_batch_results(str(tmp_path))
+            success_total, error_pmids = _parse_batch_results(str(tmp_path), db_path=db_path)
             logger.info(f"结果已写入 DB: {success_total} 篇成功, {len(error_pmids)} 篇解析失败")
         except Exception as e:
             logger.error(f"下载/解析输出文件失败: {e}")

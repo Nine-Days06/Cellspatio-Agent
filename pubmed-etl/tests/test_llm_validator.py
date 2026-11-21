@@ -874,5 +874,52 @@ class TestBatchWithoutOutput(unittest.TestCase):
         sync.assert_called_once_with(["1", "2"])
 
 
+class TestBatchResultDbTarget(unittest.TestCase):
+    """Batch 收割必须写入调用方指定的库，不能落生产库。"""
+
+    def test_parse_uses_given_db_path(self):
+        payload = {
+            "response": {
+                "status_code": 200,
+                "body": {
+                    "choices": [
+                        {
+                            "message": {
+                                "content": '{"pmid":"94600","verdict":"RELEVANT","reason":"r"}'
+                            }
+                        }
+                    ]
+                },
+            },
+            "custom_id": "request-94600",
+        }
+
+        class FakeFile:
+            def write_to_file(self, path: str) -> None:
+                Path(path).write_text(json.dumps(payload) + "\n", encoding="utf-8")
+
+        class FakeFiles:
+            def content(self, _file_id: str) -> FakeFile:
+                return FakeFile()
+
+        class FakeClient:
+            files = FakeFiles()
+
+        status = SimpleNamespace(
+            status="completed", output_file_id="f1", error_file_id=None
+        )
+        with tempfile.TemporaryDirectory() as td:
+            db_path = Path(td) / "t.db"
+            init_db(db_path)
+            with patch("cleaner.llm_validator.OUTPUT_DIR", td):
+                _download_and_parse_batch(
+                    FakeClient(), status, {"batch_id": "b1", "pmid_list": ["94600"]}, db_path
+                )
+            conn = sqlite3.connect(db_path)
+            got = conn.execute("SELECT pmid FROM llm_validation").fetchall()
+            conn.close()
+        self.assertEqual(got, [("94600",)])
+
+
 if __name__ == "__main__":
     unittest.main()
