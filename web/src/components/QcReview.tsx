@@ -118,7 +118,14 @@ export function QcReview({ sessionId, runId, onRecorded }: { sessionId: string; 
   const approveGate = evaluateStageGate({ ...gateFacts, stage: 'qc', action: 'approve', unchanged })
   const rejectGate = evaluateStageGate({ ...gateFacts, stage: 'qc', action: 'reject' })
   const filterGate = evaluateStageGate({ ...gateFacts, stage: 'qc', action: 'filter', unchanged })
-  const previewGate = evaluateStageGate({ ...gateFacts, stage: 'qc', action: 'preview' })
+  // 预览自身报告的 blocked 不能阻止改阈值重算；只受未加载与上游阻断约束。
+  const previewGate = evaluateStageGate({
+    stage: 'qc',
+    action: 'preview',
+    blocked: state ? state.blocked : ['QC 状态未加载'],
+    busy,
+    running,
+  })
   return (
     <section aria-label="QC 阈值选择" className="analysis-stage space-y-3">
       <h4 className="font-medium">阈值选择 · 记录与执行分开授权</h4>

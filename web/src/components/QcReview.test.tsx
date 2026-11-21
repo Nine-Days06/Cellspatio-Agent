@@ -104,6 +104,14 @@ describe('QC review', () => {
     await enterPreview()
     fireEvent.change(screen.getByLabelText('选择依据 / 拒绝原因（仅本地记录）'), { target: { value: 'review' } })
     expect(screen.getByRole('button', { name: '记录此过滤选择' })).toBeDisabled()
+    expect(screen.getByRole('button', { name: '生成排除预览' })).toBeEnabled()
+  })
+
+  it('keeps preview controls disabled when state never loads', async () => {
+    vi.mocked(fetchQc).mockRejectedValue(new Error('网络失败'))
+    render(<QcReview sessionId="s1" runId="r1" />)
+    await screen.findByText('网络失败')
+    expect(screen.getByLabelText('RNA features 下限')).toBeDisabled()
     expect(screen.getByRole('button', { name: '生成排除预览' })).toBeDisabled()
   })
 
