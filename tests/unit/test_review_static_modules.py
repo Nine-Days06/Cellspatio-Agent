@@ -55,9 +55,7 @@ def test_review_reads_selection_snapshot() -> None:
     """详情与提交只读选择快照，不再缓存独立的 selected/events/review。"""
     text = (STATIC / "review.js").read_text(encoding="utf-8")
     for token in ("state.selected", "state.events", "state.review"):
-        assert not re.search(rf"\b{re.escape(token)}\b", text), (
-            f"review.js 仍直接读取 {token}"
-        )
+        assert not re.search(rf"\b{re.escape(token)}\b", text), f"review.js 仍直接读取 {token}"
     assert re.search(r"selection\.current\(\)\?\.id", text), (
         "review.js 的提交目标必须取 selection.current()?.id"
     )
