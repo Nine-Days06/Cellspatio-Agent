@@ -228,6 +228,21 @@ export interface ClusterAcceptanceState {
   latest_decision: ReviewFact | null
 }
 
+export interface ClusterReviewState {
+  run_id: string
+  cluster_attempt_id: string
+  record_version: string
+  revision: number
+  stage: 'cluster_review'
+  scientific_status: 'unreviewed'
+  binding_sha256: string | null
+  evidence: { cells: number; clusters: number; cluster_sizes: { cluster_id: string; cells: number; proportion: number }[]; versions: string[] } | null
+  blocked: string[]
+  current: ClusterAcceptance | null
+  history: ClusterAcceptance[]
+  latest_decision: ReviewFact | null
+}
+
 export interface ReviewFact {
   decision: 'accepted' | 'rejected'
   reason: string
@@ -266,6 +281,7 @@ export interface MarkerState {
   scientific_status: 'unreviewed'
   binding_sha256: string | null
   review: { review_id: string; record_version: string; accepted: true } | null
+  cluster_review: ClusterReviewState
   protocol: Record<string, unknown>
   tool_version: string
   blocked: string[]
