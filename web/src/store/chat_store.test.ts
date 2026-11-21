@@ -124,10 +124,14 @@ describe('turn 生命周期', () => {
     const store = useChatStore.getState()
     store.setSession('s1', [])
     store.beginTurn('hi')
+    store.appendDelta('已生成一半')
 
     useChatStore.getState().endTurn('aborted')
 
-    expect(useChatStore.getState().busy).toBe(false)
+    const s = useChatStore.getState()
+    expect(s.busy).toBe(false)
+    expect(s.history.at(-1)).toMatchObject({ role: 'assistant', content: '已生成一半' })
+    expect(s.notice).toEqual({ kind: 'info', text: '已停止，保留已生成的部分回答。' })
   })
 })
 
@@ -399,6 +403,14 @@ describe('send：SSE 接线', () => {
 
     ctl.onEnd?.('closed')
     expect(useChatStore.getState().busy).toBe(false)
+    expect(useChatStore.getState().history.at(-1)).toMatchObject({
+      role: 'assistant',
+      content: '中间文本',
+    })
+    expect(useChatStore.getState().notice).toEqual({
+      kind: 'error',
+      text: '连接中断，回答可能不完整。',
+    })
 
     release()
     await pending

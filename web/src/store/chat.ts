@@ -215,9 +215,35 @@ export function createChatStore() {
         })
       },
 
-      endTurn() {
+      endTurn(reason) {
         if (!get().busy) return // 幂等：重复收尾不改状态
-        set({ busy: false, tools: [], draft: '' })
+        const state = get()
+        if (reason === 'done' || !state.draft.trim()) {
+          set({ busy: false, tools: [], draft: '' })
+          return
+        }
+        // 停止/断线时保留已生成内容，避免部分回答静默消失。
+        localSeq += 1
+        const partial: WireMessage = {
+          id: -localSeq,
+          session_id: state.sessionId ?? '',
+          seq: -localSeq,
+          role: 'assistant',
+          content: state.draft,
+          timestamp: new Date().toISOString(),
+          results: state.charts.length > 0 ? { charts: state.charts } : null,
+          pending_script: null,
+        }
+        set({
+          busy: false,
+          tools: [],
+          draft: '',
+          history: [...state.history, partial],
+          notice:
+            reason === 'aborted'
+              ? { kind: 'info', text: '已停止，保留已生成的部分回答。' }
+              : { kind: 'error', text: '连接中断，回答可能不完整。' },
+        })
       },
 
       failTurn(message) {
