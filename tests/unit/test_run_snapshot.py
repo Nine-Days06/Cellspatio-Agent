@@ -5,6 +5,7 @@ import json
 import pytest
 
 from src.cli.records import _json_safe
+from src.ui.record_files import run_dirs
 from src.ui.run_snapshot import RunSnapshot
 from src.ui.session_store import SessionStore
 
@@ -322,3 +323,22 @@ def test_records_json_safe_handles_snapshot() -> None:
         "run_id": "r1",
         "evidence": {"cells": 3},
     }
+
+
+def test_run_dirs_delegates_to_stage_dirs_for_snapshot_and_mapping() -> None:
+    """run_dirs 与 stage_dirs 同序，普通 Mapping 输入同样可用。"""
+    raw = {
+        "directory": "runs/qc",
+        "attempts": [{"directory": "runs/f"}],
+        "pca_attempts": [{"directory": "runs/p"}],
+        "cluster_attempts": [{"directory": ""}],
+        "marker_attempts": [{"directory": "runs/m"}],
+    }
+    expected = [
+        ("qc", "runs/qc"),
+        ("filter", "runs/f"),
+        ("pca", "runs/p"),
+        ("marker", "runs/m"),
+    ]
+    assert run_dirs(RunSnapshot(raw)) == expected
+    assert run_dirs(raw) == expected
