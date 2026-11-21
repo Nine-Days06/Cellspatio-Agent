@@ -18,7 +18,13 @@ from src.ui.sc_stage_defs import (
     STAGE_SPECS,
 )
 from src.ui.session_codec import _encode_results, _now
-from src.ui.stage_lifecycle import StageLifecycle, advance_run, publish_message
+from src.ui.stage_lifecycle import (
+    ReviewFactPlan,
+    StageLifecycle,
+    advance_run,
+    append_review_fact,
+    publish_message,
+)
 
 if TYPE_CHECKING:
     from src.ui.session_store import SessionStore
@@ -753,86 +759,94 @@ class ScStages:
             raise ValueError("复核必须填写原因")
         reviewer = reviewer.strip() or "local-user"
         with self._conn() as conn:
-            conn.execute("BEGIN IMMEDIATE")
             attempt = conn.execute(
                 "SELECT a.*, r.session_id, r.revision FROM sc_marker_attempts a "
                 "JOIN qc_runs r USING(run_id) WHERE a.attempt_id = ?",
                 (marker_attempt_id,),
             ).fetchone()
-            if attempt is None or attempt["session_id"] != session_id:
-                raise ValueError("marker 关联不存在")
-            if attempt["status"] != "completed":
-                raise ValueError("marker 尚未完成，不能复核")
-            if attempt["revision"] != revision:
-                raise ValueError("marker 记录已失效，请刷新")
-            binding = attempt["binding_sha256"]
-            previous = conn.execute(
-                "SELECT * FROM sc_marker_reviews WHERE marker_attempt_id = ? "
-                "AND binding_sha256 = ? AND record_version = ? AND source_revision = ?",
-                (marker_attempt_id, binding, version, revision),
-            ).fetchone()
-            if previous:
-                same = (
-                    previous["decision"] == decision
-                    and previous["reason"] == reason
-                    and previous["reviewer"] == reviewer
-                )
-                if not same:
-                    raise ValueError("同一 revision 的 marker 复核内容冲突")
-                return self.get_qc_run(session_id, attempt["run_id"])
-            latest = conn.execute(
-                "SELECT * FROM sc_marker_reviews WHERE marker_attempt_id = ? "
-                "ORDER BY rowid DESC LIMIT 1",
+        if attempt is None or attempt["session_id"] != session_id:
+            raise ValueError("marker 关联不存在")
+        run_id = attempt["run_id"]
+        binding = attempt["binding_sha256"]
+
+        def validate(conn: sqlite3.Connection) -> None:
+            """事务内复核 attempt 身份与 revision，保持旧错误优先级。"""
+            current = conn.execute(
+                "SELECT a.*, r.session_id, r.revision FROM sc_marker_attempts a "
+                "JOIN qc_runs r USING(run_id) WHERE a.attempt_id = ?",
                 (marker_attempt_id,),
             ).fetchone()
-            if (
-                latest
-                and latest["binding_sha256"] == binding
-                and latest["record_version"] == version
-                and latest["source_revision"] + 1 == revision
-                and latest["decision"] == decision
-                and latest["reason"] == reason
-                and latest["reviewer"] == reviewer
-            ):
-                return self.get_qc_run(session_id, attempt["run_id"])
-            self._require_no_filter(conn, attempt["run_id"])
-            now = _now()
-            message_id = publish_message(
-                conn,
-                session_id,
-                "marker 人工复核已记录；未执行自动注释。",
-                {
-                    "sc_marker_review": {
-                        "run_id": attempt["run_id"],
-                        "marker_attempt_id": marker_attempt_id,
-                        "decision": decision,
-                        "stage": "marker_review",
-                        "scientific_status": "unreviewed",
-                    }
+            if current is None or current["session_id"] != session_id:
+                raise ValueError("marker 关联不存在")
+            if current["status"] != "completed":
+                raise ValueError("marker 尚未完成，不能复核")
+            if current["revision"] != revision:
+                raise ValueError("marker 记录已失效，请刷新")
+
+        def same_previous(row: sqlite3.Row) -> bool:
+            """同 revision 内容一致才幂等。"""
+            return (
+                row["decision"] == decision
+                and row["reason"] == reason
+                and row["reviewer"] == reviewer
+            )
+
+        def same_latest(row: sqlite3.Row) -> bool:
+            """latest+1 且内容一致才抑制重复。"""
+            return (
+                row["binding_sha256"] == binding
+                and row["record_version"] == version
+                and row["decision"] == decision
+                and row["reason"] == reason
+                and row["reviewer"] == reviewer
+            )
+
+        def message(fact: dict[str, Any]) -> tuple[str, dict[str, Any]]:
+            """保留 marker 复核的固定消息与结构化结果。"""
+            return "marker 人工复核已记录；未执行自动注释。", {
+                "sc_marker_review": {
+                    "run_id": run_id,
+                    "marker_attempt_id": marker_attempt_id,
+                    "decision": fact["decision"],
+                    "stage": "marker_review",
+                    "scientific_status": "unreviewed",
+                }
+            }
+
+        append_review_fact(
+            self._conn,
+            _encode_results,
+            ReviewFactPlan(
+                table="sc_marker_reviews",
+                previous_match={
+                    "marker_attempt_id": marker_attempt_id,
+                    "binding_sha256": binding,
+                    "record_version": version,
+                    "source_revision": revision,
                 },
-                now,
-                _encode_results,
-            )
-            conn.execute(
-                "INSERT INTO sc_marker_reviews "
-                "(review_id, marker_attempt_id, binding_sha256, record_version, source_revision, "
-                "decision, reason, reviewer, created_at, message_id) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                (
-                    uuid.uuid4().hex,
-                    marker_attempt_id,
-                    binding,
-                    version,
-                    revision,
-                    decision,
-                    reason,
-                    reviewer,
-                    now,
-                    message_id,
-                ),
-            )
-            advance_run(conn, attempt["run_id"], session_id, now)
-        return self.get_qc_run(session_id, attempt["run_id"])
+                insert_values={
+                    "marker_attempt_id": marker_attempt_id,
+                    "binding_sha256": binding,
+                    "record_version": version,
+                    "source_revision": revision,
+                    "decision": decision,
+                    "reason": reason,
+                    "reviewer": reviewer,
+                },
+                same_previous=same_previous,
+                conflict_message="同一 revision 的 marker 复核内容冲突",
+                latest_match={"marker_attempt_id": marker_attempt_id},
+                same_latest=same_latest,
+                message=message,
+                run_id=run_id,
+                session_id=session_id,
+            ),
+            validate=validate,
+            before_insert=lambda conn: self._require_no_filter(conn, run_id),
+            validate_first=True,
+            clock=_now,
+        )
+        return self.get_qc_run(session_id, run_id)
 
     def interrupt_all(self) -> None:
         """启动恢复：中断全部遗留 running，不接管、不自动重跑。"""
