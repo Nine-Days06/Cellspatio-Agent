@@ -170,6 +170,29 @@ def test_restore_refuses_non_empty_target(tmp_path):
         evidence_backup.main(["--root", str(target), "restore", "--backup", str(backup_dir)])
 
 
+def test_restore_rejects_manifest_path_traversal(tmp_path):
+    """manifest 里的数据库名不能越出备份目录。"""
+    source = tmp_path / "source"
+    _accept(_store(source), _submit(_store(source), _card())["evidence_id"])
+    AccountStore(public_evidence_dir(source)).create_user(
+        "alice", hash_password(PASSWORD), roles=(ROLE_CONTRIBUTOR,)
+    )
+    backup_dir = tmp_path / "backup"
+    assert evidence_backup.main(["--root", str(source), "backup", "--out", str(backup_dir)]) == 0
+
+    evil = tmp_path / "evil.db"
+    evil.write_bytes(b"outside")
+    manifest_path = backup_dir / "manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["databases"]["../evil.db"] = evidence_backup._sha256(evil)
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+
+    with pytest.raises(SystemExit, match="不支持的数据库名"):
+        evidence_backup.main(
+            ["--root", str(tmp_path / "restored"), "restore", "--backup", str(backup_dir)]
+        )
+
+
 def test_restore_rejects_tampered_database(tmp_path):
     """备份数据库哈希不符时拒绝恢复。"""
     source = tmp_path / "source"

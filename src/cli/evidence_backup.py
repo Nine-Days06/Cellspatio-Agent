@@ -21,6 +21,7 @@ from src.evidence.accounts import AccountStore
 from src.evidence.governance import GovernanceStore, public_evidence_dir
 
 BACKUP_SCHEMA_VERSION = "cellspatio-evidence-backup/1.0"
+DATABASE_NAMES = frozenset({"governance.db", "accounts.db"})
 
 
 def _sha256(path: Path) -> str:
@@ -145,13 +146,19 @@ def restore(backup_dir: Path, root: Path) -> None:
         raise SystemExit(f"目标 public_evidence 必须为空；恢复前请停服: {target}")
 
     for name, expected in manifest["databases"].items():
+        if name not in DATABASE_NAMES:
+            raise SystemExit(f"备份 manifest 含不支持的数据库名: {name}")
         source = backup_dir / name
+        if source.resolve().parent != backup_dir.resolve():
+            raise SystemExit(f"备份数据库路径越界: {name}")
         if not source.is_file():
             raise SystemExit(f"备份缺少数据库: {name}")
         if _sha256(source) != expected:
             raise SystemExit(f"备份数据库校验失败: {name}")
 
     source_cards = backup_dir / "cards"
+    if source_cards.is_dir() and any(path.is_symlink() for path in source_cards.rglob("*")):
+        raise SystemExit("备份卡目录不能包含符号链接")
     card_count = sum(1 for _ in source_cards.rglob("*.json")) if source_cards.is_dir() else 0
     if card_count != manifest["cards"]:
         raise SystemExit(f"备份卡数量与 manifest 不一致: {card_count} != {manifest['cards']}")
