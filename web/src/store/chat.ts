@@ -69,191 +69,199 @@ interface ChatState {
   stop: () => void
 }
 
-/** 本地 user 消息用负 id/seq，与服务端正 id 区分。 */
-let localSeq = 0
-/** 当前进行中的流；stop() 通过它 abort。 */
-let activeStream: AbortController | null = null
+export function createChatStore() {
+  /** 本地 user 消息用负 id/seq，与服务端正 id 区分。 */
+  let localSeq = 0
+  /** 当前进行中的流；stop() 通过它 abort。 */
+  let activeStream: AbortController | null = null
 
-export const useChatStore = create<ChatState>((set, get) => {
-  /** SSE 事件分发：只推进状态；唯一允许关 busy 的分支是 error → failTurn（约束 2）。 */
-  const dispatch = (event: SseEvent): void => {
-    switch (event.type) {
-      case 'delta':
-        if (typeof event.text === 'string') get().appendDelta(event.text)
-        break
-      case 'tool_status': {
-        const phase = event.phase
-        if (typeof event.name !== 'string' || (phase !== 'start' && phase !== 'end')) break
-        get().pushTool({
-          name: event.name,
-          phase,
-          label: typeof event.label === 'string' ? event.label : undefined,
-        })
-        break
-      }
-      case 'confirm_card':
-        if (event.kind === 'script' && event.payload) {
-          get().setScriptCard(event.payload as ScriptCardPayload)
-        } else if (event.kind === 'data' && event.payload) {
-          get().setDataCard(event.payload as DataCardPayload)
+  return create<ChatState>((set, get) => {
+    /** SSE 事件分发：只推进状态；唯一允许关 busy 的分支是 error → failTurn（约束 2）。 */
+    const dispatch = (event: SseEvent): void => {
+      switch (event.type) {
+        case 'delta':
+          if (typeof event.text === 'string') get().appendDelta(event.text)
+          break
+        case 'tool_status': {
+          const phase = event.phase
+          if (typeof event.name !== 'string' || (phase !== 'start' && phase !== 'end')) break
+          get().pushTool({
+            name: event.name,
+            phase,
+            label: typeof event.label === 'string' ? event.label : undefined,
+          })
+          break
         }
-        break
-      case 'chart': {
-        const plotly = typeof event.plotly_json === 'string' ? event.plotly_json : undefined
-        const image = typeof event.image_b64 === 'string' ? event.image_b64 : undefined
-        if (plotly !== undefined || image !== undefined) {
-          get().pushChart(chartFromEvent({ type: 'chart', plotly_json: plotly, image_b64: image }))
+        case 'confirm_card':
+          if (event.kind === 'script' && event.payload) {
+            get().setScriptCard(event.payload as ScriptCardPayload)
+          } else if (event.kind === 'data' && event.payload) {
+            get().setDataCard(event.payload as DataCardPayload)
+          }
+          break
+        case 'chart': {
+          const plotly = typeof event.plotly_json === 'string' ? event.plotly_json : undefined
+          const image = typeof event.image_b64 === 'string' ? event.image_b64 : undefined
+          if (plotly !== undefined || image !== undefined) {
+            get().pushChart(
+              chartFromEvent({ type: 'chart', plotly_json: plotly, image_b64: image }),
+            )
+          }
+          break
         }
-        break
+        case 'compressed':
+          if (typeof event.soft_warn === 'boolean') set({ softWarn: event.soft_warn })
+          break
+        case 'done':
+          if (event.message) get().finalizeTurn(event.message as WireMessage)
+          break
+        case 'error':
+          get().failTurn(
+            typeof event.message === 'string' && event.message ? event.message : '对话发生错误',
+          )
+          break
+        default:
+          break
       }
-      case 'compressed':
-        if (typeof event.soft_warn === 'boolean') set({ softWarn: event.soft_warn })
-        break
-      case 'done':
-        if (event.message) get().finalizeTurn(event.message as WireMessage)
-        break
-      case 'error':
-        get().failTurn(
-          typeof event.message === 'string' && event.message ? event.message : '对话发生错误',
-        )
-        break
-      default:
-        break
     }
-  }
 
-  return {
-    sessionId: null,
-    history: [],
-    draft: '',
-    busy: false,
-    tools: [],
-    notice: null,
-    charts: [],
-    scriptCard: null,
-    dataCard: null,
-    softWarn: false,
+    return {
+      sessionId: null,
+      history: [],
+      draft: '',
+      busy: false,
+      tools: [],
+      notice: null,
+      charts: [],
+      scriptCard: null,
+      dataCard: null,
+      softWarn: false,
 
-    setSession(sessionId, history) {
-      set({
-        sessionId,
-        history,
-        draft: '',
-        busy: false,
-        tools: [],
-        notice: null,
-        charts: [],
-        scriptCard: null,
-        dataCard: null,
-        softWarn: false,
-      })
-    },
-
-    beginTurn(prompt) {
-      localSeq += 1
-      const user: WireMessage = {
-        id: -localSeq,
-        session_id: get().sessionId ?? '',
-        seq: -localSeq,
-        role: 'user',
-        content: prompt,
-        timestamp: new Date().toISOString(),
-        results: null,
-        pending_script: null,
-      }
-      set((state) => ({
-        history: [...state.history, user],
-        draft: '',
-        busy: true,
-        tools: [],
-        notice: null,
-        charts: [],
-        scriptCard: null,
-        dataCard: null,
-        // softWarn 是会话级状态，本轮保留
-      }))
-    },
-
-    appendDelta(text) {
-      set((state) => ({ draft: state.draft + text }))
-    },
-
-    pushTool(entry) {
-      // 同名工具只留最新一条（start → end 覆盖）
-      set((state) => ({ tools: [...state.tools.filter((t) => t.name !== entry.name), entry] }))
-    },
-
-    pushChart(item) {
-      set((state) => ({ charts: [...state.charts, item] }))
-    },
-
-    setScriptCard(payload) {
-      set({ scriptCard: payload })
-    },
-
-    setDataCard(payload) {
-      set({ dataCard: payload })
-    },
-
-    setNotice(notice) {
-      set({ notice })
-    },
-
-    finalizeTurn(message) {
-      set((state) => {
-        const hasCharts = (message.results?.charts?.length ?? 0) > 0
-        const results = hasCharts ? message.results : { ...message.results, charts: state.charts }
-        return {
-          history: [...state.history, { ...message, results }],
-          draft: '',
-        }
-      })
-    },
-
-    endTurn() {
-      if (!get().busy) return // 幂等：重复收尾不改状态
-      set({ busy: false, tools: [], draft: '' })
-    },
-
-    failTurn(message) {
-      if (!get().busy) return // 幂等：busy 已关时不覆盖已有提示
-      set({ busy: false, tools: [], draft: '', notice: { kind: 'error', text: message } })
-    },
-
-    async send(prompt, mode = 'chat') {
-      const { sessionId, busy } = get()
-      if (busy || !sessionId) return
-
-      get().beginTurn(prompt)
-      const controller = new AbortController()
-      activeStream = controller
-      try {
-        await streamChat({
+      setSession(sessionId, history) {
+        activeStream?.abort()
+        activeStream = null
+        set({
           sessionId,
-          prompt,
-          mode,
-          signal: controller.signal,
-          onEvent: dispatch,
-          onEnd: (reason) => {
-            // error 的收尾由 error 事件或 catch 完成，这里不覆盖其 notice（约束 2）
-            if (reason !== 'error') get().endTurn(reason)
-          },
+          history,
+          draft: '',
+          busy: false,
+          tools: [],
+          notice: null,
+          charts: [],
+          scriptCard: null,
+          dataCard: null,
+          softWarn: false,
         })
-      } catch (err) {
-        const text = err instanceof Error ? err.message : String(err)
-        if (get().busy) {
-          get().failTurn(text)
-        } else {
-          // busy 已被 error 事件收尾时，直接写提示
-          get().setNotice({ kind: 'error', text })
-        }
-      } finally {
-        if (activeStream === controller) activeStream = null
-      }
-    },
+      },
 
-    stop() {
-      activeStream?.abort()
-    },
-  }
-})
+      beginTurn(prompt) {
+        localSeq += 1
+        const user: WireMessage = {
+          id: -localSeq,
+          session_id: get().sessionId ?? '',
+          seq: -localSeq,
+          role: 'user',
+          content: prompt,
+          timestamp: new Date().toISOString(),
+          results: null,
+          pending_script: null,
+        }
+        set((state) => ({
+          history: [...state.history, user],
+          draft: '',
+          busy: true,
+          tools: [],
+          notice: null,
+          charts: [],
+          scriptCard: null,
+          dataCard: null,
+          // softWarn 是会话级状态，本轮保留
+        }))
+      },
+
+      appendDelta(text) {
+        set((state) => ({ draft: state.draft + text }))
+      },
+
+      pushTool(entry) {
+        // 同名工具只留最新一条（start → end 覆盖）
+        set((state) => ({ tools: [...state.tools.filter((t) => t.name !== entry.name), entry] }))
+      },
+
+      pushChart(item) {
+        set((state) => ({ charts: [...state.charts, item] }))
+      },
+
+      setScriptCard(payload) {
+        set({ scriptCard: payload })
+      },
+
+      setDataCard(payload) {
+        set({ dataCard: payload })
+      },
+
+      setNotice(notice) {
+        set({ notice })
+      },
+
+      finalizeTurn(message) {
+        set((state) => {
+          const hasCharts = (message.results?.charts?.length ?? 0) > 0
+          const results = hasCharts ? message.results : { ...message.results, charts: state.charts }
+          return {
+            history: [...state.history, { ...message, results }],
+            draft: '',
+          }
+        })
+      },
+
+      endTurn() {
+        if (!get().busy) return // 幂等：重复收尾不改状态
+        set({ busy: false, tools: [], draft: '' })
+      },
+
+      failTurn(message) {
+        if (!get().busy) return // 幂等：busy 已关时不覆盖已有提示
+        set({ busy: false, tools: [], draft: '', notice: { kind: 'error', text: message } })
+      },
+
+      async send(prompt, mode = 'chat') {
+        const { sessionId, busy } = get()
+        if (busy || !sessionId) return
+
+        get().beginTurn(prompt)
+        const controller = new AbortController()
+        activeStream = controller
+        try {
+          await streamChat({
+            sessionId,
+            prompt,
+            mode,
+            signal: controller.signal,
+            onEvent: dispatch,
+            onEnd: (reason) => {
+              // error 的收尾由 error 事件或 catch 完成，这里不覆盖其 notice（约束 2）
+              if (reason !== 'error') get().endTurn(reason)
+            },
+          })
+        } catch (err) {
+          const text = err instanceof Error ? err.message : String(err)
+          if (get().busy) {
+            get().failTurn(text)
+          } else {
+            // busy 已被 error 事件收尾时，直接写提示
+            get().setNotice({ kind: 'error', text })
+          }
+        } finally {
+          if (activeStream === controller) activeStream = null
+        }
+      },
+
+      stop() {
+        activeStream?.abort()
+      },
+    }
+  })
+}
+
+export const useChatStore = createChatStore()
