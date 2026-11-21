@@ -667,6 +667,25 @@ def test_lazy_ingest_requires_builder_and_registry():
     assert wm_missing_registry._lazy_ingest_missing("map04115 是什么", {}) == []
 
 
+def test_lazy_ingest_uses_replaced_ingest_callback():
+    """替换 ingest_asset_to_kb 后补库走新回调，而不是构造时的旧绑定"""
+    kegg = FakeBioFetcher("kegg")
+    registry = FakeBioRegistry({"kegg": kegg})
+    wm, _ = _make_lazy_manager(context_len=0, registry=registry, builder=FakeBuilder())
+    calls = []
+
+    def ingest(source, asset_id):
+        calls.append((source, asset_id))
+        return {"status": "success"}
+
+    wm.ingest_asset_to_kb = ingest
+
+    result = wm._lazy_ingest_missing("map04115 是什么", {})
+
+    assert calls == [("kegg", "map04115")]
+    assert result == [{"source": "kegg", "asset_id": "map04115", "title": "map04115"}]
+
+
 def test_lazy_ingest_uniprot_accession_and_dedup():
     """P04637 识别为 uniprot；重复 accession 只入库一次"""
     uni = FakeBioFetcher("uniprot")
