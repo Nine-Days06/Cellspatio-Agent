@@ -26,6 +26,14 @@ class WRROCStore:
                     self._index[run_dir.name] = wf_file
 
     def persist(self, run: WorkflowRun) -> Path:
+        if (
+            not run.run_id
+            or run.run_id in {".", ".."}
+            or "/" in run.run_id
+            or "\\" in run.run_id
+            or Path(run.run_id).is_absolute()
+        ):
+            raise ValueError(f"run_id 不能包含路径分隔符: {run.run_id!r}")
         run_dir = self.base_dir / run.run_id
         run_dir.mkdir(parents=True, exist_ok=True)
         wf_file = run_dir / "workflow.json"

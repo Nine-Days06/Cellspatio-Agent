@@ -3,6 +3,8 @@
 import tempfile
 from pathlib import Path
 
+import pytest
+
 from src.control.wrroc_store import WRROCStore
 from src.schemas.workflow import (
     StepOutput,
@@ -67,6 +69,15 @@ def test_wrroc_list_runs():
         assert len(runs) == 2
         ids = {r.run_id for r in runs}
         assert ids == {"run-001", "run-002"}
+
+
+def test_wrroc_persist_rejects_path_traversal():
+    """run_id 不能把记录写出 .wrroc 目录。"""
+    with tempfile.TemporaryDirectory() as tmp:
+        store = WRROCStore(base_dir=Path(tmp) / ".wrroc")
+        for run_id in ("../outside", "a/b", "a\\b", str(Path(tmp) / "abs")):
+            with pytest.raises(ValueError):
+                store.persist(_make_run(run_id))
 
 
 def test_wrroc_lineage_graph():
