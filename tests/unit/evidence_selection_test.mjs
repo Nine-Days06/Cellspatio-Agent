@@ -49,9 +49,11 @@ function payload(id) {
   const b = selection.select("B");
   pending.get("A").reject(new Error("A failed"));
   assert.equal(await a, null);
+  assert.equal(selection.lastError(), null);
   pending.get("B").resolve(payload("B"));
   assert.deepEqual(await b, { id: "B", ...payload("B") });
   assert.deepEqual(selection.current(), { id: "B", ...payload("B") });
+  assert.equal(selection.lastError(), null);
 }
 
 {
@@ -90,7 +92,51 @@ function payload(id) {
   const failure = deferred();
   const selection = createEvidenceSelection(() => failure.promise);
   const pending = selection.select("A");
-  failure.reject(new Error("failed"));
+  const error = new Error("failed");
+  failure.reject(error);
   assert.equal(await pending, null);
   assert.equal(selection.current(), null);
+  assert.equal(selection.lastError(), error);
+
+  selection.clear();
+  assert.equal(selection.lastError(), null);
+}
+
+{
+  const pending = new Map();
+  const selection = createEvidenceSelection((id) => {
+    const task = deferred();
+    pending.set(id, task);
+    return task.promise;
+  });
+
+  const a = selection.select("A");
+  const b = selection.select("B");
+  const latest = new Error("B failed");
+  pending.get("B").reject(latest);
+  assert.equal(await b, null);
+  assert.equal(selection.lastError(), latest);
+
+  pending.get("A").reject(new Error("A failed"));
+  assert.equal(await a, null);
+  assert.equal(selection.lastError(), latest);
+}
+
+{
+  const attempts = [];
+  const selection = createEvidenceSelection(() => {
+    const task = deferred();
+    attempts.push(task);
+    return task.promise;
+  });
+
+  const failed = selection.select("A");
+  attempts[0].reject(new Error("failed"));
+  assert.equal(await failed, null);
+  assert.notEqual(selection.lastError(), null);
+
+  const retried = selection.select("A");
+  attempts[1].resolve(payload("A"));
+  assert.deepEqual(await retried, { id: "A", ...payload("A") });
+  assert.equal(selection.lastError(), null);
 }
