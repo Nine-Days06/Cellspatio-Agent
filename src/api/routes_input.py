@@ -10,11 +10,10 @@ from typing import Any
 from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, ConfigDict, Field
 
-from src.api.chat_service import _persist, is_qc_stage, register_qc_result
+from src.api.chat_service import is_qc_stage, persist_outcome, register_qc_result
 from src.api.deps import StoreDep
 from src.api.events import wire_message
 from src.api.session_locks import session_guard
-from src.chat_messages import build_assistant_message
 
 router = APIRouter(prefix="/api/sessions/{session_id}", tags=["input"])
 logger = logging.getLogger(__name__)
@@ -73,8 +72,7 @@ def register_local_input(
             store.update_session_meta(session_id, downloaded_assets=assets)
 
             result = register_qc_result(agent, store, session_id, result)
-            message = build_assistant_message(result)
-            last = _persist(store, session_id, message["content"], results=result.get("results"))
+            result, last = persist_outcome(store, session_id, result)
             return {
                 "message": wire_message(last),
                 "session": store.get_session(session_id),
