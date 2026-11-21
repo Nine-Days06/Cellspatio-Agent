@@ -82,6 +82,13 @@ def test_verify_completed_accepts_exact_and_subset(tmp_path: Path) -> None:
     assert set(subset_ids) == {"a.txt", "script.R", "stdout.txt"}
 
 
+def test_verify_completed_skips_protocol_when_plan_has_none(tmp_path: Path) -> None:
+    """父阶段（filter）没有协议字段时，不应拿 PCA 协议去比。"""
+    plan = _check(tmp_path / "parent", protocol=None)
+    summary, _ = verify_completed(plan)
+    assert summary == {"cells": 3}
+
+
 @pytest.mark.parametrize(
     ("overrides", "message"),
     [

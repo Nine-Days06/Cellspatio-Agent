@@ -17,7 +17,7 @@ class CompletedStageCheck:
     expected_directory: Path
     attempt: dict[str, Any]
     tool_version: str
-    protocol: dict[str, Any]
+    protocol: dict[str, Any] | None
     required_fields: dict[str, Any]
     required_files: tuple[str, ...]
     exact_files: bool
@@ -45,7 +45,7 @@ def verify_completed(plan: CompletedStageCheck) -> tuple[dict[str, Any], dict[st
     if (
         plan.attempt["status"] != "completed"
         or plan.attempt["tool_version"] != plan.tool_version
-        or json.loads(plan.attempt["protocol"]) != plan.protocol
+        or (plan.protocol is not None and json.loads(plan.attempt["protocol"]) != plan.protocol)
         or meta != plan.attempt["result"]
         or any(meta.get(k) != v for k, v in plan.required_fields.items())
     ):

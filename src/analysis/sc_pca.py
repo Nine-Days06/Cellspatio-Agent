@@ -8,7 +8,7 @@ import math
 from pathlib import Path
 from typing import Any
 
-from src.analysis.evidence import digest, fingerprints, records
+from src.analysis.evidence import digest, records
 from src.analysis.qc_preview import checked_evidence
 from src.analysis.r_executor import RExecutorError
 from src.analysis.sc_filter import FILTER_TOOL_VERSION, filter_script, verified_selection
@@ -96,56 +96,63 @@ def checked_parent(run: dict[str, Any], parent: dict[str, Any], root: Path) -> d
     selection = verified_selection(run, root, preview)
     qc = checked_evidence(run, root)
     directory = Path(parent["directory"]).resolve()
-    if directory != stage_directory(FILTER, root, parent["attempt_id"])[1]:
-        raise ValueError("父过滤目录非法")
-    meta_path = directory / "metadata.json"
-    if meta_path.resolve().parent != directory:
-        raise ValueError("父过滤 metadata 路径非法")
-    meta = json.loads(meta_path.read_bytes())
     result = parent["result"]
-    if meta != result or any(
-        meta.get(k) != v
-        for k, v in {
-            "tool": "sc_filter",
-            "tool_version": FILTER_TOOL_VERSION,
-            "status": "completed",
-            "stage": "filter_review",
-            "scientific_status": "unreviewed",
-            "returncode": 0,
-            "run_id": run["run_id"],
-            "preview_id": preview["preview_id"],
-            "binding_sha256": preview["binding_sha256"],
-            "inputs": run["evidence"]["inputs"],
-        }.items()
-    ):
-        raise ValueError("父过滤 metadata 与权威结果不一致")
-    paths = [directory / name for name in PARENT_FILES]
-    if any(p.resolve().parent != directory or not p.is_file() for p in paths):
-        raise ValueError("父过滤文件缺失或路径非法")
-    identities = {Path(r["path"]).name: r for r in fingerprints(paths)}
-    if any(identities[n] != result["artifacts"].get(n) for n in PARENT_FILES):
-        raise ValueError("父过滤文件身份已变化")
-    for name in ("features.csv", "cell_qc.csv"):
-        if (directory / name).read_bytes() != qc[name]:
-            raise ValueError("父过滤 QC 副本不一致")
-    if (directory / "selection.csv").read_bytes() != selection:
-        raise ValueError("父过滤选择副本不一致")
-    if (directory / "script.R").read_text(encoding="utf-8") != filter_script(
-        run["evidence"]["input_path"], directory
-    ):
-        raise ValueError("父过滤固定脚本不符")
-    kept = [r["barcode"] for r in records(selection) if r["keep"] == "1"]
-    barcodes = records((directory / "barcodes.csv").read_bytes())
-    dimensions = [int(x) for x in (directory / "dimensions.txt").read_text().splitlines()]
-    if (
-        barcodes != [{"barcode": b} for b in kept]
-        or dimensions != [result["features"], result["cells"], result["stored_entries"]]
-        or len(kept) != result["cells"]
-        or result["features"] != run["evidence"]["summary"]["features"]
-        or (directory / "versions.txt").read_text().splitlines() != result["versions"]
-        or result["versions"] != run["evidence"]["summary"]["versions"]
-    ):
-        raise ValueError("父过滤维度、barcode 或版本不一致")
+
+    def parent_extra() -> dict[str, Any]:
+        """父过滤特有的 QC/选择副本与维度一致性校验。"""
+        for name in ("features.csv", "cell_qc.csv"):
+            if (directory / name).read_bytes() != qc[name]:
+                raise ValueError("父过滤 QC 副本不一致")
+        if (directory / "selection.csv").read_bytes() != selection:
+            raise ValueError("父过滤选择副本不一致")
+        kept = [r["barcode"] for r in records(selection) if r["keep"] == "1"]
+        barcodes = records((directory / "barcodes.csv").read_bytes())
+        dimensions = [int(x) for x in (directory / "dimensions.txt").read_text().splitlines()]
+        if (
+            barcodes != [{"barcode": b} for b in kept]
+            or dimensions != [result["features"], result["cells"], result["stored_entries"]]
+            or len(kept) != result["cells"]
+            or result["features"] != run["evidence"]["summary"]["features"]
+            or (directory / "versions.txt").read_text().splitlines() != result["versions"]
+            or result["versions"] != run["evidence"]["summary"]["versions"]
+        ):
+            raise ValueError("父过滤维度、barcode 或版本不一致")
+        return {}
+
+    summary, identities = verify_completed(
+        CompletedStageCheck(
+            directory=directory,
+            expected_directory=stage_directory(FILTER, root, parent["attempt_id"])[1],
+            attempt=parent,
+            tool_version=FILTER_TOOL_VERSION,
+            protocol=None,
+            required_fields={
+                "tool": "sc_filter",
+                "tool_version": FILTER_TOOL_VERSION,
+                "status": "completed",
+                "stage": "filter_review",
+                "scientific_status": "unreviewed",
+                "returncode": 0,
+                "run_id": run["run_id"],
+                "preview_id": preview["preview_id"],
+                "binding_sha256": preview["binding_sha256"],
+                "inputs": run["evidence"]["inputs"],
+            },
+            required_files=PARENT_FILES,
+            exact_files=False,
+            summary=parent_extra,
+            script=lambda: filter_script(run["evidence"]["input_path"], directory),
+            result_error="父过滤 metadata 与权威结果不一致",
+            directory_error="父过滤目录非法",
+            metadata_path_error="父过滤 metadata 路径非法",
+            files_error="父过滤文件缺失或路径非法",
+            artifact_error="父过滤文件缺失或路径非法",
+            identity_error="父过滤文件身份已变化",
+            summary_error="父过滤维度、barcode 或版本不一致",
+            script_error="父过滤固定脚本不符",
+        )
+    )
+    assert summary == {}  # 父阶段没有额外 summary 字段
     payload = {
         "run_id": run["run_id"],
         "preview_id": parent["preview_id"],
