@@ -6,8 +6,6 @@
 
 import logging
 import os
-import threading
-import time
 from collections.abc import Callable
 from pathlib import Path
 from typing import Annotated, Any
@@ -36,15 +34,11 @@ from src.evidence.schema import EvidenceCard
 from src.evidence.vocabulary import vocabulary
 from src.public_api.context import reviewer_context
 from src.public_api.evidence_service import PublicEvidenceService
+from src.public_api.login_limiter import LoginLimiter
 
 logger = logging.getLogger(__name__)
 
 _STATIC_DIR = Path(__file__).resolve().parent / "static"
-
-_LIMIT_WINDOW = 300.0
-_LIMIT_MAX = 5
-_attempts: dict[str, list[float]] = {}
-_attempts_guard = threading.Lock()
 
 
 def _session_days() -> int:
@@ -67,31 +61,6 @@ def _client_ip(request: Request) -> str:
         if forwarded:
             return forwarded.split(",")[-1].strip()
     return request.client.host if request.client else "unknown"
-
-
-def _rate_limited(key: str) -> bool:
-    """内存登录限速；进程重启清零，长期防护交给反向代理。"""
-    now = time.monotonic()
-    with _attempts_guard:
-        # shortcut: 内存限速只防短期爆破；键超过 1024 个时清理过期项，避免随机用户名撑大内存。
-        if len(_attempts) > 1024:
-            for stale in [
-                k for k, v in _attempts.items() if not any(now - t < _LIMIT_WINDOW for t in v)
-            ]:
-                _attempts.pop(stale, None)
-        hits = [t for t in _attempts.get(key, []) if now - t < _LIMIT_WINDOW]
-        if len(hits) >= _LIMIT_MAX:
-            _attempts[key] = hits
-            return True
-        hits.append(now)
-        _attempts[key] = hits
-        return False
-
-
-def _clear_attempts(key: str) -> None:
-    """登录成功后清空该 key 的失败记录。"""
-    with _attempts_guard:
-        _attempts.pop(key, None)
 
 
 class LoginRequest(BaseModel):
@@ -146,6 +115,7 @@ def create_public_app(data_root: str | Path) -> FastAPI:
     app.state.governance = GovernanceStore(public_dir)
     app.state.accounts = AccountStore(public_dir)
     app.state.evidence_service_factory = PublicEvidenceService
+    app.state.login_limiter = LoginLimiter()
 
     def governance(request: Request) -> GovernanceStore:
         """取当前应用的治理库。"""
@@ -211,12 +181,13 @@ def create_public_app(data_root: str | Path) -> FastAPI:
     def login(body: LoginRequest, request: Request) -> dict[str, Any]:
         """用户名密码登录，签发 Bearer token。"""
         key = f"{body.username.strip().lower()}|{_client_ip(request)}"
-        if _rate_limited(key):
+        limiter: LoginLimiter = request.app.state.login_limiter
+        if limiter.blocked(key):
             raise HTTPException(status_code=429, detail="尝试次数过多，请稍后再试")
         user = accounts(request).authenticate(body.username, body.password)
         if user is None:
             raise HTTPException(status_code=401, detail="用户名或密码错误")
-        _clear_attempts(key)
+        limiter.clear(key)
         token = accounts(request).create_token(user["id"], days=_session_days())
         return {"token": token, "user": public_user(user)}
 
