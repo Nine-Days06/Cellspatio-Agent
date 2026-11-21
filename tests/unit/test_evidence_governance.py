@@ -91,6 +91,20 @@ def _accept(store: GovernanceStore, submission_id: str) -> dict:
     )
 
 
+def test_submit_removes_card_when_db_write_fails(tmp_path, monkeypatch):
+    """数据库写入失败时不能留下孤儿卡文件。"""
+    store = GovernanceStore(tmp_path)
+    card = _card("evc-rollback")
+
+    def _fail_event(*args, **kwargs):
+        raise RuntimeError("db write failed")
+
+    monkeypatch.setattr(store, "_event", _fail_event)
+    with pytest.raises(RuntimeError, match="db write failed"):
+        store.submit(_envelope(card, submission_id="evs-rollback"))
+    assert not (tmp_path / "cards" / "evc-rollback.json").exists()
+
+
 def test_submit_and_dual_sign_make_accepted(tmp_path):
     store = GovernanceStore(tmp_path)
     submitted = store.submit(_envelope(_card()))
