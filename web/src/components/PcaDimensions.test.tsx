@@ -84,6 +84,18 @@ describe('PCA dimension facts without execution', () => {
     expect(screen.getByLabelText('维度选择依据（仅本地）')).toHaveValue('')
   })
 
+  it('drops a late GET from the previous revision', async () => {
+    let finishOld!: (value: PcaDimensionsState) => void
+    vi.mocked(fetchPcaDimensions)
+      .mockImplementationOnce(() => new Promise((resolve) => { finishOld = resolve }))
+      .mockResolvedValue(initial)
+    const view = render(<PcaDimensions sessionId="s1" runId="r1" filterAttemptId="f1" attemptId="a1" revision={5} />)
+    view.rerender(<PcaDimensions sessionId="s1" runId="r1" filterAttemptId="f1" attemptId="a1" revision={6} />)
+    await waitFor(() => expect(screen.getByLabelText('维度数 k（手工填写）')).toBeEnabled())
+    await act(async () => { finishOld(recorded) })
+    expect(screen.queryByText(/当前维度：/)).not.toBeInTheDocument()
+  })
+
   it('rechecks after an upstream preview/revision change in the same session', async () => {
     vi.mocked(fetchPcaDimensions).mockResolvedValueOnce(recorded).mockResolvedValue({ ...initial, binding_sha256: null, blocked: ['新预览使父选择失效'], history: [{ ...review, invalidated_reason: '需重新记录' }] })
     const view = render(<PcaDimensions sessionId="s1" runId="r1" filterAttemptId="f1" attemptId="a1" revision={5} />)

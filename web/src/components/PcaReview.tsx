@@ -4,6 +4,7 @@ import { Textarea } from '@/components/ui/textarea'
 import { executePca, fetchPca, pcaDiagnosticPath } from '@/lib/api'
 import { evaluateStageGate, isAttemptedByBinding } from '@/lib/stageGate'
 import type { PcaState } from '@/lib/types'
+import { useStageReview } from '@/lib/useStageReview'
 import { PcaDimensions } from '@/components/PcaDimensions'
 import { ClusterReview } from '@/components/ClusterReview'
 import { AnalysisImage } from '@/components/AnalysisImage'
@@ -14,70 +15,39 @@ export function PcaReview({ sessionId, runId, filterAttemptId, revision, onRunni
   revision: number
   onRunning?: (running: boolean) => void; onRecorded?: () => void
 }) {
-  const [state, setState] = useState<PcaState | null>(null)
   const [reason, setReason] = useState('')
-  const [busy, setBusy] = useState(true)
-  const [executing, setExecuting] = useState(false)
   const [clusterRunning, setClusterRunning] = useState<string[]>([])
-  const [error, setError] = useState('')
-  const generation = useRef(0)
-  const callbacks = useRef({ onRunning, onRecorded })
-  callbacks.current = { onRunning, onRecorded }
+  const onRunningRef = useRef(onRunning)
+  onRunningRef.current = onRunning
+  const review = useStageReview<PcaState>({
+    load: () => fetchPca(sessionId, runId, filterAttemptId),
+    deps: [sessionId, runId, filterAttemptId, revision],
+    isRunning: (current, executing) =>
+      executing || (current?.attempts.some((a) => a.status === 'running') ?? false),
+    onRecorded,
+  })
+  const { state, busy, executing, error } = review
   const pcaRunning = executing || (state?.attempts.some((a) => a.status === 'running') ?? false)
   const running = pcaRunning || clusterRunning.length > 0
 
-  useEffect(() => {
-    const ticket = ++generation.current
-    setState(null); setReason(''); setError(''); setBusy(true); setExecuting(false)
-    setClusterRunning([])
-    fetchPca(sessionId, runId, filterAttemptId).then((next) => {
-      if (ticket === generation.current) setState(next)
-    }).catch((err: Error) => {
-      if (ticket === generation.current) setError(err.message)
-    }).finally(() => {
-      if (ticket === generation.current) setBusy(false)
-    })
-    return () => { generation.current++ }
-  }, [sessionId, runId, filterAttemptId, revision])
+  useEffect(() => { setReason(''); setClusterRunning([]) }, [sessionId, runId, filterAttemptId, revision])
 
   useEffect(() => {
-    callbacks.current.onRunning?.(running)
-    return () => callbacks.current.onRunning?.(false)
+    onRunningRef.current?.(running)
+    return () => onRunningRef.current?.(false)
   }, [running])
 
-  useEffect(() => {
-    if (!pcaRunning || busy) return
-    const ticket = generation.current
-    const timer = window.setTimeout(() => {
-      fetchPca(sessionId, runId, filterAttemptId).then((next) => {
-        if (ticket !== generation.current) return
-        setState(next)
-        if (!next.attempts.some((a) => a.status === 'running')) callbacks.current.onRecorded?.()
-      }).catch((err: Error) => {
-        if (ticket === generation.current) setError(err.message)
-      })
-    }, 1500)
-    return () => window.clearTimeout(timer)
-  }, [pcaRunning, busy, state, sessionId, runId, filterAttemptId])
-
   async function execute() {
-    if (!state?.binding_sha256) return
-    const ticket = ++generation.current
-    setBusy(true); setExecuting(true); setError('')
-    try {
-      const next = await executePca(sessionId, runId, filterAttemptId, state.binding_sha256, reason.trim())
-      if (ticket !== generation.current) return
-      setState(next)
-      callbacks.current.onRecorded?.()
-    } catch (err) {
-      if (ticket !== generation.current) return
-      setError(err instanceof Error ? err.message : 'PCA 请求失败；请只读刷新，不要重复执行')
-      // 请求失联后先恢复服务端状态，不能把未知执行当作未执行。
-      try { const next = await fetchPca(sessionId, runId, filterAttemptId); if (ticket === generation.current) setState(next) }
-      catch { if (ticket === generation.current) setState(null) }
-    } finally {
-      if (ticket === generation.current) { setBusy(false); setExecuting(false) }
-    }
+    const binding = state?.binding_sha256
+    if (!binding) return
+    let failed = false
+    const ok = await review.perform(
+      () => executePca(sessionId, runId, filterAttemptId, binding, reason.trim())
+        .catch((err) => { failed = true; throw err instanceof Error ? err : new Error('PCA 请求失败；请只读刷新，不要重复执行') }),
+      { executing: true, recorded: true },
+    )
+    // 请求失联后只读恢复服务端状态，不能把未知执行当作未执行。
+    if (!ok && failed) await review.refresh()
   }
 
   const attempted = isAttemptedByBinding(state?.attempts ?? [], state?.binding_sha256)

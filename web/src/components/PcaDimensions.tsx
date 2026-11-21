@@ -1,61 +1,40 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useState } from 'react'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Textarea } from '@/components/ui/textarea'
 import { fetchPcaDimensions, recordPcaDimensions } from '@/lib/api'
 import { evaluateStageGate } from '@/lib/stageGate'
 import type { PcaDimensionsState } from '@/lib/types'
+import { useStageReview } from '@/lib/useStageReview'
 
 /** 人工选择是独立事实；本控件没有分析执行入口。 */
 export function PcaDimensions({ sessionId, runId, filterAttemptId, attemptId, revision, disabled = false, onRecorded }: {
   sessionId: string; runId: string; filterAttemptId: string; attemptId: string; revision: number; disabled?: boolean; onRecorded?: () => void
 }) {
-  const [state, setState] = useState<PcaDimensionsState | null>(null)
   const [nDims, setNDims] = useState('')
   const [reason, setReason] = useState('')
-  const [busy, setBusy] = useState(true)
-  const [error, setError] = useState('')
-  const generation = useRef(0)
+  const review = useStageReview<PcaDimensionsState>({
+    load: () => fetchPcaDimensions(sessionId, runId, filterAttemptId, attemptId),
+    deps: [sessionId, runId, filterAttemptId, attemptId, revision],
+    isRunning: () => false,
+    onRecorded,
+  })
+  const { state, busy, error } = review
 
-  useEffect(() => {
-    const ticket = ++generation.current
-    setState(null); setNDims(''); setReason(''); setError(''); setBusy(true)
-    fetchPcaDimensions(sessionId, runId, filterAttemptId, attemptId).then((next) => {
-      if (ticket === generation.current) setState(next)
-    }).catch((err: Error) => {
-      if (ticket === generation.current) setError(err.message)
-    }).finally(() => { if (ticket === generation.current) setBusy(false) })
-    return () => { generation.current++ }
-  }, [sessionId, runId, filterAttemptId, attemptId, revision])
-
-  async function refresh() {
-    const ticket = ++generation.current
-    setBusy(true); setError(''); setState(null)
-    try {
-      const next = await fetchPcaDimensions(sessionId, runId, filterAttemptId, attemptId)
-      if (ticket === generation.current) setState(next)
-    } catch (err) {
-      if (ticket === generation.current) setError(err instanceof Error ? err.message : '读取失败')
-    } finally { if (ticket === generation.current) setBusy(false) }
-  }
+  useEffect(() => { setNDims(''); setReason('') }, [sessionId, runId, filterAttemptId, attemptId, revision])
 
   async function record() {
-    if (!state?.binding_sha256) return
-    const ticket = ++generation.current
-    setBusy(true); setError('')
-    try {
-      const next = await recordPcaDimensions(sessionId, runId, filterAttemptId, attemptId, state.binding_sha256, state.revision, Number(nDims), reason.trim())
-      if (ticket !== generation.current) return
-      setState(next); setNDims(''); setReason(''); onRecorded?.()
-    } catch (err) {
-      if (ticket !== generation.current) return
-      setError(err instanceof Error ? err.message : '记录失败，请刷新')
-      // 失联或 CAS 冲突只能只读恢复，不能自动重发选择。
-      try {
-        const next = await fetchPcaDimensions(sessionId, runId, filterAttemptId, attemptId)
-        if (ticket === generation.current) setState(next)
-      } catch { if (ticket === generation.current) setState(null) }
-    } finally { if (ticket === generation.current) setBusy(false) }
+    const binding = state?.binding_sha256
+    if (!binding) return
+    let failed = false
+    const ok = await review.perform(
+      () => recordPcaDimensions(sessionId, runId, filterAttemptId, attemptId, binding, state.revision, Number(nDims), reason.trim())
+        .catch((err) => { failed = true; throw err instanceof Error ? err : new Error('记录失败，请刷新') }),
+      { recorded: true },
+    )
+    if (ok) { setNDims(''); setReason('') }
+    // 失联或 CAS 冲突只能只读恢复，不能自动重发选择。
+    else if (failed) await review.refresh()
   }
 
   const k = Number(nDims)
@@ -90,12 +69,12 @@ export function PcaDimensions({ sessionId, runId, filterAttemptId, attemptId, re
       <span title={gate.blockerText || undefined}><Button type="button" disabled={!gate.allowed} onClick={() => void record()}>记录选择（不执行）</Button></span>
     </div>
     </details>
-    <Button type="button" variant="outline" disabled={busy} onClick={() => void refresh()}>只读刷新维度记录</Button>
+    <Button type="button" variant="outline" disabled={busy} onClick={() => void review.refresh()}>只读刷新维度记录</Button>
     {!!state?.history.length && <details><summary>人工记录历史（{state.history.length}）</summary>
-      {state.history.map((review) => <div key={review.review_id} className="my-2 space-y-1 break-words">
-        <p>[{review.dims.join(', ')}] · {review.created_at}</p>
-        <p className="whitespace-pre-wrap">{review.reason}</p>
-        <p>{review.invalidated_reason ?? '当前有效记录；科学未复核'}</p>
+      {state.history.map((entry) => <div key={entry.review_id} className="my-2 space-y-1 break-words">
+        <p>[{entry.dims.join(', ')}] · {entry.created_at}</p>
+        <p className="whitespace-pre-wrap">{entry.reason}</p>
+        <p>{entry.invalidated_reason ?? '当前有效记录；科学未复核'}</p>
       </div>)}
     </details>}
   </section>
