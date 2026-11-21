@@ -23,7 +23,7 @@ import {
   updateSession,
 } from '@/lib/api'
 import type { EnvStatus, KbStats, Project, SessionSummary, UsageSummary } from '@/lib/types'
-import { collectArchivedProjectIds, isActiveSession } from '@/lib/sessions'
+import { groupSessions } from '@/lib/sessionGroups'
 import { Button } from '@/components/ui/button'
 import {
   Dialog,
@@ -110,33 +110,16 @@ export function Sidebar({
   const [usageError, setUsageError] = useState<string | null>(null)
   const usageRequest = useRef(0)
 
-  const archivedProjectIds = collectArchivedProjectIds(projects)
-  const query = search.trim().toLocaleLowerCase()
-  const visibleSessions = sessions.filter((session) =>
-    session.title.toLocaleLowerCase().includes(query),
-  )
-  const activeSessions = visibleSessions.filter((session) =>
-    isActiveSession(session, archivedProjectIds),
-  )
-  const archivedSessions = visibleSessions.filter(
-    (session) =>
-      Boolean(session.archived_at) &&
-      !(session.project_id && archivedProjectIds.has(session.project_id)),
-  )
-  const activeProjects = projects.filter((project) => !project.archived_at)
-  const archivedProjects = projects.filter(
-    (project) =>
-      project.archived_at &&
-      (!query || project.label.toLocaleLowerCase().includes(query)),
-  )
-  const pinnedSessions = activeSessions.filter((session) => session.pinned)
-  const ungroupedSessions = activeSessions.filter(
-    (session) => !session.pinned && !session.project_id,
-  )
-  const projectSessions = (projectId: string) =>
-    activeSessions.filter(
-      (session) => !session.pinned && session.project_id === projectId,
-    )
+  const {
+    query,
+    activeSessions,
+    archivedSessions,
+    activeProjects,
+    archivedProjects,
+    pinnedSessions,
+    ungroupedSessions,
+    projectSessions,
+  } = groupSessions(sessions, projects, search)
 
   function toggleProject(projectId: string) {
     setCollapsedProjects((previous) => {
