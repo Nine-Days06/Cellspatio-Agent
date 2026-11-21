@@ -39,7 +39,9 @@ class FetcherStorage:
         path = asset_dir / name
         if path.exists():
             return path
-        path.write_bytes(data)
+        tmp = path.with_name(path.name + ".part")
+        tmp.write_bytes(data)
+        tmp.replace(path)
         return path
 
     def exists(self, source: str, asset_id: str, filename: str | None = None) -> bool:
@@ -54,7 +56,9 @@ class FetcherStorage:
     def save_meta(self, source: str, asset_id: str, info: dict[str, Any]) -> Path:
         """保存资产元数据 JSON"""
         meta_file = self.meta_dir / self._meta_name(source, asset_id)
-        meta_file.write_text(json.dumps(info, ensure_ascii=False, indent=2), encoding="utf-8")
+        tmp = meta_file.with_name(meta_file.name + ".part")
+        tmp.write_text(json.dumps(info, ensure_ascii=False, indent=2), encoding="utf-8")
+        tmp.replace(meta_file)
         return meta_file
 
     def load_meta(self, source: str, asset_id: str) -> dict[str, Any] | None:

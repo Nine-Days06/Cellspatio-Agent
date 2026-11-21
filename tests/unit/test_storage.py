@@ -25,6 +25,7 @@ def test_save_and_exists():
     assert path.name == "hsa00010.raw"
     assert storage.exists("kegg", "hsa00010")
     assert storage.get_path("kegg", "hsa00010") == path
+    assert not (path.parent / "hsa00010.raw.part").exists()
 
 
 def test_save_skips_existing_file():
@@ -46,6 +47,7 @@ def test_meta_roundtrip():
     storage.save_meta("geo", "GSE123", {"title": "Demo"})
     assert storage.load_meta("geo", "GSE123") == {"title": "Demo"}
     assert storage.load_meta("geo", "NOPE") is None
+    assert not (storage.meta_dir / "geo_GSE123.json.part").exists()
 
 
 def test_list_assets():
