@@ -133,7 +133,19 @@ class PublicEvidenceService:
             viewer_role=ctx.role,
             events=[(event["actor_id"], event["action"]) for event in records],
         )
+        try:
+            evidence = self._store.get(
+                evidence_id,
+                include_unaccepted=True,
+                viewer_actor=ctx.actor_id,
+                viewer_role=ctx.role,
+            )
+        except EvidenceError as exc:
+            if exc.kind != "permission_denied":
+                raise
+            evidence = self._store.get(evidence_id)
         return {
+            "evidence": evidence,
             "events": records,
             "review": {
                 "role": ctx.role,

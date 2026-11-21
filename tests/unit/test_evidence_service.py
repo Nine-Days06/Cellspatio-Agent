@@ -339,6 +339,7 @@ def test_events_returns_review_capability_for_current_viewer(app, client: TestCl
         "checklists": {ROLE_DOMAIN: list(DOMAIN_CHECKLIST)},
     }
     assert [event["action"] for event in payload["events"]] == ["submit"]
+    assert payload["evidence"]["evidence_id"] == evidence_id
 
     signed = client.post(
         f"/api/public/evidence/submissions/{evidence_id}/review",

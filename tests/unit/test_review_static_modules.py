@@ -59,6 +59,7 @@ def test_review_reads_selection_snapshot() -> None:
     assert re.search(r"selection\.current\(\)\?\.id", text), (
         "review.js 的提交目标必须取 selection.current()?.id"
     )
+    assert not re.search(r"\bPromise\.all\b", text), "证据详情与事件必须来自同一次读取"
 
 
 def test_review_api_has_no_dom() -> None:

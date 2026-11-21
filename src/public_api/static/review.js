@@ -23,8 +23,8 @@ const state = {
 api.setToken(state.token);
 
 const selection = createEvidenceSelection(async (id) => {
-  const [detail, events] = await Promise.all([api.evidence(id), api.events(id)]);
-  return { detail, events: events.events, review: events.review };
+  const payload = await api.events(id);
+  return { detail: payload.evidence, events: payload.events, review: payload.review };
 });
 
 const view = {
