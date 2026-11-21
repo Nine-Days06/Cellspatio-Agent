@@ -86,6 +86,7 @@ def _get(url: str, params: dict, retries: int = 5) -> requests.Response:
                 raise
             logger.warning(f"Request failed ({e}), retrying {attempt}/{retries}")
             time.sleep(2**attempt)
+    raise requests.HTTPError("NCBI 连续返回 429，重试已耗尽")
 
 
 def _post(url: str, data: dict, retries: int = 5) -> requests.Response:
@@ -108,6 +109,7 @@ def _post(url: str, data: dict, retries: int = 5) -> requests.Response:
                 raise
             logger.warning(f"Request failed ({e}), retrying {attempt}/{retries}")
             time.sleep(2**attempt)
+    raise requests.HTTPError("NCBI 连续返回 429，重试已耗尽")
 
 
 def _safe_json(r: requests.Response) -> dict:

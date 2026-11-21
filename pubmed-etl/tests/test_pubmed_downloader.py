@@ -2,8 +2,15 @@ import unittest
 from unittest.mock import Mock, patch
 from urllib.parse import urlencode
 
+import requests
 from config.settings import SEARCH_YEAR_MAX, SEARCH_YEAR_MIN
-from downloader.pubmed_downloader import _collect_pmids, _fetch_count, _split_range, fetch_pmid_list
+from downloader.pubmed_downloader import (
+    _collect_pmids,
+    _fetch_count,
+    _get,
+    _split_range,
+    fetch_pmid_list,
+)
 
 
 class TestPubmedDownloaderDateRange(unittest.TestCase):
@@ -166,6 +173,17 @@ class TestCollectPmidsAdaptiveSplit(unittest.TestCase):
 
         self.assertEqual(pmids, ["1"])
         mock_fetch.assert_called_once()
+
+
+class TestRateLimitExhaustion(unittest.TestCase):
+    """连续 429 必须抛错，不能返回 None 让调用方 AttributeError。"""
+
+    @patch("downloader.pubmed_downloader.time.sleep")
+    @patch("downloader.pubmed_downloader.requests.get")
+    def test_get_raises_after_retries(self, mock_get, _mock_sleep):
+        mock_get.return_value = Mock(status_code=429)
+        with self.assertRaises(requests.HTTPError):
+            _get("https://example.test", {}, retries=2)
 
 
 if __name__ == "__main__":
