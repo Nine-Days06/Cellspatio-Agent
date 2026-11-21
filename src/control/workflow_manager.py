@@ -359,9 +359,12 @@ class WorkflowManager:
             output_dir.mkdir(parents=True, exist_ok=True)
             output_file = str(output_dir / f"{run_id or 'de'}.de_results.csv")
         method_context = self._method_context_for("differential_expression", params)
+        de_params = {"input_file": input_file, "output_file": output_file}
+        if params.get("group_csv"):
+            de_params["group_csv"] = params["group_csv"]
         code = self.r_script_generator.generate_code(
             "differential_expression",
-            {"input_file": input_file, "output_file": output_file},
+            de_params,
             method_context=method_context,
         )
 
@@ -371,7 +374,7 @@ class WorkflowManager:
                 "status": "needs_script_confirmation",
                 "analysis_type": "differential_expression",
                 "script": code,
-                "params": {"input_file": input_file, "output_file": output_file},
+                "params": de_params,
                 "method_context": method_context,
             }
             self._record_step(
@@ -386,7 +389,7 @@ class WorkflowManager:
 
         result = self._finish_analysis(
             "differential_expression",
-            {"input_file": input_file, "output_file": output_file},
+            de_params,
             code,
             method_context,
             context,

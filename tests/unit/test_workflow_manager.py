@@ -181,6 +181,32 @@ def test_explicit_input_wins_over_downloaded_asset(tmp_path):
     assert manager._resolve_input_file({"input_files": [str(missing)]}, context) == str(downloaded)
 
 
+def test_de_group_csv_reaches_script_and_confirmation(tmp_path):
+    """分组注释表必须进入生成参数与待确认参数，不能被丢弃。"""
+    counts = tmp_path / "counts.csv"
+    counts.write_text("gene,S1\nTP53,1\n", encoding="utf-8")
+    groups = tmp_path / "groups.csv"
+    groups.write_text("sample,group\nS1,case\n", encoding="utf-8")
+    gen = FakeGen()
+    manager = WorkflowManager(
+        intent_parser=FakeIntent(),
+        knowledge_client=MockKnowledgeClient(),
+        r_executor=MockRExecutor(),
+        visualizer=MockVisualizer(),
+        fetcher_registry=_DEFAULT_REGISTRY,
+        knowledge_builder=FakeBuilder(),
+        r_script_generator=gen,
+        require_script_confirmation=True,
+    )
+    result = manager._execute_de_analysis(
+        {"input_files": [str(counts)], "group_csv": str(groups)}, {}
+    )
+    assert gen.last is not None
+    assert gen.last["params"]["group_csv"] == str(groups)
+    assert result["status"] == "needs_script_confirmation"
+    assert result["params"]["group_csv"] == str(groups)
+
+
 def test_de_analysis_without_data_needs_input():
     manager = _make_manager()
     result = manager.execute_workflow("做差异表达分析")
