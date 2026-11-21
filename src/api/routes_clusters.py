@@ -25,6 +25,7 @@ from src.api.authorized_run import StageClaim, run_authorized
 from src.api.deps import StoreDep
 from src.api.routes_pca import dimension_view, require_parent, require_pca
 from src.api.routes_qc import require_run, run_qc_root
+from src.api.stage_history import history_entry
 from src.api.stage_runtime import RUNNING, has_running, running_stages
 from src.api.verified_artifact import read_verified_artifact
 from src.ui.run_snapshot import RunSnapshot
@@ -92,39 +93,12 @@ def view(
             except EVIDENCE_ERRORS:
                 invalid = "来源、最新维度记录、协议或产物已变化；本次结果仅为历史"
         attempts_view.append(
-            {
-                **{
-                    k: a[k]
-                    for k in (
-                        "attempt_id",
-                        "review_id",
-                        "binding_sha256",
-                        "status",
-                        "created_at",
-                        "finished_at",
-                        "source_revision",
-                        "claim_revision",
-                    )
-                },
-                "dims": a["snapshot"]["review"]["dims"],
-                "invalidated_reason": invalid,
-                "result": {
-                    k: checked[k]
-                    for k in (
-                        "cells",
-                        "clusters",
-                        "cluster_sizes",
-                        "n_epochs",
-                        "versions",
-                        "seurat_threads",
-                    )
-                }
-                if checked
-                else None,
-                "error": "执行失败，本地证据保留；不会自动重跑"
-                if a["status"] == "failed"
-                else None,
-            }
+            history_entry(
+                "cluster",
+                a,
+                result=checked,
+                invalidated_reason=invalid,
+            )
         )
     return {
         "run_id": run["run_id"],

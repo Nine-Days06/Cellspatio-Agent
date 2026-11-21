@@ -13,6 +13,7 @@ from src.analysis.qc_preview import Thresholds, build_preview, check_preview, ch
 from src.analysis.sc_filter import FILTER_TOOL_VERSION, run_sc_filter, verified_selection
 from src.api.authorized_run import StageClaim, run_authorized
 from src.api.deps import StoreDep
+from src.api.stage_history import history_entry
 from src.api.stage_runtime import running_stages
 from src.ui.analysis_roots import AnalysisRoots
 from src.ui.run_snapshot import RunSnapshot
@@ -49,27 +50,7 @@ def view(run: RunSnapshot, blocked: str | None = None) -> dict[str, Any]:
         "cluster_running": "cluster" in running,
         "marker_running": "marker" in running,
         "attempts": [
-            {
-                **{
-                    key: attempt[key]
-                    for key in (
-                        "attempt_id",
-                        "preview_id",
-                        "status",
-                        "directory",
-                        "created_at",
-                        "finished_at",
-                    )
-                },
-                "result": {
-                    key: value
-                    for key, value in attempt["result"].items()
-                    if key
-                    in ("cells", "features", "error", "versions", "artifacts", "scientific_status")
-                }
-                if attempt["result"]
-                else None,
-            }
+            history_entry("filter", attempt, result=attempt["result"])
             for attempt in run.stage_attempts("filter")
         ],
     }

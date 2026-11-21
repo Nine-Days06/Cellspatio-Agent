@@ -24,6 +24,7 @@ from src.analysis.sc_pca import (
 from src.api.authorized_run import StageClaim, run_authorized
 from src.api.deps import StoreDep
 from src.api.routes_qc import require_run, run_qc_root
+from src.api.stage_history import history_entry
 from src.api.stage_runtime import has_running
 from src.api.verified_artifact import ArtifactError, read_verified_artifact
 from src.ui.run_snapshot import RunSnapshot
@@ -64,32 +65,7 @@ def view(run: RunSnapshot, parent: dict[str, Any], root: Path) -> dict[str, Any]
         "source_summary": {k: source[k] for k in ("cells", "features")} if source else None,
         "blocked": blocked,
         "attempts": [
-            {
-                **{
-                    k: a[k]
-                    for k in ("attempt_id", "binding_sha256", "status", "created_at", "finished_at")
-                },
-                "result": {
-                    k: v
-                    for k, v in a["result"].items()
-                    if k
-                    in (
-                        "cells",
-                        "features",
-                        "selected_features",
-                        "usable_features",
-                        "actual_pcs",
-                        "pc_reduction_reason",
-                        "versions",
-                        "error",
-                        "elapsed_seconds",
-                        "scientific_status",
-                    )
-                }
-                if a["result"]
-                else None,
-            }
-            for a in attempts
+            history_entry("pca", attempt, result=attempt["result"]) for attempt in attempts
         ],
     }
 
