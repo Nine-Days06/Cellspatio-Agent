@@ -89,16 +89,16 @@ describe('useStageReview', () => {
       useStageReview<View>({ load, deps: [], isRunning }))
     await waitFor(() => expect(result.current.state).toEqual(view(0)))
 
-    let firstAction!: Promise<boolean>
-    let secondAction!: Promise<boolean>
+    let firstAction!: Promise<'ok' | 'failed' | 'stale'>
+    let secondAction!: Promise<'ok' | 'failed' | 'stale'>
     act(() => {
       firstAction = result.current.perform(() => first.promise, { executing: true })
       secondAction = result.current.perform(() => second.promise)
     })
     await act(async () => { second.resolve(view(2)) })
-    await expect(secondAction).resolves.toBe(true)
+    await expect(secondAction).resolves.toBe('ok')
     await act(async () => { first.resolve(view(1)) })
-    await expect(firstAction).resolves.toBe(false)
+    await expect(firstAction).resolves.toBe('stale')
 
     expect(result.current.state).toEqual(view(2))
     expect(result.current.executing).toBe(false)
@@ -112,14 +112,14 @@ describe('useStageReview', () => {
       useStageReview<View>({ load, deps: [], isRunning }))
     await waitFor(() => expect(result.current.state).toEqual(view(0)))
 
-    let pending!: Promise<boolean>
+    let pending!: Promise<'ok' | 'failed' | 'stale'>
     act(() => { pending = result.current.perform(() => action.promise, { executing: true }) })
     expect(result.current.executing).toBe(true)
 
     load.mockResolvedValue(view(3))
     await act(async () => { await result.current.refresh() })
     await act(async () => { action.resolve(view(1)) })
-    await expect(pending).resolves.toBe(false)
+    await expect(pending).resolves.toBe('stale')
 
     expect(result.current.state).toEqual(view(3))
     expect(result.current.executing).toBe(false)
@@ -153,11 +153,11 @@ describe('useStageReview', () => {
       useStageReview<View>({ load, deps: [], isRunning }))
     await waitFor(() => expect(result.current.state).toEqual(view(0)))
 
-    let action!: Promise<boolean>
+    let action!: Promise<'ok' | 'failed' | 'stale'>
     await act(async () => {
       action = result.current.perform(() => Promise.reject(new Error('执行失联')))
     })
-    await expect(action).resolves.toBe(false)
+    await expect(action).resolves.toBe('failed')
     expect(result.current.error).toBe('执行失联')
 
     load.mockResolvedValue(view(3))
@@ -189,6 +189,23 @@ describe('useStageReview', () => {
     expect(result.current.state).toEqual(view(2, false))
     expect(pollLoad).toHaveBeenCalledTimes(1)
     expect(recorded).not.toHaveBeenCalled()
+  })
+
+  it('recover 不递增 generation，旧身份恢复不覆盖新动作', async () => {
+    const load = vi.fn().mockResolvedValue(view(0))
+    const slow = deferred<View>()
+    const { result } = renderHook(() =>
+      useStageReview<View>({ load, deps: [], isRunning }))
+    await waitFor(() => expect(result.current.state).toEqual(view(0)))
+
+    let recovered!: Promise<void>
+    act(() => { recovered = result.current.recover(() => slow.promise) })
+    await act(async () => {
+      await result.current.perform(async () => view(2), {})
+    })
+    await act(async () => { slow.resolve(view(1)) })
+    await recovered
+    expect(result.current.state).toEqual(view(2))
   })
 
   it('卸载清理定时器并发布 onRunning(false)', async () => {

@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useState } from 'react'
 import { Button } from '@/components/ui/button'
 import { Textarea } from '@/components/ui/textarea'
 import { executeMarkers, fetchClusterAcceptance, fetchMarkerCandidates, fetchMarkers, markerDiagnosticPath, recordClusterAcceptance, recordClusterRejection, reviewMarkers } from '@/lib/api'
@@ -50,9 +50,6 @@ export function MarkerReview({ sessionId, runId, filterAttemptId, pcaAttemptId, 
   const [reviewReason, setReviewReason] = useState('')
   const [reason, setReason] = useState('')
   const [markerReasons, setMarkerReasons] = useState<Record<string, string>>({})
-  const identity = `${sessionId}|${runId}|${filterAttemptId}|${pcaAttemptId}|${clusterAttemptId}|${revision}`
-  const identityRef = useRef(identity)
-  identityRef.current = identity
   const stage = useStageReview<{ review: ClusterAcceptanceState; state: MarkerState }>({
     load: async () => {
       const [review, state] = await Promise.all([fetchClusterAcceptance(source), fetchMarkers(source)])
@@ -69,7 +66,7 @@ export function MarkerReview({ sessionId, runId, filterAttemptId, pcaAttemptId, 
   })
   const review = stage.state?.review ?? null
   const state = stage.state?.state ?? null
-  const { busy, executing, error, setState: setSnapshot } = stage
+  const { busy, executing, error } = stage
   const running = executing || (state?.attempts.some((a) => a.status === 'running') ?? false)
 
   useEffect(() => {
@@ -84,10 +81,10 @@ export function MarkerReview({ sessionId, runId, filterAttemptId, pcaAttemptId, 
   }
 
   async function recoverSnapshot() {
-    try {
+    await stage.recover(async () => {
       const [nextReview, next] = await Promise.all([fetchClusterAcceptance(source), fetchMarkers(source)])
-      setSnapshot({ review: nextReview, state: next })
-    } catch { setSnapshot(null) }
+      return { review: nextReview, state: next }
+    })
   }
 
   async function submit(kind: 'accept' | 'reject' | 'execute') {
@@ -98,10 +95,9 @@ export function MarkerReview({ sessionId, runId, filterAttemptId, pcaAttemptId, 
     } else if (!state?.binding_sha256 || !state.review || !reason.trim()) return
     const current = stage.state
     if (!current) return
-    const startedIdentity = identityRef.current
     const reasonText = reviewReason.trim()
     const executeReason = reason.trim()
-    const ok = await stage.perform(async () => {
+    const result = await stage.perform(async () => {
       try {
         if (kind === 'accept') {
           const nextReview = await recordClusterAcceptance(source, current.review.binding_sha256!, current.review.revision, reasonText)
@@ -114,12 +110,12 @@ export function MarkerReview({ sessionId, runId, filterAttemptId, pcaAttemptId, 
         const next = await executeMarkers(source, current.state.binding_sha256!, current.state.review!.review_id, current.state.revision, executeReason)
         return { review: current.review, state: next }
       } catch (err) {
-        // 失败只读恢复；身份已变化时旧结果不得落地。
-        if (identityRef.current === startedIdentity) await recoverSnapshot()
+        // 失败只读恢复；generation 已变化时 hook 不会落地旧结果。
+        await recoverSnapshot()
         throw err
       }
     }, { executing: kind === 'execute', recorded: true })
-    if (!ok) return
+    if (result !== 'ok') return
     if (kind === 'accept') { setAccepted(false); setReviewReason('') }
     else if (kind === 'reject') setReviewReason('')
     else setReason('')
@@ -130,17 +126,16 @@ export function MarkerReview({ sessionId, runId, filterAttemptId, pcaAttemptId, 
     if (!state || !reviewReasonText) return
     const current = stage.state
     if (!current) return
-    const startedIdentity = identityRef.current
-    const ok = await stage.perform(async () => {
+    const result = await stage.perform(async () => {
       try {
         const next = await reviewMarkers(source, attemptId, decision, current.state.revision, reviewReasonText)
         return { review: current.review, state: next }
       } catch (err) {
-        if (identityRef.current === startedIdentity) await recoverSnapshot()
+        await recoverSnapshot()
         throw err
       }
     }, { recorded: true })
-    if (ok) setMarkerReasons((previous) => ({ ...previous, [attemptId]: '' }))
+    if (result === 'ok') setMarkerReasons((previous) => ({ ...previous, [attemptId]: '' }))
   }
 
   const reviewGateFacts = {

@@ -27,14 +27,14 @@ export function PcaDimensions({ sessionId, runId, filterAttemptId, attemptId, re
     const binding = state?.binding_sha256
     if (!binding) return
     let failed = false
-    const ok = await review.perform(
+    const result = await review.perform(
       () => recordPcaDimensions(sessionId, runId, filterAttemptId, attemptId, binding, state.revision, Number(nDims), reason.trim())
         .catch((err) => { failed = true; throw err instanceof Error ? err : new Error('记录失败，请刷新') }),
       { recorded: true },
     )
-    if (ok) { setNDims(''); setReason('') }
+    if (result === 'ok') { setNDims(''); setReason('') }
     // 失联或 CAS 冲突只能只读恢复，不能自动重发选择。
-    else if (failed) await review.refresh()
+    else if (result === 'failed' && failed) await review.recover()
   }
 
   const k = Number(nDims)

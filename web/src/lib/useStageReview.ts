@@ -36,14 +36,16 @@ export interface StageReview<T> {
   reload: () => Promise<void>
   /** 只读刷新：保留当前状态，成功后再替换。 */
   refresh: (options?: { clearError?: boolean }) => Promise<void>
+  /** 失败后只读恢复；不递增 generation，旧身份结果不会落地。 */
+  recover: (loader?: () => Promise<T>) => Promise<void>
   /**
-   * 显式动作。返回 false 表示失败或已被更新的 generation 取代；
-   * 失败后不自动重发，调用方可自行读取 load 恢复。
+   * 显式动作。'stale' 表示已被更新的 generation 取代；
+   * 'failed' 表示本次动作失败，调用方可自行读取 load 恢复。
    */
   perform: (
     action: () => Promise<T>,
     options?: { executing?: boolean; recorded?: boolean },
-  ) => Promise<boolean>
+  ) => Promise<'ok' | 'failed' | 'stale'>
 }
 
 function messageOf(error: unknown): string {
@@ -109,6 +111,16 @@ export function useStageReview<T>(options: StageReviewOptions<T>): StageReview<T
 
   const reload = useCallback(() => load(true), [load])
   const refresh = useCallback((opts?: { clearError?: boolean }) => load(false, opts?.clearError ?? false), [load])
+  const recover = useCallback(async (loader?: () => Promise<T>): Promise<void> => {
+    const ticket = generation.current
+    try {
+      const next = await (loader?.() ?? loadRef.current())
+      if (!mounted.current || ticket !== generation.current) return
+      apply(next)
+    } catch {
+      if (mounted.current && ticket === generation.current) setState(null)
+    }
+  }, [apply])
 
   const perform = useCallback<StageReview<T>['perform']>(async (action, opts = {}) => {
     const ticket = ++generation.current
@@ -117,18 +129,18 @@ export function useStageReview<T>(options: StageReviewOptions<T>): StageReview<T
     setError('')
     try {
       const next = await action()
-      if (!mounted.current || ticket !== generation.current) return false
+      if (!mounted.current || ticket !== generation.current) return 'stale'
       apply(next)
       // 仍在运行时交给轮询收尾，保证一轮运行只发一次 onRecorded。
       if (opts.recorded && !isRunningRef.current(next, false)) {
         recordedNotified.current = true
         callbacks.current.onRecorded?.()
       }
-      return true
+      return 'ok'
     } catch (err) {
-      if (!mounted.current || ticket !== generation.current) return false
+      if (!mounted.current || ticket !== generation.current) return 'stale'
       setError(messageOf(err))
-      return false
+      return 'failed'
     } finally {
       if (mounted.current && ticket === generation.current) {
         setBusy(false)
@@ -189,5 +201,5 @@ export function useStageReview<T>(options: StageReviewOptions<T>): StageReview<T
     }
   }, [running, busy, pollMs, recordOnPoll, state, executing, apply])
 
-  return { state, setState, busy, executing, error, reload, refresh, perform }
+  return { state, setState, busy, executing, error, reload, refresh, recover, perform }
 }

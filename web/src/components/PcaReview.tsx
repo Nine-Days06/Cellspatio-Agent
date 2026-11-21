@@ -41,13 +41,13 @@ export function PcaReview({ sessionId, runId, filterAttemptId, revision, onRunni
     const binding = state?.binding_sha256
     if (!binding) return
     let failed = false
-    const ok = await review.perform(
+    const result = await review.perform(
       () => executePca(sessionId, runId, filterAttemptId, binding, reason.trim())
         .catch((err) => { failed = true; throw err instanceof Error ? err : new Error('PCA 请求失败；请只读刷新，不要重复执行') }),
       { executing: true, recorded: true },
     )
     // 请求失联后只读恢复服务端状态，不能把未知执行当作未执行。
-    if (!ok && failed) await review.refresh()
+    if (result === 'failed' && failed) await review.recover()
   }
 
   const attempted = isAttemptedByBinding(state?.attempts ?? [], state?.binding_sha256)

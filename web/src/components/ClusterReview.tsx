@@ -15,16 +15,13 @@ export function ClusterReview({ sessionId, runId, filterAttemptId, pcaAttemptId,
 }) {
   const [reason, setReason] = useState('')
   const [markerRunning, setMarkerRunning] = useState<string[]>([])
-  const identity = `${sessionId}|${runId}|${filterAttemptId}|${pcaAttemptId}|${revision}`
-  const identityRef = useRef(identity)
-  identityRef.current = identity
   const stage = useStageReview<ClusterState>({
     load: () => fetchClusters(sessionId, runId, filterAttemptId, pcaAttemptId),
     deps: [sessionId, runId, filterAttemptId, pcaAttemptId, revision],
     isRunning: (current, executing) => executing || (current?.attempts.some((a) => a.status === 'running') ?? false),
     onRecorded,
   })
-  const { state, busy, executing, error, setState } = stage
+  const { state, busy, executing, error } = stage
   const callbacks = useRef({ onRunning })
   callbacks.current = { onRunning }
   const clusterRunning = executing || (state?.attempts.some((a) => a.status === 'running') ?? false)
@@ -52,20 +49,16 @@ export function ClusterReview({ sessionId, runId, filterAttemptId, pcaAttemptId,
     const selection = state.selection
     if (!binding || !selection) return
     const stateRevision = state.revision
-    const startedIdentity = identityRef.current
-    const ok = await stage.perform(async () => {
+    const result = await stage.perform(async () => {
       try {
         return await executeClusters(sessionId, runId, filterAttemptId, pcaAttemptId, binding, selection.review_id, stateRevision, reason.trim())
       } catch (err) {
-        // 失败只读恢复；身份已变化时旧结果不得落地。
-        if (identityRef.current === startedIdentity) {
-          try { setState(await fetchClusters(sessionId, runId, filterAttemptId, pcaAttemptId)) }
-          catch { setState(null) }
-        }
+        // 失败只读恢复；generation 已变化时 hook 不会落地旧结果。
+        await stage.recover()
         throw err
       }
     }, { executing: true, recorded: true })
-    if (ok) setReason('')
+    if (result === 'ok') setReason('')
   }
 
   const attempted = isAttemptedByBinding(state?.attempts ?? [], state?.binding_sha256)

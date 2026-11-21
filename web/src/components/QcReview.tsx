@@ -70,9 +70,9 @@ export function QcReview({ sessionId, runId, onRecorded }: { sessionId: string; 
   }, [sessionId, runId])
 
   async function perform(action: () => Promise<QcReviewState>, recorded = false) {
-    const ok = await runAction(action, { recorded })
-    if (!ok) setPreviewValues('')
-    return ok
+    const result = await runAction(action, { recorded })
+    if (result === 'failed') setPreviewValues('')
+    return result === 'ok'
   }
 
   async function executeFilter(previewId: string) {
