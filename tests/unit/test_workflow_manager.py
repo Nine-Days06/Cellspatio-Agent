@@ -1,3 +1,4 @@
+import json
 from pathlib import Path
 
 from src.control.intent_parser import IntentParser
@@ -1171,7 +1172,7 @@ def test_execute_workflow_records_single_run():
             "run_id": spy.starts[0]["run_id"],
             "step_id": "general_workflow",
             "step_type": "general",
-            "tool": "none",
+            "tool": None,
             "params": {},
         }
     ]
@@ -1186,7 +1187,7 @@ def test_record_step_without_recorder_is_noop():
             None,
             step_id="general_workflow",
             step_type="general",
-            tool="none",
+            tool=None,
             params={},
         )
         is None
@@ -1196,7 +1197,7 @@ def test_record_step_without_recorder_is_noop():
             "run-fake",
             step_id="general_workflow",
             step_type="general",
-            tool="none",
+            tool=None,
             params={},
         )
         is None
@@ -1223,6 +1224,29 @@ def test_run_analysis_for_agent_finish_run_persists_wrroc(tmp_path, monkeypatch)
     assert len(wf_files) == 1
     assert wf_files[0].parent.name.startswith("run-")
     assert "run_id" in wf_files[0].read_text(encoding="utf-8")
+
+
+def test_general_workflow_records_with_real_recorder(tmp_path, monkeypatch):
+    """真实 recorder 接受 general 回退：step_type=general，tool 为 null。"""
+    monkeypatch.setattr(
+        "src.control.snapshot_manager.SnapshotManager.create_snapshot",
+        lambda self, run_id, commit_msg=None: tmp_path / "snap",
+    )
+    manager = _make_manager()
+    manager.intent_parser = FakeIntent(
+        parse_return={"type": "general", "original_input": ""},
+        extract_params_return={},
+    )
+    manager.workflow_recorder = WorkflowRecorder(wrroc_base_dir=str(tmp_path / "wrroc"))
+
+    result = manager.execute_workflow("你好", {"last_user_input": "你好"})
+
+    wf_files = list((tmp_path / "wrroc").glob("*/workflow.json"))
+    assert result["type"] == "general_response"
+    assert len(wf_files) == 1
+    payload = json.loads(wf_files[0].read_text(encoding="utf-8"))
+    assert payload["steps"][0]["step_type"] == "general"
+    assert payload["steps"][0]["tool"] is None
 
 
 def test_search_datasets_for_agent_records_run():

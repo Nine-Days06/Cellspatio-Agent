@@ -38,11 +38,12 @@ class AnalysisType(str, Enum):
 
 
 class StepType(str, Enum):
-    """工作流步骤类型。对应三个工具。"""
+    """工作流步骤类型。"""
 
     ANALYSIS = "analysis"
     FETCH_DATA = "fetch_data"
     KNOWLEDGE_QUERY = "knowledge_query"
+    GENERAL = "general"
 
 
 class IntentType(str, Enum):
@@ -89,7 +90,8 @@ class WorkflowStep(BaseModel):
 
     step_id: str
     step_type: StepType
-    tool: Literal["run_analysis", "search_datasets", "query_knowledge"]
+    # 技能步骤使用任意 tool 名；没有工具时用 None，而不是 "none" 哨兵
+    tool: str | None = None
     params: dict[str, Any] = Field(default_factory=dict)
     output: StepOutput | None = None
     timestamp: datetime = Field(default_factory=datetime.utcnow)

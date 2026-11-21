@@ -123,6 +123,25 @@ def test_recorder_records_step():
     assert step.output.status.value == "success"
 
 
+def test_recorder_accepts_open_skill_tool_name():
+    """技能步骤的 tool 名不限于内置 agent 工具。"""
+    recorder = WorkflowRecorder()
+    run_id = recorder.start_execution(
+        intent={"type": "general", "original_input": "skill"},
+        parameters={},
+        user_input="skill",
+        context={},
+    )
+    recorder.record_step(
+        run_id,
+        step_id="skill-1",
+        step_type="general",
+        tool="test_skill",
+        params={},
+    )
+    assert recorder.get_record(run_id).steps[0].tool == "test_skill"
+
+
 def test_recorder_records_multiple_steps():
     """多步骤正确追加并保持顺序。"""
     recorder = WorkflowRecorder()
