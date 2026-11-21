@@ -6,7 +6,7 @@ from tests.unit.fakes import FakeExec, FakeGen, FakeIntent
 
 def _make(require: bool) -> WorkflowManager:
     return WorkflowManager(
-        intent_parser=FakeIntent(),
+        intent_parser=FakeIntent(extract_params_return={"input_files": []}),
         knowledge_client=None,
         r_executor=FakeExec(track_codes=True),
         visualizer=None,

@@ -266,7 +266,11 @@ class IntentParser:
         """从用户输入中提取参数"""
         params = {}
 
-        file_pattern = r"[\w/\\:\-\.]+\.(?:csv|tsv|fastq|vcf|fasta)"
+        # 绝对路径可含空格；相对路径保持无空格，避免吞掉后续自然语言。
+        file_pattern = (
+            r"(?:[A-Za-z]:\\[^\"'<>|\r\n]+?|[/~][^\"'<>|\r\n]+?|[\w/\-\.]+?)"
+            r"\.(?:csv|tsv|fastq|vcf|fasta)"
+        )
         files = re.findall(file_pattern, user_input)
         if files:
             params["input_files"] = files
