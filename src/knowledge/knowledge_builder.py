@@ -27,6 +27,30 @@ class KnowledgeBuilder:
     def _insert_texts(self, texts: list[str]) -> int:
         return self.client.insert_documents(texts)
 
+    def _build_fetched(
+        self,
+        label: str,
+        ids: list[str],
+        source: str,
+        noun: str,
+        fetcher_name: str,
+        fetcher: Any = None,
+    ) -> dict[str, Any]:
+        """按抓取源批量生成文本并入库，统一统计与日志。"""
+        self._need_registry()
+        fetcher = fetcher or self.registry.get(fetcher_name)
+        texts = [getattr(fetcher, source)(item) for item in ids]
+        inserted = self._insert_texts(texts)
+        count = f"{len(ids)} {noun}".strip()
+        logger.info(f"Built knowledge from {label}: {count}, inserted {inserted}")
+        return {"requested": len(ids), "inserted": inserted}
+
+    def _build_texts(self, label: str, texts: list[str], noun: str = "docs") -> dict[str, Any]:
+        """把已生成的文本批量入库。"""
+        inserted = self._insert_texts(texts)
+        logger.info(f"Built knowledge from {label}: {len(texts)} {noun}, inserted {inserted}")
+        return {"requested": len(texts), "inserted": inserted}
+
     def build_from_pubmed(
         self, search_terms: list[str] | None = None, max_per_term: int = 500
     ) -> dict[str, Any]:
@@ -36,79 +60,47 @@ class KnowledgeBuilder:
 
     def build_from_kegg(self, pathway_ids: list[str], fetcher=None) -> dict[str, Any]:
         """从 KEGG 通路批量构建"""
-        self._need_registry()
-        fetcher = fetcher or self.registry.get("kegg")
-        texts = [fetcher.ingest_text(pid) for pid in pathway_ids]
-        inserted = self._insert_texts(texts)
-        logger.info(f"Built knowledge from KEGG: {len(pathway_ids)} pathways, inserted {inserted}")
-        return {"requested": len(pathway_ids), "inserted": inserted}
+        return self._build_fetched("KEGG", pathway_ids, "ingest_text", "pathways", "kegg", fetcher)
 
     def build_from_uniprot(self, accessions: list[str], fetcher=None) -> dict[str, Any]:
         """从 UniProt 蛋白条目批量构建"""
-        self._need_registry()
-        fetcher = fetcher or self.registry.get("uniprot")
-        texts = [fetcher.ingest_text(acc) for acc in accessions]
-        inserted = self._insert_texts(texts)
-        logger.info(
-            f"Built knowledge from UniProt: {len(accessions)} proteins, inserted {inserted}"
+        return self._build_fetched(
+            "UniProt", accessions, "ingest_text", "proteins", "uniprot", fetcher
         )
-        return {"requested": len(accessions), "inserted": inserted}
 
     def build_from_kegg_kgml(self, pathway_ids: list[str], fetcher=None) -> dict[str, Any]:
         """从 KEGG 通路 KGML 结构批量构建"""
-        self._need_registry()
-        fetcher = fetcher or self.registry.get("kegg")
-        texts = [fetcher.ingest_kgml_text(pid) for pid in pathway_ids]
-        inserted = self._insert_texts(texts)
-        logger.info(
-            f"Built knowledge from KEGG KGML: {len(pathway_ids)} pathways, inserted {inserted}"
+        return self._build_fetched(
+            "KEGG KGML", pathway_ids, "ingest_kgml_text", "pathways", "kegg", fetcher
         )
-        return {"requested": len(pathway_ids), "inserted": inserted}
 
     def build_from_reactome(self, st_ids: list[str], fetcher=None) -> dict[str, Any]:
         """从 Reactome 通路批量构建"""
-        self._need_registry()
-        fetcher = fetcher or self.registry.get("reactome")
-        texts = [fetcher.ingest_text(sid) for sid in st_ids]
-        inserted = self._insert_texts(texts)
-        logger.info(f"Built knowledge from Reactome: {len(st_ids)} pathways, inserted {inserted}")
-        return {"requested": len(st_ids), "inserted": inserted}
+        return self._build_fetched(
+            "Reactome", st_ids, "ingest_text", "pathways", "reactome", fetcher
+        )
 
     def build_from_hpa(self, genes: list[str], fetcher=None) -> dict[str, Any]:
         """从 HPA 蛋白条目批量构建"""
-        self._need_registry()
-        fetcher = fetcher or self.registry.get("hpa")
-        texts = [fetcher.ingest_text(g) for g in genes]
-        inserted = self._insert_texts(texts)
-        logger.info(f"Built knowledge from HPA: {len(genes)} proteins, inserted {inserted}")
-        return {"requested": len(genes), "inserted": inserted}
+        return self._build_fetched("HPA", genes, "ingest_text", "proteins", "hpa", fetcher)
 
     def build_from_geo_metadata(self, gse_ids: list[str], fetcher=None) -> dict[str, Any]:
         """从 GEO 数据集元数据批量构建（供「找数据集」类问答）"""
-        self._need_registry()
-        fetcher = fetcher or self.registry.get("geo")
-        texts = [fetcher.ingest_text(gse) for gse in gse_ids]
-        inserted = self._insert_texts(texts)
-        logger.info(f"Built knowledge from GEO metadata: {len(gse_ids)}, inserted {inserted}")
-        return {"requested": len(gse_ids), "inserted": inserted}
+        return self._build_fetched("GEO metadata", gse_ids, "ingest_text", "", "geo", fetcher)
 
     def build_from_cellmarker(self, xlsx_path: str | None = None) -> dict[str, Any]:
         """从 CellMarker 人类细胞标志物表批量构建"""
         from src.knowledge.curated_sources import cellmarker_texts
 
         texts = cellmarker_texts(Path(xlsx_path) if xlsx_path else None)
-        inserted = self._insert_texts(texts)
-        logger.info(f"Built knowledge from CellMarker: {len(texts)} docs, inserted {inserted}")
-        return {"requested": len(texts), "inserted": inserted}
+        return self._build_texts("CellMarker", texts)
 
     def build_from_cell_ontology(self, obo_path: str | None = None) -> dict[str, Any]:
         """从 Cell Ontology cl.obo 批量构建"""
         from src.knowledge.curated_sources import cell_ontology_texts
 
         texts = cell_ontology_texts(Path(obo_path) if obo_path else None)
-        inserted = self._insert_texts(texts)
-        logger.info(f"Built knowledge from Cell Ontology: {len(texts)} docs, inserted {inserted}")
-        return {"requested": len(texts), "inserted": inserted}
+        return self._build_texts("Cell Ontology", texts)
 
     def build_from_files(self, file_paths: list[str]) -> dict[str, Any]:
         """从本地文本文件批量构建"""
