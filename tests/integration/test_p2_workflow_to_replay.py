@@ -62,4 +62,4 @@ def test_full_workflow_with_snapshot(monkeypatch):
         from src.control.replay import replay_run
 
         replay_result = replay_run(last_snap_id, repo_root=repo)
-        assert replay_result["status"] == "success"
+        assert replay_result["status"] == "restored"

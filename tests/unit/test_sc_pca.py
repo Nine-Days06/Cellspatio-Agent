@@ -17,6 +17,7 @@ from src.analysis.qc_preview import _identity
 from src.analysis.r_executor import RExecutorError
 from src.analysis.sc_pca import PCA_TOOL_VERSION, PROTOCOL, checked_parent
 from src.analysis.sc_qc import run_sc_qc
+from src.api import authorized_run
 from src.api.app import create_app
 from src.api.chat_service import run_turn
 from src.ui.session_store import SessionStore
@@ -156,6 +157,19 @@ def parent_ready(tmp_path, monkeypatch, request):
     return store, sid, rid, root, source, client, url, pid, fid, pca_url, binding, executor
 
 
+def test_lock_conflict_is_busy_without_r(parent_ready):
+    _, sid, _, _, _, client, _, _, _, path, binding, executor = parent_ready
+    lock = authorized_run.session_lock(sid)
+    assert lock.acquire(blocking=False)
+    try:
+        response = client.post(path, json={"binding_sha256": binding, "reason": "私有依据"})
+    finally:
+        lock.release()
+    assert response.status_code == 409
+    assert response.json()["detail"] == "该会话已有任务在进行"
+    executor.execute_script.assert_not_called()
+
+
 def test_get_never_executes_post_once_and_private_stage_only(parent_ready):
     store, sid, rid, root, source, client, url, pid, fid, path, binding, executor = parent_ready
     original = {p: p.read_bytes() for p in [source, *(root / rid).glob("*.csv")]}
@@ -174,6 +188,8 @@ def test_get_never_executes_post_once_and_private_stage_only(parent_ready):
     assert all(p.read_bytes() == content for p, content in original.items())
     run = store.get_qc_run(sid, rid)
     attempt = run["pca_attempts"][0]
+    assert Path(attempt["directory"]).parent == root.parent / "sc_pca"
+    assert Path(attempt["directory"]).name == attempt["attempt_id"]
     assert attempt["reason"] == "私有依据" and json.loads(attempt["protocol"]) == PROTOCOL
     assert attempt["result"]["stage"] == "pca_review"
     messages = store.get_messages(sid)
@@ -317,7 +333,7 @@ def test_multi_connection_claim_running_guards_restart_and_atomic_finish(parent_
 
     def claim(index):
         barrier.wait()
-        return store.start_sc_pca(
+        return store.stages.claim_pca(
             sid,
             rid,
             run["revision"],
@@ -346,7 +362,7 @@ def test_multi_connection_claim_running_guards_restart_and_atomic_finish(parent_
             "CREATE TRIGGER reject_pca BEFORE UPDATE OF status ON sc_pca_attempts BEGIN SELECT RAISE(ABORT, 'forced rollback'); END;"
         )
     with pytest.raises(sqlite3.IntegrityError, match="forced rollback"):
-        store.finish_sc_pca(attempt_id, {"status": "completed"})
+        store.stages.finish_pca(attempt_id, {"status": "completed"})
     assert len(store.get_messages(sid)) == count
     assert store.get_qc_run(sid, rid)["pca_attempts"][0]["status"] == "running"
     with store._conn() as conn:

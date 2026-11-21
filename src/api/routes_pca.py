@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import logging
 import sqlite3
-import uuid
 from pathlib import Path
 from typing import Any
 
@@ -23,23 +22,26 @@ from src.analysis.sc_pca import (
     dimension_binding,
     run_sc_pca,
 )
-from src.api.chat_service import session_lock
+from src.api.authorized_run import StageClaim, run_authorized
+from src.api.deps import StoreDep
 from src.api.routes_qc import require_run, run_qc_root
+from src.api.stage_runtime import has_running
+from src.ui.run_snapshot import RunSnapshot
 from src.ui.session_store import SessionStore
 
 router = APIRouter(prefix="/api/sessions/{session_id}/qc/{run_id}/pca", tags=["pca"])
 logger = logging.getLogger(__name__)
 
 
-def require_parent(run: dict[str, Any], filter_attempt_id: str) -> dict[str, Any]:
+def require_parent(run: RunSnapshot, filter_attempt_id: str) -> dict[str, Any]:
     """仅定位已关联父记录；路径不能来自客户端。"""
-    parent = next((a for a in run["attempts"] if a["attempt_id"] == filter_attempt_id), None)
+    parent = next((a for a in run.filter_attempts if a["attempt_id"] == filter_attempt_id), None)
     if parent is None:
         raise HTTPException(404, "父过滤关联不存在")
     return parent
 
 
-def view(run: dict[str, Any], parent: dict[str, Any], root: Path) -> dict[str, Any]:
+def view(run: RunSnapshot, parent: dict[str, Any], root: Path) -> dict[str, Any]:
     """返回方法/授权状态和必要汇总，不返回逐细胞数据或私有路径。"""
     blocked = []
     source = None
@@ -49,16 +51,8 @@ def view(run: dict[str, Any], parent: dict[str, Any], root: Path) -> dict[str, A
             blocked.append("PCA 至少需要 3 个过滤后细胞；不放宽 QC")
     except (OSError, ValueError, KeyError, TypeError) as exc:
         blocked.append(str(exc))
-    attempts = [a for a in run["pca_attempts"] if a["filter_attempt_id"] == parent["attempt_id"]]
-    if any(
-        a["status"] == "running"
-        for a in [
-            *run["attempts"],
-            *run["pca_attempts"],
-            *run.get("cluster_attempts", []),
-            *run.get("marker_attempts", []),
-        ]
-    ):
+    attempts = run.pca_attempts(parent["attempt_id"])
+    if has_running(run):
         blocked.append("该 run 有阶段运行中")
     return {
         "run_id": run["run_id"],
@@ -101,10 +95,14 @@ def view(run: dict[str, Any], parent: dict[str, Any], root: Path) -> dict[str, A
 
 @router.get("/{filter_attempt_id}")
 def get_pca(
-    session_id: str, run_id: str, filter_attempt_id: str, request: Request
+    session_id: str,
+    run_id: str,
+    filter_attempt_id: str,
+    request: Request,
+    store: StoreDep,
 ) -> dict[str, Any]:
     """GET 仅校验和恢复，不启动分析。"""
-    run = require_run(SessionStore(), session_id, run_id)
+    run = require_run(store, session_id, run_id)
     return view(
         run,
         require_parent(run, filter_attempt_id),
@@ -130,78 +128,94 @@ class PcaRequest(BaseModel):
 
 @router.post("/{filter_attempt_id}")
 def execute_pca(
-    session_id: str, run_id: str, filter_attempt_id: str, body: PcaRequest, request: Request
+    session_id: str,
+    run_id: str,
+    filter_attempt_id: str,
+    body: PcaRequest,
+    request: Request,
+    store: StoreDep,
 ) -> dict[str, Any]:
     """同绑定终态/运行态只返历史；首次请求独立校验和原子认领。"""
-    store = SessionStore()
-    run = require_run(store, session_id, run_id)
-    parent = require_parent(run, filter_attempt_id)
-    root = run_qc_root(request.app.state.agent, run)
-    if any(
-        a["filter_attempt_id"] == filter_attempt_id
-        and a["binding_sha256"] == body.binding_sha256
-        and a["tool_version"] == PCA_TOOL_VERSION
-        for a in run["pca_attempts"]
-    ):
-        return view(run, parent, root)
-    lock = session_lock(session_id)
-    if not lock.acquire(blocking=False):
-        raise HTTPException(409, "该会话已有任务在进行")
-    try:
-        run = require_run(store, session_id, run_id)
+
+    def previous(run: RunSnapshot) -> dict[str, Any] | None:
+        """按父过滤、来源绑定与工具版本查找已落库的 PCA 尝试。"""
+        require_parent(run, filter_attempt_id)
+        return next(
+            (
+                a
+                for a in run.pca_attempts(filter_attempt_id)
+                if a["binding_sha256"] == body.binding_sha256
+                and a["tool_version"] == PCA_TOOL_VERSION
+            ),
+            None,
+        )
+
+    def prepare(run: RunSnapshot, attempt_id: str) -> StageClaim:
+        """锁内重读父关联与来源证据，并给出 PCA 领取计划。"""
         parent = require_parent(run, filter_attempt_id)
+        root = run_qc_root(request.app.state.agent, run)
         source = checked_parent(run, parent, root)
         if source["binding_sha256"] != body.binding_sha256 or source["cells"] < 3:
             raise ValueError("PCA 绑定不符或细胞不足，请刷新")
-        attempt_id = uuid.uuid4().hex
-        directory = root.parent / "sc_pca" / attempt_id
-        if directory.resolve().parent != root.parent / "sc_pca" or directory.exists():
-            raise ValueError("PCA 输出目录非法")
-        attempt = store.start_sc_pca(
-            session_id,
-            run_id,
-            run["revision"],
-            filter_attempt_id,
-            body.binding_sha256,
-            PCA_TOOL_VERSION,
-            PROTOCOL,
-            body.reason,
-            str(directory),
-            attempt_id,
+        directory_parent = root.parent / "sc_pca"
+        directory = directory_parent / attempt_id
+        return StageClaim(
+            directory_parent=directory_parent,
+            directory=directory,
+            start=lambda: store.stages.claim_pca(
+                session_id,
+                run_id,
+                run["revision"],
+                filter_attempt_id,
+                body.binding_sha256,
+                PCA_TOOL_VERSION,
+                PROTOCOL,
+                body.reason,
+                str(directory),
+                attempt_id,
+            ),
+            execute=lambda attempt: run_sc_pca(
+                run,
+                parent,
+                root,
+                directory,
+                body.binding_sha256,
+                request.app.state.agent.workflow_manager.r_executor,
+            ),
+            finish=lambda result: store.stages.finish_pca(attempt_id, result),
+            on_error=lambda exc: {
+                "status": "failed",
+                "stage": "pca_review",
+                "scientific_status": "unreviewed",
+                "error": str(exc),
+            },
         )
-        if attempt["claimed"]:
-            try:
-                result = run_sc_pca(
-                    run,
-                    parent,
-                    root,
-                    directory,
-                    body.binding_sha256,
-                    request.app.state.agent.workflow_manager.r_executor,
-                )
-            except OSError as exc:
-                result = {
-                    "status": "failed",
-                    "stage": "pca_review",
-                    "scientific_status": "unreviewed",
-                    "error": str(exc),
-                }
-            store.finish_sc_pca(attempt_id, result)
-        return view(require_run(store, session_id, run_id), parent, root)
+
+    def refresh() -> dict[str, Any]:
+        """重读同一 run 并返回 PCA 只读视图。"""
+        run = require_run(store, session_id, run_id)
+        return view(
+            run, require_parent(run, filter_attempt_id), run_qc_root(request.app.state.agent, run)
+        )
+
+    try:
+        return run_authorized(
+            session_id=session_id,
+            load=lambda: require_run(store, session_id, run_id),
+            previous=previous,
+            prepare=prepare,
+            refresh=refresh,
+            unsafe_directory="PCA 输出目录非法",
+        )
     except (OSError, ValueError, KeyError, TypeError, sqlite3.OperationalError) as exc:
+        logger.error("PCA execution rejected: %s", type(exc).__name__)
         raise HTTPException(409, str(exc)) from exc
-    finally:
-        lock.release()
 
 
-def require_pca(run: dict[str, Any], filter_attempt_id: str, attempt_id: str) -> dict[str, Any]:
+def require_pca(run: RunSnapshot, filter_attempt_id: str, attempt_id: str) -> dict[str, Any]:
     """只定位本会话关联的 PCA，不能借用其他父记录。"""
     attempt = next(
-        (
-            a
-            for a in run["pca_attempts"]
-            if a["attempt_id"] == attempt_id and a["filter_attempt_id"] == filter_attempt_id
-        ),
+        (a for a in run.pca_attempts(filter_attempt_id) if a["attempt_id"] == attempt_id),
         None,
     )
     if attempt is None:
@@ -210,7 +224,7 @@ def require_pca(run: dict[str, Any], filter_attempt_id: str, attempt_id: str) ->
 
 
 def dimension_view(
-    run: dict[str, Any], parent: dict[str, Any], attempt: dict[str, Any], root: Path
+    run: RunSnapshot, parent: dict[str, Any], attempt: dict[str, Any], root: Path
 ) -> dict[str, Any]:
     """恢复当前选择及失效历史；不返回原始细胞表或私有产物路径。"""
     evidence = None
@@ -224,17 +238,9 @@ def dimension_view(
         blocked.append("PCA 或父证据文件不可读取，请检查本地产物")
     except (ValueError, KeyError, TypeError, OverflowError) as exc:
         blocked.append(str(exc))
-    if any(
-        a["status"] == "running"
-        for a in [
-            *run["attempts"],
-            *run["pca_attempts"],
-            *run.get("cluster_attempts", []),
-            *run.get("marker_attempts", []),
-        ]
-    ):
+    if has_running(run):
         blocked.append("该 run 有阶段运行中，不能记录维度")
-    history = [d for d in run["dimension_reviews"] if d["pca_attempt_id"] == attempt["attempt_id"]]
+    history = run.dimension_reviews(attempt["attempt_id"])
     latest = history[-1] if history else None
     current = (
         None if blocked else current_dimensions(run, attempt, binding, DIMENSION_RECORD_VERSION)
@@ -269,10 +275,27 @@ def dimension_view(
 
 @router.get("/{filter_attempt_id}/{attempt_id}/dimensions")
 def get_dimensions(
-    session_id: str, run_id: str, filter_attempt_id: str, attempt_id: str, request: Request
+    session_id: str,
+    run_id: str,
+    filter_attempt_id: str,
+    attempt_id: str,
+    request: Request,
+    store: StoreDep,
 ) -> dict[str, Any]:
     """只读证据和人工事实，不调用 R、LLM 或 KG。"""
-    run = require_run(SessionStore(), session_id, run_id)
+    return _dimensions_view(store, session_id, run_id, filter_attempt_id, attempt_id, request)
+
+
+def _dimensions_view(
+    store: SessionStore,
+    session_id: str,
+    run_id: str,
+    filter_attempt_id: str,
+    attempt_id: str,
+    request: Request,
+) -> dict[str, Any]:
+    """按同一 store 重读 run 后返回维度只读视图。"""
+    run = require_run(store, session_id, run_id)
     return dimension_view(
         run,
         require_parent(run, filter_attempt_id),
@@ -296,9 +319,9 @@ def record_dimensions(
     attempt_id: str,
     body: DimensionRequest,
     request: Request,
+    store: StoreDep,
 ) -> dict[str, Any]:
     """显式条件写入；旧请求重发只能返回历史，绝不重新激活。"""
-    store = SessionStore()
     run = require_run(store, session_id, run_id)
     parent = require_parent(run, filter_attempt_id)
     attempt = require_pca(run, filter_attempt_id, attempt_id)
@@ -306,9 +329,8 @@ def record_dimensions(
     previous = next(
         (
             d
-            for d in run["dimension_reviews"]
-            if d["pca_attempt_id"] == attempt_id
-            and d["binding_sha256"] == body.binding_sha256
+            for d in run.dimension_reviews(attempt_id)
+            if d["binding_sha256"] == body.binding_sha256
             and d["record_version"] == DIMENSION_RECORD_VERSION
             and d["source_revision"] == body.revision
         ),
@@ -324,7 +346,7 @@ def record_dimensions(
     if body.n_dims > state["evidence"]["actual_pcs"]:
         raise HTTPException(422, "维度数不能超过已计算的 actual_pcs")
     try:
-        store.record_pca_dimensions(
+        store.stages.record_dimensions(
             session_id,
             run,
             parent,
@@ -340,22 +362,23 @@ def record_dimensions(
     except sqlite3.OperationalError as exc:
         logger.exception("PCA dimension record database write failed")
         raise HTTPException(409, "维度记录写入失败，请检查本地数据库并只读刷新") from exc
-    return get_dimensions(session_id, run_id, filter_attempt_id, attempt_id, request)
+    return _dimensions_view(store, session_id, run_id, filter_attempt_id, attempt_id, request)
 
 
 @router.get("/{filter_attempt_id}/{attempt_id}/diagnostic")
 def diagnostic(
-    session_id: str, run_id: str, filter_attempt_id: str, attempt_id: str, request: Request
+    session_id: str,
+    run_id: str,
+    filter_attempt_id: str,
+    attempt_id: str,
+    request: Request,
+    store: StoreDep,
 ) -> Response:
     """验证登记 PNG 的同一份字节后返回，不接受任意路径。"""
-    run = require_run(SessionStore(), session_id, run_id)
+    run = require_run(store, session_id, run_id)
     require_parent(run, filter_attempt_id)
     attempt = next(
-        (
-            a
-            for a in run["pca_attempts"]
-            if a["attempt_id"] == attempt_id and a["filter_attempt_id"] == filter_attempt_id
-        ),
+        (a for a in run.pca_attempts(filter_attempt_id) if a["attempt_id"] == attempt_id),
         None,
     )
     if attempt is None or attempt["status"] != "completed":

@@ -257,7 +257,11 @@ export interface MarkerPage {
 }
 
 export interface MarkerState {
+  run_id: string
+  cluster_attempt_id: string
   revision: number
+  stage: 'marker_review'
+  scientific_status: 'unreviewed'
   binding_sha256: string | null
   review: { review_id: string; record_version: string; accepted: true } | null
   protocol: Record<string, unknown>

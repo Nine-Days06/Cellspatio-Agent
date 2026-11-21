@@ -1,17 +1,23 @@
 """探索性聚类接受的只读身份绑定；不改变科学状态或执行分析。"""
 
+from __future__ import annotations
+
 import json
+from collections.abc import Mapping
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from src.analysis.qc_preview import _digest
 from src.analysis.sc_cluster import checked_completed_cluster
 from src.analysis.sc_pca import DIMENSION_RECORD_VERSION
 
+if TYPE_CHECKING:
+    from src.ui.run_snapshot import RunSnapshot
+
 CLUSTER_RECORD_VERSION = "sc-cluster-review/1.0.0"
 
 
-def review_binding(run: dict[str, Any], cluster: dict[str, Any]) -> str:
+def review_binding(run: Mapping[str, Any], cluster: dict[str, Any]) -> str:
     """绑定完整已校验结果，不包含自由文本依据或当前 revision。"""
     payload = {
         "session_id": run["session_id"],
@@ -32,7 +38,7 @@ def review_binding(run: dict[str, Any], cluster: dict[str, Any]) -> str:
     return _digest(json.dumps(payload, sort_keys=True, ensure_ascii=False).encode())
 
 
-def review_view(run: dict[str, Any], cluster: dict[str, Any], root: Path) -> dict[str, Any]:
+def review_view(run: RunSnapshot, cluster: dict[str, Any], root: Path) -> dict[str, Any]:
     """当前复核需最新 revision；下游执行展示另使用自身授权快照。"""
     checked, binding, blocked = None, None, []
     try:
@@ -42,22 +48,18 @@ def review_view(run: dict[str, Any], cluster: dict[str, Any], root: Path) -> dic
         blocked.append("聚类来源、协议或本地产物不符；仅保留历史，不能记录接受")
     if any(
         a["status"] == "running"
-        for key in (
-            "attempts",
-            "pca_attempts",
-            "cluster_attempts",
-            "marker_attempts",
+        for attempts in (
+            run.filter_attempts,
+            run.pca_attempts(),
+            run.cluster_attempts(),
+            run.marker_attempts(),
         )
-        for a in run.get(key, [])
+        for a in attempts
     ):
         blocked.append("该 run 有阶段运行中，不能记录聚类复核")
-    history = [
-        d for d in run["cluster_reviews"] if d["cluster_attempt_id"] == cluster["attempt_id"]
-    ]
+    history = run.cluster_reviews(cluster["attempt_id"])
     latest = history[-1] if history else None
-    rejections = [
-        d for d in run["cluster_rejections"] if d["cluster_attempt_id"] == cluster["attempt_id"]
-    ]
+    rejections = run.cluster_rejections(cluster["attempt_id"])
     latest_rejection = rejections[-1] if rejections else None
     current = (
         latest

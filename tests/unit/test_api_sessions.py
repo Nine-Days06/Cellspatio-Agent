@@ -9,6 +9,7 @@ from fastapi.testclient import TestClient
 
 from src.api.app import create_app
 from src.api.chat_service import session_lock
+from src.ui.confirm_protocol import STATUS_CONFIRMED, STATUS_EXPIRED, STATUS_PENDING
 from src.ui.session_store import SessionStore
 from tests.unit.fakes import FakeAgent, FakeRuntime
 
@@ -18,7 +19,7 @@ def client():
     return TestClient(create_app(FakeAgent()))
 
 
-def _pending_message(store: SessionStore, session_id: str, status: str = "pending") -> None:
+def _pending_message(store: SessionStore, session_id: str, status: str = STATUS_PENDING) -> None:
     store.append_message(
         session_id,
         "user",
@@ -195,25 +196,25 @@ def test_restore_expires_pending_script(client):
 
     body = client.get(f"/api/sessions/{sid}/messages?restore=1").json()
 
-    assert body["pending_script"]["status"] == "expired"
+    assert body["pending_script"]["status"] == STATUS_EXPIRED
     assert body["pending_script"]["user_request"] == "做差异表达"
     # 过期状态已落库
     latest = [m for m in SessionStore().get_messages(sid) if m["pending_script"]][-1]
-    assert latest["pending_script"]["status"] == "expired"
+    assert latest["pending_script"]["status"] == STATUS_EXPIRED
 
 
 def test_restore_keeps_already_expired_script(client):
     sid = client.post("/api/sessions", json={}).json()["session"]["id"]
-    _pending_message(SessionStore(), sid, status="expired")
+    _pending_message(SessionStore(), sid, status=STATUS_EXPIRED)
 
     body = client.get(f"/api/sessions/{sid}/messages?restore=1").json()
 
-    assert body["pending_script"]["status"] == "expired"
+    assert body["pending_script"]["status"] == STATUS_EXPIRED
 
 
 def test_restore_ignores_confirmed_script(client):
     sid = client.post("/api/sessions", json={}).json()["session"]["id"]
-    _pending_message(SessionStore(), sid, status="confirmed")
+    _pending_message(SessionStore(), sid, status=STATUS_CONFIRMED)
 
     body = client.get(f"/api/sessions/{sid}/messages?restore=1").json()
 
@@ -229,18 +230,18 @@ def test_without_restore_pending_script_stays_pending(client):
 
     assert body["pending_script"] is None
     latest = [m for m in SessionStore().get_messages(sid) if m["pending_script"]][-1]
-    assert latest["pending_script"]["status"] == "pending"
+    assert latest["pending_script"]["status"] == STATUS_PENDING
 
 
 def test_only_latest_pending_script_is_considered(client):
     sid = client.post("/api/sessions", json={}).json()["session"]["id"]
     store = SessionStore()
-    _pending_message(store, sid, status="confirmed")
-    _pending_message(store, sid, status="pending")
+    _pending_message(store, sid, status=STATUS_CONFIRMED)
+    _pending_message(store, sid, status=STATUS_PENDING)
 
     body = client.get(f"/api/sessions/{sid}/messages?restore=1").json()
 
-    assert body["pending_script"]["status"] == "expired"
+    assert body["pending_script"]["status"] == STATUS_EXPIRED
     assert body["pending_script"]["user_request"] == "做差异表达"
 
 

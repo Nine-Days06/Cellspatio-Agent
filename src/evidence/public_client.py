@@ -10,6 +10,16 @@ from typing import Any
 import httpx
 
 
+class PublicEvidenceError(ValueError):
+    """公共证据服务的非 2xx 响应，携带稳定类别。"""
+
+    def __init__(self, message: str, *, status: int, code: str | None = None) -> None:
+        """保存 HTTP 状态码与服务端返回的领域类别。"""
+        super().__init__(message)
+        self.status = status
+        self.code = code
+
+
 class PublicEvidenceClient:
     """公共证据服务的最小客户端。"""
 
@@ -39,7 +49,7 @@ class PublicEvidenceClient:
         auth: bool = True,
         params: dict[str, Any] | None = None,
     ) -> Any:
-        """发请求并解析 JSON；非 2xx 统一抛 ValueError(detail)。"""
+        """发请求并解析 JSON；非 2xx 抛 PublicEvidenceError(status, code)。"""
         headers = {"Authorization": f"Bearer {self.token}"} if auth and self.token else {}
         try:
             response = self._client.request(method, path, json=json, headers=headers, params=params)
@@ -50,7 +60,12 @@ class PublicEvidenceClient:
         except ValueError:
             payload = {"detail": response.text}
         if response.status_code >= 400:
-            raise ValueError(str(payload.get("detail") or response.status_code))
+            code = payload.get("code")
+            raise PublicEvidenceError(
+                str(payload.get("detail") or response.status_code),
+                status=response.status_code,
+                code=code if isinstance(code, str) else None,
+            )
         return payload
 
     def login(self, username: str, password: str) -> dict[str, Any]:

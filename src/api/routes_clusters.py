@@ -2,10 +2,8 @@
 
 from __future__ import annotations
 
-import json
 import logging
 import sqlite3
-import uuid
 from pathlib import Path
 from typing import Any
 
@@ -24,9 +22,12 @@ from src.analysis.sc_cluster import (
 )
 from src.analysis.sc_marker_reviews import CLUSTER_RECORD_VERSION, review_view
 from src.api import routes_pca
-from src.api.chat_service import session_lock
+from src.api.authorized_run import StageClaim, run_authorized
+from src.api.deps import StoreDep
 from src.api.routes_pca import dimension_view, require_parent, require_pca
 from src.api.routes_qc import require_run, run_qc_root
+from src.api.stage_runtime import RUNNING, has_running, running_stages
+from src.ui.run_snapshot import RunSnapshot
 from src.ui.session_store import SessionStore
 
 router = APIRouter(prefix="/api/sessions/{session_id}/qc/{run_id}/clusters", tags=["clusters"])
@@ -43,7 +44,7 @@ EVIDENCE_ERRORS = (
 
 
 def view(
-    run: dict[str, Any], parent: dict[str, Any], pca: dict[str, Any], root: Path
+    run: RunSnapshot, parent: dict[str, Any], pca: dict[str, Any], root: Path
 ) -> dict[str, Any]:
     """新授权看 current；历史展示看 attempt 快照，不依赖被自身推进的 revision。"""
     state = dimension_view(run, parent, pca, root)
@@ -68,16 +69,15 @@ def view(
                 "所选 PCs 存在零范数、非有限或退化列；固定 cosine 协议不适用",
             }
             blocked.append(str(exc) if str(exc) in safe else "PCA 来源不可读取或结构不符")
-    attempts = [a for a in run["cluster_attempts"] if a["pca_attempt_id"] == pca["attempt_id"]]
+    attempts = run.cluster_attempts(pca["attempt_id"])
     latest = attempts[-1] if attempts else None
     if not state["current"] and latest is None:
         blocked.extend(state["blocked"] or ["无当前有效维度记录；请回上游明确记录至少 2 个 PCs"])
     display_snapshot = auth_snapshot or (latest["snapshot"] if latest else None)
-    cluster_running = any(a["status"] == "running" for a in run["cluster_attempts"])
-    if any(
-        a["status"] == "running"
-        for a in [*run["attempts"], *run["pca_attempts"], *run.get("marker_attempts", [])]
-    ) or (cluster_running and latest is not None and latest["status"] != "running"):
+    cluster_running = "cluster" in running_stages(run)
+    if has_running(run, ("filter", "pca", "marker")) or (
+        cluster_running and latest is not None and latest["status"] != RUNNING
+    ):
         blocked.append("该 run 有阶段运行中，不能新授权")
     attempts_view = []
     for a in attempts:
@@ -153,11 +153,16 @@ def view(
 
 @router.get("/{filter_attempt_id}/{pca_attempt_id}")
 def get_clusters(
-    session_id: str, run_id: str, filter_attempt_id: str, pca_attempt_id: str, request: Request
+    session_id: str,
+    run_id: str,
+    filter_attempt_id: str,
+    pca_attempt_id: str,
+    request: Request,
+    store: StoreDep,
 ) -> dict[str, Any]:
     """只读本会话完整关联与阶段历史。"""
     try:
-        run = require_run(SessionStore(), session_id, run_id)
+        run = require_run(store, session_id, run_id)
         return view(
             run,
             require_parent(run, filter_attempt_id),
@@ -184,53 +189,38 @@ def execute_clusters(
     pca_attempt_id: str,
     body: ClusterRequest,
     request: Request,
+    store: StoreDep,
 ) -> dict[str, Any]:
     """同绑定先返历史；首次短事务认领，事务外固定执行，无重试接口。"""
-    store = SessionStore()
-    lock = session_lock(session_id)
-    acquired = False
-    try:
-        run = require_run(store, session_id, run_id)
+
+    def locate(run: RunSnapshot) -> tuple[dict[str, Any], dict[str, Any], Path]:
+        """按父过滤与 PCA 定位本 run 的完整上游链。"""
         parent = require_parent(run, filter_attempt_id)
         pca = require_pca(run, filter_attempt_id, pca_attempt_id)
-        root = run_qc_root(request.app.state.agent, run)
-        reviews = [d for d in run["dimension_reviews"] if d["pca_attempt_id"] == pca_attempt_id]
+        return parent, pca, run_qc_root(request.app.state.agent, run)
+
+    def previous(run: RunSnapshot) -> dict[str, Any] | None:
+        """按 PCA 尝试、来源绑定与工具版本查找已落库的聚类尝试。"""
+        locate(run)
+        reviews = run.dimension_reviews(pca_attempt_id)
         if not any(d["review_id"] == body.dimension_review_id for d in reviews):
             raise HTTPException(404, "维度记录关联不存在")
-        previous = next(
+        found = next(
             (
                 a
-                for a in run["cluster_attempts"]
-                if a["pca_attempt_id"] == pca_attempt_id
-                and a["binding_sha256"] == body.binding_sha256
+                for a in run.cluster_attempts(pca_attempt_id)
+                if a["binding_sha256"] == body.binding_sha256
                 and a["tool_version"] == CLUSTER_TOOL_VERSION
             ),
             None,
         )
-        if previous:
-            if previous["review_id"] != body.dimension_review_id:
-                raise HTTPException(409, "维度记录与历史授权不符")
-            return view(run, parent, pca, root)
-        acquired = lock.acquire(blocking=False)
-        if not acquired:
-            raise HTTPException(409, "该会话已有任务在进行")
-        run = require_run(store, session_id, run_id)
-        parent = require_parent(run, filter_attempt_id)
-        pca = require_pca(run, filter_attempt_id, pca_attempt_id)
-        previous = next(
-            (
-                a
-                for a in run["cluster_attempts"]
-                if a["pca_attempt_id"] == pca_attempt_id
-                and a["binding_sha256"] == body.binding_sha256
-                and a["tool_version"] == CLUSTER_TOOL_VERSION
-            ),
-            None,
-        )
-        if previous:
-            if previous["review_id"] != body.dimension_review_id:
-                raise HTTPException(409, "维度记录与历史授权不符")
-            return view(run, parent, pca, root)
+        if found is not None and found["review_id"] != body.dimension_review_id:
+            raise HTTPException(409, "维度记录与历史授权不符")
+        return found
+
+    def prepare(run: RunSnapshot, attempt_id: str) -> StageClaim:
+        """锁内重读维度授权与来源证据，并给出聚类领取计划。"""
+        parent, pca, root = locate(run)
         state = dimension_view(run, parent, pca, root)
         review = state["current"]
         if state["blocked"] or not review or review["review_id"] != body.dimension_review_id:
@@ -245,57 +235,76 @@ def execute_clusters(
         }
         if execution_binding(run, snapshot) != body.binding_sha256:
             raise HTTPException(409, "聚类来源绑定已变化，请刷新")
-        attempt_id = uuid.uuid4().hex
-        directory = root.parent / "sc_clusters" / attempt_id
-        if directory.resolve().parent != root.parent / "sc_clusters" or directory.exists():
-            raise HTTPException(409, "聚类输出目录不可认领")
-        attempt = store.start_sc_cluster(
-            session_id,
-            run_id,
-            body.revision,
-            snapshot,
-            body.binding_sha256,
-            CLUSTER_TOOL_VERSION,
-            PROTOCOL,
-            body.reason,
-            str(directory),
-            attempt_id,
-        )
-        if attempt["claimed"]:
+        directory_parent = root.parent / "sc_clusters"
+        directory = directory_parent / attempt_id
+        claimed: dict[str, Any] = {}
+
+        def execute(attempt: dict[str, Any]) -> dict[str, Any]:
+            """固定执行；未预期错误也落为失败而不泄漏本地细节。"""
+            claimed["attempt"] = attempt
             try:
-                result = run_sc_cluster(
+                return run_sc_cluster(
                     run, attempt, root, request.app.state.agent.workflow_manager.r_executor
                 )
             except OSError:
-                result = {
-                    "status": "failed",
-                    "stage": "cluster_review",
-                    "scientific_status": "unreviewed",
-                    "error": "聚类产物落盘失败",
-                }
+                raise
             except Exception as exc:
                 logger.error("unexpected cluster execution failure: %s", type(exc).__name__)
-                result = {
+                return {
                     "status": "failed",
                     "stage": "cluster_review",
                     "scientific_status": "unreviewed",
                     "error": "聚类执行出现未预期错误；本地证据保留，请人工检查",
                 }
-            saved = store.finish_sc_cluster(attempt_id, result, attempt)
-            if saved != result:
-                # DB 的失败权威不能被本地旧 completed metadata 冒充。
-                (directory / "metadata.json").write_text(
-                    json.dumps(saved, ensure_ascii=False, indent=2), encoding="utf-8"
-                )
-        return view(require_run(store, session_id, run_id), parent, pca, root)
+
+        def finish(result: dict[str, Any]) -> dict[str, Any]:
+            """保存终态并返回数据库权威结果。"""
+            return store.stages.finish_cluster(attempt_id, result, claimed["attempt"])
+
+        return StageClaim(
+            directory_parent=directory_parent,
+            directory=directory,
+            start=lambda: store.stages.claim_cluster(
+                session_id,
+                run_id,
+                body.revision,
+                snapshot,
+                body.binding_sha256,
+                CLUSTER_TOOL_VERSION,
+                PROTOCOL,
+                body.reason,
+                str(directory),
+                attempt_id,
+            ),
+            execute=execute,
+            finish=finish,
+            on_error=lambda exc: {
+                "status": "failed",
+                "stage": "cluster_review",
+                "scientific_status": "unreviewed",
+                "error": "聚类产物落盘失败",
+            },
+        )
+
+    def refresh() -> dict[str, Any]:
+        """重读同一 run 并返回聚类只读视图。"""
+        run = require_run(store, session_id, run_id)
+        return view(run, *locate(run))
+
+    try:
+        return run_authorized(
+            session_id=session_id,
+            load=lambda: require_run(store, session_id, run_id),
+            previous=previous,
+            prepare=prepare,
+            refresh=refresh,
+            unsafe_directory="聚类输出目录不可认领",
+        )
     except sqlite3.Error as exc:
         logger.error("cluster state database write failed: %s", type(exc).__name__)
         raise HTTPException(409, "聚类状态持久化失败，请只读刷新；不要重复执行") from exc
     except EVIDENCE_ERRORS as exc:
         raise HTTPException(409, "聚类来源或本地证据不符，请只读刷新并检查上游") from exc
-    finally:
-        if acquired:
-            lock.release()
 
 
 @router.get("/{filter_attempt_id}/{pca_attempt_id}/{attempt_id}/diagnostic")
@@ -306,18 +315,15 @@ def diagnostic(
     pca_attempt_id: str,
     attempt_id: str,
     request: Request,
+    store: StoreDep,
 ) -> Response:
     """只返回完整校验后的同一份 PNG 字节，不提供逐细胞下载。"""
     try:
-        run = require_run(SessionStore(), session_id, run_id)
+        run = require_run(store, session_id, run_id)
         require_parent(run, filter_attempt_id)
         require_pca(run, filter_attempt_id, pca_attempt_id)
         attempt = next(
-            (
-                a
-                for a in run["cluster_attempts"]
-                if a["attempt_id"] == attempt_id and a["pca_attempt_id"] == pca_attempt_id
-            ),
+            (a for a in run.cluster_attempts(pca_attempt_id) if a["attempt_id"] == attempt_id),
             None,
         )
         if attempt is None or attempt["status"] != "completed":
@@ -340,14 +346,10 @@ def diagnostic(
     return Response(data, media_type="image/png", headers={"Cache-Control": "no-store"})
 
 
-def require_cluster(run: dict[str, Any], pca_attempt_id: str, attempt_id: str) -> dict[str, Any]:
+def require_cluster(run: RunSnapshot, pca_attempt_id: str, attempt_id: str) -> dict[str, Any]:
     """只定位本 run 与 PCA 下的确切聚类尝试。"""
     cluster = next(
-        (
-            a
-            for a in run["cluster_attempts"]
-            if a["attempt_id"] == attempt_id and a["pca_attempt_id"] == pca_attempt_id
-        ),
+        (a for a in run.cluster_attempts(pca_attempt_id) if a["attempt_id"] == attempt_id),
         None,
     )
     if cluster is None:
@@ -384,10 +386,26 @@ def get_review(
     pca_attempt_id: str,
     attempt_id: str,
     request: Request,
+    store: StoreDep,
 ) -> dict[str, Any]:
     """只读证据与本地人工事实；不执行 R、LLM 或 KG。"""
+    return _review_view(
+        store, session_id, run_id, filter_attempt_id, pca_attempt_id, attempt_id, request
+    )
+
+
+def _review_view(
+    store: SessionStore,
+    session_id: str,
+    run_id: str,
+    filter_attempt_id: str,
+    pca_attempt_id: str,
+    attempt_id: str,
+    request: Request,
+) -> dict[str, Any]:
+    """按同一 store 重读 run 后返回聚类复核只读视图。"""
     try:
-        run = require_run(SessionStore(), session_id, run_id)
+        run = require_run(store, session_id, run_id)
         require_parent(run, filter_attempt_id)
         require_pca(run, filter_attempt_id, pca_attempt_id)
         return review_view(
@@ -409,10 +427,10 @@ def record_review(
     attempt_id: str,
     body: ClusterReviewRequest,
     request: Request,
+    store: StoreDep,
 ) -> dict[str, Any]:
     """追加接受事实；旧请求重发仅返回历史，不重新激活或授权 marker。"""
     try:
-        store = SessionStore()
         run = require_run(store, session_id, run_id)
         require_parent(run, filter_attempt_id)
         require_pca(run, filter_attempt_id, pca_attempt_id)
@@ -421,9 +439,8 @@ def record_review(
         previous = next(
             (
                 d
-                for d in run["cluster_reviews"]
-                if d["cluster_attempt_id"] == attempt_id
-                and d["binding_sha256"] == body.binding_sha256
+                for d in run.cluster_reviews(attempt_id)
+                if d["binding_sha256"] == body.binding_sha256
                 and d["record_version"] == CLUSTER_RECORD_VERSION
                 and d["source_revision"] == body.revision
             ),
@@ -436,7 +453,7 @@ def record_review(
         state = review_view(run, cluster, root)
         if not state["binding_sha256"] or state["binding_sha256"] != body.binding_sha256:
             raise HTTPException(409, "聚类证据不可记录或已变化，请只读刷新")
-        store.record_sc_cluster_review(
+        store.stages.record_cluster_review(
             session_id,
             run,
             cluster,
@@ -445,8 +462,8 @@ def record_review(
             body.revision,
             body.reason,
         )
-        return get_review(
-            session_id, run_id, filter_attempt_id, pca_attempt_id, attempt_id, request
+        return _review_view(
+            store, session_id, run_id, filter_attempt_id, pca_attempt_id, attempt_id, request
         )
     except sqlite3.Error as exc:
         logger.error("cluster review database write failed: %s", type(exc).__name__)
@@ -464,10 +481,10 @@ def reject_review(
     attempt_id: str,
     body: ClusterRejectionRequest,
     request: Request,
+    store: StoreDep,
 ) -> dict[str, Any]:
     """追加拒绝事实；不改写接受历史，不授权 marker。"""
     try:
-        store = SessionStore()
         run = require_run(store, session_id, run_id)
         require_parent(run, filter_attempt_id)
         require_pca(run, filter_attempt_id, pca_attempt_id)
@@ -476,7 +493,7 @@ def reject_review(
         state = review_view(run, cluster, root)
         if not state["binding_sha256"] or state["binding_sha256"] != body.binding_sha256:
             raise HTTPException(409, "聚类证据不可记录或已变化，请只读刷新")
-        store.record_sc_cluster_rejection(
+        store.stages.record_cluster_rejection(
             session_id,
             run,
             cluster,
@@ -485,8 +502,8 @@ def reject_review(
             body.revision,
             body.reason,
         )
-        return get_review(
-            session_id, run_id, filter_attempt_id, pca_attempt_id, attempt_id, request
+        return _review_view(
+            store, session_id, run_id, filter_attempt_id, pca_attempt_id, attempt_id, request
         )
     except sqlite3.Error as exc:
         logger.error("cluster rejection database write failed: %s", type(exc).__name__)

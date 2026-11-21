@@ -14,7 +14,7 @@
 ② done 载荷是规格 {message_id} 的超集，另含 message（完整线路消息，供对账）；
 ③ error.retryable 当前实现恒为 True（后端尚无不可恢复错误的细分）；
 ④ 打开会话必须带 ?restore=1，否则 pending_script 永不转 expired（见
-   routes_sessions._restore_pending 的过期语义）。
+   confirm_flow.restore_pending 的过期语义）。
 """
 
 from __future__ import annotations

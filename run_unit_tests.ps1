@@ -35,6 +35,8 @@ if ($startedPg) {
 
 $exitCode = 0
 try {
+    # Codex/桌面工具会注入 GIT_CONFIG_*，它会让测试内的 `git init` 以 exit 128 失败。
+    Get-ChildItem Env: | Where-Object Name -like 'GIT_CONFIG_*' | Remove-Item -ErrorAction SilentlyContinue
     & $PythonExe -m pytest tests/unit/ -q --basetemp $basetemp @PytestArgs
     $exitCode = $LASTEXITCODE
 }

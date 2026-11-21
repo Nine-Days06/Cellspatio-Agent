@@ -10,8 +10,19 @@ from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel
 
 from src.api.chat_service import session_lock, soft_warn_for
+from src.api.deps import StoreDep
 from src.api.events import wire_message
-from src.control.chat_messages import build_assistant_message
+from src.ui.confirm_flow import (
+    ERR_MISSING_SOURCE,
+    ERR_NO_PENDING_SCRIPT,
+    ERR_NOT_SCRIPT_ACTION,
+    ERR_UNKNOWN_SOURCE,
+    ConfirmFlowError,
+    confirm_data,
+    confirm_script,
+    restore_pending,
+)
+from src.ui.confirm_protocol import ACTION_DATA_CONFIRM, SCRIPT_ACTIONS
 from src.ui.session_store import SessionStore
 from src.ui.usage import session_usage
 
@@ -19,10 +30,12 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api", tags=["sessions"])
 
-
-def _store() -> SessionStore:
-    """每次新建短连接存储（与 src/ui/app.py:_get_store 同策略）。"""
-    return SessionStore()
+_CONFIRM_ERROR_STATUS = {
+    ERR_NO_PENDING_SCRIPT: 409,
+    ERR_MISSING_SOURCE: 400,
+    ERR_UNKNOWN_SOURCE: 400,
+    ERR_NOT_SCRIPT_ACTION: 400,
+}
 
 
 def _require_session(store: SessionStore, session_id: str) -> dict[str, Any]:
@@ -40,14 +53,14 @@ class CreateSessionRequest(BaseModel):
 
 
 @router.get("/sessions")
-def list_sessions(include_archived: bool = False) -> dict[str, Any]:
-    return {"sessions": _store().list_sessions(include_archived=include_archived)}
+def list_sessions(store: StoreDep, include_archived: bool = False) -> dict[str, Any]:
+    """列出会话（可选含归档）；只读，不加会话锁。"""
+    return {"sessions": store.list_sessions(include_archived=include_archived)}
 
 
 @router.post("/sessions")
-def create_session(body: CreateSessionRequest | None = None) -> dict[str, Any]:
+def create_session(store: StoreDep, body: CreateSessionRequest | None = None) -> dict[str, Any]:
     """新建会话；显式 project_id 时归入该项目，否则保持未归类。"""
-    store = _store()
     title = body.title if body and body.title else "新会话"
     try:
         session_id = store.create_session(title, body.project_id if body else None)
@@ -58,10 +71,10 @@ def create_session(body: CreateSessionRequest | None = None) -> dict[str, Any]:
 
 
 @router.get("/sessions/{session_id}/usage")
-def get_session_usage(session_id: str) -> dict[str, Any]:
+def get_session_usage(session_id: str, store: StoreDep) -> dict[str, Any]:
     """返回会话产物、.wrroc 与 snapshots 的只读占用汇总。"""
     try:
-        return session_usage(_store(), session_id, Path.cwd())
+        return session_usage(store, session_id, Path.cwd())
     except ValueError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
 
@@ -75,9 +88,8 @@ class UpdateSessionRequest(BaseModel):
 
 
 @router.patch("/sessions/{session_id}")
-def update_session(session_id: str, body: UpdateSessionRequest) -> dict[str, Any]:
+def update_session(session_id: str, body: UpdateSessionRequest, store: StoreDep) -> dict[str, Any]:
     """更新归属/置顶/归档；归档前先拿会话锁，避免误藏运行中的对话。"""
-    store = _store()
     _require_session(store, session_id)
     lock = None
     if body.archived:
@@ -101,8 +113,8 @@ def update_session(session_id: str, body: UpdateSessionRequest) -> dict[str, Any
 
 
 @router.delete("/sessions/{session_id}")
-def delete_session(session_id: str) -> dict[str, Any]:
-    store = _store()
+def delete_session(session_id: str, store: StoreDep) -> dict[str, Any]:
+    """删除会话；先取非阻塞会话锁，避免删掉生成中的会话。"""
     _require_session(store, session_id)
     # 生成中删除会让 worker 落库失败 → 与 chat/confirm 同一把非阻塞会话锁
     lock = session_lock(session_id)
@@ -118,44 +130,16 @@ def delete_session(session_id: str) -> dict[str, Any]:
 
 
 @router.get("/sessions/{session_id}/messages")
-def list_messages(session_id: str, restore: int = 0) -> dict[str, Any]:
-    store = _store()
+def list_messages(session_id: str, store: StoreDep, restore: int = 0) -> dict[str, Any]:
+    """返回会话与消息；只读，仅 restore=1 时改写待确认脚本并落库。"""
     session = _require_session(store, session_id)
     messages = store.get_messages(session_id)
     return {
         "session": session,
         "messages": [wire_message(m) for m in messages],
-        "pending_script": _restore_pending(store, session_id, messages) if restore else None,
+        "pending_script": restore_pending(store, session_id, messages) if restore else None,
         "soft_warn": soft_warn_for(store, session_id),
     }
-
-
-def _restore_pending(
-    store: SessionStore, session_id: str, messages: list[dict[str, Any]]
-) -> dict[str, Any] | None:
-    """复刻 src/ui/app.py:439 _load_session 的过期语义。
-
-    只看最新一条带 pending_script 的消息：pending → 落库置 expired 后按
-    expired 返回；expired → 原样返回；其他状态 → None。
-    """
-    for msg in reversed(messages):
-        pending = msg.get("pending_script")
-        if not pending:
-            continue
-        if pending.get("status") in ("pending", "expired"):
-            if pending.get("status") == "pending":
-                store.set_script_status(session_id, "expired")
-            return {
-                "script": pending.get("script", ""),
-                "analysis_type": pending.get("analysis_type"),
-                "params": pending.get("params") or {},
-                "method_context": pending.get("method_context"),
-                "user_request": pending.get("user_request", ""),
-                "status": "expired",
-            }
-        # 只看最新一条 pending_script，更早的不再考虑
-        return None
-    return None
 
 
 class ConfirmRequest(BaseModel):
@@ -170,24 +154,37 @@ class ConfirmRequest(BaseModel):
 
 # 用同步 def：FastAPI 丢到线程池执行，避免阻塞事件循环上的其它 SSE 流
 @router.post("/confirm", tags=["confirm"])
-def confirm(body: ConfirmRequest, request: Request) -> dict[str, Any]:
+def confirm(body: ConfirmRequest, request: Request, store: StoreDep) -> dict[str, Any]:
     """HITL 确认端点：脚本确认 / 脚本取消 / 数据下载确认。
 
     script_regen 不设端点：前端用 pending_script.user_request 直接重发
     /api/chat，与 Streamlit 的「重新生成」不改 DB status 行为一致。
     """
     agent = request.app.state.agent
-    store = _store()
     _require_session(store, body.session_id)
     lock = session_lock(body.session_id)
     if not lock.acquire(blocking=False):
         raise HTTPException(status_code=409, detail="该会话已有任务在进行")
     try:
-        if body.action == "data_confirm":
-            return _confirm_data(agent, store, body)
-        if body.action in ("script_confirm", "script_cancel"):
-            return _confirm_script(agent, store, body)
-        raise HTTPException(status_code=400, detail=f"未知动作: {body.action}")
+        if body.action == ACTION_DATA_CONFIRM:
+            last = confirm_data(
+                agent,
+                store,
+                body.session_id,
+                source=body.source,
+                asset_id=body.asset_id,
+                query=body.query,
+            )
+        elif body.action in SCRIPT_ACTIONS:
+            last = confirm_script(agent, store, body.session_id, body.action)
+        else:
+            raise HTTPException(status_code=400, detail=f"未知动作: {body.action}")
+        return {"message": wire_message(last)}
+    except ConfirmFlowError as exc:
+        status = _CONFIRM_ERROR_STATUS.get(exc.code, 502)
+        if status == 502:
+            logger.exception("confirm action failed: %s", body.action)
+        raise HTTPException(status_code=status, detail=str(exc)) from exc
     except HTTPException:
         raise  # 已结构化的 4xx 直接透传，勿吞成 502
     except Exception as exc:  # 兜底：任意失败都保持 {"detail":...} JSON 契约
@@ -195,65 +192,3 @@ def confirm(body: ConfirmRequest, request: Request) -> dict[str, Any]:
         raise HTTPException(status_code=502, detail=str(exc) or type(exc).__name__) from exc
     finally:
         lock.release()
-
-
-def _latest_pending_raw(store: SessionStore, session_id: str) -> dict[str, Any] | None:
-    """从库里反查最新一条带 pending_script 的消息（不做过期改写）。"""
-    for msg in reversed(store.get_messages(session_id)):
-        if msg.get("pending_script"):
-            return msg["pending_script"]
-    return None
-
-
-def _confirm_script(agent: Any, store: SessionStore, body: ConfirmRequest) -> dict[str, Any]:
-    pending = _latest_pending_raw(store, body.session_id)
-    if pending is None or pending.get("status") != "pending":
-        raise HTTPException(status_code=409, detail="没有待确认的脚本")
-
-    if body.action == "script_cancel":
-        store.set_script_status(body.session_id, "cancelled")
-        content = "已取消本次脚本执行。"
-        results = None
-    else:
-        result = agent.execute_confirmed_script(
-            pending.get("analysis_type"),
-            pending.get("params") or {},
-            pending.get("script", ""),
-            method_context=pending.get("method_context"),
-        )
-        store.set_script_status(body.session_id, "confirmed")
-        content = build_assistant_message(result)["content"]
-        results = result.get("results")
-
-    store.append_message(body.session_id, "assistant", content, results=results)
-    return {"message": wire_message(store.get_messages(body.session_id)[-1])}
-
-
-def _asset_key(asset: dict[str, Any], source: str) -> tuple[str, Any]:
-    """已下载资产的去重键 (source, asset_id)；历史记录缺 source 字段时用请求 source。"""
-    return (asset.get("source") or source, asset.get("asset_id"))
-
-
-def _confirm_data(agent: Any, store: SessionStore, body: ConfirmRequest) -> dict[str, Any]:
-    if not body.source or not body.asset_id:
-        raise HTTPException(status_code=400, detail="缺少 source 或 asset_id")
-
-    try:
-        result = agent.confirm_and_download(body.source, body.asset_id, query=body.query or "")
-    except KeyError as exc:  # fetcher_registry.get 未注册 source
-        raise HTTPException(status_code=400, detail=f"未知数据源: {body.source}") from exc
-    asset = result.get("asset")
-    if asset:
-        session = store.get_session(body.session_id) or {}
-        assets = list(session.get("downloaded_assets") or [])
-        key = _asset_key(asset, body.source)
-        # 重复确认：下载可重复，但同一资产只落库一次（避免污染 run_turn 上下文）
-        if key not in {_asset_key(a, body.source) for a in assets}:
-            assets.append(asset)
-            store.update_session_meta(body.session_id, downloaded_assets=assets)
-        content = f"已下载 {body.asset_id} → `{asset.get('access_path')}`"
-    else:
-        content = result.get("message", "数据下载未完成。")
-
-    store.append_message(body.session_id, "assistant", content)
-    return {"message": wire_message(store.get_messages(body.session_id)[-1])}

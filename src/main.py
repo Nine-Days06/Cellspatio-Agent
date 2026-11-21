@@ -209,7 +209,7 @@ class CellSpatioAgent:
         )
 
     def replay(self, run_id: str) -> dict[str, Any]:
-        """一键复现历史运行"""
+        """恢复历史运行快照（不重跑）"""
         from src.control.replay import replay_run
 
         return replay_run(run_id, repo_root=self.config.get("repo_root", Path.cwd()))
