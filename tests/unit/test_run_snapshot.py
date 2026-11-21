@@ -335,6 +335,167 @@ def test_store_decodes_json_and_returns_snapshot(tmp_path) -> None:
     assert store.get_qc_run(sid, "missing") is None
 
 
+def test_load_returns_none_for_missing_run(tmp_path) -> None:
+    """load 在 run 不属于该会话时返回 None。"""
+    store = SessionStore(tmp_path / "sessions.db")
+    sid = store.create_session()
+    with store._conn() as conn:
+        assert RunSnapshot.load(conn, sid, "missing") is None
+
+
+def test_load_orders_by_rowid_and_decodes_json_and_bool(tmp_path) -> None:
+    """load 直接完成 rowid 排序、JSON 解码与 bool 转换。"""
+    store = SessionStore(tmp_path / "sessions.db")
+    sid = store.create_session()
+    rid = "run-load"
+    with store._conn() as conn:
+        conn.execute(
+            "INSERT INTO qc_runs (run_id, session_id, directory, evidence) VALUES (?, ?, ?, ?)",
+            (rid, sid, str(tmp_path / "qc"), json.dumps({"cells": 5})),
+        )
+        conn.execute(
+            "INSERT INTO qc_previews (preview_id, run_id, payload) VALUES (?, ?, ?)",
+            ("p2", rid, json.dumps({"preview_id": "p2"})),
+        )
+        conn.execute(
+            "INSERT INTO qc_previews (preview_id, run_id, payload) VALUES (?, ?, ?)",
+            ("p1", rid, json.dumps({"preview_id": "p1"})),
+        )
+        conn.execute(
+            "INSERT INTO sc_filter_attempts "
+            "(attempt_id, run_id, preview_id, binding_sha256, tool_version, directory, "
+            "status, created_at, result) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                "fz",
+                rid,
+                "p2",
+                "b" * 64,
+                "filter/1",
+                str(tmp_path / "fz"),
+                "completed",
+                "2026-01-01",
+                json.dumps({"cells": 8}),
+            ),
+        )
+        conn.execute(
+            "INSERT INTO sc_filter_attempts "
+            "(attempt_id, run_id, preview_id, binding_sha256, tool_version, directory, "
+            "status, created_at, result) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                "fa",
+                rid,
+                "p1",
+                "a" * 64,
+                "filter/1",
+                str(tmp_path / "fa"),
+                "completed",
+                "2026-01-02",
+                None,
+            ),
+        )
+        conn.execute(
+            "INSERT INTO sc_pca_attempts "
+            "(attempt_id, filter_attempt_id, run_id, binding_sha256, tool_version, protocol, "
+            "reason, directory, status, created_at, result) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                "pa",
+                "fz",
+                rid,
+                "c" * 64,
+                "pca/1",
+                "pca/1",
+                "test",
+                str(tmp_path / "pa"),
+                "completed",
+                "2026-01-03",
+                json.dumps({"actual_pcs": 2}),
+            ),
+        )
+        conn.execute(
+            "INSERT INTO sc_pca_dimension_reviews "
+            "(review_id, pca_attempt_id, binding_sha256, record_version, source_revision, "
+            "dims, reason, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                "d1",
+                "pa",
+                "c" * 64,
+                "sc-pca-dimensions/1.0.0",
+                1,
+                json.dumps([1, 2]),
+                "test",
+                "2026-01-04",
+            ),
+        )
+        conn.execute(
+            "INSERT INTO sc_cluster_attempts "
+            "(attempt_id, run_id, pca_attempt_id, review_id, snapshot, binding_sha256, "
+            "tool_version, protocol, source_revision, claim_revision, reason, directory, "
+            "status, created_at, result) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                "ca",
+                rid,
+                "pa",
+                "d1",
+                json.dumps({"clusters": 3}),
+                "e" * 64,
+                "cluster/1",
+                "cluster/1",
+                1,
+                1,
+                "test",
+                str(tmp_path / "ca"),
+                "completed",
+                "2026-01-05",
+                None,
+            ),
+        )
+        conn.execute(
+            "INSERT INTO sc_cluster_reviews "
+            "(review_id, cluster_attempt_id, binding_sha256, record_version, source_revision, "
+            "accepted, reason, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            ("cr1", "ca", "e" * 64, "sc-cluster/1.0.0", 1, 1, "test", "2026-01-06"),
+        )
+        conn.execute(
+            "INSERT INTO sc_marker_attempts "
+            "(attempt_id, run_id, cluster_attempt_id, review_id, snapshot, binding_sha256, "
+            "tool_version, protocol, source_revision, claim_revision, reason, directory, "
+            "status, created_at, result) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                "ma",
+                rid,
+                "ca",
+                "cr1",
+                json.dumps({"markers": 4}),
+                "f" * 64,
+                "marker/1",
+                "marker/1",
+                1,
+                1,
+                "test",
+                str(tmp_path / "ma"),
+                "completed",
+                "2026-01-07",
+                json.dumps({"n": 1}),
+            ),
+        )
+        conn.commit()
+
+        run = RunSnapshot.load(conn, sid, rid)
+        assert run is not None
+        assert run["evidence"] == {"cells": 5}
+        assert [p["preview_id"] for p in run.previews] == ["p2", "p1"]
+        assert [a["attempt_id"] for a in run.filter_attempts] == ["fz", "fa"]
+        assert run.filter_attempts[0]["result"] == {"cells": 8}
+        assert run.filter_attempts[1]["result"] is None
+        assert run.pca_attempts("fz")[0]["result"] == {"actual_pcs": 2}
+        assert run.dimension_reviews("pa")[0]["dims"] == [1, 2]
+        assert run.cluster_attempts("pa")[0]["snapshot"] == {"clusters": 3}
+        assert run.cluster_reviews("ca")[0]["accepted"] is True
+        assert run.marker_attempts("ca")[0]["snapshot"] == {"markers": 4}
+        assert run.marker_attempts("ca")[0]["result"] == {"n": 1}
+
+
 def test_records_json_safe_handles_snapshot() -> None:
     """records 序列化把 RunSnapshot 当 Mapping，而不是字符串化。"""
     assert _json_safe(RunSnapshot({"run_id": "r1", "evidence": {"cells": 3}}), False) == {
