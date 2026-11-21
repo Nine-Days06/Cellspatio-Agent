@@ -277,6 +277,26 @@ describe('ChatPage 本地输入', () => {
 })
 
 describe('ChatPage 输入区：键位 / 停止 / 错误提示（约束 3）', () => {
+  it('无会话发送时保留输入并提示先选择会话', async () => {
+    const client = new QueryClient({
+      defaultOptions: { queries: { retry: false, refetchOnWindowFocus: false } },
+    })
+    render(
+      <QueryClientProvider client={client}>
+        <ChatPage />
+      </QueryClientProvider>,
+    )
+    const field = screen.getByLabelText('输入你的问题')
+    fireEvent.change(field, { target: { value: '看看 PBMC' } })
+    fireEvent.click(screen.getByRole('button', { name: '发送' }))
+
+    expect(field).toHaveValue('看看 PBMC')
+    await waitFor(() =>
+      expect(screen.getByText('请先新建或选择会话')).toBeInTheDocument(),
+    )
+    expect(streamChatMock).not.toHaveBeenCalled()
+  })
+
   it('起步提示填入问题、切换模式并聚焦，不自动发送或创建会话', async () => {
     await renderReady(nextSid(), { messages: [] })
     fireEvent.click(screen.getByRole('button', { name: /查阅文献证据/ }))

@@ -171,6 +171,10 @@ export function ChatPage() {
   function handleSend(): void {
     const prompt = input.trim()
     if (!prompt || busy) return
+    if (!sessionId) {
+      useChatStore.getState().setNotice({ kind: 'error', text: '请先新建或选择会话' })
+      return
+    }
     setInput('')
     dispatchConfirm({ type: 'reset' })
     void send(prompt, mode)
