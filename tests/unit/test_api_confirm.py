@@ -117,6 +117,86 @@ def test_script_confirm_without_pending_returns_409(client):
     assert response.json()["detail"] == "没有待确认的脚本"
 
 
+def test_script_confirm_targets_message_id_not_latest(client):
+    """多标签页：A 页的旧卡不能执行 B 页新产生的脚本。"""
+    sid = _with_pending_script(client)
+    old_id = _latest_pending(sid)["id"]
+    SessionStore().append_message(
+        sid,
+        "assistant",
+        "```r\nnew_script()\n```",
+        pending_script={
+            "script": "new_script()",
+            "analysis_type": "differential_expression",
+            "params": {},
+            "method_context": None,
+            "user_request": "再跑一次",
+            "status": STATUS_PENDING,
+        },
+    )
+
+    response = client.post(
+        "/api/confirm",
+        json={"session_id": sid, "action": ACTION_SCRIPT_CONFIRM, "message_id": old_id},
+    )
+
+    assert response.status_code == 200
+    assert [c["script"] for c in client.app.state.agent.confirm_calls] == ["library(DESeq2)"]
+    # 新卡仍是 pending，旧卡已确认
+    statuses = {
+        m["id"]: m["pending_script"]["status"]
+        for m in SessionStore().get_messages(sid)
+        if m["pending_script"]
+    }
+    assert statuses[old_id] == STATUS_CONFIRMED
+    assert statuses[max(statuses)] == STATUS_PENDING
+
+
+def test_script_confirm_with_stale_message_id_returns_409(client):
+    """卡片已被其它标签页确认后，旧 id 不能重复执行。"""
+    sid = _with_pending_script(client)
+    card_id = _latest_pending(sid)["id"]
+    first = client.post(
+        "/api/confirm",
+        json={"session_id": sid, "action": ACTION_SCRIPT_CONFIRM, "message_id": card_id},
+    )
+    second = client.post(
+        "/api/confirm",
+        json={"session_id": sid, "action": ACTION_SCRIPT_CONFIRM, "message_id": card_id},
+    )
+
+    assert first.status_code == 200
+    assert second.status_code == 409
+    assert len(client.app.state.agent.confirm_calls) == 1
+
+
+def test_script_confirm_failure_releases_card(client):
+    """执行失败要把卡片退回 pending，否则用户既看不到结果也无法重试。"""
+    sid = _with_pending_script(client)
+    card_id = _latest_pending(sid)["id"]
+
+    def _boom(*args, **kwargs):
+        raise RuntimeError("R 环境不可用")
+
+    client.app.state.agent.execute_confirmed_script = _boom
+
+    with pytest.raises(RuntimeError):
+        confirm_script(
+            client.app.state.agent,
+            SessionStore(),
+            sid,
+            ACTION_SCRIPT_CONFIRM,
+            message_id=card_id,
+        )
+
+    statuses = {
+        m["id"]: m["pending_script"]["status"]
+        for m in SessionStore().get_messages(sid)
+        if m["pending_script"]
+    }
+    assert statuses[card_id] == STATUS_PENDING
+
+
 def test_script_confirm_on_expired_returns_409(client):
     sid = _with_pending_script(client, status=STATUS_EXPIRED)
 

@@ -31,14 +31,6 @@ class ConfirmFlowError(ValueError):
         self.code = code
 
 
-def latest_pending_raw(store: SessionStore, session_id: str) -> PendingScript | None:
-    """从库里反查最新一条带 pending_script 的消息（不做过期改写）。"""
-    for msg in reversed(store.get_messages(session_id)):
-        if msg.get("pending_script"):
-            return msg["pending_script"]
-    return None
-
-
 def restore_pending(
     store: SessionStore, session_id: str, messages: list[dict[str, Any]]
 ) -> PendingScript | None:
@@ -68,28 +60,47 @@ def restore_pending(
     return None
 
 
-def confirm_script(agent: Any, store: SessionStore, session_id: str, action: str) -> dict[str, Any]:
-    """确认或取消最新 pending 脚本，并落一条助手消息。"""
-    pending = latest_pending_raw(store, session_id)
-    if pending is None or pending.get("status") != STATUS_PENDING:
+def confirm_script(
+    agent: Any,
+    store: SessionStore,
+    session_id: str,
+    action: str,
+    *,
+    message_id: int | None = None,
+) -> dict[str, Any]:
+    """确认或取消指定（缺省最新）pending 脚本，并落一条助手消息。
+
+    先用 CAS 把卡片改到终态再执行：同一张卡被两个标签页同时确认时，只有一个能拿到执行权。
+    """
+    if action not in SCRIPT_STATUS_BY_ACTION or action not in (
+        ACTION_SCRIPT_CONFIRM,
+        ACTION_SCRIPT_CANCEL,
+    ):
+        raise ConfirmFlowError(ERR_NOT_SCRIPT_ACTION, f"不是脚本动作: {action}")
+
+    status = SCRIPT_STATUS_BY_ACTION[action]
+    claimed = store.claim_script(session_id, status, message_id=message_id)
+    if claimed is None:
         raise ConfirmFlowError(ERR_NO_PENDING_SCRIPT, "没有待确认的脚本")
+    claimed_id, pending = claimed
 
     if action == ACTION_SCRIPT_CANCEL:
-        store.set_script_status(session_id, SCRIPT_STATUS_BY_ACTION[action])
         content = "已取消本次脚本执行。"
         results = None
-    elif action == ACTION_SCRIPT_CONFIRM:
-        result = agent.execute_confirmed_script(
-            pending.get("analysis_type"),
-            pending.get("params") or {},
-            pending.get("script", ""),
-            method_context=pending.get("method_context"),
-        )
-        store.set_script_status(session_id, SCRIPT_STATUS_BY_ACTION[action])
+    else:
+        try:
+            result = agent.execute_confirmed_script(
+                pending.get("analysis_type"),
+                pending.get("params") or {},
+                pending.get("script", ""),
+                method_context=pending.get("method_context"),
+            )
+        except Exception:
+            # 执行失败不能把卡片留在终态，否则用户既看不到结果也无法重试。
+            store.release_script(session_id, claimed_id)
+            raise
         content = build_assistant_message(result)["content"]
         results = result.get("results")
-    else:
-        raise ConfirmFlowError(ERR_NOT_SCRIPT_ACTION, f"不是脚本动作: {action}")
 
     return store.append_message(session_id, "assistant", content, results=results)
 

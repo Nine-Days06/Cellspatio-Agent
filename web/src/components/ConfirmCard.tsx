@@ -57,7 +57,7 @@ export function ConfirmCard({
     const isPending = scriptCard.status === STATUS_PENDING
     const submit = (action: ScriptConfirmRequest['action']) => {
       if (locked) return
-      onConfirm({ session_id, action })
+      onConfirm({ session_id, action, message_id: scriptCard.message_id })
     }
     const lines = scriptCard.script.split('\n')
     return (

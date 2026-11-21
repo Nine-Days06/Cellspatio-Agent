@@ -134,10 +134,11 @@ def list_messages(session_id: str, store: StoreDep, restore: int = 0) -> dict[st
 
 
 class ConfirmRequest(BaseModel):
-    """POST /api/confirm 请求体。action 决定分支，data_confirm 需带三项来源信息。"""
+    """POST /api/confirm 请求体。action 决定分支；脚本动作可用 message_id 锁定卡片。"""
 
     session_id: str
     action: str
+    message_id: int | None = None
     source: str | None = None
     asset_id: str | None = None
     query: str | None = None
@@ -165,7 +166,9 @@ def confirm(body: ConfirmRequest, request: Request, store: StoreDep) -> dict[str
                     query=body.query,
                 )
             elif body.action in SCRIPT_ACTIONS:
-                last = confirm_script(agent, store, body.session_id, body.action)
+                last = confirm_script(
+                    agent, store, body.session_id, body.action, message_id=body.message_id
+                )
             else:
                 raise HTTPException(status_code=400, detail=f"未知动作: {body.action}")
             return {"message": wire_message(last)}

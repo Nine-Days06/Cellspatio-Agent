@@ -811,6 +811,53 @@ class SessionStore:
                 (json.dumps(script, ensure_ascii=False), row["id"]),
             )
 
+    def claim_script(
+        self, session_id: str, status: str, *, message_id: int | None = None
+    ) -> tuple[int, dict[str, Any]] | None:
+        """把指定（缺省最新）pending 脚本原子改成 status，返回 (消息 id, 脚本)。"""
+        with self._conn() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            if message_id is None:
+                row = conn.execute(
+                    "SELECT id, pending_script FROM messages "
+                    "WHERE session_id = ? AND pending_script IS NOT NULL "
+                    "ORDER BY seq DESC LIMIT 1",
+                    (session_id,),
+                ).fetchone()
+            else:
+                row = conn.execute(
+                    "SELECT id, pending_script FROM messages "
+                    "WHERE session_id = ? AND id = ? AND pending_script IS NOT NULL",
+                    (session_id, message_id),
+                ).fetchone()
+            if row is None:
+                return None
+            script = json.loads(row["pending_script"])
+            if script.get("status") != STATUS_PENDING:
+                return None
+            script["status"] = status
+            conn.execute(
+                "UPDATE messages SET pending_script = ? WHERE id = ?",
+                (json.dumps(script, ensure_ascii=False), row["id"]),
+            )
+            return int(row["id"]), script
+
+    def release_script(self, session_id: str, message_id: int) -> None:
+        """把指定脚本卡退回 pending，供执行失败后重试。"""
+        with self._conn() as conn:
+            row = conn.execute(
+                "SELECT pending_script FROM messages WHERE session_id = ? AND id = ?",
+                (session_id, message_id),
+            ).fetchone()
+            if row is None or not row["pending_script"]:
+                return
+            script = json.loads(row["pending_script"])
+            script["status"] = STATUS_PENDING
+            conn.execute(
+                "UPDATE messages SET pending_script = ? WHERE id = ?",
+                (json.dumps(script, ensure_ascii=False), message_id),
+            )
+
 
 def _decode_downloaded(text: str | None) -> list:
     if not text:

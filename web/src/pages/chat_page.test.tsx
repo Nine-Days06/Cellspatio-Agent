@@ -631,7 +631,11 @@ describe('ChatPage 确认卡片接线', () => {
     fireEvent.click(screen.getByRole('button', { name: '执行脚本' }))
 
     await waitFor(() =>
-      expect(confirmActionMock).toHaveBeenCalledWith({ session_id: sid, action: 'script_confirm' }),
+      expect(confirmActionMock).toHaveBeenCalledWith({
+        session_id: sid,
+        action: 'script_confirm',
+        message_id: 7,
+      }),
     )
     await waitFor(() => expect(useChatStore.getState().scriptCard?.status).toBe('confirmed'))
     expect(screen.getByText('已确认执行')).toBeInTheDocument()
