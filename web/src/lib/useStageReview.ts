@@ -20,7 +20,7 @@ export interface StageReviewOptions<T> {
   onRecorded?: () => void
   /** 轮询结束是否触发 onRecorded；QC 由子级显式通知时为 false。 */
   recordOnPoll?: boolean
-  /** 轮询专用读取；Markers 用它避免每轮重复读取接受记录。 */
+  /** 轮询专用读取；用于避免每轮重复读取较重数据。 */
   pollLoad?: (state: T | null) => Promise<T>
   onRunning?: (running: boolean) => void
   pollMs?: number
