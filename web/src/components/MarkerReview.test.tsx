@@ -143,6 +143,7 @@ describe('聚类接受与 marker 独立授权', () => {
     const view = render(<MarkerReview {...source} revision={10} onRunning={running} onRecorded={recorded} />)
     await authorize()
     expect(running).toHaveBeenLastCalledWith(true)
+    expect(running.mock.calls.filter(([active]) => active)).toHaveLength(1)
     view.rerender(<MarkerReview {...source} sessionId="s2" runId="r2" revision={10} onRunning={running} onRecorded={recorded} />)
     await waitFor(() => expect(fetchMarkers).toHaveBeenCalledWith({ ...source, sessionId: 's2', runId: 'r2' }))
     await act(async () => { resolve(completed) })

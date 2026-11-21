@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react'
 import { Button } from '@/components/ui/button'
 import { Textarea } from '@/components/ui/textarea'
 import { clusterDiagnosticPath, executeClusters, fetchClusters } from '@/lib/api'
+import { stageActivity } from '@/lib/stageActivity'
 import { evaluateStageGate, isAttemptedByBinding } from '@/lib/stageGate'
 import { useStageReview } from '@/lib/useStageReview'
 import type { ClusterState } from '@/lib/types'
@@ -18,14 +19,15 @@ export function ClusterReview({ sessionId, runId, filterAttemptId, pcaAttemptId,
   const stage = useStageReview<ClusterState>({
     load: () => fetchClusters(sessionId, runId, filterAttemptId, pcaAttemptId),
     deps: [sessionId, runId, filterAttemptId, pcaAttemptId, revision],
-    isRunning: (current, executing) => executing || (current?.attempts.some((a) => a.status === 'running') ?? false),
+    isRunning: (current, executing) => stageActivity({ attempts: current?.attempts, executing }).selfRunning,
     onRecorded,
   })
   const { state, busy, executing, error } = stage
   const callbacks = useRef({ onRunning })
   callbacks.current = { onRunning }
-  const clusterRunning = executing || (state?.attempts.some((a) => a.status === 'running') ?? false)
-  const running = clusterRunning || markerRunning.length > 0
+  const activity = stageActivity({ attempts: state?.attempts, executing, downstream: markerRunning })
+  const clusterRunning = activity.selfRunning
+  const running = activity.running
 
   useEffect(() => {
     setReason(''); setMarkerRunning([])

@@ -4,6 +4,7 @@ import { Input } from '@/components/ui/input'
 import { Textarea } from '@/components/ui/textarea'
 import { PcaReview } from '@/components/PcaReview'
 import { approveQc, fetchQc, filterQc, previewQc, rejectQc } from '@/lib/api'
+import { stageActivity } from '@/lib/stageActivity'
 import { evaluateStageGate, isAttemptedByPreview } from '@/lib/stageGate'
 import { useStageReview } from '@/lib/useStageReview'
 import type { QcReviewState, QcThresholds } from '@/lib/types'
@@ -21,11 +22,6 @@ const reasonNames: Record<string, string> = {
   n_feature_below_min: 'features 低于下限', n_feature_above_max: 'features 高于上限',
   n_count_below_min: 'counts 低于下限', n_count_above_max: 'counts 高于上限',
   mt_above_max: 'percent.mt 超过上限', mt_unavailable: 'percent.mt 不可定义',
-}
-
-function runningOf(state: QcReviewState | null, executing: boolean, pcaRunning: string[]) {
-  return executing || (state?.attempts?.some((attempt) => attempt.status === 'running') ?? false) ||
-    !!state?.pca_running || !!state?.cluster_running || !!state?.marker_running || pcaRunning.length > 0
 }
 
 /** 只批准已展示的精确预览；编辑阈值立即禁用旧批准。 */
@@ -54,11 +50,15 @@ export function QcReview({ sessionId, runId, onRecorded }: { sessionId: string; 
     deps: [sessionId, runId],
     // 只轮询 QC 自身执行；子级运行由 pcaRecorded 显式刷新，避免双发。
     isRunning: (current, isExecuting) =>
-      isExecuting || (current?.attempts?.some((attempt) => attempt.status === 'running') ?? false),
+      stageActivity({ attempts: current?.attempts, executing: isExecuting }).selfRunning,
     onLoaded: accept,
     onRecorded,
   })
-  const running = runningOf(state, executing, pcaRunning)
+  const running = stageActivity({
+    attempts: state?.attempts,
+    executing,
+    downstream: !!state?.pca_running || !!state?.cluster_running || !!state?.marker_running || pcaRunning,
+  }).running
 
   useEffect(() => {
     setValues(empty)
