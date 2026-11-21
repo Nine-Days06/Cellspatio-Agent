@@ -31,6 +31,20 @@ describe('受控聚类独立授权', () => {
     expect(screen.getByRole('button', { name: '下游 marker 运行中…' })).toBeDisabled()
   })
 
+  it('聚类轮询到终态只通知一次父级刷新', async () => {
+    vi.useFakeTimers()
+    const running = { ...completed, attempts: [{ ...completed.attempts[0], status: 'running' as const, result: null }] }
+    vi.mocked(fetchClusters).mockResolvedValueOnce(running).mockResolvedValue(completed)
+    const recorded = vi.fn()
+    render(<ClusterReview {...props} onRecorded={recorded} />)
+    await act(async () => {})
+    await act(async () => { await vi.advanceTimersByTimeAsync(1500) })
+    expect(recorded).toHaveBeenCalledTimes(1)
+    await act(async () => { await vi.advanceTimersByTimeAsync(6000) })
+    expect(recorded).toHaveBeenCalledTimes(1)
+    expect(fetchClusters).toHaveBeenCalledTimes(2)
+  })
+
   it('空初值、明确确切绑定/review/revision，刷新恢复只有 GET', async () => {
     const recorded = vi.fn()
     const view = render(<ClusterReview {...props} onRecorded={recorded} />)

@@ -3,6 +3,7 @@ import { Button } from '@/components/ui/button'
 import { Textarea } from '@/components/ui/textarea'
 import { executeMarkers, fetchClusterAcceptance, fetchMarkerCandidates, fetchMarkers, markerDiagnosticPath, recordClusterAcceptance, recordClusterRejection, reviewMarkers } from '@/lib/api'
 import { evaluateStageGate, isAttemptedByBinding } from '@/lib/stageGate'
+import { useStageReview } from '@/lib/useStageReview'
 import type { ClusterAcceptanceState, MarkerPage, MarkerState } from '@/lib/types'
 import { AnalysisImage } from '@/components/AnalysisImage'
 
@@ -45,66 +46,44 @@ export function MarkerReview({ sessionId, runId, filterAttemptId, pcaAttemptId, 
   revision: number; disabled?: boolean; onRunning?: (active: boolean) => void; onRecorded?: () => void
 }) {
   const source = { sessionId, runId, filterAttemptId, pcaAttemptId, clusterAttemptId }
-  const [review, setReview] = useState<ClusterAcceptanceState | null>(null)
-  const [state, setState] = useState<MarkerState | null>(null)
   const [accepted, setAccepted] = useState(false)
   const [reviewReason, setReviewReason] = useState('')
   const [reason, setReason] = useState('')
   const [markerReasons, setMarkerReasons] = useState<Record<string, string>>({})
-  const [busy, setBusy] = useState(true)
-  const [executing, setExecuting] = useState(false)
-  const [error, setError] = useState('')
-  const generation = useRef(0)
-  const callbacks = useRef({ onRunning, onRecorded })
-  callbacks.current = { onRunning, onRecorded }
+  const identity = `${sessionId}|${runId}|${filterAttemptId}|${pcaAttemptId}|${clusterAttemptId}|${revision}`
+  const identityRef = useRef(identity)
+  identityRef.current = identity
+  const stage = useStageReview<{ review: ClusterAcceptanceState; state: MarkerState }>({
+    load: async () => {
+      const [review, state] = await Promise.all([fetchClusterAcceptance(source), fetchMarkers(source)])
+      return { review, state }
+    },
+    deps: [sessionId, runId, filterAttemptId, pcaAttemptId, clusterAttemptId, revision],
+    isRunning: (snapshot, executing) => executing || (snapshot?.state.attempts.some((a) => a.status === 'running') ?? false),
+    onRunning,
+    onRecorded,
+  })
+  const review = stage.state?.review ?? null
+  const state = stage.state?.state ?? null
+  const { busy, executing, error, setState: setSnapshot } = stage
   const running = executing || (state?.attempts.some((a) => a.status === 'running') ?? false)
 
   useEffect(() => {
-    const ticket = ++generation.current
-    setReview(null); setState(null); setAccepted(false); setReviewReason(''); setReason(''); setMarkerReasons({}); setError(''); setBusy(true); setExecuting(false)
-    Promise.all([fetchClusterAcceptance({ sessionId, runId, filterAttemptId, pcaAttemptId, clusterAttemptId }), fetchMarkers({ sessionId, runId, filterAttemptId, pcaAttemptId, clusterAttemptId })])
-      .then(([nextReview, next]) => { if (ticket === generation.current) { setReview(nextReview); setState(next) } })
-      .catch((err: Error) => { if (ticket === generation.current) setError(err.message) })
-      .finally(() => { if (ticket === generation.current) setBusy(false) })
-    return () => { generation.current++ }
+    setAccepted(false); setReviewReason(''); setReason(''); setMarkerReasons({})
+    // 身份变化时丢弃未保存依据；hook 负责清空记录并重新读取。
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [sessionId, runId, filterAttemptId, pcaAttemptId, clusterAttemptId, revision])
 
-  useEffect(() => {
-    callbacks.current.onRunning?.(running)
-    return () => callbacks.current.onRunning?.(false)
-  }, [running])
-
-  useEffect(() => {
-    if (!running || busy) return
-    const ticket = generation.current
-    let ignore = false
-    let timer: number
-    async function poll() {
-      let again = true
-      try {
-        const next = await fetchMarkers({ sessionId, runId, filterAttemptId, pcaAttemptId, clusterAttemptId })
-        if (ignore || ticket !== generation.current) return
-        setState(next); setError('')
-        again = next.attempts.some((a) => a.status === 'running')
-        if (!again) callbacks.current.onRecorded?.()
-      } catch (err) {
-        if (!ignore && ticket === generation.current) setError(err instanceof Error ? err.message : '状态读取失败')
-      } finally {
-        if (again && !ignore && ticket === generation.current) timer = window.setTimeout(() => void poll(), 1500)
-      }
-    }
-    timer = window.setTimeout(() => void poll(), 1500)
-    return () => { ignore = true; window.clearTimeout(timer) }
-  }, [running, busy, sessionId, runId, filterAttemptId, pcaAttemptId, clusterAttemptId])
-
   async function refresh() {
-    const ticket = ++generation.current
-    setBusy(true); setError(''); setReview(null); setState(null); setAccepted(false); setReviewReason(''); setReason(''); setMarkerReasons({})
+    setAccepted(false); setReviewReason(''); setReason(''); setMarkerReasons({})
+    await stage.refresh()
+  }
+
+  async function recoverSnapshot() {
     try {
       const [nextReview, next] = await Promise.all([fetchClusterAcceptance(source), fetchMarkers(source)])
-      if (ticket === generation.current) { setReview(nextReview); setState(next) }
-    } catch (err) { if (ticket === generation.current) setError(err instanceof Error ? err.message : '读取失败') }
-    finally { if (ticket === generation.current) setBusy(false) }
+      setSnapshot({ review: nextReview, state: next })
+    } catch { setSnapshot(null) }
   }
 
   async function submit(kind: 'accept' | 'reject' | 'execute') {
@@ -113,58 +92,51 @@ export function MarkerReview({ sessionId, runId, filterAttemptId, pcaAttemptId, 
     } else if (kind === 'reject') {
       if (!review?.binding_sha256 || !reviewReason.trim()) return
     } else if (!state?.binding_sha256 || !state.review || !reason.trim()) return
-    const ticket = ++generation.current
-    setBusy(true); setError(''); setExecuting(kind === 'execute')
-    try {
-      if (kind === 'accept' && review?.binding_sha256) {
-        const nextReview = await recordClusterAcceptance(source, review.binding_sha256, review.revision, reviewReason.trim())
-        if (ticket !== generation.current) return
-        setReview(nextReview); setAccepted(false); setReviewReason('')
-        const next = await fetchMarkers(source)
-        if (ticket !== generation.current) return
-        setState(next)
-      } else if (kind === 'reject' && review?.binding_sha256) {
-        const nextReview = await recordClusterRejection(source, review.binding_sha256, review.revision, reviewReason.trim())
-        if (ticket !== generation.current) return
-        setReview(nextReview); setReviewReason('')
-        const next = await fetchMarkers(source)
-        if (ticket !== generation.current) return
-        setState(next)
-      } else if (state?.binding_sha256 && state.review) {
-        const next = await executeMarkers(source, state.binding_sha256, state.review.review_id, state.revision, reason.trim())
-        if (ticket !== generation.current) return
-        setState(next); setReason('')
-      }
-      callbacks.current.onRecorded?.()
-    } catch (err) {
-      if (ticket !== generation.current) return
-      setError(err instanceof Error ? err.message : '请求失败；请只读刷新，不要重复执行')
+    const current = stage.state
+    if (!current) return
+    const startedIdentity = identityRef.current
+    const reasonText = reviewReason.trim()
+    const executeReason = reason.trim()
+    const ok = await stage.perform(async () => {
       try {
-        const [nextReview, next] = await Promise.all([fetchClusterAcceptance(source), fetchMarkers(source)])
-        if (ticket === generation.current) { setReview(nextReview); setState(next) }
-      } catch { if (ticket === generation.current) { setReview(null); setState(null) } }
-    } finally { if (ticket === generation.current) { setBusy(false); setExecuting(false) } }
+        if (kind === 'accept') {
+          const nextReview = await recordClusterAcceptance(source, current.review.binding_sha256!, current.review.revision, reasonText)
+          return { review: nextReview, state: await fetchMarkers(source) }
+        }
+        if (kind === 'reject') {
+          const nextReview = await recordClusterRejection(source, current.review.binding_sha256!, current.review.revision, reasonText)
+          return { review: nextReview, state: await fetchMarkers(source) }
+        }
+        const next = await executeMarkers(source, current.state.binding_sha256!, current.state.review!.review_id, current.state.revision, executeReason)
+        return { review: current.review, state: next }
+      } catch (err) {
+        // 失败只读恢复；身份已变化时旧结果不得落地。
+        if (identityRef.current === startedIdentity) await recoverSnapshot()
+        throw err
+      }
+    }, { executing: kind === 'execute', recorded: true })
+    if (!ok) return
+    if (kind === 'accept') { setAccepted(false); setReviewReason('') }
+    else if (kind === 'reject') setReviewReason('')
+    else setReason('')
   }
 
   async function submitMarkerReview(attemptId: string, decision: 'accepted' | 'rejected') {
     const reviewReasonText = markerReasons[attemptId]?.trim()
     if (!state || !reviewReasonText) return
-    const ticket = ++generation.current
-    setBusy(true); setError('')
-    try {
-      const next = await reviewMarkers(source, attemptId, decision, state.revision, reviewReasonText)
-      if (ticket !== generation.current) return
-      setState(next)
-      setMarkerReasons((previous) => ({ ...previous, [attemptId]: '' }))
-      callbacks.current.onRecorded?.()
-    } catch (err) {
-      if (ticket !== generation.current) return
-      setError(err instanceof Error ? err.message : '复核请求失败；请只读刷新')
+    const current = stage.state
+    if (!current) return
+    const startedIdentity = identityRef.current
+    const ok = await stage.perform(async () => {
       try {
-        const next = await fetchMarkers(source)
-        if (ticket === generation.current) setState(next)
-      } catch { if (ticket === generation.current) setState(null) }
-    } finally { if (ticket === generation.current) setBusy(false) }
+        const next = await reviewMarkers(source, attemptId, decision, current.state.revision, reviewReasonText)
+        return { review: current.review, state: next }
+      } catch (err) {
+        if (identityRef.current === startedIdentity) await recoverSnapshot()
+        throw err
+      }
+    }, { recorded: true })
+    if (ok) setMarkerReasons((previous) => ({ ...previous, [attemptId]: '' }))
   }
 
   const reviewGateFacts = {
