@@ -7,7 +7,7 @@ from src.control.workflow_recorder import WorkflowRecorder
 from src.data.fetchers.base import AssetInfo, AssetMeta
 from src.ui.analysis_roots import AnalysisRoots
 from src.ui.session_store import SessionStore
-from tests.unit.fakes import FakeExec, FakeGen, FakeIntent
+from tests.unit.fakes import FakeExec, FakeGen, FakeIntent, write_declared_output
 
 
 class MockKnowledgeClient:
@@ -19,12 +19,17 @@ class MockRExecutor:
     def execute_code(self, code):
         from types import SimpleNamespace
 
+        write_declared_output(code)
         return SimpleNamespace(returncode=0, stdout="", stderr="")
 
 
 class MockRScriptGenerator:
     def generate_code(self, analysis_type, params, method_context=None):
-        return f"# R code for {analysis_type}"
+        output = params.get("output_file")
+        script = f"# R code for {analysis_type}"
+        if output:
+            script += f'\noutput_file <- "{output}"\n'
+        return script
 
 
 class MockVisualizer:
@@ -350,6 +355,34 @@ def test_de_success_returns_explanation_field():
     assert result.get("explanation") == "解说文本"
 
 
+def test_de_success_without_output_file_is_error():
+    """R 正常退出但没有产物文件时不能算成功。"""
+    wm = WorkflowManager(
+        intent_parser=FakeIntent(),
+        knowledge_client=None,
+        r_executor=FakeExec(outputs=False),
+        visualizer=None,
+        r_script_generator=FakeGen(return_value="# s"),
+    )
+    result = wm.execute_workflow("做差异表达")
+    assert result["status"] == "error"
+    assert "未产出结果文件" in result["message"]
+
+
+def test_de_success_with_empty_output_file_is_error():
+    """产物是 0 字节时同样算失败。"""
+    wm = WorkflowManager(
+        intent_parser=FakeIntent(),
+        knowledge_client=None,
+        r_executor=FakeExec(output_text=""),
+        visualizer=None,
+        r_script_generator=FakeGen(return_value="# s"),
+    )
+    result = wm.execute_workflow("做差异表达")
+    assert result["status"] == "error"
+    assert "未产出结果文件" in result["message"]
+
+
 def test_fetch_candidates_include_reason_and_confirm_detail():
     from src.control.workflow_manager import WorkflowManager
 
@@ -450,7 +483,8 @@ def test_de_retries_after_repair_then_succeeds():
 
         def repair(self, code, err):
             self.calls.append(err)
-            return "# repaired"
+            output = ((gen.last or {}).get("params") or {}).get("output_file")
+            return f'# repaired\noutput_file <- "{output}"\n'
 
     rep = FakeRepairer()
     call_count = {"n": 0}
@@ -460,17 +494,20 @@ def test_de_retries_after_repair_then_succeeds():
         if call_count["n"] == 1:
             raise RExecutorError("first fail")
 
+        write_declared_output(code)
+
         class R:
             returncode = 0
 
         return R()
 
+    gen = FakeGen(return_value="# attempt")
     wm = WorkflowManager(
         intent_parser=FakeIntent(),
         knowledge_client=None,
         r_executor=FakeExec(side_effect=flaky_side_effect),
         visualizer=None,
-        r_script_generator=FakeGen(return_value="# attempt"),
+        r_script_generator=gen,
         code_repairer=rep,
         max_repair_attempts=2,
     )

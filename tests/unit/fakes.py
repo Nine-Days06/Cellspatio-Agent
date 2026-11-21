@@ -7,11 +7,24 @@
 
 from __future__ import annotations
 
+import re
 from collections.abc import Callable
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 from unittest.mock import Mock
+
+_OUTPUT_DECL = re.compile(r'^output_file\s*<-\s*"(.+?)"\s*$', re.MULTILINE)
+
+
+def write_declared_output(code: str, text: str = "gene,padj\nG1,0.01\n") -> None:
+    """按脚本里声明的 `output_file <- "..."` 落一个非空产物，模拟真实 R 脚本写出结果。"""
+    for raw in _OUTPUT_DECL.findall(code or ""):
+        path = Path(raw.replace("\\\\", "\\"))
+        if not path.suffix:
+            continue
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(text, encoding="utf-8")
 
 
 class FakeIntent:
@@ -79,7 +92,11 @@ class FakeGen:
         if self.track_ctx:
             self.ctx_seen = method_context
         self.last = {"type": analysis_type, "params": params}
-        return self._return_value
+        output = params.get("output_file")
+        if not output:
+            return self._return_value
+        # 真实脚本会写 output_file；桩也声明一行，供 FakeExec 落盘
+        return f'{self._return_value}\noutput_file <- "{output}"\n'
 
 
 class FakeExec:
@@ -90,6 +107,8 @@ class FakeExec:
     - track_codes: 记录执行的代码列表
     - fail_once: 第一次调用抛出异常，后续成功
     - side_effect: 可调用对象，接收 code 返回自定义结果或抛异常
+    默认按脚本里声明的 output_file 落一个非空产物；outputs=False 可关闭，
+    用于覆盖“脚本正常退出但没有产物”的失败路径。
     """
 
     def __init__(
@@ -99,12 +118,16 @@ class FakeExec:
         fail_once: bool = False,
         side_effect: Callable[[str], Any] | None = None,
         return_value: Any | None = None,
+        outputs: bool = True,
+        output_text: str = "gene,padj\nG1,0.01\n",
     ):
         self.track_codes = track_codes
         self.fail_once = fail_once
         self._fail_count = 0
         self.side_effect = side_effect
         self._return_value = return_value
+        self.outputs = outputs
+        self.output_text = output_text
         self.codes: list[str] = []
 
     def execute_code(self, code: str) -> Any:
@@ -118,6 +141,9 @@ class FakeExec:
             self._fail_count += 1
             if self._fail_count == 1:
                 raise RuntimeError("first fail")
+
+        if self.outputs:
+            write_declared_output(code, self.output_text)
 
         if self._return_value is not None:
             return self._return_value

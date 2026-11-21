@@ -538,6 +538,21 @@ class WorkflowManager:
             result.returncode,
         )
         if result.returncode == 0:
+            output_path = Path(output_file)
+            # R 脚本可能吞掉错误后正常退出；没有产物就不能算成功
+            if not output_path.is_file() or output_path.stat().st_size == 0:
+                return {
+                    "status": "error",
+                    "analysis_type": analysis_type,
+                    "message": (
+                        f"{self._analysis_type_zh(analysis_type)}未产出结果文件: {output_path.name}"
+                    ),
+                    "results": {
+                        "returncode": result.returncode,
+                        "repair_count": repair_count,
+                    },
+                }
+        if result.returncode == 0:
             self._record_analysis_to_kb(
                 analysis_type, input_file, output_file, params.get("question", "")
             )

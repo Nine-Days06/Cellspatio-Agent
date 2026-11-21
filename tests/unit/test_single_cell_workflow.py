@@ -262,10 +262,15 @@ def test_unprojected_de_and_spatial_outputs_under_analysis_root(tmp_path):
     assert gen.last["params"]["plot_file"] == str(base / "spatial" / "run-spatial.spatial_plot.png")
 
 
-def test_execute_confirmed_script_still_accepts_spatial():
+def test_execute_confirmed_script_still_accepts_spatial(tmp_path):
     wm, _ = _wm(FakeIntent(), require=True)
+    params = {
+        "input_file": "d",
+        "output_file": str(tmp_path / "e.csv"),
+        "plot_file": str(tmp_path / "f.png"),
+    }
     result = wm.execute_confirmed_script(
-        "spatial", {"input_file": "d", "output_file": "e", "plot_file": "f"}, "# s"
+        "spatial", params, f'# s\noutput_file <- "{params["output_file"]}"\n'
     )
     assert result["status"] == "success"
 

@@ -49,7 +49,7 @@ def test_execute_confirmed_script_runs_repair_loop(tmp_path):
     result = wm.execute_confirmed_script(
         "differential_expression",
         params,
-        "#!/usr/bin/env Rscript\n# user-approved",
+        f'#!/usr/bin/env Rscript\n# user-approved\noutput_file <- "{params["output_file"]}"\n',
     )
     assert result["status"] == "success"
     assert "user-approved" in wm.r_executor.codes[0]
