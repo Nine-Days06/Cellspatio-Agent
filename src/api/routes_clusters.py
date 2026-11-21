@@ -11,7 +11,6 @@ from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import Response
 from pydantic import Field, field_validator
 
-from src.analysis.qc_preview import _identity
 from src.analysis.sc_cluster import (
     CLUSTER_TOOL_VERSION,
     PROTOCOL,
@@ -27,6 +26,7 @@ from src.api.deps import StoreDep
 from src.api.routes_pca import dimension_view, require_parent, require_pca
 from src.api.routes_qc import require_run, run_qc_root
 from src.api.stage_runtime import RUNNING, has_running, running_stages
+from src.api.verified_artifact import read_verified_artifact
 from src.ui.run_snapshot import RunSnapshot
 from src.ui.session_store import SessionStore
 
@@ -167,7 +167,7 @@ def get_clusters(
             run,
             require_parent(run, filter_attempt_id),
             require_pca(run, filter_attempt_id, pca_attempt_id),
-            run_qc_root(request.app.state.agent, run),
+            run_qc_root(request.app.state.analysis_roots, run),
         )
     except sqlite3.Error as exc:
         logger.error("cluster state database read failed: %s", type(exc).__name__)
@@ -197,7 +197,7 @@ def execute_clusters(
         """按父过滤与 PCA 定位本 run 的完整上游链。"""
         parent = require_parent(run, filter_attempt_id)
         pca = require_pca(run, filter_attempt_id, pca_attempt_id)
-        return parent, pca, run_qc_root(request.app.state.agent, run)
+        return parent, pca, run_qc_root(request.app.state.analysis_roots, run)
 
     def previous(run: RunSnapshot) -> dict[str, Any] | None:
         """按 PCA 尝试、来源绑定与工具版本查找已落库的聚类尝试。"""
@@ -322,22 +322,20 @@ def diagnostic(
         run = require_run(store, session_id, run_id)
         require_parent(run, filter_attempt_id)
         require_pca(run, filter_attempt_id, pca_attempt_id)
-        attempt = next(
-            (a for a in run.cluster_attempts(pca_attempt_id) if a["attempt_id"] == attempt_id),
-            None,
-        )
+        attempt = run.attempt("cluster", attempt_id, pca_attempt_id)
         if attempt is None or attempt["status"] != "completed":
             raise HTTPException(404, "聚类图未完成或不存在")
         checked_completed_cluster(
             run,
             attempt,
-            run_qc_root(request.app.state.agent, run),
+            run_qc_root(request.app.state.analysis_roots, run),
             routes_pca.DIMENSION_RECORD_VERSION,
         )
-        path = Path(attempt["directory"]).resolve() / "umap_clusters.png"
-        data = path.read_bytes()
-        if {"path": str(path), **_identity(data)} != attempt["result"]["artifacts"][path.name]:
-            raise ValueError("图身份变化")
+        data = read_verified_artifact(
+            attempt=attempt,
+            name="umap_clusters.png",
+            identity_error="图身份变化",
+        ).data
     except sqlite3.Error as exc:
         logger.error("cluster diagnostic database read failed: %s", type(exc).__name__)
         raise HTTPException(409, "聚类状态读取失败，请检查本地数据库") from exc
@@ -348,10 +346,7 @@ def diagnostic(
 
 def require_cluster(run: RunSnapshot, pca_attempt_id: str, attempt_id: str) -> dict[str, Any]:
     """只定位本 run 与 PCA 下的确切聚类尝试。"""
-    cluster = next(
-        (a for a in run.cluster_attempts(pca_attempt_id) if a["attempt_id"] == attempt_id),
-        None,
-    )
+    cluster = run.attempt("cluster", attempt_id, pca_attempt_id)
     if cluster is None:
         raise HTTPException(404, "聚类关联不存在")
     return cluster
@@ -411,7 +406,7 @@ def _review_view(
         return review_view(
             run,
             require_cluster(run, pca_attempt_id, attempt_id),
-            run_qc_root(request.app.state.agent, run),
+            run_qc_root(request.app.state.analysis_roots, run),
         )
     except sqlite3.Error as exc:
         logger.error("cluster review database read failed: %s", type(exc).__name__)
@@ -435,7 +430,7 @@ def record_review(
         require_parent(run, filter_attempt_id)
         require_pca(run, filter_attempt_id, pca_attempt_id)
         cluster = require_cluster(run, pca_attempt_id, attempt_id)
-        root = run_qc_root(request.app.state.agent, run)
+        root = run_qc_root(request.app.state.analysis_roots, run)
         previous = next(
             (
                 d
@@ -489,7 +484,7 @@ def reject_review(
         require_parent(run, filter_attempt_id)
         require_pca(run, filter_attempt_id, pca_attempt_id)
         cluster = require_cluster(run, pca_attempt_id, attempt_id)
-        root = run_qc_root(request.app.state.agent, run)
+        root = run_qc_root(request.app.state.analysis_roots, run)
         state = review_view(run, cluster, root)
         if not state["binding_sha256"] or state["binding_sha256"] != body.binding_sha256:
             raise HTTPException(409, "聚类证据不可记录或已变化，请只读刷新")

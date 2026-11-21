@@ -9,6 +9,8 @@ from types import SimpleNamespace
 
 import pytest
 
+import src.ui.sc_stages as sc_stages
+from src.api.routes_pca import DIMENSION_RECORD_VERSION
 from tests.unit.test_sc_pca import PARAMS
 from tests.unit.test_sc_pca import parent_ready as _parent_ready
 
@@ -115,19 +117,85 @@ def test_strict_request_rejected(dimensions_ready, payload):
 def test_association_and_stale_binding_revision(dimensions_ready):
     """跨会话/父/PCA 404，陈旧绑定或 revision 409。"""
     d = dimensions_ready
-    for target in (
-        d.target.replace(d.sid, d.store.create_session()),
-        d.target.replace(d.fid, "unknown"),
-        d.target.replace(d.aid, "unknown"),
+    for target, detail in (
+        (
+            d.target.replace(d.sid, d.store.create_session()),
+            "QC 关联不存在；旧证据需重新 QC 才能交互",
+        ),
+        (d.target.replace(d.fid, "unknown"), "父过滤关联不存在"),
+        (d.target.replace(d.aid, "unknown"), "PCA 关联不存在"),
     ):
-        assert d.client.get(target).status_code == 404
-        assert d.client.post(target, json=d.body).status_code == 404
+        for response in (d.client.get(target), d.client.post(target, json=d.body)):
+            assert response.status_code == 404
+            assert response.json()["detail"] == detail
     for payload in (
         {"binding_sha256": "0" * 64},
         {"revision": d.body["revision"] - 1},
         {"revision": 2**63 - 1},
     ):
         assert d.client.post(d.target, json={**d.body, **payload}).status_code == 409
+
+
+def test_dimension_record_uses_review_fact_seam(dimensions_ready, monkeypatch):
+    """维度记录由统一接缝追加，阶段只提供匹配键与身份校验。"""
+    d = dimensions_ready
+    calls = []
+    real = sc_stages.append_review_fact
+
+    def spy(connect, encode_results, plan, **kwargs):
+        calls.append((plan, kwargs))
+        return real(connect, encode_results, plan, **kwargs)
+
+    monkeypatch.setattr(sc_stages, "append_review_fact", spy)
+    response = d.client.post(d.target, json=d.body)
+    assert response.status_code == 200
+    assert response.json()["current"]["dims"] == [1]
+    assert len(calls) == 1
+    plan, kwargs = calls[0]
+    assert plan.table == "sc_pca_dimension_reviews"
+    assert plan.previous_match == {
+        "pca_attempt_id": d.aid,
+        "binding_sha256": d.body["binding_sha256"],
+        "record_version": DIMENSION_RECORD_VERSION,
+        "source_revision": d.body["revision"],
+    }
+    assert plan.latest_match == {"pca_attempt_id": d.aid}
+    assert plan.insert_values["dims"] == json.dumps([1])
+    assert plan.run_id == d.rid and plan.session_id == d.sid
+    assert plan.message is not None
+    content, results = plan.message({"review_id": "review-1"})
+    assert content == "维度选择已记录，科学未复核；未授权下游执行。"
+    assert results == {
+        "pca_dimensions": {
+            "run_id": d.rid,
+            "filter_attempt_id": d.fid,
+            "attempt_id": d.aid,
+            "review_id": "review-1",
+            "stage": "pca_review",
+            "scientific_status": "unreviewed",
+        }
+    }
+    assert kwargs["validate"] is not None
+
+
+def test_missing_run_is_rejected_before_existing_dimension_fact(dimensions_ready):
+    """previous 命中也不掩盖跨会话的 QC 关联缺失。"""
+    d = dimensions_ready
+    assert d.client.post(d.target, json=d.body).status_code == 200
+    run = d.store.get_qc_run(d.sid, d.rid)
+    review = run["dimension_reviews"][0]
+    with pytest.raises(ValueError, match="QC 关联不存在"):
+        d.store.stages.record_dimensions(
+            d.store.create_session(),
+            run,
+            next(a for a in run["attempts"] if a["attempt_id"] == d.fid),
+            next(a for a in run["pca_attempts"] if a["attempt_id"] == d.aid),
+            review["binding_sha256"],
+            review["record_version"],
+            review["source_revision"],
+            review["dims"],
+            review["reason"],
+        )
 
 
 def test_database_write_failure_logged_without_exposing_details(

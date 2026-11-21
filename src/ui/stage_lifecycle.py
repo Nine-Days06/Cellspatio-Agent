@@ -1,10 +1,16 @@
-"""阶段 attempt 的通用领取与终态事务骨架；阶段差异由描述提供。"""
+"""阶段 attempt 的通用领取与终态事务骨架；阶段差异由描述提供。
+
+``append_review_fact`` 的执行顺序为：可选 ``validate``（``validate_first`` 时）→
+``before_previous`` → previous 幂等/冲突 → ``validate``（默认）→ latest 去重 →
+``before_insert`` → 消息 → 事实 INSERT → revision 推进。
+"""
 
 from __future__ import annotations
 
 import json
 import sqlite3
-from collections.abc import Callable
+import uuid
+from collections.abc import Callable, Mapping
 from contextlib import AbstractContextManager
 from dataclasses import dataclass
 from typing import Any
@@ -57,6 +63,117 @@ def advance_run(
     conn.execute("UPDATE qc_runs SET revision = revision + 1 WHERE run_id = ?", (run_id,))
     if touch_session:
         conn.execute("UPDATE sessions SET updated_at = ? WHERE id = ?", (now, session_id))
+
+
+@dataclass(frozen=True)
+class ReviewFactPlan:
+    """一次人工复核事实的持久化描述；阶段语义只存在于回调与文案。
+
+    ``previous_match`` / ``latest_match`` 是 WHERE 列值映射，标识符只能来自内部阶段描述；
+    ``insert_values`` 不含接缝生成的 review_id/created_at/message_id。
+    ``latest_match`` 与 ``same_latest`` 必须成对提供；latest 去重要求插入值含
+    ``source_revision``。消息与 run 都依赖 ``session_id``。
+    """
+
+    table: str
+    previous_match: Mapping[str, Any]
+    insert_values: Mapping[str, Any]
+    same_previous: Callable[[sqlite3.Row], bool]
+    conflict_message: str
+    latest_match: Mapping[str, Any] | None = None
+    same_latest: Callable[[sqlite3.Row], bool] | None = None
+    message: Callable[[dict[str, Any]], tuple[str, dict[str, Any]]] | None = None
+    run_id: str | None = None
+    session_id: str | None = None
+
+    def __post_init__(self) -> None:
+        """拒绝会静默降级或无法绑定会话的无效组合。"""
+        if (self.latest_match is None) != (self.same_latest is None):
+            raise ValueError("latest_match 与 same_latest 必须同时提供")
+        if self.latest_match is not None and "source_revision" not in self.insert_values:
+            raise ValueError("latest 去重需要 insert_values.source_revision")
+        if self.session_id is None and (self.run_id is not None or self.message is not None):
+            raise ValueError("复核 run 或消息需要 session_id")
+
+
+@dataclass(frozen=True)
+class ReviewFactResult:
+    """接缝结果：是否新增，以及命中的事实行。"""
+
+    inserted: bool
+    fact: dict[str, Any]
+
+
+def append_review_fact(
+    connect: Callable[[], AbstractContextManager[sqlite3.Connection]],
+    encode_results: Callable[[dict[str, Any]], str],
+    plan: ReviewFactPlan,
+    *,
+    before_previous: Callable[[sqlite3.Connection], None] | None = None,
+    validate: Callable[[sqlite3.Connection], None] | None = None,
+    before_insert: Callable[[sqlite3.Connection], None] | None = None,
+    validate_first: bool = False,
+    clock: Callable[[], str],
+) -> ReviewFactResult:
+    """在单一事务内追加复核事实：previous 幂等/冲突后插入，返回是否新增。
+
+    顺序：可选 ``validate``（``validate_first`` 时）→ ``before_previous`` → previous
+    幂等/冲突 → ``validate``（默认）→ latest 去重 → ``before_insert`` → 消息 →
+    INSERT → revision。``before_previous`` 在幂等早退前检查始终存在的前提；
+    ``validate`` 负责 run/父/attempt 的存在与身份校验；``validate_first`` 供
+    “旧 revision 先报失效”的路径使用，必须同时提供 ``validate``。
+    """
+    if validate_first and validate is None:
+        raise ValueError("validate_first 需要 validate")
+    with connect() as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        if validate_first and validate is not None:
+            validate(conn)
+        if before_previous is not None:
+            before_previous(conn)
+        where = " AND ".join(f"{column} = ?" for column in plan.previous_match)
+        previous = conn.execute(
+            f"SELECT * FROM {plan.table} WHERE {where}", tuple(plan.previous_match.values())
+        ).fetchone()
+        if previous is not None:
+            if not plan.same_previous(previous):
+                raise ValueError(plan.conflict_message)
+            return ReviewFactResult(False, dict(previous))
+        if not validate_first and validate is not None:
+            validate(conn)
+        if plan.latest_match is not None and plan.same_latest is not None:
+            latest_where = " AND ".join(f"{column} = ?" for column in plan.latest_match)
+            latest = conn.execute(
+                f"SELECT * FROM {plan.table} WHERE {latest_where} ORDER BY rowid DESC LIMIT 1",
+                tuple(plan.latest_match.values()),
+            ).fetchone()
+            new_revision = plan.insert_values.get("source_revision")
+            if (
+                latest is not None
+                and new_revision is not None
+                and latest["source_revision"] + 1 == new_revision
+                and plan.same_latest(latest)
+            ):
+                return ReviewFactResult(False, dict(latest))
+        if before_insert is not None:
+            before_insert(conn)
+        now = clock()
+        fact = {**plan.insert_values}
+        fact.setdefault("review_id", uuid.uuid4().hex)
+        fact.setdefault("created_at", now)
+        if plan.message is not None:
+            content, results = plan.message(fact)
+            fact["message_id"] = publish_message(
+                conn, plan.session_id, content, results, now, encode_results
+            )
+        columns = ", ".join(fact)
+        conn.execute(
+            f"INSERT INTO {plan.table} ({columns}) VALUES ({', '.join('?' for _ in fact)})",
+            tuple(fact.values()),
+        )
+        if plan.run_id is not None:
+            advance_run(conn, plan.run_id, plan.session_id, now)
+        return ReviewFactResult(True, fact)
 
 
 class StageLifecycle:

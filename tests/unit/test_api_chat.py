@@ -8,7 +8,7 @@ import threading
 import pytest
 from fastapi.testclient import TestClient
 
-from src.api import chat_service
+from src.api import session_locks
 from src.api.app import create_app
 from src.api.chat_service import session_lock
 from src.ui.session_store import SessionStore
@@ -100,7 +100,7 @@ def test_stream_emits_confirm_card_for_script_branch(client):
 def test_unknown_session_returns_404(client):
     assert client.post("/api/chat", json={"session_id": "nope", "prompt": "hi"}).status_code == 404
     # 404 在抢锁之前返回，不应创建锁条目
-    assert "nope" not in chat_service._locks
+    assert "nope" not in session_locks._locks
 
 
 def test_unverified_qc_keeps_artifact_references_without_pending_script(client):

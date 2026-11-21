@@ -100,7 +100,7 @@ def build_qc_card(
     """QC 阈值复核卡：只含聚合统计、阈值与产物哈希，支持拒绝。"""
     run = _run(store, session_id, run_id)
     reviewed = [
-        preview for preview in run["previews"] if preview["status"] in ("approved", "rejected")
+        preview for preview in run.previews if preview["status"] in ("approved", "rejected")
     ]
     if not reviewed:
         raise ValueError("QC 尚未人工复核，不能生成证据卡")
@@ -186,8 +186,8 @@ def build_cluster_card(
 ) -> EvidenceCard:
     """聚类复核卡：只含簇大小与版本，不含 barcode/UMAP 坐标，支持拒绝。"""
     run = _run(store, session_id, run_id)
-    facts = [{**review, "outcome": "accepted"} for review in run["cluster_reviews"]] + [
-        {**review, "outcome": "rejected"} for review in run.get("cluster_rejections", [])
+    facts = [{**review, "outcome": "accepted"} for review in run.cluster_reviews()] + [
+        {**review, "outcome": "rejected"} for review in run.cluster_rejections()
     ]
     facts = [
         fact for fact in facts if attempt_id is None or fact["cluster_attempt_id"] == attempt_id
@@ -197,14 +197,7 @@ def build_cluster_card(
     facts.sort(key=lambda fact: (fact["created_at"], fact.get("review_id", "")))
     review = facts[-1]
     outcome = review["outcome"]
-    attempt = next(
-        (
-            item
-            for item in run["cluster_attempts"]
-            if item["attempt_id"] == review["cluster_attempt_id"]
-        ),
-        None,
-    )
+    attempt = run.attempt("cluster", review["cluster_attempt_id"])
     if attempt is None or not attempt.get("result"):
         raise ValueError("聚类结果缺失")
     result = attempt["result"]
@@ -270,22 +263,16 @@ def build_pca_dimensions_card(
     run = _run(store, session_id, run_id)
     reviews = [
         review
-        for review in run["dimension_reviews"]
+        for review in run.dimension_reviews()
         if attempt_id is None or review["pca_attempt_id"] == attempt_id
     ]
     if not reviews:
         raise ValueError("PCA 尚未人工记录维度，不能生成证据卡")
     review = reviews[-1]
-    attempt = next(
-        (item for item in run["pca_attempts"] if item["attempt_id"] == review["pca_attempt_id"]),
-        None,
-    )
+    attempt = run.attempt("pca", review["pca_attempt_id"])
     if attempt is None or attempt["status"] != "completed" or not attempt.get("result"):
         raise ValueError("PCA 结果缺失")
-    parent = next(
-        (item for item in run["attempts"] if item["attempt_id"] == attempt["filter_attempt_id"]),
-        None,
-    )
+    parent = run.attempt("filter", attempt["filter_attempt_id"])
     if parent is None:
         raise ValueError("PCA 父过滤缺失")
     result = attempt["result"]
@@ -361,20 +348,13 @@ def build_marker_card(
     run = _run(store, session_id, run_id)
     reviews = [
         review
-        for review in run.get("marker_reviews", [])
+        for review in run.marker_reviews()
         if attempt_id is None or review["marker_attempt_id"] == attempt_id
     ]
     if not reviews:
         raise ValueError("marker 尚未人工复核，不能生成证据卡")
     review = reviews[-1]
-    attempt = next(
-        (
-            item
-            for item in run["marker_attempts"]
-            if item["attempt_id"] == review["marker_attempt_id"]
-        ),
-        None,
-    )
+    attempt = run.attempt("marker", review["marker_attempt_id"])
     if attempt is None or attempt["status"] != "completed" or not attempt.get("result"):
         raise ValueError("marker 结果缺失")
     if review["binding_sha256"] != attempt["binding_sha256"]:

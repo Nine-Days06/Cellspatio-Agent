@@ -1,5 +1,5 @@
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
-import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { QcReview } from '@/components/QcReview'
 import { approveQc, fetchQc, filterQc, previewQc, rejectQc } from '@/lib/api'
 import type { QcReviewState } from '@/lib/types'
@@ -26,6 +26,10 @@ beforeEach(() => {
   vi.mocked(approveQc).mockResolvedValue(approved)
 })
 
+afterEach(() => {
+  vi.useRealTimers()
+})
+
 async function enterPreview() {
   await waitFor(() => expect(screen.getByRole('button', { name: '生成排除预览' })).toBeEnabled())
   fireEvent.change(screen.getByLabelText('RNA features 下限'), { target: { value: '1' } })
@@ -36,6 +40,17 @@ async function enterPreview() {
 }
 
 describe('QC review', () => {
+  it('disables threshold inputs while the initial read is busy', async () => {
+    let resolve!: (value: QcReviewState) => void
+    vi.mocked(fetchQc).mockImplementationOnce(() => new Promise((done) => { resolve = done }))
+    render(<QcReview sessionId="s1" runId="r1" />)
+    expect(screen.getByLabelText('RNA features 下限')).toBeDisabled()
+    expect(screen.getByRole('button', { name: '正在读取或执行…' })).toBeDisabled()
+    await act(async () => { resolve(initial) })
+    await waitFor(() => expect(screen.getByLabelText('RNA features 下限')).toBeEnabled())
+    expect(screen.getByRole('button', { name: '生成排除预览' })).toBeEnabled()
+  })
+
   it.each(['pca_running', 'cluster_running', 'marker_running'] as const)('disables QC changes while %s is running in another view', async (stage) => {
     vi.mocked(fetchQc).mockResolvedValue({ ...preview, [stage]: true })
     render(<QcReview sessionId="s1" runId="r1" />)
@@ -80,14 +95,24 @@ describe('QC review', () => {
     fireEvent.submit(screen.getByRole('button', { name: '生成排除预览' }).closest('form')!)
     expect(screen.getByRole('alert')).toHaveTextContent('请输入合法阈值')
     expect(previewQc).not.toHaveBeenCalled()
-    vi.mocked(previewQc).mockResolvedValue({ ...preview, active_preview: { ...preview.active_preview!, summary: { ...preview.active_preview!.summary, blocked: ['NA 不能批准'] } } })
     await enterPreview()
-    fireEvent.change(screen.getByLabelText('选择依据 / 拒绝原因（仅本地记录）'), { target: { value: 'review' } })
-    expect(screen.getByRole('button', { name: '记录此过滤选择' })).toBeDisabled()
     vi.mocked(previewQc).mockRejectedValue(new Error('证据变化，请重新 QC'))
     fireEvent.click(screen.getByRole('button', { name: '生成排除预览' }))
     await screen.findByText('证据变化，请重新 QC')
     expect(screen.getByRole('button', { name: '记录此过滤选择' })).toBeDisabled()
+    vi.mocked(previewQc).mockResolvedValue({ ...preview, active_preview: { ...preview.active_preview!, summary: { ...preview.active_preview!.summary, blocked: ['NA 不能批准'] } } })
+    await enterPreview()
+    fireEvent.change(screen.getByLabelText('选择依据 / 拒绝原因（仅本地记录）'), { target: { value: 'review' } })
+    expect(screen.getByRole('button', { name: '记录此过滤选择' })).toBeDisabled()
+    expect(screen.getByRole('button', { name: '生成排除预览' })).toBeEnabled()
+  })
+
+  it('keeps preview controls disabled when state never loads', async () => {
+    vi.mocked(fetchQc).mockRejectedValue(new Error('网络失败'))
+    render(<QcReview sessionId="s1" runId="r1" />)
+    await screen.findByText('网络失败')
+    expect(screen.getByLabelText('RNA features 下限')).toBeDisabled()
+    expect(screen.getByRole('button', { name: '生成排除预览' })).toBeDisabled()
   })
 
   it('discards async response after switching run', async () => {
@@ -158,6 +183,31 @@ describe('QC review', () => {
     fireEvent.click(screen.getByRole('button', { name: '拒绝此预览' }))
     await screen.findByText(/此预览已拒绝/)
     expect(rejectQc).toHaveBeenCalledWith('s1', 'r1', 'p1', '阈值过宽')
+    expect(recorded).toHaveBeenCalledOnce()
+  })
+
+  it('refreshes the parent only once when the filter run finishes', async () => {
+    vi.useFakeTimers()
+    const running: QcReviewState = {
+      ...approved,
+      attempts: [{ attempt_id: 'a1', preview_id: 'p1', status: 'running', directory: '/local/a1', created_at: 'now', finished_at: null, result: null }],
+    }
+    const completed: QcReviewState = {
+      ...running,
+      attempts: [{ ...running.attempts![0], status: 'completed', finished_at: 'later', result: { cells: 1, features: 2 } }],
+    }
+    vi.mocked(fetchQc).mockResolvedValueOnce(approved).mockResolvedValue(completed)
+    vi.mocked(filterQc).mockResolvedValue(running)
+    const recorded = vi.fn()
+    render(<QcReview sessionId="s1" runId="r1" onRecorded={recorded} />)
+    await act(async () => { await vi.advanceTimersByTimeAsync(0) })
+    fireEvent.click(screen.getByRole('button', { name: '执行此已记录选择的过滤' }))
+    await act(async () => { await vi.advanceTimersByTimeAsync(0) })
+    expect(filterQc).toHaveBeenCalledOnce()
+    expect(recorded).not.toHaveBeenCalled()
+    await act(async () => { await vi.advanceTimersByTimeAsync(1500) })
+    expect(recorded).toHaveBeenCalledOnce()
+    await act(async () => { await vi.advanceTimersByTimeAsync(6000) })
     expect(recorded).toHaveBeenCalledOnce()
   })
 })

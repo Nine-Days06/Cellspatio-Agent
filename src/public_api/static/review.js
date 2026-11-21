@@ -1,3 +1,6 @@
+import * as api from "./review-api.js";
+import { normalizeActions, noticeFor, reviewerRole } from "./review-model.js";
+
 const TOKEN_KEY = "cellspatio_review_token";
 
 const state = {
@@ -18,6 +21,8 @@ const state = {
   revisesId: null,
   withdrawId: null,
 };
+
+api.setToken(state.token);
 
 const view = {
   login: document.querySelector("#login-view"),
@@ -102,6 +107,7 @@ function clearSession(message) {
   state.preview = null;
   state.revisesId = null;
   state.withdrawId = null;
+  api.setToken(null);
   sessionStorage.removeItem(TOKEN_KEY);
   const url = new URL(location.href);
   url.searchParams.delete("evidence");
@@ -119,26 +125,11 @@ function clearSession(message) {
   if (message) document.querySelector("#login-error").textContent = message;
 }
 
-async function api(path, options = {}) {
-  const headers = { "Content-Type": "application/json", ...(options.headers || {}) };
-  if (state.token) headers.Authorization = `Bearer ${state.token}`;
-  const response = await fetch(path, { ...options, headers });
-  if (response.status === 401 && state.token) {
-    clearSession("登录已失效，请重新登录。");
-    throw new Error("登录已失效");
-  }
-  const data = await response.json().catch(() => ({}));
-  if (!response.ok) throw new Error(data.detail || `请求失败（${response.status}）`);
-  return data;
-}
+api.setUnauthorizedHandler(() => clearSession("登录已失效，请重新登录。"));
 
 function setUser(user) {
   state.user = user;
-  state.role = user.roles.includes("domain_reviewer")
-    ? "domain_reviewer"
-    : user.roles.includes("compliance_reviewer")
-      ? "compliance_reviewer"
-      : null;
+  state.role = reviewerRole(user.roles);
   state.canReview = Boolean(state.role);
   state.canContribute = user.roles.includes("contributor");
   const roleText = state.role
@@ -186,12 +177,12 @@ async function loadWorkspace() {
   state.queue = [];
   state.mine = [];
   if (state.canReview) {
-    const queueData = await api("/api/public/evidence/queue");
+    const queueData = await api.queue();
     state.role = queueData.role;
     state.queue = queueData.queue;
   }
   if (state.canContribute) {
-    state.mine = (await api("/api/public/evidence/mine")).submissions;
+    state.mine = (await api.mine()).submissions;
   }
 
   const params = new URLSearchParams(location.search);
@@ -238,8 +229,8 @@ async function selectEvidence(evidenceId, { updateUrl = true } = {}) {
   renderQueue();
   try {
     const [detail, events] = await Promise.all([
-      api(`/api/public/evidence/${encodeURIComponent(evidenceId)}?unpublished=1`),
-      api(`/api/public/evidence/${encodeURIComponent(evidenceId)}/events`),
+      api.evidence(evidenceId),
+      api.events(evidenceId),
     ]);
     state.selected = detail;
     state.events = events.events;
@@ -323,10 +314,7 @@ async function confirmWithdraw() {
   const reason = view.withdrawReason.value.trim();
   if (!reason) return toast("撤回必须填写原因。");
   try {
-    await api(
-      `/api/public/evidence/submissions/${encodeURIComponent(state.withdrawId)}/withdraw`,
-      { method: "POST", body: JSON.stringify({ reason }) },
-    );
+    await api.withdraw(state.withdrawId, reason);
     toast("已撤回。");
     state.withdrawId = null;
     view.withdrawForm.classList.add("hidden");
@@ -339,10 +327,7 @@ async function confirmWithdraw() {
 async function uploadPreview() {
   if (!state.preview) return;
   try {
-    const result = await api("/api/public/evidence/submissions", {
-      method: "POST",
-      body: JSON.stringify({ preview: state.preview, consent: true }),
-    });
+    const result = await api.uploadSubmission(state.preview, true);
     toast(`已提交，等待复核：${result.evidence_id}`);
     state.preview = null;
     state.revisesId = null;
@@ -363,10 +348,7 @@ async function loadCardFile(event) {
     return toast("文件不是有效的 JSON。");
   }
   try {
-    state.preview = await api("/api/public/evidence/preview", {
-      method: "POST",
-      body: JSON.stringify({ card, revises_submission_id: state.revisesId }),
-    });
+    state.preview = await api.preview(card, state.revisesId);
     renderContribute();
   } catch (error) {
     toast(error.message);
@@ -523,7 +505,7 @@ function contextBlock(card) {
 
 function reviewForm() {
   const review = state.review;
-  const actions = review?.actions || [];
+  const actions = normalizeActions(review?.actions);
   if (!actions.length) return null;
   const role = review.role;
   const required = review.checklists?.[role] || [];
@@ -556,10 +538,7 @@ function reviewForm() {
     controls.forEach(({ button }) => (button.disabled = true));
     const evidenceId = state.selectedId;
     try {
-      await api(`/api/public/evidence/submissions/${encodeURIComponent(evidenceId)}/review`, {
-        method: "POST",
-        body: JSON.stringify(result),
-      });
+      await api.review(evidenceId, result);
       toast("已记录复核结论。");
       await loadWorkspace();
       await selectEvidence(evidenceId);
@@ -596,10 +575,6 @@ function reviewForm() {
     el("label", {}, el("span", { class: "muted", text: "说明" }), reason),
     el("div", { class: "actions" }, ...controls.map(({ button }) => button)),
   );
-}
-
-function noticeText() {
-  return state.review?.blocked_reason || "该提交不在当前角色的待审范围。";
 }
 
 function eventList() {
@@ -687,6 +662,7 @@ function renderDetail() {
   const sources = sourcesSection(card);
 
   const form = reviewForm();
+  const notice = noticeFor(state.review);
   view.detail.append(
     el(
       "article",
@@ -702,7 +678,7 @@ function renderDetail() {
         : null,
       limitations,
       sources,
-      form || el("p", { class: "muted", text: noticeText() }),
+      form || (notice ? el("p", { class: "muted", text: notice }) : null),
       section("审计事件", eventList()),
     ),
   );
@@ -712,14 +688,12 @@ document.querySelector("#login-form").addEventListener("submit", async (event) =
   event.preventDefault();
   document.querySelector("#login-error").textContent = "";
   try {
-    const data = await api("/api/auth/login", {
-      method: "POST",
-      body: JSON.stringify({
-        username: document.querySelector("#username").value.trim(),
-        password: document.querySelector("#password").value,
-      }),
+    const data = await api.login({
+      username: document.querySelector("#username").value.trim(),
+      password: document.querySelector("#password").value,
     });
     state.token = data.token;
+    api.setToken(data.token);
     sessionStorage.setItem(TOKEN_KEY, data.token);
     setUser(data.user);
     await loadWorkspace();
@@ -730,7 +704,7 @@ document.querySelector("#login-form").addEventListener("submit", async (event) =
 
 document.querySelector("#logout").addEventListener("click", async () => {
   try {
-    await api("/api/auth/logout", { method: "POST" });
+    await api.logout();
   } finally {
     clearSession("");
   }
@@ -750,7 +724,7 @@ document.querySelector("#withdraw-cancel").addEventListener("click", () => {
 
 async function boot() {
   try {
-    state.labels = await api("/api/public/vocabulary");
+    state.labels = await api.vocabulary();
   } catch {
     // 词汇不可用时保留空表，页面回退原始键，不阻断登录。
   }
@@ -759,7 +733,7 @@ async function boot() {
     return;
   }
   try {
-    const data = await api("/api/auth/me");
+    const data = await api.currentUser();
     setUser(data.user);
     await loadWorkspace();
   } catch {

@@ -13,6 +13,7 @@ import type {
   ConfirmRequestBody,
   DataCandidate,
   DataCardPayload,
+  ScriptConfirmRequest,
   ScriptCardPayload,
 } from '@/lib/types'
 import { useChatStore } from '@/store/chat'
@@ -54,7 +55,7 @@ export function ConfirmCard({
 
   if (scriptCard) {
     const isPending = scriptCard.status === STATUS_PENDING
-    const submit = (action: ConfirmRequestBody['action']) => {
+    const submit = (action: ScriptConfirmRequest['action']) => {
       if (locked) return
       onConfirm({ session_id, action })
     }

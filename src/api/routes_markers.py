@@ -10,7 +10,6 @@ from typing import Any, Literal
 from fastapi import APIRouter, HTTPException, Query, Request, Response
 from pydantic import BaseModel, ConfigDict, Field
 
-from src.analysis.qc_preview import _identity
 from src.analysis.sc_marker_reviews import review_view
 from src.analysis.sc_markers import (
     MARKER_FIELDS,
@@ -28,6 +27,7 @@ from src.api.routes_clusters import EVIDENCE_ERRORS, require_cluster
 from src.api.routes_pca import PcaRequest, require_parent, require_pca
 from src.api.routes_qc import require_run, run_qc_root
 from src.api.stage_runtime import has_other_marker_running, has_running
+from src.api.verified_artifact import read_verified_artifact
 from src.ui.run_snapshot import RunSnapshot
 
 router = APIRouter(prefix="/api/sessions/{session_id}/qc/{run_id}/markers", tags=["markers"])
@@ -159,7 +159,7 @@ def get_markers(
         return view(
             run,
             _associated(run, filter_attempt_id, pca_attempt_id, cluster_attempt_id),
-            run_qc_root(request.app.state.agent, run),
+            run_qc_root(request.app.state.analysis_roots, run),
         )
     except sqlite3.Error as exc:
         logger.error("marker read failed: %s", type(exc).__name__)
@@ -188,7 +188,7 @@ def execute_markers(
 
     def locate(run: RunSnapshot) -> tuple[dict[str, Any], Path]:
         """按完整父链定位聚类并读取 QC 根目录。"""
-        root = run_qc_root(request.app.state.agent, run)
+        root = run_qc_root(request.app.state.analysis_roots, run)
         return _associated(run, filter_attempt_id, pca_attempt_id, cluster_attempt_id), root
 
     def previous(run: RunSnapshot) -> dict[str, Any] | None:
@@ -310,23 +310,22 @@ def diagnostic(
     try:
         run = require_run(store, session_id, run_id)
         _associated(run, filter_attempt_id, pca_attempt_id, cluster_attempt_id)
-        attempt = next(
-            (a for a in run.marker_attempts(cluster_attempt_id) if a["attempt_id"] == attempt_id),
-            None,
-        )
+        attempt = run.attempt("marker", attempt_id, cluster_attempt_id)
         if not attempt or attempt["status"] != "completed":
             raise HTTPException(404, "marker 图未完成或不存在")
-        checked_completed_marker(run, attempt, run_qc_root(request.app.state.agent, run))
-        path = Path(attempt["directory"]).resolve() / "marker_dotplot.png"
-        data = path.read_bytes()
-        if {"path": str(path), **_identity(data)} != attempt["result"]["artifacts"][path.name]:
-            raise ValueError("marker 图身份变化")
+        checked_completed_marker(run, attempt, run_qc_root(request.app.state.analysis_roots, run))
+        artifact = read_verified_artifact(
+            attempt=attempt,
+            name="marker_dotplot.png",
+            identity_error="marker 图身份变化",
+            magic=b"\x89PNG\r\n\x1a\n",
+        )
     except sqlite3.Error as exc:
         logger.error("marker diagnostic read failed: %s", type(exc).__name__)
         raise HTTPException(409, "marker 状态读取失败") from exc
     except EVIDENCE_ERRORS as exc:
         raise HTTPException(409, "marker 图或来源身份变化；请检查本地证据") from exc
-    return Response(data, media_type="image/png", headers={"Cache-Control": "no-store"})
+    return Response(artifact.data, media_type="image/png", headers={"Cache-Control": "no-store"})
 
 
 @router.get("/{filter_attempt_id}/{pca_attempt_id}/{cluster_attempt_id}/{attempt_id}/candidates")
@@ -347,18 +346,16 @@ def candidates(
     try:
         run = require_run(store, session_id, run_id)
         _associated(run, filter_attempt_id, pca_attempt_id, cluster_attempt_id)
-        attempt = next(
-            (a for a in run.marker_attempts(cluster_attempt_id) if a["attempt_id"] == attempt_id),
-            None,
-        )
+        attempt = run.attempt("marker", attempt_id, cluster_attempt_id)
         if not attempt or attempt["status"] != "completed":
             raise HTTPException(404, "marker 候选未完成或不存在")
-        summary = checked_completed_marker(run, attempt, run_qc_root(request.app.state.agent, run))
-        path = Path(attempt["directory"]).resolve() / "markers.csv"
-        data = path.read_bytes()
-        if {"path": str(path), **_identity(data)} != attempt["result"]["artifacts"][path.name]:
-            raise ValueError("marker 候选身份变化")
-        rows = list(csv.DictReader(io.StringIO(data.decode("utf-8-sig"))))
+        summary = checked_completed_marker(
+            run, attempt, run_qc_root(request.app.state.analysis_roots, run)
+        )
+        artifact = read_verified_artifact(
+            attempt=attempt, name="markers.csv", identity_error="marker 候选身份变化"
+        )
+        rows = list(csv.DictReader(io.StringIO(artifact.data.decode("utf-8-sig"))))
         response.headers["Cache-Control"] = "no-store"
         page = [
             {**{k: r[k] for k in MARKER_FIELDS[:4]}, **{k: float(r[k]) for k in MARKER_FIELDS[4:]}}
@@ -405,10 +402,7 @@ def review_markers(
     try:
         run = require_run(store, session_id, run_id)
         cluster = _associated(run, filter_attempt_id, pca_attempt_id, cluster_attempt_id)
-        attempt = next(
-            (a for a in run.marker_attempts(cluster_attempt_id) if a["attempt_id"] == attempt_id),
-            None,
-        )
+        attempt = run.attempt("marker", attempt_id, cluster_attempt_id)
         if attempt is None:
             raise HTTPException(404, "marker 关联不存在")
         store.stages.record_marker_review(
@@ -421,7 +415,7 @@ def review_markers(
             revision=body.revision,
         )
         current = require_run(store, session_id, run_id)
-        return view(current, cluster, run_qc_root(request.app.state.agent, current))
+        return view(current, cluster, run_qc_root(request.app.state.analysis_roots, current))
     except sqlite3.Error as exc:
         logger.error("marker review database write failed: %s", type(exc).__name__)
         raise HTTPException(409, "marker 复核写入失败，请只读刷新") from exc

@@ -4,6 +4,7 @@ import { Textarea } from '@/components/ui/textarea'
 import { executePca, fetchPca, pcaDiagnosticPath } from '@/lib/api'
 import { evaluateStageGate, isAttemptedByBinding } from '@/lib/stageGate'
 import type { PcaState } from '@/lib/types'
+import { useStageReview } from '@/lib/useStageReview'
 import { PcaDimensions } from '@/components/PcaDimensions'
 import { ClusterReview } from '@/components/ClusterReview'
 import { AnalysisImage } from '@/components/AnalysisImage'
@@ -14,70 +15,39 @@ export function PcaReview({ sessionId, runId, filterAttemptId, revision, onRunni
   revision: number
   onRunning?: (running: boolean) => void; onRecorded?: () => void
 }) {
-  const [state, setState] = useState<PcaState | null>(null)
   const [reason, setReason] = useState('')
-  const [busy, setBusy] = useState(true)
-  const [executing, setExecuting] = useState(false)
   const [clusterRunning, setClusterRunning] = useState<string[]>([])
-  const [error, setError] = useState('')
-  const generation = useRef(0)
-  const callbacks = useRef({ onRunning, onRecorded })
-  callbacks.current = { onRunning, onRecorded }
+  const onRunningRef = useRef(onRunning)
+  onRunningRef.current = onRunning
+  const review = useStageReview<PcaState>({
+    load: () => fetchPca(sessionId, runId, filterAttemptId),
+    deps: [sessionId, runId, filterAttemptId, revision],
+    isRunning: (current, executing) =>
+      executing || (current?.attempts.some((a) => a.status === 'running') ?? false),
+    onRecorded,
+  })
+  const { state, busy, executing, error } = review
   const pcaRunning = executing || (state?.attempts.some((a) => a.status === 'running') ?? false)
   const running = pcaRunning || clusterRunning.length > 0
 
-  useEffect(() => {
-    const ticket = ++generation.current
-    setState(null); setReason(''); setError(''); setBusy(true); setExecuting(false)
-    setClusterRunning([])
-    fetchPca(sessionId, runId, filterAttemptId).then((next) => {
-      if (ticket === generation.current) setState(next)
-    }).catch((err: Error) => {
-      if (ticket === generation.current) setError(err.message)
-    }).finally(() => {
-      if (ticket === generation.current) setBusy(false)
-    })
-    return () => { generation.current++ }
-  }, [sessionId, runId, filterAttemptId, revision])
+  useEffect(() => { setReason(''); setClusterRunning([]) }, [sessionId, runId, filterAttemptId, revision])
 
   useEffect(() => {
-    callbacks.current.onRunning?.(running)
-    return () => callbacks.current.onRunning?.(false)
+    onRunningRef.current?.(running)
+    return () => onRunningRef.current?.(false)
   }, [running])
 
-  useEffect(() => {
-    if (!pcaRunning || busy) return
-    const ticket = generation.current
-    const timer = window.setTimeout(() => {
-      fetchPca(sessionId, runId, filterAttemptId).then((next) => {
-        if (ticket !== generation.current) return
-        setState(next)
-        if (!next.attempts.some((a) => a.status === 'running')) callbacks.current.onRecorded?.()
-      }).catch((err: Error) => {
-        if (ticket === generation.current) setError(err.message)
-      })
-    }, 1500)
-    return () => window.clearTimeout(timer)
-  }, [pcaRunning, busy, state, sessionId, runId, filterAttemptId])
-
   async function execute() {
-    if (!state?.binding_sha256) return
-    const ticket = ++generation.current
-    setBusy(true); setExecuting(true); setError('')
-    try {
-      const next = await executePca(sessionId, runId, filterAttemptId, state.binding_sha256, reason.trim())
-      if (ticket !== generation.current) return
-      setState(next)
-      callbacks.current.onRecorded?.()
-    } catch (err) {
-      if (ticket !== generation.current) return
-      setError(err instanceof Error ? err.message : 'PCA 请求失败；请只读刷新，不要重复执行')
-      // 请求失联后先恢复服务端状态，不能把未知执行当作未执行。
-      try { const next = await fetchPca(sessionId, runId, filterAttemptId); if (ticket === generation.current) setState(next) }
-      catch { if (ticket === generation.current) setState(null) }
-    } finally {
-      if (ticket === generation.current) { setBusy(false); setExecuting(false) }
-    }
+    const binding = state?.binding_sha256
+    if (!binding) return
+    let failed = false
+    const result = await review.perform(
+      () => executePca(sessionId, runId, filterAttemptId, binding, reason.trim())
+        .catch((err) => { failed = true; throw err instanceof Error ? err : new Error('PCA 请求失败；请只读刷新，不要重复执行') }),
+      { executing: true, recorded: true },
+    )
+    // 请求失联后只读恢复服务端状态，不能把未知执行当作未执行。
+    if (result === 'failed' && failed) await review.recover()
   }
 
   const attempted = isAttemptedByBinding(state?.attempts ?? [], state?.binding_sha256)
@@ -99,7 +69,7 @@ export function PcaReview({ sessionId, runId, filterAttemptId, revision, onRunni
     <p className="text-xs text-muted-foreground">实际 PC 数 = min(30, 细胞数 − 1, 可用特征数 − 1)。至少 3 细胞和 3 可用特征；不足失败，不放宽 QC。完成停在 pca_review / unreviewed；下游维度与聚类须分别明确授权，本工具不执行 marker 或注释。</p>
     {state?.source_summary && <p>父过滤：{state.source_summary.cells.toLocaleString()} 细胞 · {state.source_summary.features.toLocaleString()} features</p>}
     {state && <details><summary>完整固定协议与绑定</summary><pre className="whitespace-pre-wrap break-all text-xs">{JSON.stringify(state.protocol, null, 2)}</pre><code className="block break-all text-xs">工具 {state.tool_version} · 父过滤 {filterAttemptId} · 绑定 {state.binding_sha256 ?? '不可授权'}</code></details>}
-    <label className="block space-y-1"><span>PCA 授权依据（仅本地记录）</span><Textarea maxLength={2000} value={reason} disabled={busy || running || attempted || !state} onChange={(event) => setReason(event.target.value)} /></label>
+    <label className="block space-y-1"><span>PCA 授权依据（仅本地记录）</span><Textarea maxLength={2000} value={reason} disabled={!gate.available} onChange={(event) => setReason(event.target.value)} /></label>
     <span title={gate.blockerText || undefined}><Button type="button" disabled={!gate.allowed} onClick={() => void execute()}>{clusterRunning.length > 0 && !pcaRunning ? '聚类或 marker 运行中…' : running ? 'PCA 运行中…' : '独立授权并执行归一化与 PCA'}</Button></span>
     <p className="text-xs text-muted-foreground">授权不是科学认可；刷新不执行，失败和中断不自动重跑。原始 counts 与父 QC 不改写；诊断图仅本地读取。</p>
     </details>

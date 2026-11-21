@@ -1,8 +1,9 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useState } from 'react'
 import { Button } from '@/components/ui/button'
 import { Textarea } from '@/components/ui/textarea'
 import { executeMarkers, fetchClusterAcceptance, fetchMarkerCandidates, fetchMarkers, markerDiagnosticPath, recordClusterAcceptance, recordClusterRejection, reviewMarkers } from '@/lib/api'
 import { evaluateStageGate, isAttemptedByBinding } from '@/lib/stageGate'
+import { useStageReview } from '@/lib/useStageReview'
 import type { ClusterAcceptanceState, MarkerPage, MarkerState } from '@/lib/types'
 import { AnalysisImage } from '@/components/AnalysisImage'
 
@@ -45,66 +46,45 @@ export function MarkerReview({ sessionId, runId, filterAttemptId, pcaAttemptId, 
   revision: number; disabled?: boolean; onRunning?: (active: boolean) => void; onRecorded?: () => void
 }) {
   const source = { sessionId, runId, filterAttemptId, pcaAttemptId, clusterAttemptId }
-  const [review, setReview] = useState<ClusterAcceptanceState | null>(null)
-  const [state, setState] = useState<MarkerState | null>(null)
   const [accepted, setAccepted] = useState(false)
   const [reviewReason, setReviewReason] = useState('')
   const [reason, setReason] = useState('')
   const [markerReasons, setMarkerReasons] = useState<Record<string, string>>({})
-  const [busy, setBusy] = useState(true)
-  const [executing, setExecuting] = useState(false)
-  const [error, setError] = useState('')
-  const generation = useRef(0)
-  const callbacks = useRef({ onRunning, onRecorded })
-  callbacks.current = { onRunning, onRecorded }
+  const stage = useStageReview<{ review: ClusterAcceptanceState; state: MarkerState }>({
+    load: async () => {
+      const [review, state] = await Promise.all([fetchClusterAcceptance(source), fetchMarkers(source)])
+      return { review, state }
+    },
+    pollLoad: async (current) => ({
+      review: current?.review ?? await fetchClusterAcceptance(source),
+      state: await fetchMarkers(source),
+    }),
+    deps: [sessionId, runId, filterAttemptId, pcaAttemptId, clusterAttemptId, revision],
+    isRunning: (snapshot, executing) => executing || (snapshot?.state.attempts.some((a) => a.status === 'running') ?? false),
+    onRunning,
+    onRecorded,
+  })
+  const review = stage.state?.review ?? null
+  const state = stage.state?.state ?? null
+  const { busy, executing, error } = stage
   const running = executing || (state?.attempts.some((a) => a.status === 'running') ?? false)
 
   useEffect(() => {
-    const ticket = ++generation.current
-    setReview(null); setState(null); setAccepted(false); setReviewReason(''); setReason(''); setMarkerReasons({}); setError(''); setBusy(true); setExecuting(false)
-    Promise.all([fetchClusterAcceptance({ sessionId, runId, filterAttemptId, pcaAttemptId, clusterAttemptId }), fetchMarkers({ sessionId, runId, filterAttemptId, pcaAttemptId, clusterAttemptId })])
-      .then(([nextReview, next]) => { if (ticket === generation.current) { setReview(nextReview); setState(next) } })
-      .catch((err: Error) => { if (ticket === generation.current) setError(err.message) })
-      .finally(() => { if (ticket === generation.current) setBusy(false) })
-    return () => { generation.current++ }
+    setAccepted(false); setReviewReason(''); setReason(''); setMarkerReasons({})
+    // 身份变化时丢弃未保存依据；hook 负责清空记录并重新读取。
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [sessionId, runId, filterAttemptId, pcaAttemptId, clusterAttemptId, revision])
 
-  useEffect(() => {
-    callbacks.current.onRunning?.(running)
-    return () => callbacks.current.onRunning?.(false)
-  }, [running])
-
-  useEffect(() => {
-    if (!running || busy) return
-    const ticket = generation.current
-    let ignore = false
-    let timer: number
-    async function poll() {
-      let again = true
-      try {
-        const next = await fetchMarkers({ sessionId, runId, filterAttemptId, pcaAttemptId, clusterAttemptId })
-        if (ignore || ticket !== generation.current) return
-        setState(next); setError('')
-        again = next.attempts.some((a) => a.status === 'running')
-        if (!again) callbacks.current.onRecorded?.()
-      } catch (err) {
-        if (!ignore && ticket === generation.current) setError(err instanceof Error ? err.message : '状态读取失败')
-      } finally {
-        if (again && !ignore && ticket === generation.current) timer = window.setTimeout(() => void poll(), 1500)
-      }
-    }
-    timer = window.setTimeout(() => void poll(), 1500)
-    return () => { ignore = true; window.clearTimeout(timer) }
-  }, [running, busy, sessionId, runId, filterAttemptId, pcaAttemptId, clusterAttemptId])
-
   async function refresh() {
-    const ticket = ++generation.current
-    setBusy(true); setError(''); setReview(null); setState(null); setAccepted(false); setReviewReason(''); setReason(''); setMarkerReasons({})
-    try {
+    setAccepted(false); setReviewReason(''); setReason(''); setMarkerReasons({})
+    await stage.refresh({ clearError: true })
+  }
+
+  async function recoverSnapshot() {
+    await stage.recover(async () => {
       const [nextReview, next] = await Promise.all([fetchClusterAcceptance(source), fetchMarkers(source)])
-      if (ticket === generation.current) { setReview(nextReview); setState(next) }
-    } catch (err) { if (ticket === generation.current) setError(err instanceof Error ? err.message : '读取失败') }
-    finally { if (ticket === generation.current) setBusy(false) }
+      return { review: nextReview, state: next }
+    })
   }
 
   async function submit(kind: 'accept' | 'reject' | 'execute') {
@@ -113,58 +93,49 @@ export function MarkerReview({ sessionId, runId, filterAttemptId, pcaAttemptId, 
     } else if (kind === 'reject') {
       if (!review?.binding_sha256 || !reviewReason.trim()) return
     } else if (!state?.binding_sha256 || !state.review || !reason.trim()) return
-    const ticket = ++generation.current
-    setBusy(true); setError(''); setExecuting(kind === 'execute')
-    try {
-      if (kind === 'accept' && review?.binding_sha256) {
-        const nextReview = await recordClusterAcceptance(source, review.binding_sha256, review.revision, reviewReason.trim())
-        if (ticket !== generation.current) return
-        setReview(nextReview); setAccepted(false); setReviewReason('')
-        const next = await fetchMarkers(source)
-        if (ticket !== generation.current) return
-        setState(next)
-      } else if (kind === 'reject' && review?.binding_sha256) {
-        const nextReview = await recordClusterRejection(source, review.binding_sha256, review.revision, reviewReason.trim())
-        if (ticket !== generation.current) return
-        setReview(nextReview); setReviewReason('')
-        const next = await fetchMarkers(source)
-        if (ticket !== generation.current) return
-        setState(next)
-      } else if (state?.binding_sha256 && state.review) {
-        const next = await executeMarkers(source, state.binding_sha256, state.review.review_id, state.revision, reason.trim())
-        if (ticket !== generation.current) return
-        setState(next); setReason('')
-      }
-      callbacks.current.onRecorded?.()
-    } catch (err) {
-      if (ticket !== generation.current) return
-      setError(err instanceof Error ? err.message : '请求失败；请只读刷新，不要重复执行')
+    const current = stage.state
+    if (!current) return
+    const reasonText = reviewReason.trim()
+    const executeReason = reason.trim()
+    const result = await stage.perform(async () => {
       try {
-        const [nextReview, next] = await Promise.all([fetchClusterAcceptance(source), fetchMarkers(source)])
-        if (ticket === generation.current) { setReview(nextReview); setState(next) }
-      } catch { if (ticket === generation.current) { setReview(null); setState(null) } }
-    } finally { if (ticket === generation.current) { setBusy(false); setExecuting(false) } }
+        if (kind === 'accept') {
+          const nextReview = await recordClusterAcceptance(source, current.review.binding_sha256!, current.review.revision, reasonText)
+          return { review: nextReview, state: await fetchMarkers(source) }
+        }
+        if (kind === 'reject') {
+          const nextReview = await recordClusterRejection(source, current.review.binding_sha256!, current.review.revision, reasonText)
+          return { review: nextReview, state: await fetchMarkers(source) }
+        }
+        const next = await executeMarkers(source, current.state.binding_sha256!, current.state.review!.review_id, current.state.revision, executeReason)
+        return { review: current.review, state: next }
+      } catch (err) {
+        // 失败只读恢复；generation 已变化时 hook 不会落地旧结果。
+        await recoverSnapshot()
+        throw err
+      }
+    }, { executing: kind === 'execute', recorded: true })
+    if (result !== 'ok') return
+    if (kind === 'accept') { setAccepted(false); setReviewReason('') }
+    else if (kind === 'reject') setReviewReason('')
+    else setReason('')
   }
 
   async function submitMarkerReview(attemptId: string, decision: 'accepted' | 'rejected') {
     const reviewReasonText = markerReasons[attemptId]?.trim()
     if (!state || !reviewReasonText) return
-    const ticket = ++generation.current
-    setBusy(true); setError('')
-    try {
-      const next = await reviewMarkers(source, attemptId, decision, state.revision, reviewReasonText)
-      if (ticket !== generation.current) return
-      setState(next)
-      setMarkerReasons((previous) => ({ ...previous, [attemptId]: '' }))
-      callbacks.current.onRecorded?.()
-    } catch (err) {
-      if (ticket !== generation.current) return
-      setError(err instanceof Error ? err.message : '复核请求失败；请只读刷新')
+    const current = stage.state
+    if (!current) return
+    const result = await stage.perform(async () => {
       try {
-        const next = await fetchMarkers(source)
-        if (ticket === generation.current) setState(next)
-      } catch { if (ticket === generation.current) setState(null) }
-    } finally { if (ticket === generation.current) setBusy(false) }
+        const next = await reviewMarkers(source, attemptId, decision, current.state.revision, reviewReasonText)
+        return { review: current.review, state: next }
+      } catch (err) {
+        await recoverSnapshot()
+        throw err
+      }
+    }, { recorded: true })
+    if (result === 'ok') setMarkerReasons((previous) => ({ ...previous, [attemptId]: '' }))
   }
 
   const reviewGateFacts = {
@@ -228,25 +199,36 @@ export function MarkerReview({ sessionId, runId, filterAttemptId, pcaAttemptId, 
     <Button variant="outline" disabled={busy} onClick={() => void refresh()}>只读刷新 marker 与接受记录</Button>
     {running && <p role="status">marker 运行中；该 run 上游修改、再次接受与删除暂不可用。</p>}
     <p className="text-xs text-muted-foreground">停在 marker_review / unreviewed。失败、中断、刷新不自动重跑；新执行必须重新明确记录聚类接受并独立授权。不调用 LLM 或 KG，不改写父对象。</p>
-    {state?.attempts.map((a) => <div key={a.attempt_id} className="space-y-2">
-      <p role="status">{({ running: 'marker 运行中', completed: 'marker 候选已保存，科学未复核', failed: 'marker 失败，需要人工处理', interrupted: 'marker 中断，需要人工处理' })[a.status]}</p>
-      {a.error && <p role="alert">{a.error}</p>}{a.invalidated_reason && <p role="alert">{a.invalidated_reason}</p>}
-      {a.result && !a.invalidated_reason && <>
-        <p>{a.result.marker_rows.toLocaleString()} 条候选（正向 {a.result.positive_rows.toLocaleString()} / 负向 {a.result.negative_rows.toLocaleString()}） · {a.result.cells.toLocaleString()} 全细胞</p>
-        <details><summary>查看每簇候选摘要</summary><ul className="space-y-2 text-sm">{a.result.cluster_summary.map((g) => <li key={g.cluster_id}>簇 {g.cluster_id} · {g.cells} vs 其余 {g.rest_cells} · 正 {g.positive_markers} / 负 {g.negative_markers} · {g.result_status === 'no_returned_candidates' ? '检验完成，无通过固定阈值候选' : '已返回候选'}</li>)}</ul></details>
-        <details><summary>marker 执行身份与版本</summary><code className="block break-all text-xs">{a.attempt_id}</code><p className="break-all text-xs">{a.result.versions.join(' / ')}</p></details>
-        <AnalysisImage src={markerDiagnosticPath(source, a.attempt_id)} alt="未复核正向 marker 候选点图：面积为表达比例，颜色为平均归一化表达的 log1p；不是细胞类型注释" />
-        <MarkerTable key={`${sessionId}:${runId}:${clusterAttemptId}:${a.attempt_id}`} source={source} attemptId={a.attempt_id} />
-        <div className="space-y-1 border-t border-border pt-2">
-          <p className="text-xs">marker 结果复核（仅本地事实，不改变科学状态）</p>
-          {a.review && <p className="text-xs">最新：{a.review.decision === 'accepted' ? '接受' : '拒绝'} · {a.review.reason}{a.review.invalidated_reason ? ` · ${a.review.invalidated_reason}` : ''}</p>}
-          <label className="block space-y-1"><span>marker 复核理由（仅本地）</span><Textarea maxLength={2000} disabled={busy || running || disabled} value={markerReasons[a.attempt_id] ?? ''} onChange={(event) => setMarkerReasons((previous) => ({ ...previous, [a.attempt_id]: event.target.value }))} /></label>
-          <div className="flex flex-wrap gap-2">
-            <Button disabled={busy || running || disabled || !markerReasons[a.attempt_id]?.trim()} onClick={() => void submitMarkerReview(a.attempt_id, 'accepted')}>记录 marker 接受</Button>
-            <Button variant="outline" disabled={busy || running || disabled || !markerReasons[a.attempt_id]?.trim()} onClick={() => void submitMarkerReview(a.attempt_id, 'rejected')}>记录 marker 拒绝</Button>
+    {state?.attempts.map((a) => {
+      const reviewGate = evaluateStageGate({
+        stage: 'marker',
+        action: 'review',
+        disabled,
+        blocked: state.blocked,
+        busy,
+        running,
+        reasonProvided: !!markerReasons[a.attempt_id]?.trim(),
+      })
+      return <div key={a.attempt_id} className="space-y-2">
+        <p role="status">{({ running: 'marker 运行中', completed: 'marker 候选已保存，科学未复核', failed: 'marker 失败，需要人工处理', interrupted: 'marker 中断，需要人工处理' })[a.status]}</p>
+        {a.error && <p role="alert">{a.error}</p>}{a.invalidated_reason && <p role="alert">{a.invalidated_reason}</p>}
+        {a.result && !a.invalidated_reason && <>
+          <p>{a.result.marker_rows.toLocaleString()} 条候选（正向 {a.result.positive_rows.toLocaleString()} / 负向 {a.result.negative_rows.toLocaleString()}） · {a.result.cells.toLocaleString()} 全细胞</p>
+          <details><summary>查看每簇候选摘要</summary><ul className="space-y-2 text-sm">{a.result.cluster_summary.map((g) => <li key={g.cluster_id}>簇 {g.cluster_id} · {g.cells} vs 其余 {g.rest_cells} · 正 {g.positive_markers} / 负 {g.negative_markers} · {g.result_status === 'no_returned_candidates' ? '检验完成，无通过固定阈值候选' : '已返回候选'}</li>)}</ul></details>
+          <details><summary>marker 执行身份与版本</summary><code className="block break-all text-xs">{a.attempt_id}</code><p className="break-all text-xs">{a.result.versions.join(' / ')}</p></details>
+          <AnalysisImage src={markerDiagnosticPath(source, a.attempt_id)} alt="未复核正向 marker 候选点图：面积为表达比例，颜色为平均归一化表达的 log1p；不是细胞类型注释" />
+          <MarkerTable key={`${sessionId}:${runId}:${clusterAttemptId}:${a.attempt_id}`} source={source} attemptId={a.attempt_id} />
+          <div className="space-y-1 border-t border-border pt-2">
+            <p className="text-xs">marker 结果复核（仅本地事实，不改变科学状态）</p>
+            {a.review && <p className="text-xs">最新：{a.review.decision === 'accepted' ? '接受' : '拒绝'} · {a.review.reason}{a.review.invalidated_reason ? ` · ${a.review.invalidated_reason}` : ''}</p>}
+            <label className="block space-y-1"><span>marker 复核理由（仅本地）</span><Textarea maxLength={2000} disabled={!reviewGate.available} value={markerReasons[a.attempt_id] ?? ''} onChange={(event) => setMarkerReasons((previous) => ({ ...previous, [a.attempt_id]: event.target.value }))} /></label>
+            <div className="flex flex-wrap gap-2">
+              <Button disabled={!reviewGate.allowed} onClick={() => void submitMarkerReview(a.attempt_id, 'accepted')}>记录 marker 接受</Button>
+              <Button variant="outline" disabled={!reviewGate.allowed} onClick={() => void submitMarkerReview(a.attempt_id, 'rejected')}>记录 marker 拒绝</Button>
+            </div>
           </div>
-        </div>
-      </>}
-    </div>)}
+        </>}
+      </div>
+    })}
   </section>
 }

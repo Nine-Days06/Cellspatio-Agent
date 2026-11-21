@@ -30,6 +30,7 @@ from src.ui.record_files import (
     writable_dir,
     wrroc_runs,
 )
+from src.ui.run_snapshot import RunSnapshot
 from src.ui.session_store import SessionStore
 
 SCHEMA_VERSION = "cellspatio-record/1.1.0"
@@ -239,18 +240,19 @@ def _session_markdown(record: dict[str, Any]) -> str:
         lines.append("")
     lines.extend(["## QC runs", ""])
     for run in record["qc_runs"]:
+        snapshot = RunSnapshot.coerce(run)
         lines.append(
             f"- `{run['run_id']}` · cells={run['evidence'].get('cells')} "
             f"features={run['evidence'].get('features')}"
         )
-        for attempt in run.get("attempts") or []:
-            lines.append(f"  - filter `{attempt['attempt_id']}` · {attempt['status']}")
-        for attempt in run.get("pca_attempts") or []:
-            lines.append(f"  - PCA `{attempt['attempt_id']}` · {attempt['status']}")
-        for attempt in run.get("cluster_attempts") or []:
-            lines.append(f"  - cluster `{attempt['attempt_id']}` · {attempt['status']}")
-        for attempt in run.get("marker_attempts") or []:
-            lines.append(f"  - marker `{attempt['attempt_id']}` · {attempt['status']}")
+        for stage, label in (
+            ("filter", "filter"),
+            ("pca", "PCA"),
+            ("cluster", "cluster"),
+            ("marker", "marker"),
+        ):
+            for attempt in snapshot.stage_attempts(stage):
+                lines.append(f"  - {label} `{attempt['attempt_id']}` · {attempt['status']}")
     lines.extend(["", "## 运行记录", ""])
     for run in record["workflow_runs"]:
         intent = run.get("intent") or {}

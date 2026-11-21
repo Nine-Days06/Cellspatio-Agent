@@ -4,11 +4,11 @@ from __future__ import annotations
 
 import logging
 import sqlite3
-import threading
 from collections.abc import Callable
 from typing import Any, Literal
 
 from src.api.events import chart_events, make_event, wire_message
+from src.api.session_locks import lock_for
 from src.chat_messages import (
     build_assistant_message,
     format_script_confirmation,
@@ -20,20 +20,10 @@ from src.ui.session_store import SessionStore
 
 logger = logging.getLogger(__name__)
 
-_locks: dict[str, threading.Lock] = {}
-_locks_guard = threading.Lock()
+# 兼容既有 `from src.api.chat_service import session_lock` 导入；锁实现统一在 session_locks。
+session_lock = lock_for
 
 Emit = Callable[[dict], bool]
-
-
-def session_lock(session_id: str) -> threading.Lock:
-    """取该会话的生成锁；单用户单进程内存锁，每会话同时只允许一个生成任务。"""
-    with _locks_guard:
-        lock = _locks.get(session_id)
-        if lock is None:
-            lock = threading.Lock()
-            _locks[session_id] = lock
-        return lock
 
 
 def soft_warn_for(store: SessionStore, session_id: str) -> bool:
@@ -110,13 +100,13 @@ def register_qc_result(
     from pathlib import Path
 
     from src.analysis.qc_preview import register_evidence
-    from src.ui.session_store import project_analysis_root
+    from src.ui.analysis_roots import AnalysisRoots
 
     try:
         directory = Path(result["results"]["qc_artifacts"]["metadata.json"]).resolve().parent
         recorder = getattr(getattr(agent, "workflow_manager", None), "workflow_recorder", None)
         repo_root = Path(recorder.repo_root) if recorder else Path.cwd()
-        root = project_analysis_root(session_id, repo_root) / "sc_qc"
+        root = AnalysisRoots(store, repo_root).for_session(session_id) / "sc_qc"
         evidence = register_evidence(directory, root)
         store.register_qc_run(session_id, directory.name, str(directory), evidence)
         result["results"]["qc_run_id"] = directory.name

@@ -31,20 +31,6 @@ from src.schemas.workflow import (
     WorkflowStep,
 )
 
-# 运行级上下文变量：run_id -> WorkflowExecution
-_run_context: contextvars.ContextVar[dict[str, WorkflowExecution] | None] = contextvars.ContextVar(
-    "_run_context", default=None
-)
-
-
-def _get_context() -> dict[str, WorkflowExecution]:
-    """获取或初始化上下文字典。"""
-    ctx = _run_context.get()
-    if ctx is None:
-        ctx = {}
-        _run_context.set(ctx)
-    return ctx
-
 
 class WorkflowRecorder:
     """工作流执行记录器。
@@ -67,15 +53,22 @@ class WorkflowRecorder:
         self.store = WRROCStore(Path(wrroc_base_dir))
         self.repo_root = Path(repo_root) if repo_root else Path.cwd()
         self.kg_memory = kg_memory
+        # 实例级上下文变量：run_id -> WorkflowExecution；不同 recorder 互不可见。
+        self._context: contextvars.ContextVar[dict[str, WorkflowExecution] | None] = (
+            contextvars.ContextVar(f"workflow_run_context_{uuid.uuid4().hex}", default=None)
+        )
 
-    @classmethod
-    def get_context(cls) -> dict[str, WorkflowExecution]:
-        """获取上下文字典（供外部获取 run_id 列表）。"""
-        ctx = _run_context.get()
+    def _current_context(self) -> dict[str, WorkflowExecution]:
+        """获取或初始化当前 context 下的运行表。"""
+        ctx = self._context.get()
         if ctx is None:
             ctx = {}
-            _run_context.set(ctx)
+            self._context.set(ctx)
         return ctx
+
+    def get_context(self) -> dict[str, WorkflowExecution]:
+        """获取上下文字典（供外部获取 run_id 列表）。"""
+        return self._current_context()
 
     def start_execution(
         self,
@@ -99,12 +92,12 @@ class WorkflowRecorder:
         )
 
         # 写入上下文
-        ctx = _get_context()
+        ctx = self._current_context()
         ctx[run_id] = execution
         return run_id
 
     def _get_execution(self, run_id: str) -> WorkflowExecution | None:
-        ctx = _get_context()
+        ctx = self._current_context()
         return ctx.get(run_id)
 
     def _require_execution(self, run_id: str) -> WorkflowExecution:

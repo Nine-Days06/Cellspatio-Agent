@@ -3,6 +3,7 @@ import {
   evaluateStageGate,
   isAttemptedByBinding,
   isAttemptedByPreview,
+  type GateBlocker,
   type QcPreviewStatus,
 } from '@/lib/stageGate'
 
@@ -31,7 +32,36 @@ function qc(action: 'approve' | 'reject' | 'filter', facts: QcFacts = {}) {
   return evaluateStageGate({ ...common, stage: 'qc', action, unchanged })
 }
 
+function qcPreview(facts: Pick<QcFacts, 'blocked' | 'busy' | 'running'> = {}) {
+  const { blocked = [], busy = false, running = false } = facts
+  return evaluateStageGate({ stage: 'qc', action: 'preview', blocked, busy, running, reasonProvided: false })
+}
+
+type MarkerReviewFacts = {
+  disabled?: boolean
+  blocked?: string[]
+  busy?: boolean
+  running?: boolean
+  reasonProvided?: boolean
+}
+
+function markerReview(facts: MarkerReviewFacts = {}) {
+  const { disabled = false, blocked = [], busy = false, running = false, reasonProvided = true } = facts
+  return evaluateStageGate({ stage: 'marker', action: 'review', disabled, blocked, busy, running, reasonProvided })
+}
+
 describe('QC preview gate', () => {
+  it('previews whenever idle and unblocked, without a preview status or reason', () => {
+    expect(qcPreview()).toMatchObject({ available: true, allowed: true, blockers: [] })
+    expect(qcPreview({ blocked: ['参数不完整'] })).toMatchObject({ available: false, allowed: false, blockers: ['blocked'] })
+    expect(qcPreview({ blocked: ['参数不完整'] }).blockerText).toBe('阶段前置条件未满足')
+    expect(qcPreview({ busy: true })).toMatchObject({ available: false, allowed: false, blockers: ['busy'] })
+    expect(qcPreview({ busy: true }).blockerText).toBe('正在读取或执行')
+    expect(qcPreview({ running: true })).toMatchObject({ available: false, allowed: false, blockers: ['running'] })
+    expect(qcPreview({ running: true }).blockerText).toBe('当前阶段或下游正在运行')
+    expect(qcPreview({ busy: true, running: true }).blockerText).toBe('正在读取或执行；当前阶段或下游正在运行')
+  })
+
   it('approves only a pending, unchanged preview with a reason and no block', () => {
     expect(qc('approve')).toMatchObject({ available: true, allowed: true, blockers: [] })
     expect(qc('approve', { previewStatus: 'approved' }).blockers).toContain('preview-not-pending')
@@ -113,6 +143,22 @@ describe('binding-based gates', () => {
     expect(evaluateStageGate({ ...base, blocked: ['需要至少 31 细胞'], reasonProvided: true }).available).toBe(false)
   })
 
+  it('reviews marker results without a binding, needing only an idle unblocked stage and a reason', () => {
+    expect(markerReview()).toMatchObject({ available: true, allowed: true, blockers: [] })
+    expect(markerReview({ reasonProvided: false })).toMatchObject({
+      available: true,
+      allowed: false,
+      blockers: ['missing-reason'],
+    })
+    expect(markerReview({ reasonProvided: false }).blockerText).toBe('缺少书面依据')
+    expect(markerReview({ disabled: true })).toMatchObject({ available: false, allowed: false, blockers: ['disabled'] })
+    expect(markerReview({ disabled: true }).blockerText).toBe('上游运行中，暂不可操作')
+    expect(markerReview({ blocked: ['marker 结果缺失'] })).toMatchObject({ available: false, blockers: ['blocked'] })
+    expect(markerReview({ blocked: ['marker 结果缺失'] }).blockerText).toBe('阶段前置条件未满足')
+    expect(markerReview({ busy: true })).toMatchObject({ available: false, blockers: ['busy'] })
+    expect(markerReview({ running: true })).toMatchObject({ available: false, blockers: ['running'] })
+  })
+
   it('keeps marker cluster acceptance and marker execution as separate actions', () => {
     const accept = {
       stage: 'marker' as const,
@@ -188,5 +234,50 @@ describe('attempt identity helpers', () => {
     expect(isAttemptedByBinding([{ binding_sha256: 'h1' }], 'h1')).toBe(true)
     expect(isAttemptedByBinding([{ binding_sha256: 'h2' }], 'h1')).toBe(false)
     expect(isAttemptedByBinding([{ binding_sha256: 'h1' }], null)).toBe(false)
+  })
+})
+
+describe('blocker messages', () => {
+  it('maps every blocker to one stable user-facing text', () => {
+    const base = { blocked: [], busy: false, running: false, reasonProvided: true }
+    const cases: Array<[GateBlocker, string, () => ReturnType<typeof evaluateStageGate>]> = [
+      ['busy', '正在读取或执行', () => markerReview({ busy: true })],
+      ['running', '当前阶段或下游正在运行', () => markerReview({ running: true })],
+      ['disabled', '上游运行中，暂不可操作', () => markerReview({ disabled: true })],
+      ['blocked', '阶段前置条件未满足', () => markerReview({ blocked: ['不可操作'] })],
+      ['preview-not-pending', '预览不在可操作状态', () => qc('approve', { previewStatus: 'approved' })],
+      ['preview-edited', '阈值已编辑，需重新生成预览', () => qc('approve', { unchanged: false })],
+      ['already-attempted', '当前身份已有执行记录', () => qc('filter', { previewStatus: 'approved', attempted: true })],
+      ['missing-binding', '缺少当前授权绑定', () => evaluateStageGate({
+        ...base, stage: 'pca', bindingExists: false, bindingAttempted: false,
+      })],
+      ['missing-selection', '缺少当前维度选择记录', () => evaluateStageGate({
+        ...base, stage: 'cluster', bindingExists: true, selectionExists: false, disabled: false, bindingAttempted: false,
+      })],
+      ['missing-cluster-review', '缺少当前聚类接受记录', () => evaluateStageGate({
+        ...base, stage: 'marker', action: 'execute', bindingExists: true, hasClusterAcceptance: false,
+        disabled: false, bindingAttempted: false,
+      })],
+      ['missing-reason', '缺少书面依据', () => evaluateStageGate({
+        ...base, stage: 'pca', bindingExists: true, bindingAttempted: false, reasonProvided: false,
+      })],
+      ['cluster-already-accepted', '当前聚类已有接受记录', () => evaluateStageGate({
+        ...base, stage: 'marker', action: 'accept', bindingExists: true, hasClusterAcceptance: true,
+        accepted: true, disabled: false,
+      })],
+      ['acceptance-required', '尚未勾选接受当前探索性聚类', () => evaluateStageGate({
+        ...base, stage: 'marker', action: 'accept', bindingExists: true, hasClusterAcceptance: false,
+        accepted: false, disabled: false,
+      })],
+      ['invalid-dimensions', '维度数不在证据范围内', () => evaluateStageGate({
+        ...base, stage: 'pca-dimensions', bindingExists: true, dimensionsValid: false, disabled: false,
+      })],
+    ]
+
+    for (const [blocker, text, createGate] of cases) {
+      const gate = createGate()
+      expect(gate.blockers).toEqual([blocker])
+      expect(gate.blockerText).toBe(text)
+    }
   })
 })

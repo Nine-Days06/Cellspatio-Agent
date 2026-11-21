@@ -5,11 +5,12 @@ from unittest.mock import Mock
 import pytest
 
 from src.control.workflow_manager import WorkflowManager
+from src.ui.analysis_roots import AnalysisRoots
 from src.ui.session_store import SessionStore
 from tests.unit.fakes import FakeExec, FakeGen, FakeIntent
 
 
-def _wm(intent, require=False):
+def _wm(intent, require=False, analysis_roots=None):
     gen = FakeGen(return_value="# script", track_calls=True)
     wm = WorkflowManager(
         intent_parser=intent,
@@ -18,6 +19,7 @@ def _wm(intent, require=False):
         visualizer=None,
         r_script_generator=gen,
         require_script_confirmation=require,
+        analysis_roots=analysis_roots,
     )
     return wm, gen
 
@@ -51,6 +53,41 @@ def test_single_cell_routes_to_fixed_qc(tmp_path, monkeypatch, approved):
     wm.methods_kb.query_context.assert_not_called()
     wm.explainer.explain.assert_not_called()
     wm.code_repairer.repair.assert_not_called()
+
+
+def test_injected_analysis_roots_route_qc_and_project_output(tmp_path, monkeypatch):
+    """项目会话的 QC 与 DE/spatial 根来自注入的 roots，不触碰默认会话库。"""
+    monkeypatch.setenv("CELLSPATIO_SESSIONS_DB", str(tmp_path / "unused.db"))
+    store = SessionStore(tmp_path / "sessions.db")
+    pid = store.create_project("项目")
+    sid = store.create_session(project_id=pid)
+    roots = AnalysisRoots(store, tmp_path)
+    f = tmp_path / "m.csv"
+    f.write_text("gene,c1,c2\nG1,0,2.0\n", encoding="utf-8")
+    intent = FakeIntent(
+        parse_return={"type": "analysis", "analysis_type": "single_cell", "original_input": ""}
+    )
+    wm, _ = _wm(intent, analysis_roots=roots)
+    wm.methods_kb = Mock()
+    qc = Mock(
+        return_value={
+            "status": "needs_confirmation",
+            "analysis_type": "single_cell",
+            "stage": "qc_review",
+        }
+    )
+    monkeypatch.setattr("src.analysis.sc_qc.run_sc_qc", qc)
+
+    wm.execute_workflow(
+        "做单细胞聚类",
+        {"downloaded_assets": [{"access_path": str(f)}], "session_id": sid},
+    )
+
+    expected = (tmp_path / "data" / "projects" / pid / "analysis").resolve()
+    assert qc.call_args.args[2] == expected / "sc_qc"
+    assert wm._project_output_root({"session_id": sid}) == expected
+    assert wm._project_output_root({}) is None
+    assert not (tmp_path / "unused.db").exists()
 
 
 @pytest.mark.parametrize("require", [False, True])
@@ -176,8 +213,8 @@ def test_project_de_and_spatial_outputs_under_project_root(tmp_path):
     source.write_text("gene,c1,c2\nG1,1,2\n", encoding="utf-8")
     context = {"downloaded_assets": [{"access_path": str(source)}], "session_id": sid}
 
-    wm, gen = _wm(FakeIntent(), require=False)
-    wm.workflow_recorder = Mock(repo_root=tmp_path)
+    roots = AnalysisRoots(store, tmp_path)
+    wm, gen = _wm(FakeIntent(), require=False, analysis_roots=roots)
     result = wm._execute_de_analysis({}, context, "run-de")
 
     assert result["status"] == "success"
@@ -185,8 +222,7 @@ def test_project_de_and_spatial_outputs_under_project_root(tmp_path):
         tmp_path / "data" / "projects" / pid / "analysis" / "de" / "run-de.de_results.csv"
     )
 
-    wm, gen = _wm(FakeIntent(), require=False)
-    wm.workflow_recorder = Mock(repo_root=tmp_path)
+    wm, gen = _wm(FakeIntent(), require=False, analysis_roots=roots)
     result = wm._execute_spatial_analysis({}, context, "run-spatial")
 
     assert result["status"] == "success"

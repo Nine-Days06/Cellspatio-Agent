@@ -51,19 +51,7 @@ def wrroc_index(root: Path) -> dict[str, list[tuple[str, dict[str, Any]]]]:
 
 def run_dirs(run: Mapping[str, Any]) -> list[tuple[str, str]]:
     """返回 run 的 (stage, directory) 列表。"""
-    pairs = []
-    if run.get("directory"):
-        pairs.append(("qc", str(run["directory"])))
-    for key, stage in (
-        ("attempts", "filter"),
-        ("pca_attempts", "pca"),
-        ("cluster_attempts", "cluster"),
-        ("marker_attempts", "marker"),
-    ):
-        for attempt in run.get(key) or []:
-            if attempt.get("directory"):
-                pairs.append((stage, str(attempt["directory"])))
-    return pairs
+    return RunSnapshot.coerce(run).stage_dirs()
 
 
 def resolve_dir(value: str, root: Path) -> Path:

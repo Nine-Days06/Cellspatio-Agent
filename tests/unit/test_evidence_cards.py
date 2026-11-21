@@ -17,6 +17,7 @@ from src.evidence.builder import (
 )
 from src.evidence.governance import admission_problems
 from src.evidence.schema import EvidenceCard, validate_card
+from src.ui.run_snapshot import RunSnapshot
 
 EXAMPLES = Path(__file__).resolve().parents[2] / "docs" / "examples" / "evidence-cards"
 
@@ -119,7 +120,7 @@ class _Store:
         self.reviews = reviews or []
 
     def get_qc_run(self, _session_id, _run_id):
-        return self.run
+        return RunSnapshot(self.run) if self.run is not None else None
 
     def get_messages(self, _session_id):
         return self.messages
@@ -493,3 +494,25 @@ def test_build_marker_card_accepted_and_rejected():
     assert accepted.observation["marker_rows"] == 100
     assert rejected.outcome == "rejected"
     assert rejected.review.reason == "候选不足"
+
+
+def test_builders_report_missing_attempts(tmp_path):
+    cluster = _cluster_run({"cells": 11})
+    cluster["cluster_attempts"] = []
+    with pytest.raises(ValueError, match="聚类结果缺失"):
+        build_cluster_card(_Store(cluster), "s", "r")
+
+    pca = _pca_run(tmp_path)
+    pca["pca_attempts"] = []
+    with pytest.raises(ValueError, match="PCA 结果缺失"):
+        build_pca_dimensions_card(_Store(pca), "s", "r")
+
+    pca = _pca_run(tmp_path)
+    pca["attempts"] = []
+    with pytest.raises(ValueError, match="PCA 父过滤缺失"):
+        build_pca_dimensions_card(_Store(pca), "s", "r")
+
+    marker = _marker_run()
+    marker["marker_attempts"] = []
+    with pytest.raises(ValueError, match="marker 结果缺失"):
+        build_marker_card(_Store(marker), "s", "r")

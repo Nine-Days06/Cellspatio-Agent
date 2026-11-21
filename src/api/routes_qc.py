@@ -14,27 +14,16 @@ from src.analysis.sc_filter import FILTER_TOOL_VERSION, run_sc_filter, verified_
 from src.api.authorized_run import StageClaim, run_authorized
 from src.api.deps import StoreDep
 from src.api.stage_runtime import running_stages
+from src.ui.analysis_roots import AnalysisRoots
 from src.ui.run_snapshot import RunSnapshot
 from src.ui.session_store import SessionStore
 
 router = APIRouter(prefix="/api/sessions/{session_id}/qc", tags=["qc"])
 
 
-def run_qc_root(agent: Any, run: RunSnapshot) -> Path:
-    """校验 run 目录在旧全局根或项目分析根内，返回 QC 根。"""
-    root = Path(run["directory"]).resolve().parent
-    recorder = getattr(getattr(agent, "workflow_manager", None), "workflow_recorder", None)
-    repo = Path(recorder.repo_root) if recorder else Path.cwd()
-    legacy = (repo / "data" / "analysis" / "sc_qc").resolve()
-    projects = (repo / "data" / "projects").resolve()
-    project_root = (
-        root.name == "sc_qc"
-        and root.parent.name == "analysis"
-        and root.parent.parent.parent == projects
-    )
-    if root != legacy and not project_root:
-        raise ValueError("QC 目录非法，请重新 QC")
-    return root
+def run_qc_root(roots: AnalysisRoots, run: RunSnapshot) -> Path:
+    """由应用注入的 roots 校验并返回 run 的 QC 根。"""
+    return roots.qc_root(run)
 
 
 def require_run(store: SessionStore, session_id: str, run_id: str) -> RunSnapshot:
@@ -80,7 +69,7 @@ def view(run: RunSnapshot, blocked: str | None = None) -> dict[str, Any]:
                 if attempt["result"]
                 else None,
             }
-            for attempt in run.filter_attempts
+            for attempt in run.stage_attempts("filter")
         ],
     }
 
@@ -90,10 +79,10 @@ def get_qc(session_id: str, run_id: str, request: Request, store: StoreDep) -> d
     """刷新后仍显示精确批准历史；变化证据显示阻断。"""
     run = require_run(store, session_id, run_id)
     try:
-        checked_evidence(run, run_qc_root(request.app.state.agent, run))
+        checked_evidence(run, run_qc_root(request.app.state.analysis_roots, run))
         active = run.active_preview
         if active and active["status"] == "pending":
-            check_preview(run, run_qc_root(request.app.state.agent, run), active)
+            check_preview(run, run_qc_root(request.app.state.analysis_roots, run), active)
     except (OSError, ValueError) as exc:
         return view(run, str(exc))
     return view(run)
@@ -106,7 +95,7 @@ def preview_qc(
     """生成独立预览，以数据库版本条件替换 active 预览。"""
     run = require_run(store, session_id, run_id)
     try:
-        preview = build_preview(run, run_qc_root(request.app.state.agent, run), body)
+        preview = build_preview(run, run_qc_root(request.app.state.analysis_roots, run), body)
         store.activate_qc_preview(session_id, run_id, run["revision"], preview)
     except (OSError, ValueError, sqlite3.OperationalError) as exc:
         raise HTTPException(409, str(exc)) from exc
@@ -132,7 +121,7 @@ def approve_qc(
         raise HTTPException(409, "预览不存在，请重新预览")
     try:
         if preview["status"] != "approved":
-            check_preview(run, run_qc_root(request.app.state.agent, run), preview)
+            check_preview(run, run_qc_root(request.app.state.analysis_roots, run), preview)
         approved = store.approve_qc_preview(
             session_id, run_id, run["revision"], body.preview_id, body.reason
         )
@@ -180,7 +169,7 @@ def filter_qc(
         return next(
             (
                 a
-                for a in run.filter_attempts
+                for a in run.stage_attempts("filter")
                 if a["preview_id"] == body.preview_id and a["tool_version"] == FILTER_TOOL_VERSION
             ),
             None,
@@ -188,14 +177,14 @@ def filter_qc(
 
     def prepare(run: RunSnapshot, attempt_id: str) -> StageClaim:
         """锁内校验当前批准预览，并给出 attempt 目录与领取计划。"""
-        preview = next((p for p in run.previews if p["preview_id"] == body.preview_id), None)
+        preview = run.active_preview
         if (
             preview is None
+            or preview["preview_id"] != body.preview_id
             or preview["status"] != "approved"
-            or run["active_preview_id"] != body.preview_id
         ):
             raise ValueError("仅可执行当前已批准选择")
-        root = run_qc_root(request.app.state.agent, run)
+        root = run_qc_root(request.app.state.analysis_roots, run)
         verified_selection(run, root, preview)
         directory_parent = root.parent / "sc_filter"
         directory = directory_parent / attempt_id

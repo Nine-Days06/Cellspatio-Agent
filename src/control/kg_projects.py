@@ -21,11 +21,13 @@ class ProjectKGMemory:
         root: Path | str,
         llm_model_func: Any = None,
         embedding_func: Any = None,
+        store: SessionStore | None = None,
     ):
         """保存根目录与可选的 LLM/embedding 函数；记忆实例按需懒建。"""
         self.root = Path(root)
         self._llm_model_func = llm_model_func
         self._embedding_func = embedding_func
+        self._store = store or SessionStore()
         self._memories: dict[str, KGMemory] = {}
         self._lock = threading.Lock()
 
@@ -37,7 +39,7 @@ class ProjectKGMemory:
 
     def _key(self, session_id: str | None) -> str:
         """会话所属项目 id；未归类会话落 unclassified。"""
-        session = SessionStore().get_session(session_id) if session_id else None
+        session = self._store.get_session(session_id) if session_id else None
         return (session or {}).get("project_id") or "unclassified"
 
     def memory_for(self, session_id: str | None) -> KGMemory:
