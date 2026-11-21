@@ -18,7 +18,13 @@ from src.ui.sc_stage_defs import (
     STAGE_SPECS,
 )
 from src.ui.session_codec import _encode_results, _now
-from src.ui.stage_lifecycle import StageLifecycle, advance_run, publish_message
+from src.ui.stage_lifecycle import (
+    ReviewFactPlan,
+    StageLifecycle,
+    advance_run,
+    append_review_fact,
+    publish_message,
+)
 
 if TYPE_CHECKING:
     from src.ui.session_store import SessionStore
@@ -162,24 +168,25 @@ class ScStages:
         reason: str,
     ) -> None:
         """追加人工事实与安全消息；CAS 防止校验期间发生选择变化。"""
+
         # shortcut: 文件哈希在事务外检查，本地证据可被外部改写；生产隔离另片处理。
-        with self._conn() as conn:
-            conn.execute("BEGIN IMMEDIATE")
-            row = conn.execute(
+        def run_row(conn: sqlite3.Connection) -> sqlite3.Row | None:
+            """按会话读取当前 run。"""
+            return conn.execute(
                 "SELECT * FROM qc_runs WHERE session_id = ? AND run_id = ?",
                 (session_id, run["run_id"]),
             ).fetchone()
+
+        def require_run(conn: sqlite3.Connection) -> None:
+            """previous 命中前仍确认 QC 关联存在。"""
+            if run_row(conn) is None:
+                raise ValueError("QC 关联不存在")
+
+        def validate(conn: sqlite3.Connection) -> None:
+            """锁内重查 run、父选择与 PCA 身份。"""
+            row = run_row(conn)
             if row is None:
                 raise ValueError("QC 关联不存在")
-            previous = conn.execute(
-                "SELECT * FROM sc_pca_dimension_reviews WHERE pca_attempt_id = ? "
-                "AND binding_sha256 = ? AND record_version = ? AND source_revision = ?",
-                (attempt["attempt_id"], binding, version, revision),
-            ).fetchone()
-            if previous:
-                if json.loads(previous["dims"]) != dims or previous["reason"] != reason:
-                    raise ValueError("同一 revision 的记录内容冲突，请刷新")
-                return
             self._require_no_filter(conn, run["run_id"])
             live_parent = conn.execute(
                 "SELECT a.*, p.status AS approval FROM sc_filter_attempts a "
@@ -217,52 +224,65 @@ class ScStages:
                 or json.loads(live_pca["result"]) != attempt["result"]
             ):
                 raise ValueError("PCA 或父选择已变化，请刷新后重新记录")
-            latest = conn.execute(
-                "SELECT * FROM sc_pca_dimension_reviews WHERE pca_attempt_id = ? ORDER BY rowid DESC LIMIT 1",
-                (attempt["attempt_id"],),
-            ).fetchone()
-            if (
-                latest
-                and latest["binding_sha256"] == binding
+
+        def same_previous(previous: sqlite3.Row) -> bool:
+            """同 revision 的维度与依据必须一致。"""
+            return json.loads(previous["dims"]) == dims and previous["reason"] == reason
+
+        def same_latest(latest: sqlite3.Row) -> bool:
+            """latest+1 的绑定、版本、维度与依据一致时抑制重复。"""
+            return (
+                latest["binding_sha256"] == binding
                 and latest["record_version"] == version
-                and latest["source_revision"] + 1 == revision
                 and json.loads(latest["dims"]) == dims
                 and latest["reason"] == reason
-            ):
-                return
-            review_id, now = uuid.uuid4().hex, _now()
-            message_id = publish_message(
-                conn,
-                session_id,
+            )
+
+        def message(fact: dict[str, Any]) -> tuple[str, dict[str, Any]]:
+            """维度消息只暴露聚合标识。"""
+            return (
                 "维度选择已记录，科学未复核；未授权下游执行。",
                 {
                     "pca_dimensions": {
                         "run_id": run["run_id"],
                         "filter_attempt_id": parent["attempt_id"],
                         "attempt_id": attempt["attempt_id"],
-                        "review_id": review_id,
+                        "review_id": fact["review_id"],
                         "stage": "pca_review",
                         "scientific_status": "unreviewed",
                     }
                 },
-                now,
-                _encode_results,
             )
-            conn.execute(
-                "INSERT INTO sc_pca_dimension_reviews VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                (
-                    review_id,
-                    attempt["attempt_id"],
-                    binding,
-                    version,
-                    revision,
-                    json.dumps(dims),
-                    reason,
-                    now,
-                    message_id,
-                ),
-            )
-            advance_run(conn, run["run_id"], session_id, now)
+
+        identity = {
+            "pca_attempt_id": attempt["attempt_id"],
+            "binding_sha256": binding,
+            "record_version": version,
+            "source_revision": revision,
+        }
+        append_review_fact(
+            self._conn,
+            _encode_results,
+            ReviewFactPlan(
+                table="sc_pca_dimension_reviews",
+                previous_match=identity,
+                insert_values={
+                    **identity,
+                    "dims": json.dumps(dims),
+                    "reason": reason,
+                },
+                same_previous=same_previous,
+                conflict_message="同一 revision 的记录内容冲突，请刷新",
+                latest_match={"pca_attempt_id": attempt["attempt_id"]},
+                same_latest=same_latest,
+                message=message,
+                run_id=run["run_id"],
+                session_id=session_id,
+            ),
+            before_previous=require_run,
+            validate=validate,
+            clock=_now,
+        )
 
     @staticmethod
     def _cluster_source_matches(
@@ -448,72 +468,87 @@ class ScStages:
         reason: str,
     ) -> None:
         """接受事实、安全消息与 revision 原子追加；不授权或启动 marker。"""
+
         # shortcut: 哈希在事务外核实；本地文件不可变隔离留给生产部署片。
-        with self._conn() as conn:
-            conn.execute("BEGIN IMMEDIATE")
-            row = conn.execute(
+        def run_row(conn: sqlite3.Connection) -> sqlite3.Row | None:
+            """按会话读取当前 run。"""
+            return conn.execute(
                 "SELECT * FROM qc_runs WHERE session_id = ? AND run_id = ?",
                 (session_id, run["run_id"]),
             ).fetchone()
+
+        def require_run(conn: sqlite3.Connection) -> None:
+            """previous 命中前仍确认 QC 关联存在。"""
+            if run_row(conn) is None:
+                raise ValueError("QC 关联不存在")
+
+        def validate(conn: sqlite3.Connection) -> None:
+            """锁内重查 run、父快照与已完成聚类。"""
+            row = run_row(conn)
             if row is None:
                 raise ValueError("QC 关联不存在")
-            previous = conn.execute(
-                "SELECT * FROM sc_cluster_reviews WHERE cluster_attempt_id = ? "
-                "AND binding_sha256 = ? AND record_version = ? AND source_revision = ?",
-                (cluster["attempt_id"], binding, version, revision),
-            ).fetchone()
-            if previous:
-                if previous["accepted"] != 1 or previous["reason"] != reason:
-                    raise ValueError("同一 revision 的聚类复核内容冲突")
-                return
             self._require_no_filter(conn, run["run_id"])
             if row["revision"] != revision or not self._completed_cluster_matches(
                 conn, row, cluster
             ):
                 raise ValueError("聚类或父身份已变化，请刷新后重新记录")
-            latest = conn.execute(
-                "SELECT * FROM sc_cluster_reviews WHERE cluster_attempt_id = ? ORDER BY rowid DESC LIMIT 1",
-                (cluster["attempt_id"],),
-            ).fetchone()
-            if (
-                latest
-                and latest["binding_sha256"] == binding
+
+        def same_previous(previous: sqlite3.Row) -> bool:
+            """同 revision 的接受标记与依据必须一致。"""
+            return previous["accepted"] == 1 and previous["reason"] == reason
+
+        def same_latest(latest: sqlite3.Row) -> bool:
+            """latest+1 的绑定、版本与依据一致时抑制重复。"""
+            return (
+                latest["binding_sha256"] == binding
                 and latest["record_version"] == version
-                and latest["source_revision"] + 1 == revision
                 and latest["reason"] == reason
-            ):
-                return
-            review_id, now = uuid.uuid4().hex, _now()
-            message_id = publish_message(
-                conn,
-                session_id,
+            )
+
+        def message(fact: dict[str, Any]) -> tuple[str, dict[str, Any]]:
+            """接受消息只暴露聚合标识。"""
+            return (
                 "探索性聚类接受已记录，科学未复核；未授权 marker 或注释。",
                 {
                     "sc_cluster_review": {
                         "run_id": run["run_id"],
                         "cluster_attempt_id": cluster["attempt_id"],
-                        "review_id": review_id,
+                        "review_id": fact["review_id"],
                         "stage": "cluster_review",
                         "scientific_status": "unreviewed",
                     }
                 },
-                now,
-                _encode_results,
             )
-            conn.execute(
-                "INSERT INTO sc_cluster_reviews VALUES (?, ?, ?, ?, ?, 1, ?, ?, ?)",
-                (
-                    review_id,
-                    cluster["attempt_id"],
-                    binding,
-                    version,
-                    revision,
-                    reason,
-                    now,
-                    message_id,
-                ),
-            )
-            advance_run(conn, run["run_id"], session_id, now)
+
+        identity = {
+            "cluster_attempt_id": cluster["attempt_id"],
+            "binding_sha256": binding,
+            "record_version": version,
+            "source_revision": revision,
+        }
+        append_review_fact(
+            self._conn,
+            _encode_results,
+            ReviewFactPlan(
+                table="sc_cluster_reviews",
+                previous_match=identity,
+                insert_values={
+                    **identity,
+                    "accepted": 1,
+                    "reason": reason,
+                },
+                same_previous=same_previous,
+                conflict_message="同一 revision 的聚类复核内容冲突",
+                latest_match={"cluster_attempt_id": cluster["attempt_id"]},
+                same_latest=same_latest,
+                message=message,
+                run_id=run["run_id"],
+                session_id=session_id,
+            ),
+            before_previous=require_run,
+            validate=validate,
+            clock=_now,
+        )
 
     def record_cluster_rejection(
         self,
@@ -531,8 +566,9 @@ class ScStages:
         if not reason:
             raise ValueError("拒绝必须填写原因")
         reviewer = reviewer.strip() or "local-user"
-        with self._conn() as conn:
-            conn.execute("BEGIN IMMEDIATE")
+
+        def validate(conn: sqlite3.Connection) -> None:
+            """锁内重查 run、聚类完成态与 revision。"""
             row = conn.execute(
                 "SELECT * FROM qc_runs WHERE session_id = ? AND run_id = ?",
                 (session_id, run["run_id"]),
@@ -547,29 +583,9 @@ class ScStages:
                 raise ValueError("聚类未完成或绑定不符")
             if row["revision"] != revision:
                 raise ValueError("聚类记录已失效，请刷新")
-            previous = conn.execute(
-                "SELECT * FROM sc_cluster_rejections WHERE cluster_attempt_id = ? "
-                "AND binding_sha256 = ? AND record_version = ? AND source_revision = ?",
-                (cluster["attempt_id"], binding, version, revision),
-            ).fetchone()
-            if previous:
-                if previous["reason"] != reason or previous["reviewer"] != reviewer:
-                    raise ValueError("同一 revision 的聚类拒绝内容冲突")
-                return
-            latest = conn.execute(
-                "SELECT * FROM sc_cluster_rejections WHERE cluster_attempt_id = ? "
-                "ORDER BY rowid DESC LIMIT 1",
-                (cluster["attempt_id"],),
-            ).fetchone()
-            if (
-                latest
-                and latest["binding_sha256"] == binding
-                and latest["record_version"] == version
-                and latest["source_revision"] + 1 == revision
-                and latest["reason"] == reason
-                and latest["reviewer"] == reviewer
-            ):
-                return
+
+        def before_insert(conn: sqlite3.Connection) -> None:
+            """同 revision 已有接受时拒绝；运行中阶段禁止记录。"""
             if conn.execute(
                 "SELECT 1 FROM sc_cluster_reviews WHERE cluster_attempt_id = ? "
                 "AND binding_sha256 = ? AND record_version = ? AND source_revision = ?",
@@ -577,10 +593,23 @@ class ScStages:
             ).fetchone():
                 raise ValueError("同一 revision 已有聚类接受事实")
             self._require_no_filter(conn, run["run_id"])
-            now = _now()
-            message_id = publish_message(
-                conn,
-                session_id,
+
+        def same_previous(previous: sqlite3.Row) -> bool:
+            """同 revision 的原因与复核人必须一致。"""
+            return previous["reason"] == reason and previous["reviewer"] == reviewer
+
+        def same_latest(latest: sqlite3.Row) -> bool:
+            """latest+1 的绑定、版本、原因与复核人一致时抑制重复。"""
+            return (
+                latest["binding_sha256"] == binding
+                and latest["record_version"] == version
+                and latest["reason"] == reason
+                and latest["reviewer"] == reviewer
+            )
+
+        def message(fact: dict[str, Any]) -> tuple[str, dict[str, Any]]:
+            """拒绝消息只暴露聚合标识。"""
+            return (
                 "探索性聚类拒绝已记录；未授权 marker 或注释。",
                 {
                     "sc_cluster_rejection": {
@@ -590,26 +619,38 @@ class ScStages:
                         "scientific_status": "unreviewed",
                     }
                 },
-                now,
-                _encode_results,
             )
-            conn.execute(
-                "INSERT INTO sc_cluster_rejections "
-                "(review_id, cluster_attempt_id, binding_sha256, record_version, source_revision, "
-                "reason, reviewer, created_at, message_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                (
-                    uuid.uuid4().hex,
-                    cluster["attempt_id"],
-                    binding,
-                    version,
-                    revision,
-                    reason,
-                    reviewer,
-                    now,
-                    message_id,
-                ),
-            )
-            advance_run(conn, run["run_id"], session_id, now)
+
+        identity = {
+            "cluster_attempt_id": cluster["attempt_id"],
+            "binding_sha256": binding,
+            "record_version": version,
+            "source_revision": revision,
+        }
+        append_review_fact(
+            self._conn,
+            _encode_results,
+            ReviewFactPlan(
+                table="sc_cluster_rejections",
+                previous_match=identity,
+                insert_values={
+                    **identity,
+                    "reason": reason,
+                    "reviewer": reviewer,
+                },
+                same_previous=same_previous,
+                conflict_message="同一 revision 的聚类拒绝内容冲突",
+                latest_match={"cluster_attempt_id": cluster["attempt_id"]},
+                same_latest=same_latest,
+                message=message,
+                run_id=run["run_id"],
+                session_id=session_id,
+            ),
+            validate=validate,
+            before_insert=before_insert,
+            validate_first=True,
+            clock=_now,
+        )
 
     @classmethod
     def _marker_source_matches(

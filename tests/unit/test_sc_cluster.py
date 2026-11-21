@@ -19,6 +19,7 @@ from src.analysis.sc_cluster import (
     dimension_binding,
     epochs_for,
 )
+from src.analysis.sc_marker_reviews import CLUSTER_RECORD_VERSION
 from src.api import authorized_run
 from src.api.routes_pca import DIMENSION_RECORD_VERSION
 from tests.unit.test_sc_pca import PARAMS, duplicate_attempt, table
@@ -119,6 +120,79 @@ def execute(d):
     assert response.status_code == 200, response.text
     assert response.json()["attempts"][0]["status"] == "completed", response.json()
     return response.json()
+
+
+def test_cluster_review_uses_review_fact_seam(ready, monkeypatch):
+    """聚类接受由统一接缝追加，阶段只提供聚类身份校验。"""
+    d = ready
+    state = execute(d)
+    aid = state["attempts"][0]["attempt_id"]
+    calls = []
+    real = sc_stages.append_review_fact
+
+    def spy(connect, encode_results, plan, **kwargs):
+        calls.append((plan, kwargs))
+        return real(connect, encode_results, plan, **kwargs)
+
+    monkeypatch.setattr(sc_stages, "append_review_fact", spy)
+    review = d.client.get(f"{d.path}/{aid}/review").json()
+    response = d.client.post(
+        f"{d.path}/{aid}/review",
+        json={
+            "binding_sha256": review["binding_sha256"],
+            "revision": review["revision"],
+            "accepted": True,
+            "reason": "探索性接受",
+        },
+    )
+    assert response.status_code == 200, response.text
+    assert response.json()["history"][0]["accepted"] is True
+    assert len(calls) == 1
+    plan, kwargs = calls[0]
+    assert plan.table == "sc_cluster_reviews"
+    assert plan.previous_match["cluster_attempt_id"] == aid
+    assert plan.previous_match["record_version"] == CLUSTER_RECORD_VERSION
+    assert plan.latest_match == {"cluster_attempt_id": aid}
+    assert plan.insert_values["accepted"] == 1
+    assert plan.run_id == d.rid and plan.session_id == d.sid
+    assert plan.message is not None
+    assert kwargs["validate"] is not None
+
+
+def test_cluster_rejection_uses_review_fact_seam(ready, monkeypatch):
+    """聚类拒绝由统一接缝追加，旧 revision 仍先报失效。"""
+    d = ready
+    state = execute(d)
+    aid = state["attempts"][0]["attempt_id"]
+    calls = []
+    real = sc_stages.append_review_fact
+
+    def spy(connect, encode_results, plan, **kwargs):
+        calls.append((plan, kwargs))
+        return real(connect, encode_results, plan, **kwargs)
+
+    monkeypatch.setattr(sc_stages, "append_review_fact", spy)
+    review = d.client.get(f"{d.path}/{aid}/review").json()
+    response = d.client.post(
+        f"{d.path}/{aid}/reject",
+        json={
+            "binding_sha256": review["binding_sha256"],
+            "revision": review["revision"],
+            "reason": "簇结构不稳定",
+        },
+    )
+    assert response.status_code == 200, response.text
+    assert response.json()["latest_decision"]["decision"] == "rejected"
+    assert response.json()["latest_decision"]["reason"] == "簇结构不稳定"
+    assert len(calls) == 1
+    plan, kwargs = calls[0]
+    assert plan.table == "sc_cluster_rejections"
+    assert plan.previous_match["cluster_attempt_id"] == aid
+    assert plan.previous_match["record_version"] == CLUSTER_RECORD_VERSION
+    assert plan.latest_match == {"cluster_attempt_id": aid}
+    assert plan.insert_values["reviewer"] == "local-user"
+    assert kwargs["validate_first"] is True
+    assert kwargs["before_insert"] is not None
 
 
 def test_authorize_restore_idempotent_own_revision_and_no_leak(ready):
