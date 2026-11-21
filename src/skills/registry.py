@@ -3,9 +3,19 @@
 from __future__ import annotations
 
 import json
+import logging
+import re
 from pathlib import Path
 
 from src.skills.manifest import SkillManifest
+
+logger = logging.getLogger(__name__)
+
+
+def _version_key(version: str) -> tuple[int, ...]:
+    """把常见版本号数字段转成可比较元组（非语义化标签按数字序列比较）。"""
+    parts = tuple(int(part) for part in re.findall(r"\d+", version))
+    return parts or (-1,)
 
 
 class SkillRegistry:
@@ -24,8 +34,12 @@ class SkillRegistry:
                 continue
             manifest_file = skill_dir / "manifest.json"
             if manifest_file.exists():
-                data = json.loads(manifest_file.read_text(encoding="utf-8"))
-                manifest = SkillManifest.model_validate(data)
+                try:
+                    data = json.loads(manifest_file.read_text(encoding="utf-8"))
+                    manifest = SkillManifest.model_validate(data)
+                except (OSError, ValueError) as exc:
+                    logger.warning("跳过无效技能清单 %s: %s", manifest_file, exc)
+                    continue
                 self._index.setdefault(manifest.metadata.name, []).append(manifest.model_dump())
 
     def register(self, manifest) -> None:
@@ -41,7 +55,7 @@ class SkillRegistry:
         versions = self._index[name]
         if version is None:
             # 返回最新版本
-            latest = max(versions, key=lambda v: v["metadata"]["version"])
+            latest = max(versions, key=lambda v: _version_key(v["metadata"]["version"]))
             return SkillManifest.model_validate(latest)
         for v in versions:
             if v["metadata"]["version"] == version:
@@ -62,6 +76,6 @@ class SkillRegistry:
     def list_skills(self) -> list[dict]:
         result = []
         for versions in self._index.values():
-            latest = max(versions, key=lambda v: v["metadata"]["version"])
+            latest = max(versions, key=lambda v: _version_key(v["metadata"]["version"]))
             result.append(latest["metadata"])
         return result

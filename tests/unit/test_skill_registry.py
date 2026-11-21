@@ -46,6 +46,29 @@ def test_registry_version_resolution():
         assert got.metadata.version == "1.0.0"
 
 
+def test_registry_uses_numeric_version_order():
+    """1.10.0 必须被识别为比 1.9.0 新，而不是按字符串比较。"""
+    with tempfile.TemporaryDirectory() as tmp:
+        registry = SkillRegistry(Path(tmp))
+        registry.register(_make_skill("skill_a", "1.9.0"))
+        registry.register(_make_skill("skill_a", "1.10.0"))
+        assert registry.get("skill_a").metadata.version == "1.10.0"
+        assert registry.list_skills()[0]["version"] == "1.10.0"
+
+
+def test_registry_skips_invalid_manifest():
+    """单个损坏的 manifest 不应阻止其他技能加载。"""
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        bad = root / "broken"
+        bad.mkdir()
+        (bad / "manifest.json").write_text("{not json", encoding="utf-8")
+        registry = SkillRegistry(root)
+        registry.register(_make_skill("good", "1.0.0"))
+        assert registry.get("good").metadata.name == "good"
+        assert registry.get("broken") is None
+
+
 def test_registry_dependency_resolution():
     with tempfile.TemporaryDirectory() as tmp:
         registry = SkillRegistry(Path(tmp))
