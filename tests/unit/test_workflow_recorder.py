@@ -2,6 +2,8 @@
 
 import json
 
+import pytest
+
 from src.control.workflow_recorder import WorkflowRecorder
 from src.schemas.workflow import (
     IntentRecord,
@@ -51,6 +53,20 @@ def test_recorder_start_execution_creates_record():
     assert record.intent.analysis_type.value == "differential_expression"
     assert record.parameters.input_files == ["data.csv"]
     assert record.steps == []
+
+
+def test_recorder_rejects_unsafe_run_id():
+    """显式 run_id 不能把记录带出 .wrroc 或 snapshots 目录。"""
+    recorder = WorkflowRecorder()
+    for run_id in ("../outside", "a/b", "a\\b", "/abs"):
+        with pytest.raises(ValueError):
+            recorder.start_execution(
+                intent={"type": "general", "original_input": "hi"},
+                parameters={},
+                user_input="hi",
+                context={},
+                run_id=run_id,
+            )
 
 
 def test_recorder_records_intent():

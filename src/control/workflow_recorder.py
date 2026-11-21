@@ -80,6 +80,8 @@ class WorkflowRecorder:
     ) -> str:
         """开始新的执行记录，返回 run_id。"""
         run_id = run_id or f"run-{uuid.uuid4().hex[:8]}"
+        if run_id in {".", ".."} or "/" in run_id or "\\" in run_id or Path(run_id).is_absolute():
+            raise ValueError(f"run_id 不能包含路径分隔符: {run_id!r}")
 
         # 创建初始记录
         intent_record = IntentRecord(**intent)
