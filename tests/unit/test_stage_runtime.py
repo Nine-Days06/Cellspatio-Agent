@@ -91,3 +91,18 @@ def _string_literals(relative_path: str) -> set[str]:
 def test_modules_do_not_read_bare_stage_keys(relative_path: str) -> None:
     """运行态与产物枚举只经 RunSnapshot 访问器读取阶段表。"""
     assert _string_literals(relative_path) & set(_STAGE_KEYS.values()) == set()
+
+
+def test_mapping_inputs_use_shared_snapshot_coercion(monkeypatch) -> None:
+    """普通 Mapping 运行态经过 RunSnapshot.coerce，不另写适配。"""
+    original = RunSnapshot.coerce
+    calls = []
+
+    def spy(cls, value):
+        calls.append(value)
+        return original(value)
+
+    monkeypatch.setattr(RunSnapshot, "coerce", classmethod(spy))
+    run = {"attempts": [{"status": RUNNING}]}
+    assert running_stages(run) == {"filter"}
+    assert calls == [run]

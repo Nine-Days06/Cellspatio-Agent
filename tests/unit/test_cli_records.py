@@ -11,6 +11,7 @@ from pathlib import Path
 import pytest
 
 from src.cli import records
+from src.ui.run_snapshot import RunSnapshot
 from src.ui.session_store import SessionStore
 
 
@@ -55,6 +56,61 @@ def test_export_session_zip_contains_manifest(store, root):
     assert record["qc_runs"][0]["run_id"] == "run-1"
     assert str(Path("data") / "analysis" / "qc" / "run-1" / "qc.csv") in csv_text
     assert str(root) not in csv_text
+
+
+def test_session_markdown_lists_stage_attempts_in_order(monkeypatch):
+    """导出 Markdown 经阶段访问器读取，顺序和文本保持原样。"""
+    record = {
+        "session": {
+            "id": "s1",
+            "title": "会话",
+            "created_at": "2026-01-01",
+            "updated_at": "2026-01-02",
+        },
+        "messages": [],
+        "qc_runs": [
+            {
+                "run_id": "run-1",
+                "evidence": {"cells": 3, "features": 2},
+                "attempts": [{"attempt_id": "f1", "status": "completed"}],
+                "pca_attempts": [{"attempt_id": "p1", "status": "completed"}],
+                "cluster_attempts": [{"attempt_id": "c1", "status": "completed"}],
+                "marker_attempts": [{"attempt_id": "m1", "status": "failed"}],
+            }
+        ],
+        "workflow_runs": [],
+        "artifacts": [],
+    }
+    seen = []
+    original = RunSnapshot.stage_attempts
+
+    def spy(self, stage):
+        seen.append(stage)
+        return original(self, stage)
+
+    monkeypatch.setattr(RunSnapshot, "stage_attempts", spy)
+    markdown = records._session_markdown(record)
+    assert seen == ["filter", "pca", "cluster", "marker"]
+    assert markdown.endswith(
+        "\n".join(
+            [
+                "## QC runs",
+                "",
+                "- `run-1` · cells=3 features=2",
+                "  - filter `f1` · completed",
+                "  - PCA `p1` · completed",
+                "  - cluster `c1` · completed",
+                "  - marker `m1` · failed",
+                "",
+                "## 运行记录",
+                "",
+                "",
+                "## 产物",
+                "",
+                "",
+            ]
+        )
+    )
 
 
 def test_export_redacts_paths(store, root):

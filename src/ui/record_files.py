@@ -51,8 +51,7 @@ def wrroc_index(root: Path) -> dict[str, list[tuple[str, dict[str, Any]]]]:
 
 def run_dirs(run: Mapping[str, Any]) -> list[tuple[str, str]]:
     """返回 run 的 (stage, directory) 列表。"""
-    snapshot = run if isinstance(run, RunSnapshot) else RunSnapshot(dict(run))
-    return snapshot.stage_dirs()
+    return RunSnapshot.coerce(run).stage_dirs()
 
 
 def resolve_dir(value: str, root: Path) -> Path:
