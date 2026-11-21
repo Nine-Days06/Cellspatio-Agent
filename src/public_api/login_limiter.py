@@ -30,7 +30,7 @@ class LoginLimiter:
         now = self._clock()
         with self._guard:
             # shortcut: 超过 1024 个 key 时清理过期项，避免随机用户名撑大内存。
-            if len(self._attempts) > _MAX_KEYS:
+            if len(self._attempts) >= _MAX_KEYS:
                 stale = [
                     k
                     for k, timestamps in self._attempts.items()
@@ -38,6 +38,9 @@ class LoginLimiter:
                 ]
                 for k in stale:
                     self._attempts.pop(k, None)
+            if len(self._attempts) >= _MAX_KEYS:
+                oldest = min(self._attempts, key=lambda k: self._attempts[k][-1])
+                self._attempts.pop(oldest, None)
             hits = [t for t in self._attempts.get(key, ()) if now - t < self._window]
             if len(hits) >= self._max_attempts:
                 self._attempts[key] = hits
