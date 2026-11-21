@@ -193,6 +193,14 @@ def test_de_analysis_without_data_needs_input():
     )
 
 
+def test_de_missing_explicit_input_needs_input(tmp_path):
+    """显式路径不存在且无下载资产时，不能带着无效路径进入脚本确认。"""
+    manager = _make_manager()
+    result = manager._execute_de_analysis({"input_files": [str(tmp_path / "missing.csv")]}, {})
+    assert result["status"] == "needs_input"
+    assert result["analysis_type"] == "differential_expression"
+
+
 def test_de_analysis_queries_methods_kb_and_injects_context():
     """分析流应先查 MethodsKb，再把 context 传入 generate_code"""
     from src.control.workflow_manager import WorkflowManager
@@ -1039,7 +1047,7 @@ def test_de_explanation_receives_real_stats(tmp_path):
 
     exp = CapturingExplainer()
     wm = WorkflowManager(
-        intent_parser=FakeIntent(),
+        intent_parser=FakeIntent(extract_params_return={"input_files": []}),
         knowledge_client=None,
         r_executor=FakeExec(side_effect=exec_side_effect),
         visualizer=None,

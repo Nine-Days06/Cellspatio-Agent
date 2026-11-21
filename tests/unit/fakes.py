@@ -33,7 +33,9 @@ class FakeIntent:
             "analysis_type": "differential_expression",
             "original_input": "",
         }
-        self._extract_params_return = extract_params_return or {"input_files": ["counts.csv"]}
+        self._extract_params_return = extract_params_return or {
+            "input_files": [str(Path(__file__).parent / "fixtures" / "counts.csv")]
+        }
         self.track_context = track_context
         self.seen_context: Any = None
 

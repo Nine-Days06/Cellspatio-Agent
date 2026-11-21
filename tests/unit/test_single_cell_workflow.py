@@ -29,7 +29,8 @@ def test_single_cell_routes_to_fixed_qc(tmp_path, monkeypatch, approved):
     f = tmp_path / "m.csv"
     f.write_text("gene,c1,c2\nG1,0,2.0\n", encoding="utf-8")
     intent = FakeIntent(
-        parse_return={"type": "analysis", "analysis_type": "single_cell", "original_input": ""}
+        parse_return={"type": "analysis", "analysis_type": "single_cell", "original_input": ""},
+        extract_params_return={"input_files": []},
     )
     wm, gen = _wm(intent, require=True)
     wm.methods_kb = Mock()
@@ -65,7 +66,8 @@ def test_injected_analysis_roots_route_qc_and_project_output(tmp_path, monkeypat
     f = tmp_path / "m.csv"
     f.write_text("gene,c1,c2\nG1,0,2.0\n", encoding="utf-8")
     intent = FakeIntent(
-        parse_return={"type": "analysis", "analysis_type": "single_cell", "original_input": ""}
+        parse_return={"type": "analysis", "analysis_type": "single_cell", "original_input": ""},
+        extract_params_return={"input_files": []},
     )
     wm, _ = _wm(intent, analysis_roots=roots)
     wm.methods_kb = Mock()

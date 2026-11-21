@@ -330,9 +330,7 @@ class WorkflowManager:
             params={"analysis_type": "differential_expression"},
         )
 
-        input_file = self._resolve_input_file(params, context) or next(
-            iter(params.get("input_files") or []), None
-        )
+        input_file = self._resolve_input_file(params, context)
 
         # 无数据：返回 needs_input 终态（AgentRuntime 短路上抛 UI），不再伪造成功
         if not input_file:
