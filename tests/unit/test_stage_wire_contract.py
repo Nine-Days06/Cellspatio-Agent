@@ -500,9 +500,7 @@ def test_view_attempts_use_stage_history_shape(module: str, stage: str) -> None:
     assert backend["attempts"] == [HISTORY_SHAPES[stage]]
 
 
-@pytest.mark.parametrize(
-    "field", ["attempts", "pca_running", "cluster_running", "marker_running"]
-)
+@pytest.mark.parametrize("field", ["attempts", "pca_running", "cluster_running", "marker_running"])
 def test_qc_view_loaded_fields_are_required(field: str) -> None:
     """QC 加载态四字段在前端必填；后端缺任一字段必须被契约判为漂移。"""
     tree = ast.parse((ROOT / "src/api/routes_qc.py").read_text(encoding="utf-8"))
