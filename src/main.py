@@ -120,6 +120,7 @@ class CellSpatioAgent:
                 working_dir=self.config.get("methods_knowledge_dir", "./knowledge_base_methods"),
                 config=lightrag_config,
             ),
+            cards_dir=Path(__file__).resolve().parents[1] / "knowledge_base_methods_cards",
         )
 
         self.storage = FetcherStorage(base_dir=self.config.get("data_dir", "data/raw"))
