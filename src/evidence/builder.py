@@ -50,6 +50,17 @@ def _file_artifact(path: Path) -> Artifact:
     return Artifact(name=path.name, sha256=_sha256(path), bytes=path.stat().st_size)
 
 
+def _card(gate: str, *, license: License | None, **fields: Any) -> EvidenceCard:
+    """构造证据卡，统一注入信封字段与默认许可。"""
+    return EvidenceCard(
+        card_id=_new_card_id(),
+        created_at=_now(),
+        gate=gate,
+        license=license or License(),
+        **fields,
+    )
+
+
 def _fingerprint_artifacts(rows: list[dict[str, Any]]) -> list[Artifact]:
     """把 metadata 里的输入指纹转成无路径的卡字段。"""
     return [
@@ -114,10 +125,9 @@ def build_qc_card(
     qc_evidence = evidence["summary"]
     preview_summary = preview["summary"]
     directory = Path(run["directory"])
-    card = EvidenceCard(
-        card_id=_new_card_id(),
-        created_at=_now(),
-        gate="qc_review",
+    card = _card(
+        "qc_review",
+        license=license,
         outcome=outcome,
         subject=Subject(
             session_id=session_id,
@@ -171,7 +181,6 @@ def build_qc_card(
             reason=preview.get("reason"),
             reviewed_at=reviewed_at,
         ),
-        license=license or License(),
     )
     return validate_card(card)
 
@@ -201,10 +210,9 @@ def build_cluster_card(
     if attempt is None or not attempt.get("result"):
         raise ValueError("聚类结果缺失")
     result = attempt["result"]
-    card = EvidenceCard(
-        card_id=_new_card_id(),
-        created_at=_now(),
-        gate="cluster_review",
+    card = _card(
+        "cluster_review",
+        license=license,
         outcome=outcome,
         subject=Subject(
             session_id=session_id,
@@ -246,7 +254,6 @@ def build_cluster_card(
             reason=review.get("reason"),
             reviewed_at=review.get("created_at"),
         ),
-        license=license or License(),
     )
     return validate_card(card)
 
@@ -286,10 +293,9 @@ def build_pca_dimensions_card(
     if review["binding_sha256"] != binding or review["record_version"] != DIMENSION_RECORD_VERSION:
         raise ValueError("维度记录与 PCA 身份不符")
     dims = review["dims"]
-    card = EvidenceCard(
-        card_id=_new_card_id(),
-        created_at=_now(),
-        gate="pca_dimensions",
+    card = _card(
+        "pca_dimensions",
+        license=license,
         outcome="accepted",
         subject=Subject(
             session_id=session_id,
@@ -331,7 +337,6 @@ def build_pca_dimensions_card(
             reason=review.get("reason"),
             reviewed_at=review.get("created_at"),
         ),
-        license=license or License(),
     )
     return validate_card(card)
 
@@ -361,10 +366,9 @@ def build_marker_card(
         raise ValueError("marker 复核与结果身份不符")
     result = attempt["result"]
     outcome = review["decision"]
-    card = EvidenceCard(
-        card_id=_new_card_id(),
-        created_at=_now(),
-        gate="marker_review",
+    card = _card(
+        "marker_review",
+        license=license,
         outcome=outcome,
         subject=Subject(
             session_id=session_id,
@@ -411,7 +415,6 @@ def build_marker_card(
             reason=review.get("reason"),
             reviewed_at=review.get("created_at"),
         ),
-        license=license or License(),
     )
     return validate_card(card)
 
@@ -447,10 +450,9 @@ def build_qa_card(
         for item in package.get("sources") or []
         if item.get("pmid") or item.get("doi") or item.get("source_id")
     ]
-    card = EvidenceCard(
-        card_id=_new_card_id(),
-        created_at=_now(),
-        gate="knowledge_qa_review",
+    card = _card(
+        "knowledge_qa_review",
+        license=license,
         outcome=review["decision"],
         subject=Subject(
             session_id=session_id,
@@ -492,6 +494,5 @@ def build_qa_card(
             reason=review.get("reason"),
             reviewed_at=review.get("created_at"),
         ),
-        license=license or License(),
     )
     return validate_card(card)

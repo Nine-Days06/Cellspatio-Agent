@@ -16,7 +16,7 @@ from src.evidence.builder import (
     build_qc_card,
 )
 from src.evidence.governance import admission_problems
-from src.evidence.schema import EvidenceCard, validate_card
+from src.evidence.schema import EvidenceCard, License, validate_card
 from src.ui.run_snapshot import RunSnapshot
 
 EXAMPLES = Path(__file__).resolve().parents[2] / "docs" / "examples" / "evidence-cards"
@@ -47,6 +47,13 @@ def _card() -> EvidenceCard:
         claim={"text": "ok"},
         review={"status": "accepted"},
     )
+
+
+def _assert_envelope(card: EvidenceCard) -> None:
+    """每张卡都带非空 gate/id 与默认许可。"""
+    assert card.card_id.startswith("evc-")
+    assert card.gate
+    assert card.license == License()
 
 
 def test_privacy_rejects_forbidden_keys():
@@ -180,6 +187,7 @@ def test_build_qc_card_drops_input_paths(tmp_path):
 
     card = build_qc_card(_Store(run), "s", "r")
 
+    _assert_envelope(card)
     assert card.gate == "qc_review"
     assert [item.name for item in card.provenance.inputs] == ["matrix.mtx"]
     assert "secret" not in card.to_json()
@@ -229,6 +237,7 @@ def test_build_cluster_card_keeps_only_aggregates():
 
     card = build_cluster_card(_Store(run), "s", "r")
 
+    _assert_envelope(card)
     assert card.observation["cluster_sizes"][0]["cells"] == 6
     assert card.provenance.artifacts[0].name == "summary.json"
     assert "secret" not in card.to_json()
@@ -264,6 +273,7 @@ def test_build_qa_card_hashes_question():
 
     card = build_qa_card(store, "s", "qa1")
 
+    _assert_envelope(card)
     assert card.observation["question_chars"] == len(package["question"])
     assert card.provenance.source_ids == ["12345678"]
     assert card.claim.text == "x"
@@ -429,6 +439,7 @@ def _pca_run(tmp_path):
 def test_build_pca_dimensions_card(tmp_path):
     card = build_pca_dimensions_card(_Store(_pca_run(tmp_path)), "s", "r")
 
+    _assert_envelope(card)
     assert card.gate == "pca_dimensions"
     assert card.outcome == "accepted"
     assert card.observation["dims"] == [1, 2, 3]
@@ -489,6 +500,8 @@ def test_build_marker_card_accepted_and_rejected():
     accepted = build_marker_card(_Store(_marker_run()), "s", "r")
     rejected = build_marker_card(_Store(_marker_run("rejected")), "s", "r")
 
+    _assert_envelope(accepted)
+    _assert_envelope(rejected)
     assert accepted.gate == "marker_review"
     assert accepted.outcome == "accepted"
     assert accepted.observation["marker_rows"] == 100
