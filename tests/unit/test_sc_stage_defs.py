@@ -8,14 +8,13 @@ from pathlib import Path
 
 import pytest
 
+from src.stage_defs import stage_directory, stage_failure
 from src.ui.sc_stage_defs import (
     CLUSTER_STAGE,
     FILTER_STAGE,
     MARKER_STAGE,
     PCA_STAGE,
     STAGE_SPECS,
-    stage_directory,
-    stage_failure,
 )
 from src.ui.stage_lifecycle import StageSpec
 
@@ -50,7 +49,7 @@ def test_stage_specs_fill_output_directory_and_failure_projection(
 def test_stage_directory_keeps_outputs_beside_run_root() -> None:
     """产物父目录紧邻 run 根目录，attempt 目录只多一层。"""
     root = Path("/analysis/runs/run")
-    parent, directory = stage_directory(CLUSTER_STAGE, root, "a1")
+    parent, directory = stage_directory(CLUSTER_STAGE.definition, root, "a1")
     assert parent == root.parent / "sc_clusters"
     assert directory == parent / "a1"
 
@@ -58,7 +57,7 @@ def test_stage_directory_keeps_outputs_beside_run_root() -> None:
 @pytest.mark.parametrize("spec", STAGE_SPECS)
 def test_stage_failure_reports_technical_failure_only(spec: StageSpec) -> None:
     """失败结果固定为技术失败，科学状态保持未复核。"""
-    assert stage_failure(spec, "产物落盘失败") == {
+    assert stage_failure(spec.definition, "产物落盘失败") == {
         "status": "failed",
         "stage": spec.failure_stage,
         "scientific_status": "unreviewed",

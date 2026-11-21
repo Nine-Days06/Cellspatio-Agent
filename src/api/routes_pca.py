@@ -27,8 +27,8 @@ from src.api.routes_qc import require_run, run_qc_root
 from src.api.stage_history import history_entry
 from src.api.stage_runtime import has_running
 from src.api.verified_artifact import ArtifactError, read_verified_artifact
+from src.stage_defs import PCA, stage_directory, stage_failure
 from src.ui.run_snapshot import RunSnapshot
-from src.ui.sc_stage_defs import PCA_STAGE, stage_directory, stage_failure
 from src.ui.session_store import SessionStore
 
 router = APIRouter(prefix="/api/sessions/{session_id}/qc/{run_id}/pca", tags=["pca"])
@@ -134,7 +134,7 @@ def execute_pca(
         source = checked_parent(run, parent, root)
         if source["binding_sha256"] != body.binding_sha256 or source["cells"] < 3:
             raise ValueError("PCA 绑定不符或细胞不足，请刷新")
-        directory_parent, directory = stage_directory(PCA_STAGE, root, attempt_id)
+        directory_parent, directory = stage_directory(PCA, root, attempt_id)
         return StageClaim(
             directory_parent=directory_parent,
             directory=directory,
@@ -159,7 +159,7 @@ def execute_pca(
                 request.app.state.agent.workflow_manager.r_executor,
             ),
             finish=lambda result: store.stages.finish_pca(attempt_id, result),
-            on_error=lambda exc: stage_failure(PCA_STAGE, str(exc)),
+            on_error=lambda exc: stage_failure(PCA, str(exc)),
         )
 
     def refresh() -> dict[str, Any]:
@@ -356,9 +356,9 @@ def diagnostic(
             name="pca_diagnostics.png",
             identity_error="PCA 诊断身份已变化",
             path_error="PCA 诊断路径非法",
-            expected_directory=run_qc_root(request.app.state.analysis_roots, run).parent
-            / "sc_pca"
-            / attempt_id,
+            expected_directory=stage_directory(
+                PCA, run_qc_root(request.app.state.analysis_roots, run), attempt_id
+            )[1],
             magic=b"\x89PNG\r\n\x1a\n",
         )
     except ArtifactError as exc:

@@ -13,6 +13,7 @@ from src.analysis.qc_preview import checked_evidence
 from src.analysis.r_executor import RExecutorError
 from src.analysis.sc_filter import FILTER_TOOL_VERSION, filter_script, verified_selection
 from src.analysis.stage_run import FixedStageRun, PreparedStage, run_fixed_stage
+from src.stage_defs import FILTER, PCA, stage_directory
 
 PCA_TOOL_VERSION = "1.0.0"
 DIMENSION_RECORD_VERSION = "sc-pca-dimensions/1.0.0"
@@ -94,7 +95,7 @@ def checked_parent(run: dict[str, Any], parent: dict[str, Any], root: Path) -> d
     selection = verified_selection(run, root, preview)
     qc = checked_evidence(run, root)
     directory = Path(parent["directory"]).resolve()
-    if directory != root.parent / "sc_filter" / parent["attempt_id"]:
+    if directory != stage_directory(FILTER, root, parent["attempt_id"])[1]:
         raise ValueError("父过滤目录非法")
     meta_path = directory / "metadata.json"
     if meta_path.resolve().parent != directory:
@@ -366,7 +367,7 @@ def checked_completed_pca(
     ):
         raise ValueError("PCA 未完成或当前父绑定、协议、版本不符")
     directory = Path(attempt["directory"]).resolve()
-    if directory != root.parent / "sc_pca" / attempt["attempt_id"]:
+    if directory != stage_directory(PCA, root, attempt["attempt_id"])[1]:
         raise ValueError("PCA 目录非法")
     meta_path = directory / "metadata.json"
     if meta_path.resolve().parent != directory:
