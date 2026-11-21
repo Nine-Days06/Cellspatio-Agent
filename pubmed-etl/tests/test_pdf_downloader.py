@@ -6,6 +6,7 @@ from pathlib import Path
 from unittest.mock import Mock, patch
 
 from downloader.pdf_downloader import (
+    _local_fulltext_exists,
     download_oa_pdf,
     download_pdf_file,
     export_oa_links_csv,
@@ -1139,7 +1140,7 @@ class TestRunPdfDownloadSkipsExistingFulltext(unittest.TestCase):
                 td_path = Path(td)
                 db = self._make_db(td_path, "1111", "PMC1")
                 # 仅存在 .txt（OA 包内无 PDF 时的回退产物）同样视为已下载
-                (td_path / "1111.txt").write_text("full text", encoding="utf-8")
+                (td_path / "1111.txt").write_text("full text" * 200, encoding="utf-8")
                 checkpoint, exists = self._run_with_network_failure(db, td_path)
         finally:
             self._stop((m_cached, m_export, m_fetch, m_dl, m_failcsv))
@@ -1164,6 +1165,19 @@ class TestRunPdfDownloadSkipsExistingFulltext(unittest.TestCase):
         self.assertTrue(exists)
         self.assertEqual([i["pmid"] for i in checkpoint], ["1111"])
         m_failcsv.assert_called_once()
+
+
+class TestLocalFulltext(unittest.TestCase):
+    """本地全文判据必须同时看格式、存在性与大小。"""
+
+    def test_txt_counts_and_tiny_pdf_is_ignored(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            (root / "1111.txt").write_text("x" * 2048, encoding="utf-8")
+            (root / "2222.pdf").write_bytes(b"tiny")
+            with patch("downloader.pdf_downloader.PDF_DIR", root):
+                self.assertTrue(_local_fulltext_exists("1111"))
+                self.assertFalse(_local_fulltext_exists("2222"))
 
 
 if __name__ == "__main__":

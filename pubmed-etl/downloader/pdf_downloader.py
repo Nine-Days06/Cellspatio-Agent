@@ -666,10 +666,13 @@ def download_oa_pdf(links: dict[str, str], pdf_path: Path) -> bool:
 
 
 def _local_fulltext_exists(pmid: str) -> bool:
-    """本地是否已有该文献全文（.pdf 或 .txt）。pdf 下载与 pdf-retry 共用此判据，保证两阶段口径一致。"""
+    """本地是否已有有效全文（.pdf 或 .txt）；小于阈值视为半截文件。"""
     if not pmid:
         return False
-    return (PDF_DIR / f"{pmid}.pdf").exists() or (PDF_DIR / f"{pmid}.txt").exists()
+    return any(
+        path.is_file() and path.stat().st_size > MIN_VALID_FILE_BYTES
+        for path in (PDF_DIR / f"{pmid}.pdf", PDF_DIR / f"{pmid}.txt")
+    )
 
 
 def run_pdf_download(db_path: Path = DB_PATH):
@@ -760,7 +763,7 @@ def run_pdf_download(db_path: Path = DB_PATH):
             dest_dir = PDF_DIR
             pdf_path = dest_dir / f"{info['pmid']}.pdf"
 
-            if pdf_path.exists():
+            if _local_fulltext_exists(info["pmid"]):
                 skip_count += 1
                 continue
 
