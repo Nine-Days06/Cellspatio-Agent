@@ -321,7 +321,7 @@ class LightRAGClient:
             logger.info(f"Document inserted, length: {len(document)}")
 
     def insert_documents(self, documents: list[str], file_paths: list[str] | None = None) -> int:
-        """批量插入；file_paths 缺省时按文档头/来源行推导（citation 用）"""
+        """批量插入，返回实际处理成功的文档数；file_paths 缺省时按文档头/来源行推导（citation 用）"""
         self._initialize_rag()
         if not documents or self._rag is None:
             return 0
@@ -329,11 +329,30 @@ class LightRAGClient:
             file_paths = [derive_file_path(d) for d in documents]
         # 全空则不传，兼容不支持 file_paths 的 mock
         if any(file_paths):
-            async_runtime.run(self._rag.ainsert(documents, file_paths=file_paths))
+            track_id = async_runtime.run(self._rag.ainsert(documents, file_paths=file_paths))
         else:
-            async_runtime.run(self._rag.ainsert(documents))
-        logger.info(f"Batch inserted {len(documents)} documents")
-        return len(documents)
+            track_id = async_runtime.run(self._rag.ainsert(documents))
+        inserted = self._processed_count(track_id, len(documents))
+        logger.info(f"Batch inserted {inserted}/{len(documents)} documents")
+        return inserted
+
+    def _processed_count(self, track_id: Any, requested: int) -> int:
+        """按 doc_status 统计本批真正处理完成的文档；无法查询时返回请求数"""
+        if not isinstance(track_id, str) or not hasattr(self._rag, "aget_docs_by_track_id"):
+            return requested
+        try:
+            statuses = async_runtime.run(self._rag.aget_docs_by_track_id(track_id))
+        except Exception as exc:  # noqa: BLE001 - 统计失败不能影响已完成的插入
+            logger.warning(f"统计插入结果失败，按请求数记录: {exc}")
+            return requested
+        if not statuses:
+            return requested
+        done = 0
+        for doc in statuses.values():
+            status = getattr(doc, "status", None)
+            if str(getattr(status, "value", status)) == "processed":
+                done += 1
+        return done
 
     def query(self, question: str, mode: str = "mix") -> str:
         """查询知识库（纯文本；背景/兼容调用方）"""

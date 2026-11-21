@@ -193,6 +193,27 @@ def test_insert_documents_empty_returns_zero(tmp_path):
     assert client.insert_documents([]) == 0
 
 
+def test_insert_documents_counts_only_processed(tmp_path):
+    """返回值应反映真实落库数，而不是回声请求数。"""
+    from types import SimpleNamespace
+
+    class StatusFakeRAG(FakeRAG):
+        async def ainsert(self, input_data, file_paths=None, **kwargs):
+            self.insert(input_data, file_paths=file_paths, **kwargs)
+            return "track-1"
+
+        async def aget_docs_by_track_id(self, track_id):
+            assert track_id == "track-1"
+            return {
+                "doc-a": SimpleNamespace(status="processed"),
+                "doc-b": SimpleNamespace(status="failed"),
+            }
+
+    client = _client_with_fake_rag(tmp_path)
+    client._rag = StatusFakeRAG()
+    assert client.insert_documents(["doc-a", "doc-b"]) == 1
+
+
 def test_insert_document_single_still_works(tmp_path):
     client = _client_with_fake_rag(tmp_path)
     client.insert_document("single-doc")
