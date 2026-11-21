@@ -1,4 +1,6 @@
 import tempfile
+import threading
+import time
 
 
 class FakeRAG:
@@ -141,6 +143,42 @@ def test_initialize_rag_passes_workspace_to_lightrag(tmp_path, monkeypatch):
     client = LightRAGClient(working_dir=tmp_path / "knowledge_base_methods")
     client._initialize_rag()
     assert captured["workspace"] == "knowledge_base_methods"
+
+
+def test_initialize_rag_concurrent_first_call_builds_once(tmp_path, monkeypatch):
+    """并发首问只构造一次 LightRAG 并初始化一次存储。"""
+    from src.knowledge.lightrag_client import LightRAGClient
+
+    built = []
+    initialized = []
+
+    class SlowRag:
+        def __init__(self, **kwargs):
+            built.append(kwargs)
+            time.sleep(0.05)
+
+        async def initialize_storages(self):
+            initialized.append(1)
+
+    monkeypatch.setattr("lightrag.LightRAG", SlowRag)
+    monkeypatch.setattr(
+        "src.knowledge.llm_factory.build_llm_func",
+        lambda provider: (object(), "deepseek-v4-flash"),
+    )
+    monkeypatch.setattr(
+        "src.knowledge.llm_factory.build_embedding_func",
+        lambda custom=None: object(),
+    )
+
+    client = LightRAGClient(working_dir=tmp_path)
+    threads = [threading.Thread(target=client._initialize_rag) for _ in range(6)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+
+    assert len(built) == 1
+    assert len(initialized) == 1
 
 
 def test_insert_documents_batch(tmp_path):

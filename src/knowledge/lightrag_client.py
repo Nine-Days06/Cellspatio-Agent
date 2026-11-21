@@ -233,6 +233,7 @@ class LightRAGClient:
 
         # 延迟导入 LightRAG，避免立即依赖
         self._rag = None
+        self._init_lock = threading.Lock()
         # 问答关闭缓存期间需要独占开关，避免并发检索读到半开状态
         self._cache_lock = threading.Lock()
         register_atexit(self.close)
@@ -257,7 +258,12 @@ class LightRAGClient:
 
     def _initialize_rag(self):
         """使用真实 LLM（云端 DeepSeek 等）与 embedding（本地 Ollama，默认 bge-m3:latest，见 EMBEDDING_MODEL）初始化"""
-        if self._rag is None:
+        if self._rag is not None:
+            return
+        # 并发首问只允许一个线程构造 LightRAG，避免重复 initialize_storages 泄漏连接。
+        with self._init_lock:
+            if self._rag is not None:
+                return
             try:
                 from lightrag import LightRAG
 
@@ -447,8 +453,7 @@ class LightRAGClient:
                     f"embedding 模型已锁定为 {saved}，不能改为 {model_name}；如需更换需清空知识库重建"
                 )
         else:
-            lock_file.write_text(
-                json.dumps({"model": model_name}, ensure_ascii=False),
-                encoding="utf-8",
-            )
+            tmp = lock_file.with_name(f"{lock_file.name}.{os.getpid()}.tmp")
+            tmp.write_text(json.dumps({"model": model_name}, ensure_ascii=False), encoding="utf-8")
+            os.replace(tmp, lock_file)
             logger.info("embedding 模型已锁定: %s", model_name)
