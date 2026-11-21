@@ -1,3 +1,5 @@
+import pytest
+
 from src.data.storage import FetcherStorage
 
 
@@ -63,3 +65,15 @@ def test_list_assets_excludes_meta_dir():
     storage.save_meta("kegg", "hsa00010", {"title": "Demo"})
     assets = storage.list_assets()
     assert assets == ["kegg/hsa00010/hsa00010.raw"]
+
+
+def test_rejects_path_traversal():
+    storage = FetcherStorage(base_dir="test_storage/raw")
+    with pytest.raises(ValueError):
+        storage.get_path("..", "hsa00010")
+    with pytest.raises(ValueError):
+        storage.get_path("kegg", "../evil")
+    with pytest.raises(ValueError):
+        storage.save("kegg", "hsa00010", b"x", filename="../../evil.raw")
+    with pytest.raises(ValueError):
+        storage.save_meta("../..", "x", {})
