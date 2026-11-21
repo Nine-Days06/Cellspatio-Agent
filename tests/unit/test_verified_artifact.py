@@ -9,7 +9,6 @@ from typing import Any
 import pytest
 
 from src.api.verified_artifact import (
-    DIRECTORY_ERROR,
     PATH_ERROR,
     ArtifactError,
     VerifiedArtifact,
@@ -106,7 +105,7 @@ def test_expected_directory_mismatch_is_rejected(tmp_path: Path) -> None:
     image = directory / "pca.png"
     image.write_bytes(PNG)
 
-    with pytest.raises(ArtifactError, match=DIRECTORY_ERROR):
+    with pytest.raises(ArtifactError, match=PATH_ERROR):
         read_verified_artifact(
             attempt=_attempt(directory, image.name, PNG),
             name=image.name,

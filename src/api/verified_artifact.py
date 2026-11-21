@@ -8,7 +8,6 @@ from typing import Any
 
 from src.analysis.qc_preview import _identity
 
-DIRECTORY_ERROR = "产物目录非法或与期望不符"
 PATH_ERROR = "产物路径非法或缺失"
 
 
@@ -29,7 +28,6 @@ def read_verified_artifact(
     attempt: dict[str, Any],
     name: str,
     identity_error: str,
-    directory_error: str = DIRECTORY_ERROR,
     path_error: str = PATH_ERROR,
     expected_directory: str | Path | None = None,
     magic: bytes | None = None,
@@ -38,16 +36,16 @@ def read_verified_artifact(
     try:
         directory = Path(attempt["directory"]).resolve()
     except (KeyError, OSError, TypeError) as exc:
-        raise ArtifactError(directory_error) from exc
+        raise ArtifactError(path_error) from exc
     if not directory.is_dir():
-        raise ArtifactError(directory_error)
+        raise ArtifactError(path_error)
     if expected_directory is not None:
         try:
             expected = Path(expected_directory).resolve()
         except (OSError, TypeError) as exc:
-            raise ArtifactError(directory_error) from exc
+            raise ArtifactError(path_error) from exc
         if directory != expected:
-            raise ArtifactError(directory_error)
+            raise ArtifactError(path_error)
 
     relative = Path(name)
     if not name or relative.is_absolute() or relative.anchor or relative.name != name:

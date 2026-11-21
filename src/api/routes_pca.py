@@ -384,7 +384,6 @@ def diagnostic(
             attempt=attempt,
             name="pca_diagnostics.png",
             identity_error="PCA 诊断身份已变化",
-            directory_error="PCA 诊断路径非法",
             path_error="PCA 诊断路径非法",
             expected_directory=run_qc_root(request.app.state.analysis_roots, run).parent
             / "sc_pca"

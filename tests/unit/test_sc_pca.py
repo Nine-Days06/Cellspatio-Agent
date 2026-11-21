@@ -224,7 +224,13 @@ def test_get_never_executes_post_once_and_private_stage_only(parent_ready):
     assert client.get(image_path).headers["cache-control"] == "no-store"
     image = Path(attempt["directory"]) / "pca_diagnostics.png"
     image.write_bytes(image.read_bytes() + b"changed")
-    assert client.get(image_path).status_code == 409
+    tampered = client.get(image_path)
+    assert tampered.status_code == 409
+    assert tampered.json()["detail"] == "PCA 诊断身份已变化"
+    Path(attempt["directory"]).rename(Path(attempt["directory"]).with_name("moved"))
+    missing_dir = client.get(image_path)
+    assert missing_dir.status_code == 409
+    assert missing_dir.json()["detail"] == "PCA 诊断路径非法"
     missing = client.get(path + "/unknown/diagnostic")
     assert missing.status_code == 404
     assert missing.json()["detail"] == "PCA 诊断未完成或不存在"
