@@ -6,8 +6,6 @@ import csv
 import io
 import json
 import math
-import subprocess
-import time
 from pathlib import Path
 from typing import Any
 
@@ -15,6 +13,7 @@ from src.analysis.qc_preview import _digest, checked_evidence
 from src.analysis.r_executor import RExecutorError
 from src.analysis.sc_filter import FILTER_TOOL_VERSION, filter_script, verified_selection
 from src.analysis.sc_qc import _fingerprints
+from src.analysis.stage_run import executor_streams, finish_stage, start_stage
 
 PCA_TOOL_VERSION = "1.0.0"
 DIMENSION_RECORD_VERSION = "sc-pca-dimensions/1.0.0"
@@ -474,8 +473,7 @@ def run_sc_pca(
     executor: Any,
 ) -> dict[str, Any]:
     """事务外执行一次；任何失败保留证据，绝不追加步骤或自动重试。"""
-    directory.mkdir(parents=True, exist_ok=False)
-    started = time.perf_counter()
+    started = start_stage(directory)
     metadata: dict[str, Any] = {
         "tool": "sc_pca",
         "tool_version": PCA_TOOL_VERSION,
@@ -514,21 +512,9 @@ def run_sc_pca(
     except (RExecutorError, OSError, ValueError, KeyError, TypeError) as exc:
         metadata["error"] = str(exc)
         if isinstance(exc, RExecutorError):
-            stdout, stderr = exc.stdout, exc.stderr
-            if isinstance(exc.__cause__, subprocess.TimeoutExpired):
-                stdout, stderr = exc.__cause__.stdout or "", exc.__cause__.stderr or ""
+            stdout, stderr = executor_streams(exc)
     finally:
-        for name, text in (("stdout.txt", stdout), ("stderr.txt", stderr)):
-            (directory / name).write_text(
-                text.decode("utf-8", errors="replace") if isinstance(text, bytes) else text,
-                encoding="utf-8",
-            )
-        metadata["elapsed_seconds"] = time.perf_counter() - started
-        metadata["artifacts"] = {
-            Path(r["path"]).name: r
-            for r in _fingerprints([p for p in directory.iterdir() if p.is_file()])
-        }
-        (directory / "metadata.json").write_text(
-            json.dumps(metadata, ensure_ascii=False, indent=2), encoding="utf-8"
+        finish_stage(
+            directory, metadata, started, stdout, stderr, artifacts=True, fingerprints=_fingerprints
         )
     return metadata
