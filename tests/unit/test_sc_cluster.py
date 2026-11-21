@@ -156,6 +156,17 @@ def test_cluster_review_uses_review_fact_seam(ready, monkeypatch):
     assert plan.insert_values["accepted"] == 1
     assert plan.run_id == d.rid and plan.session_id == d.sid
     assert plan.message is not None
+    content, results = plan.message({"review_id": "review-1"})
+    assert content == "探索性聚类接受已记录，科学未复核；未授权 marker 或注释。"
+    assert results == {
+        "sc_cluster_review": {
+            "run_id": d.rid,
+            "cluster_attempt_id": aid,
+            "review_id": "review-1",
+            "stage": "cluster_review",
+            "scientific_status": "unreviewed",
+        }
+    }
     assert kwargs["validate"] is not None
 
 

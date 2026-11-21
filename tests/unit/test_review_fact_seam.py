@@ -86,7 +86,7 @@ def review_plan(
         same_previous=same_previous,
         conflict_message="同一 revision 的复核内容冲突",
         latest_match={"fake_attempt_id": attempt_id} if latest else None,
-        same_latest=same_latest,
+        same_latest=same_latest if latest else None,
         message=message,
         run_id=run_id,
         session_id=session_id,
@@ -228,6 +228,53 @@ def test_run_plan_requires_session_id(world: tuple[SessionStore, str]) -> None:
         append(store, review_plan(run_id="run"))
     with store._conn() as conn:
         assert conn.execute("SELECT COUNT(*) FROM fake_reviews").fetchone()[0] == 0
+
+
+def test_plan_rejects_latest_match_without_same_latest(world: tuple[SessionStore, str]) -> None:
+    """latest 匹配键与重复判定必须成对配置。"""
+    with pytest.raises(ValueError, match="latest_match"):
+        replace(review_plan(), same_latest=None)
+
+
+def test_plan_rejects_same_latest_without_latest_match(world: tuple[SessionStore, str]) -> None:
+    """只提供重复判定而不提供 latest 键同样无效。"""
+    with pytest.raises(ValueError, match="latest_match"):
+        replace(review_plan(), latest_match=None)
+
+
+def test_plan_rejects_latest_dedupe_without_source_revision(
+    world: tuple[SessionStore, str],
+) -> None:
+    """latest 去重依赖新事实的 source_revision 判断是否相邻。"""
+    plan = review_plan()
+    without_revision = {
+        key: value for key, value in plan.insert_values.items() if key != "source_revision"
+    }
+    with pytest.raises(ValueError, match="source_revision"):
+        replace(plan, insert_values=without_revision)
+
+
+def test_message_without_session_is_rejected_at_plan_construction(
+    world: tuple[SessionStore, str],
+) -> None:
+    """消息必须绑定会话，构造 plan 时即失败，不进入事务。"""
+    store, _ = world
+
+    def message(fact: dict[str, Any]) -> tuple[str, dict[str, Any]]:
+        """该回调不应被调用。"""
+        return "x", {"review_id": fact["review_id"]}
+
+    with pytest.raises(ValueError, match="session_id"):
+        review_plan(message=message)
+    with store._conn() as conn:
+        assert conn.execute("SELECT COUNT(*) FROM fake_reviews").fetchone()[0] == 0
+
+
+def test_validate_first_requires_validate(world: tuple[SessionStore, str]) -> None:
+    """先校验顺序没有校验回调时拒绝，避免静默退回 previous 幂等。"""
+    store, _ = world
+    with pytest.raises(ValueError, match="validate"):
+        append(store, review_plan(), validate_first=True)
 
 
 def test_validate_order_is_configurable(world: tuple[SessionStore, str]) -> None:

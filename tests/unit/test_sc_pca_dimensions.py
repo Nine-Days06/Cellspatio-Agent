@@ -163,6 +163,18 @@ def test_dimension_record_uses_review_fact_seam(dimensions_ready, monkeypatch):
     assert plan.insert_values["dims"] == json.dumps([1])
     assert plan.run_id == d.rid and plan.session_id == d.sid
     assert plan.message is not None
+    content, results = plan.message({"review_id": "review-1"})
+    assert content == "维度选择已记录，科学未复核；未授权下游执行。"
+    assert results == {
+        "pca_dimensions": {
+            "run_id": d.rid,
+            "filter_attempt_id": d.fid,
+            "attempt_id": d.aid,
+            "review_id": "review-1",
+            "stage": "pca_review",
+            "scientific_status": "unreviewed",
+        }
+    }
     assert kwargs["validate"] is not None
 
 
