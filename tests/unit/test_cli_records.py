@@ -5,6 +5,7 @@ from __future__ import annotations
 import csv
 import io
 import json
+import os
 import zipfile
 from pathlib import Path
 
@@ -56,6 +57,23 @@ def test_export_session_zip_contains_manifest(store, root):
     assert record["qc_runs"][0]["run_id"] == "run-1"
     assert str(Path("data") / "analysis" / "qc" / "run-1" / "qc.csv") in csv_text
     assert str(root) not in csv_text
+
+
+def test_export_skips_symlinked_artifacts(store, root):
+    """符号链接不得把导出范围带到项目根之外。"""
+    sid, run_dir = _seed_session(store, root)
+    outside = root.parent / "outside-secret.txt"
+    outside.write_text("secret", encoding="utf-8")
+    link = run_dir / "leak.csv"
+    try:
+        os.symlink(outside, link)
+    except (OSError, NotImplementedError):
+        pytest.skip("当前环境不允许创建符号链接")
+
+    records.export_records("session", sid, out=root / "out.zip", store=store, root=root)
+
+    with zipfile.ZipFile(root / "out.zip") as archive:
+        assert "leak.csv" not in archive.read("artifacts.csv").decode("utf-8")
 
 
 def test_session_markdown_lists_stage_attempts_in_order(monkeypatch):

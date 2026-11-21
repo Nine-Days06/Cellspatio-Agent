@@ -144,7 +144,11 @@ def _artifact_rows(
         if path in seen or not path.is_dir():
             continue
         seen.add(path)
-        for file_path in sorted(item for item in path.rglob("*") if item.is_file()):
+        for file_path in sorted(
+            item
+            for item in path.rglob("*")
+            if item.is_file() and not item.is_symlink() and item.resolve().is_relative_to(root)
+        ):
             rows.append(_file_row(file_path, session_id, stage, root, redact, hash_files))
     return rows
 
@@ -168,7 +172,11 @@ def _project_extra_rows(
         for _, directory in run_dirs(run)
     ]
     rows = []
-    for file_path in sorted(item for item in project_dir.rglob("*") if item.is_file()):
+    for file_path in sorted(
+        item
+        for item in project_dir.rglob("*")
+        if item.is_file() and not item.is_symlink() and item.resolve().is_relative_to(root)
+    ):
         if any(file_path.is_relative_to(path) for path in covered):
             continue
         parts = file_path.relative_to(project_dir).parts
