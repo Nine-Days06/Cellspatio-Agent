@@ -3,6 +3,7 @@ import {
   evaluateStageGate,
   isAttemptedByBinding,
   isAttemptedByPreview,
+  type GateBlocker,
   type QcPreviewStatus,
 } from '@/lib/stageGate'
 
@@ -233,5 +234,50 @@ describe('attempt identity helpers', () => {
     expect(isAttemptedByBinding([{ binding_sha256: 'h1' }], 'h1')).toBe(true)
     expect(isAttemptedByBinding([{ binding_sha256: 'h2' }], 'h1')).toBe(false)
     expect(isAttemptedByBinding([{ binding_sha256: 'h1' }], null)).toBe(false)
+  })
+})
+
+describe('blocker messages', () => {
+  it('maps every blocker to one stable user-facing text', () => {
+    const base = { blocked: [], busy: false, running: false, reasonProvided: true }
+    const cases: Array<[GateBlocker, string, () => ReturnType<typeof evaluateStageGate>]> = [
+      ['busy', '正在读取或执行', () => markerReview({ busy: true })],
+      ['running', '当前阶段或下游正在运行', () => markerReview({ running: true })],
+      ['disabled', '上游运行中，暂不可操作', () => markerReview({ disabled: true })],
+      ['blocked', '阶段前置条件未满足', () => markerReview({ blocked: ['不可操作'] })],
+      ['preview-not-pending', '预览不在可操作状态', () => qc('approve', { previewStatus: 'approved' })],
+      ['preview-edited', '阈值已编辑，需重新生成预览', () => qc('approve', { unchanged: false })],
+      ['already-attempted', '当前身份已有执行记录', () => qc('filter', { previewStatus: 'approved', attempted: true })],
+      ['missing-binding', '缺少当前授权绑定', () => evaluateStageGate({
+        ...base, stage: 'pca', bindingExists: false, bindingAttempted: false,
+      })],
+      ['missing-selection', '缺少当前维度选择记录', () => evaluateStageGate({
+        ...base, stage: 'cluster', bindingExists: true, selectionExists: false, disabled: false, bindingAttempted: false,
+      })],
+      ['missing-cluster-review', '缺少当前聚类接受记录', () => evaluateStageGate({
+        ...base, stage: 'marker', action: 'execute', bindingExists: true, hasClusterAcceptance: false,
+        disabled: false, bindingAttempted: false,
+      })],
+      ['missing-reason', '缺少书面依据', () => evaluateStageGate({
+        ...base, stage: 'pca', bindingExists: true, bindingAttempted: false, reasonProvided: false,
+      })],
+      ['cluster-already-accepted', '当前聚类已有接受记录', () => evaluateStageGate({
+        ...base, stage: 'marker', action: 'accept', bindingExists: true, hasClusterAcceptance: true,
+        accepted: true, disabled: false,
+      })],
+      ['acceptance-required', '尚未勾选接受当前探索性聚类', () => evaluateStageGate({
+        ...base, stage: 'marker', action: 'accept', bindingExists: true, hasClusterAcceptance: false,
+        accepted: false, disabled: false,
+      })],
+      ['invalid-dimensions', '维度数不在证据范围内', () => evaluateStageGate({
+        ...base, stage: 'pca-dimensions', bindingExists: true, dimensionsValid: false, disabled: false,
+      })],
+    ]
+
+    for (const [blocker, text, createGate] of cases) {
+      const gate = createGate()
+      expect(gate.blockers).toEqual([blocker])
+      expect(gate.blockerText).toBe(text)
+    }
   })
 })
