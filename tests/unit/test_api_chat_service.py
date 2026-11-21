@@ -6,7 +6,7 @@ import json
 
 import pytest
 
-from src.api.chat_service import run_turn, session_lock
+from src.api.chat_service import _persist, persist_message, persist_outcome, run_turn, session_lock
 from src.ui.session_store import SessionStore
 from tests.unit.fakes import FakeAgent, FakeRuntime
 
@@ -189,6 +189,44 @@ def test_general_branch_persists_assistant_message_and_done_event(store):
     assert done["type"] == "done"
     assert done["message_id"] == last["id"]
     json.dumps(done)  # 不得抛 TypeError
+
+
+def test_persist_outcome_without_emit_only_persists(store):
+    sid = store.create_session()
+    result = {
+        "status": "success",
+        "message": "分析完成",
+        "results": {"charts": [{"type": "image", "image_b64": "AAA"}]},
+    }
+
+    returned, last = persist_outcome(store, sid, result)
+
+    assert returned is result
+    assert last == store.get_messages(sid)[-1]
+    assert last["role"] == "assistant"
+    assert last["results"]["charts"] == [{"type": "image", "image_b64": "AAA"}]
+
+
+def test_persist_alias_keeps_legacy_name():
+    assert _persist is persist_message
+
+
+def test_persist_outcome_emits_charts_then_serialisable_done(store):
+    import plotly.graph_objects as go
+
+    sid = store.create_session()
+    fig = go.Figure(go.Scatter(x=[1], y=[2]))
+    result = {"status": "success", "message": "ok", "results": {"charts": [fig]}}
+    emit = _sink()
+
+    returned, last = persist_outcome(store, sid, result, emit=emit)
+
+    assert returned is result
+    assert [event["type"] for event in emit.collected] == ["chart", "done"]
+    done = emit.collected[-1]
+    assert done["message_id"] == last["id"]
+    assert done["message"]["results"]["charts"][0]["type"] == "plotly"
+    json.dumps(done)
 
 
 def test_chart_events_precede_done_event(store):

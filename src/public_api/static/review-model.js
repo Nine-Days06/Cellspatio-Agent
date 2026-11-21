@@ -30,13 +30,6 @@ function normalizeAction(action) {
   };
 }
 
-export function reviewerRole(roles) {
-  const roleSet = new Set(roles || []);
-  if (roleSet.has("domain_reviewer")) return "domain_reviewer";
-  if (roleSet.has("compliance_reviewer")) return "compliance_reviewer";
-  return null;
-}
-
 export function noticeFor(review) {
   return review?.blocked_reason || null;
 }

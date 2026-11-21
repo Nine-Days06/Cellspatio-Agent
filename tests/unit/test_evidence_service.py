@@ -17,7 +17,9 @@ from src.evidence.contribution import (
 )
 from src.evidence.errors import EvidenceError
 from src.evidence.governance import (
+    ACTION_COMPLIANCE_NEEDS_CHANGES,
     ACTION_COMPLIANCE_PASS,
+    ACTION_COMPLIANCE_REJECT,
     ACTION_DOMAIN_NEEDS_CHANGES,
     ACTION_DOMAIN_PASS,
     ACTION_DOMAIN_REJECT,
@@ -38,8 +40,9 @@ from src.evidence.schema import (
     Review,
     Subject,
 )
-from src.public_api.app import create_public_app
+from src.public_api.app import ReviewRequest, WithdrawRequest, create_public_app
 from src.public_api.context import ReviewerContext, reviewer_context
+from src.public_api.evidence_service import PublicEvidenceService
 
 PASSWORD = "password123"
 
@@ -545,6 +548,56 @@ def test_auth_requires_valid_token_and_disabled_users_are_locked_out(app, client
     assert client.get("/api/auth/me", headers=_headers(token)).status_code == 401
 
 
+@pytest.mark.parametrize(
+    ("username", "roles", "role", "capabilities", "can_contribute"),
+    [
+        (
+            "principal-both",
+            (ROLE_DOMAIN, ROLE_COMPLIANCE),
+            ROLE_DOMAIN,
+            (ACTION_DOMAIN_PASS, ACTION_DOMAIN_NEEDS_CHANGES, ACTION_DOMAIN_REJECT),
+            False,
+        ),
+        (
+            "principal-compliance",
+            (ROLE_COMPLIANCE,),
+            ROLE_COMPLIANCE,
+            (
+                ACTION_COMPLIANCE_PASS,
+                ACTION_COMPLIANCE_NEEDS_CHANGES,
+                ACTION_COMPLIANCE_REJECT,
+            ),
+            False,
+        ),
+        ("principal-none", (), None, (), False),
+        ("principal-contributor", (ROLE_CONTRIBUTOR,), None, (), True),
+    ],
+)
+def test_login_and_me_return_server_principal(
+    app,
+    client: TestClient,
+    username: str,
+    roles: tuple[str, ...],
+    role: str | None,
+    capabilities: tuple[str, ...],
+    can_contribute: bool,
+):
+    """login 与 me 的 principal 一致：领域优先、仅合规、无角色、contributor。"""
+    _account(app, username, roles)
+    login = client.post("/api/auth/login", json={"username": username, "password": PASSWORD})
+    assert login.status_code == 200, login.text
+    login_user = login.json()["user"]
+    me_user = client.get("/api/auth/me", headers=_headers(login.json()["token"])).json()["user"]
+    expected = {
+        "role": role,
+        "capabilities": list(capabilities),
+        "can_review": role is not None,
+        "can_contribute": can_contribute,
+    }
+    assert login_user["principal"] == expected
+    assert me_user["principal"] == expected
+
+
 def test_client_upload_and_citation_use_real_http_path(app, client: TestClient):
     """本地客户端封装走完整 HTTP 服务，而不是直接调用存储。"""
     _account(app, "client-1", (ROLE_CONTRIBUTOR,))
@@ -864,3 +917,134 @@ def test_public_evidence_service_is_replaceable(app, client: TestClient):
         "queue",
         "events:evs-stub",
     ]
+
+
+def _service(tmp_path) -> PublicEvidenceService:
+    """构造直接调用写命令的 service。"""
+    return PublicEvidenceService(GovernanceStore(tmp_path / "public_evidence"))
+
+
+CONTRIBUTOR = {"id": "acct-contributor", "roles": [ROLE_CONTRIBUTOR]}
+OTHER_CONTRIBUTOR = {"id": "acct-contributor-2", "roles": [ROLE_CONTRIBUTOR]}
+DOMAIN = {"id": "acct-domain", "roles": [ROLE_DOMAIN]}
+COMPLIANCE = {"id": "acct-compliance", "roles": [ROLE_COMPLIANCE]}
+
+
+def test_service_submit_overrides_contributor_and_requires_consent(tmp_path):
+    """直接提交时用登录身份覆盖预览，未同意则拒绝。"""
+    service = _service(tmp_path)
+    preview = preview_card(_card("evc-svc-submit-1"), contributor_id="spoofed")
+
+    submitted = service.submit(preview, True, CONTRIBUTOR)
+    assert submitted["status"] == "pending"
+    assert submitted["contributor_id"] == CONTRIBUTOR["id"]
+    assert submitted["submitted_at"]
+
+    with pytest.raises(EvidenceError) as denied:
+        service.submit(preview, False, CONTRIBUTOR)
+    assert denied.value.kind == "invalid_input"
+
+
+def test_service_preview_checks_revision_ownership_and_state(tmp_path):
+    """修订只能指向自己的 needs_changes 提交。"""
+    service = _service(tmp_path)
+    original = service.submit(
+        service.preview(_card("evc-svc-preview-1"), CONTRIBUTOR), True, CONTRIBUTOR
+    )
+    evidence_id = original["evidence_id"]
+
+    with pytest.raises(EvidenceError) as foreign:
+        service.preview(_card("evc-svc-preview-2"), OTHER_CONTRIBUTOR, evidence_id)
+    assert foreign.value.kind == "permission_denied"
+    assert str(foreign.value) == "只能修订自己的提交"
+
+    with pytest.raises(EvidenceError) as pending:
+        service.preview(_card("evc-svc-preview-3"), CONTRIBUTOR, evidence_id)
+    assert pending.value.kind == "invalid_state"
+    assert str(pending.value) == "只能修订 needs_changes 的提交"
+
+    service.review(
+        evidence_id,
+        ReviewRequest(action=ACTION_DOMAIN_NEEDS_CHANGES, reason="补充限制"),
+        DOMAIN,
+    )
+    revised = service.preview(_card("evc-svc-preview-4"), CONTRIBUTOR, evidence_id)
+    assert revised["will_send"]["submission"]["revises_submission_id"] == evidence_id
+    assert revised["will_send"]["submission"]["contributor_id"] == CONTRIBUTOR["id"]
+
+
+def test_service_review_checks_action_role_and_terminal_state(tmp_path):
+    """未知动作、角色不符与已结束状态都在 service 内拒绝。"""
+    service = _service(tmp_path)
+    submitted = service.submit(
+        service.preview(_card("evc-svc-review-1"), CONTRIBUTOR), True, CONTRIBUTOR
+    )
+    evidence_id = submitted["evidence_id"]
+
+    with pytest.raises(EvidenceError) as unknown:
+        service.review(evidence_id, ReviewRequest(action="bogus"), DOMAIN)
+    assert unknown.value.kind == "invalid_input"
+    assert str(unknown.value) == "未知审核动作"
+
+    with pytest.raises(EvidenceError) as denied:
+        service.review(
+            evidence_id,
+            ReviewRequest(action=ACTION_DOMAIN_PASS, checklist=_checks(DOMAIN_CHECKLIST)),
+            CONTRIBUTOR,
+        )
+    assert denied.value.kind == "permission_denied"
+
+    domain = service.review(
+        evidence_id,
+        ReviewRequest(action=ACTION_DOMAIN_PASS, checklist=_checks(DOMAIN_CHECKLIST)),
+        DOMAIN,
+    )
+    assert domain["status"] == "pending"
+    accepted = service.review(
+        evidence_id,
+        ReviewRequest(
+            action=ACTION_COMPLIANCE_PASS,
+            checklist=_checks(COMPLIANCE_CHECKLIST),
+        ),
+        COMPLIANCE,
+    )
+    assert accepted["status"] == "accepted"
+
+    with pytest.raises(EvidenceError) as finished:
+        service.review(
+            evidence_id,
+            ReviewRequest(action=ACTION_DOMAIN_PASS, checklist=_checks(DOMAIN_CHECKLIST)),
+            DOMAIN,
+        )
+    assert finished.value.kind == "invalid_state"
+
+
+def test_service_withdraw_checks_role_state_and_reason(tmp_path):
+    """pending 不可撤、领域角色不可强撤，本人可撤回 accepted。"""
+    service = _service(tmp_path)
+    submitted = service.submit(
+        service.preview(_card("evc-svc-withdraw-1"), CONTRIBUTOR), True, CONTRIBUTOR
+    )
+    evidence_id = submitted["evidence_id"]
+
+    with pytest.raises(EvidenceError) as pending:
+        service.withdraw(evidence_id, WithdrawRequest(reason="提前撤回"), CONTRIBUTOR)
+    assert pending.value.kind == "invalid_state"
+
+    for user, action, checklist in (
+        (DOMAIN, ACTION_DOMAIN_PASS, DOMAIN_CHECKLIST),
+        (COMPLIANCE, ACTION_COMPLIANCE_PASS, COMPLIANCE_CHECKLIST),
+    ):
+        service.review(
+            evidence_id,
+            ReviewRequest(action=action, checklist=_checks(checklist)),
+            user,
+        )
+
+    with pytest.raises(EvidenceError) as denied:
+        service.withdraw(evidence_id, WithdrawRequest(reason="越权"), DOMAIN)
+    assert denied.value.kind == "permission_denied"
+    assert str(denied.value) == "只能撤回自己的提交"
+
+    withdrawn = service.withdraw(evidence_id, WithdrawRequest(reason="作者撤回"), CONTRIBUTOR)
+    assert withdrawn["status"] == "withdrawn"

@@ -1,5 +1,6 @@
 import * as api from "./review-api.js";
-import { normalizeActions, noticeFor, reviewerRole } from "./review-model.js";
+import { createEvidenceSelection } from "./evidence-selection.js";
+import { normalizeActions, noticeFor } from "./review-model.js";
 
 const TOKEN_KEY = "cellspatio_review_token";
 
@@ -8,11 +9,8 @@ const state = {
   labels: {},
   user: null,
   role: null,
-  review: null,
   queue: [],
   selectedId: null,
-  selected: null,
-  events: [],
   canReview: false,
   canContribute: false,
   view: "review",
@@ -23,6 +21,11 @@ const state = {
 };
 
 api.setToken(state.token);
+
+const selection = createEvidenceSelection(async (id) => {
+  const [detail, events] = await Promise.all([api.evidence(id), api.events(id)]);
+  return { detail, events: events.events, review: events.review };
+});
 
 const view = {
   login: document.querySelector("#login-view"),
@@ -95,11 +98,9 @@ function clearSession(message) {
   state.token = null;
   state.user = null;
   state.role = null;
-  state.review = null;
   state.queue = [];
   state.selectedId = null;
-  state.selected = null;
-  state.events = [];
+  selection.clear();
   state.canReview = false;
   state.canContribute = false;
   state.view = "review";
@@ -129,9 +130,10 @@ api.setUnauthorizedHandler(() => clearSession("登录已失效，请重新登录
 
 function setUser(user) {
   state.user = user;
-  state.role = reviewerRole(user.roles);
-  state.canReview = Boolean(state.role);
-  state.canContribute = user.roles.includes("contributor");
+  const principal = user.principal;
+  state.role = principal.role;
+  state.canReview = Boolean(principal.can_review);
+  state.canContribute = Boolean(principal.can_contribute);
   const roleText = state.role
     ? label("roles", state.role)
     : state.canContribute
@@ -173,7 +175,6 @@ function renderQueue() {
 
 async function loadWorkspace() {
   view.login.classList.add("hidden");
-  state.review = null;
   state.queue = [];
   state.mine = [];
   if (state.canReview) {
@@ -193,7 +194,7 @@ async function loadWorkspace() {
   renderMine();
   renderContribute();
   const fromUrl = params.get("evidence");
-  if (fromUrl && state.view === "review" && !state.selected) {
+  if (fromUrl && state.view === "review" && !selection.current()) {
     await selectEvidence(fromUrl, { updateUrl: false });
   }
   renderDetail();
@@ -227,18 +228,15 @@ async function selectEvidence(evidenceId, { updateUrl = true } = {}) {
     history.replaceState(null, "", url);
   }
   renderQueue();
-  try {
-    const [detail, events] = await Promise.all([
-      api.evidence(evidenceId),
-      api.events(evidenceId),
-    ]);
-    state.selected = detail;
-    state.events = events.events;
-    state.review = events.review;
+  await selection.select(evidenceId);
+  if (state.selectedId !== evidenceId) return;
+  const failure = selection.lastError();
+  if (failure) {
+    toast(failure.message);
     renderDetail();
-  } catch (error) {
-    toast(error.message);
+    return;
   }
+  renderDetail();
 }
 
 const MAX_CARD_BYTES = 512 * 1024;
@@ -504,7 +502,7 @@ function contextBlock(card) {
 }
 
 function reviewForm() {
-  const review = state.review;
+  const review = selection.current()?.review;
   const actions = normalizeActions(review?.actions);
   if (!actions.length) return null;
   const role = review.role;
@@ -526,6 +524,10 @@ function reviewForm() {
 
   const controls = [];
   const submit = async (spec) => {
+    const evidenceId = selection.current()?.id;
+    if (!evidenceId || evidenceId !== state.selectedId) {
+      return toast("选择已变化，请重新选择后再提交。");
+    }
     const result = { action: spec.id };
     if (spec.requires_checklist) {
       if (boxes.some((box) => !box.checked)) return toast("请先勾选全部清单项。");
@@ -536,7 +538,6 @@ function reviewForm() {
       result.reason = reason.value.trim();
     }
     controls.forEach(({ button }) => (button.disabled = true));
-    const evidenceId = state.selectedId;
     try {
       await api.review(evidenceId, result);
       toast("已记录复核结论。");
@@ -578,9 +579,10 @@ function reviewForm() {
 }
 
 function eventList() {
-  if (!state.events.length) return el("p", { class: "empty", text: "暂无审计事件。" });
+  const events = selection.current()?.events || [];
+  if (!events.length) return el("p", { class: "empty", text: "暂无审计事件。" });
   const list = el("ul", { class: "timeline" });
-  for (const event of state.events) {
+  for (const event of events) {
     list.append(
       el(
         "li",
@@ -624,7 +626,8 @@ function sourcesSection(card) {
 
 function renderDetail() {
   view.detail.replaceChildren();
-  const selected = state.selected;
+  const snapshot = selection.current();
+  const selected = snapshot?.detail;
   if (!selected || !selected.card) {
     view.detail.append(el("p", { class: "empty", text: "从左侧选择一份提交查看证据卡。" }));
     return;
@@ -662,7 +665,7 @@ function renderDetail() {
   const sources = sourcesSection(card);
 
   const form = reviewForm();
-  const notice = noticeFor(state.review);
+  const notice = noticeFor(snapshot?.review);
   view.detail.append(
     el(
       "article",

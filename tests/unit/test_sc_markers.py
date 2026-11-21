@@ -97,6 +97,24 @@ def marker_ready(reviewed_source):
     return d
 
 
+def test_marker_view_carries_cluster_review(marker_ready):
+    """marker GET 复用 cluster /review 的同一视图；自身 review 字段不变。"""
+    d = marker_ready
+    markers = d.client.get(d.marker_path)
+    review = d.client.get(d.review_path)
+    assert markers.status_code == review.status_code == 200
+    state = markers.json()
+    assert state["cluster_review"] == review.json()
+    assert state["cluster_review"]["current"]["accepted"] is True
+    assert state["review"] == {
+        k: state["cluster_review"]["current"][k]
+        for k in ("review_id", "record_version", "accepted")
+    }
+    assert state["blocked"] == [] and state["attempts"] == []
+    missing = d.client.get(f"{d.url}/markers/{d.fid}/{d.aid}/{'0' * 32}")
+    assert missing.status_code == 404
+
+
 def marker_outputs(script, empty=False):
     """子进程边界的结构替身；真实数值和 RDS 完整性由集成测试证明。"""
     from src.analysis.sc_markers import MARKER_FIELDS, PLOT_FIELDS, PROTOCOL, SUMMARY_FIELDS
@@ -245,7 +263,9 @@ def test_independent_marker_authorization_restores_own_snapshot_and_is_idempoten
     d.executor.execute_script.assert_called_once()
     assert len(d.store.get_messages(d.sid)) == before + 1
     assert all(p.read_bytes() == data for p, data in originals.items())
-    exposed = json.dumps(saved, ensure_ascii=False) + json.dumps(
+    # cluster_review 即上游 /review 同一视图，其依据不属 marker 私有载荷。
+    own = {k: v for k, v in saved.items() if k != "cluster_review"}
+    exposed = json.dumps(own, ensure_ascii=False) + json.dumps(
         d.store.get_messages(d.sid), ensure_ascii=False
     )
     assert body["reason"] not in exposed and d.review_body["reason"] not in exposed

@@ -24,9 +24,11 @@ from src.analysis.sc_pca import (
 from src.api.authorized_run import StageClaim, run_authorized
 from src.api.deps import StoreDep
 from src.api.routes_qc import require_run, run_qc_root
+from src.api.stage_history import history_entry
 from src.api.stage_runtime import has_running
 from src.api.verified_artifact import ArtifactError, read_verified_artifact
 from src.ui.run_snapshot import RunSnapshot
+from src.ui.sc_stage_defs import PCA_STAGE, stage_directory, stage_failure
 from src.ui.session_store import SessionStore
 
 router = APIRouter(prefix="/api/sessions/{session_id}/qc/{run_id}/pca", tags=["pca"])
@@ -63,32 +65,7 @@ def view(run: RunSnapshot, parent: dict[str, Any], root: Path) -> dict[str, Any]
         "source_summary": {k: source[k] for k in ("cells", "features")} if source else None,
         "blocked": blocked,
         "attempts": [
-            {
-                **{
-                    k: a[k]
-                    for k in ("attempt_id", "binding_sha256", "status", "created_at", "finished_at")
-                },
-                "result": {
-                    k: v
-                    for k, v in a["result"].items()
-                    if k
-                    in (
-                        "cells",
-                        "features",
-                        "selected_features",
-                        "usable_features",
-                        "actual_pcs",
-                        "pc_reduction_reason",
-                        "versions",
-                        "error",
-                        "elapsed_seconds",
-                        "scientific_status",
-                    )
-                }
-                if a["result"]
-                else None,
-            }
-            for a in attempts
+            history_entry("pca", attempt, result=attempt["result"]) for attempt in attempts
         ],
     }
 
@@ -157,8 +134,7 @@ def execute_pca(
         source = checked_parent(run, parent, root)
         if source["binding_sha256"] != body.binding_sha256 or source["cells"] < 3:
             raise ValueError("PCA 绑定不符或细胞不足，请刷新")
-        directory_parent = root.parent / "sc_pca"
-        directory = directory_parent / attempt_id
+        directory_parent, directory = stage_directory(PCA_STAGE, root, attempt_id)
         return StageClaim(
             directory_parent=directory_parent,
             directory=directory,
@@ -183,12 +159,7 @@ def execute_pca(
                 request.app.state.agent.workflow_manager.r_executor,
             ),
             finish=lambda result: store.stages.finish_pca(attempt_id, result),
-            on_error=lambda exc: {
-                "status": "failed",
-                "stage": "pca_review",
-                "scientific_status": "unreviewed",
-                "error": str(exc),
-            },
+            on_error=lambda exc: stage_failure(PCA_STAGE, str(exc)),
         )
 
     def refresh() -> dict[str, Any]:

@@ -40,7 +40,7 @@ def soft_warn_for(store: SessionStore, session_id: str) -> bool:
     return bool(compact.should_soft_warn(session.get("summary"), prepared[offset:]))
 
 
-def _persist(
+def persist_message(
     store: SessionStore,
     session_id: str,
     content: str,
@@ -52,6 +52,27 @@ def _persist(
         session_id, "assistant", content, results=results, pending_script=pending_script
     )
     return store.get_messages(session_id)[-1]
+
+
+# 兼容既有 `_persist` 导入；新代码用 persist_message。
+_persist = persist_message
+
+
+def persist_outcome(
+    store: SessionStore,
+    session_id: str,
+    result: dict[str, Any],
+    *,
+    emit: Emit | None = None,
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    """落库助手终态并按需发射 chart 与 done；返回 (result, last)。"""
+    message = build_assistant_message(result)
+    last = persist_message(store, session_id, message["content"], results=result.get("results"))
+    if emit is not None:
+        for chart in chart_events(result.get("results")):
+            emit(chart)
+        emit(make_event("done", message_id=last["id"], message=wire_message(last)))
+    return result, last
 
 
 def _persist_interrupted_qa(
@@ -234,9 +255,5 @@ def run_turn(
 
     result = register_qc_result(agent, store, session_id, result)
 
-    message = build_assistant_message(result)
-    last = _persist(store, session_id, message["content"], results=result.get("results"))
-    for chart in chart_events(result.get("results")):
-        emit(chart)
-    emit(make_event("done", message_id=last["id"], message=wire_message(last)))
+    result, _ = persist_outcome(store, session_id, result, emit=emit)
     return result

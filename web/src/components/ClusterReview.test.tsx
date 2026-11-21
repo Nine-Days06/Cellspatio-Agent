@@ -28,6 +28,7 @@ describe('受控聚类独立授权', () => {
     expect(fetchClusters).toHaveBeenCalledTimes(1)
     expect(recorded).not.toHaveBeenCalled()
     expect(running).toHaveBeenLastCalledWith(true)
+    expect(running.mock.calls.filter(([active]) => active)).toHaveLength(1)
     expect(screen.getByRole('button', { name: '下游 marker 运行中…' })).toBeDisabled()
   })
 
@@ -107,6 +108,7 @@ describe('受控聚类独立授权', () => {
     fireEvent.change(screen.getByLabelText('聚类与 UMAP 授权依据（仅本地）'), { target: { value: '私有依据' } })
     fireEvent.click(screen.getByRole('button', { name: '独立授权并执行聚类与 UMAP' }))
     expect(running).toHaveBeenLastCalledWith(true)
+    expect(running.mock.calls.filter(([active]) => active)).toHaveLength(1)
     expect(screen.getByRole('button', { name: '聚类与 UMAP 运行中…' })).toBeDisabled()
     view.rerender(<ClusterReview {...props} sessionId="s2" runId="r2" onRunning={running} onRecorded={recorded} />)
     await waitFor(() => expect(fetchClusters).toHaveBeenCalledWith('s2', 'r2', 'f1', 'p1'))

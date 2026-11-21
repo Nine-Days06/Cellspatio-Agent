@@ -8,6 +8,7 @@ vi.mock('@/lib/api', () => ({ fetchQc: vi.fn(), previewQc: vi.fn(), approveQc: v
 vi.mock('@/components/PcaReview', () => ({ PcaReview: () => <div>PCA 独立授权</div> }))
 const initial: QcReviewState = {
   run_id: 'r1', revision: 0, qc: {} as QcReviewState['qc'], active_preview: null, approvals: [], blocked: [],
+  attempts: [], pca_running: false, cluster_running: false, marker_running: false,
 }
 const preview: QcReviewState = {
   ...initial, revision: 1,
@@ -194,7 +195,7 @@ describe('QC review', () => {
     }
     const completed: QcReviewState = {
       ...running,
-      attempts: [{ ...running.attempts![0], status: 'completed', finished_at: 'later', result: { cells: 1, features: 2 } }],
+      attempts: [{ ...running.attempts[0], status: 'completed', finished_at: 'later', result: { cells: 1, features: 2 } }],
     }
     vi.mocked(fetchQc).mockResolvedValueOnce(approved).mockResolvedValue(completed)
     vi.mocked(filterQc).mockResolvedValue(running)

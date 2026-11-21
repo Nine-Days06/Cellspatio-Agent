@@ -26,9 +26,11 @@ from src.api.deps import StoreDep
 from src.api.routes_clusters import EVIDENCE_ERRORS, require_cluster
 from src.api.routes_pca import PcaRequest, require_parent, require_pca
 from src.api.routes_qc import require_run, run_qc_root
+from src.api.stage_history import history_entry
 from src.api.stage_runtime import has_other_marker_running, has_running
 from src.api.verified_artifact import read_verified_artifact
 from src.ui.run_snapshot import RunSnapshot
+from src.ui.sc_stage_defs import MARKER_STAGE, stage_directory, stage_failure
 
 router = APIRouter(prefix="/api/sessions/{session_id}/qc/{run_id}/markers", tags=["markers"])
 logger = logging.getLogger(__name__)
@@ -65,42 +67,12 @@ def view(run: RunSnapshot, cluster: dict[str, Any], root: Path) -> dict[str, Any
             except EVIDENCE_ERRORS:
                 invalid = "来源、最新聚类接受、协议或产物变化；本次 marker 仅为历史"
         history.append(
-            {
-                **{
-                    k: a[k]
-                    for k in (
-                        "attempt_id",
-                        "review_id",
-                        "binding_sha256",
-                        "status",
-                        "created_at",
-                        "finished_at",
-                        "source_revision",
-                        "claim_revision",
-                    )
-                },
-                "invalidated_reason": invalid,
-                "result": {
-                    k: checked[k]
-                    for k in (
-                        "cells",
-                        "features",
-                        "clusters",
-                        "marker_rows",
-                        "positive_rows",
-                        "negative_rows",
-                        "cluster_summary",
-                        "plot_features",
-                        "backend",
-                        "versions",
-                    )
-                }
-                if checked
-                else None,
-                "error": "执行失败，本地证据保留；不会自动重跑"
-                if a["status"] == "failed"
-                else None,
-                "review": next(
+            history_entry(
+                "marker",
+                a,
+                result=checked,
+                invalidated_reason=invalid,
+                review=next(
                     (
                         {
                             "decision": d["decision"],
@@ -115,7 +87,7 @@ def view(run: RunSnapshot, cluster: dict[str, Any], root: Path) -> dict[str, Any
                     ),
                     None,
                 ),
-            }
+            )
         )
     return {
         "run_id": run["run_id"],
@@ -129,6 +101,7 @@ def view(run: RunSnapshot, cluster: dict[str, Any], root: Path) -> dict[str, Any
         "review": {k: displayed["review"][k] for k in ("review_id", "record_version", "accepted")}
         if displayed
         else None,
+        "cluster_review": state,
         "blocked": blocked,
         "attempts": history,
     }
@@ -223,8 +196,7 @@ def execute_markers(
         snapshot = {"cluster": cluster, "review": review, "source": source}
         if execution_binding(run, snapshot) != body.binding_sha256:
             raise HTTPException(409, "marker 来源绑定已变化，请刷新")
-        directory_parent = root.parent / "sc_markers"
-        directory = directory_parent / attempt_id
+        directory_parent, directory = stage_directory(MARKER_STAGE, root, attempt_id)
         claimed: dict[str, Any] = {}
 
         def execute(attempt: dict[str, Any]) -> dict[str, Any]:
@@ -238,12 +210,7 @@ def execute_markers(
                 raise
             except Exception as exc:  # noqa: BLE001 - 已认领任务必须安全收口，私有异常不进入消息。
                 logger.error("unexpected marker execution failure: %s", type(exc).__name__)
-                return {
-                    "status": "failed",
-                    "stage": "marker_review",
-                    "scientific_status": "unreviewed",
-                    "error": "marker 出现未预期错误；请检查本地证据",
-                }
+                return stage_failure(MARKER_STAGE, "marker 出现未预期错误；请检查本地证据")
 
         def finish(result: dict[str, Any]) -> dict[str, Any]:
             """保存终态并返回数据库权威结果。"""
@@ -266,12 +233,7 @@ def execute_markers(
             ),
             execute=execute,
             finish=finish,
-            on_error=lambda exc: {
-                "status": "failed",
-                "stage": "marker_review",
-                "scientific_status": "unreviewed",
-                "error": "marker 产物落盘失败",
-            },
+            on_error=lambda _exc: stage_failure(MARKER_STAGE, "marker 产物落盘失败"),
         )
 
     def refresh() -> dict[str, Any]:
