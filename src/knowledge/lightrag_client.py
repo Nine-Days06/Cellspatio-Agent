@@ -156,6 +156,14 @@ FILE_STORAGE_KWARGS = {
     "doc_status_storage": "JsonDocStatusStorage",
 }
 
+PG_ENV_DEFAULTS = {
+    "POSTGRES_HOST": "127.0.0.1",
+    "POSTGRES_PORT": "5433",
+    "POSTGRES_USER": "postgres",
+    "POSTGRES_PASSWORD": "",
+    "POSTGRES_DATABASE": "rag",
+}
+
 
 def build_storage_kwargs(backend: str = "pg") -> dict[str, Any]:
     """LightRAG 四个 storage 参数；pg=PG+pgvector，file=本地文件（不需要 PG）。
@@ -169,13 +177,7 @@ def build_storage_kwargs(backend: str = "pg") -> dict[str, Any]:
     if backend != "pg":
         raise ValueError("storage backend 只能是 pg 或 file")
 
-    for key, val in {
-        "POSTGRES_HOST": "127.0.0.1",
-        "POSTGRES_PORT": "5433",
-        "POSTGRES_USER": "postgres",
-        "POSTGRES_PASSWORD": "",
-        "POSTGRES_DATABASE": "rag",
-    }.items():
+    for key, val in PG_ENV_DEFAULTS.items():
         os.environ.setdefault(key, val)
     return {
         "kv_storage": "PGKVStorage",
@@ -214,6 +216,8 @@ class LightRAGClient:
         self.working_dir = Path(working_dir)
         self.working_dir.mkdir(exist_ok=True)
         self.config = config or {}
+        #: 当前构造固定使用 PG 存储（build_storage_kwargs 默认 pg）
+        self.storage_backend = "pg"
         # LLM 抽取并发：显式传参 > MAX_ASYNC 环境变量 > None（回落默认 2）
         self._max_async = max_async if max_async is not None else resolve_max_async()
         # 文档级并发：显式传参 > MAX_PARALLEL_INSERT 环境变量 > None（回落默认 3）
