@@ -5,7 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel
 
 from src.api.deps import StoreDep
@@ -31,7 +31,7 @@ class ProjectUpdateRequest(BaseModel):
     archived: bool | None = None
 
 
-def _validated_root_path(value: str | None) -> str | None:
+def _validated_root_path(value: str | None, repo_root: Path) -> str | None:
     """工作目录必须是绝对路径、已存在、是目录且可写；不自动创建或改动用户目录。"""
     if value is None or not value.strip():
         return None
@@ -41,9 +41,7 @@ def _validated_root_path(value: str | None) -> str | None:
     path = raw.resolve()
     if not path.is_dir():
         raise HTTPException(status_code=422, detail=f"工作目录不存在或不是目录：{path}")
-    internal = [
-        Path.cwd().resolve() / name for name in ("data", ".wrroc", "snapshots", ".cellspatio")
-    ]
+    internal = [repo_root / name for name in ("data", ".wrroc", "snapshots", ".cellspatio")]
     if any(path == parent or path.is_relative_to(parent) for parent in internal):
         raise HTTPException(status_code=422, detail=f"工作目录不能位于应用数据目录内：{path}")
     if not writable_dir(path):
@@ -58,10 +56,10 @@ def list_projects(store: StoreDep, include_archived: bool = False) -> dict[str, 
 
 
 @router.post("/projects")
-def create_project(body: ProjectCreateRequest, store: StoreDep) -> dict[str, Any]:
+def create_project(body: ProjectCreateRequest, request: Request, store: StoreDep) -> dict[str, Any]:
     """新建项目；标签可省略，缺省取工作目录名。"""
     label = (body.label or "").strip()
-    root_path = _validated_root_path(body.root_path)
+    root_path = _validated_root_path(body.root_path, request.app.state.repo_root)
     if not label:
         if root_path is None:
             raise HTTPException(status_code=422, detail="项目名不能为空")
@@ -73,23 +71,27 @@ def create_project(body: ProjectCreateRequest, store: StoreDep) -> dict[str, Any
 
 
 @router.get("/projects/{project_id}/usage")
-def get_project_usage(project_id: str, store: StoreDep) -> dict[str, Any]:
+def get_project_usage(project_id: str, request: Request, store: StoreDep) -> dict[str, Any]:
     """返回项目目录、会话产物与 kg_memory 的只读占用汇总。"""
     try:
-        return project_usage(store, project_id, Path.cwd())
+        return project_usage(store, project_id, request.app.state.repo_root)
     except ValueError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
 
 
 @router.patch("/projects/{project_id}")
-def update_project(project_id: str, body: ProjectUpdateRequest, store: StoreDep) -> dict[str, Any]:
+def update_project(
+    project_id: str, body: ProjectUpdateRequest, request: Request, store: StoreDep
+) -> dict[str, Any]:
     """更新项目；归档前先拿项目下所有会话锁，运行中拒绝。"""
     if store.get_project(project_id) is None:
         raise HTTPException(status_code=404, detail="项目不存在")
     if body.label is not None and not body.label.strip():
         raise HTTPException(status_code=422, detail="项目名不能为空")
     root_path = (
-        _validated_root_path(body.root_path) if "root_path" in body.model_fields_set else None
+        _validated_root_path(body.root_path, request.app.state.repo_root)
+        if "root_path" in body.model_fields_set
+        else None
     )
     locks = []
     if body.archived:

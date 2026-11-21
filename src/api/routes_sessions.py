@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import logging
 from contextlib import nullcontext
-from pathlib import Path
 from typing import Any
 
 from fastapi import APIRouter, HTTPException, Request
@@ -74,10 +73,10 @@ def create_session(store: StoreDep, body: CreateSessionRequest | None = None) ->
 
 
 @router.get("/sessions/{session_id}/usage")
-def get_session_usage(session_id: str, store: StoreDep) -> dict[str, Any]:
+def get_session_usage(session_id: str, request: Request, store: StoreDep) -> dict[str, Any]:
     """返回会话产物、.wrroc 与 snapshots 的只读占用汇总。"""
     try:
-        return session_usage(store, session_id, Path.cwd())
+        return session_usage(store, session_id, request.app.state.repo_root)
     except ValueError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
 
