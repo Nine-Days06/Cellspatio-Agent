@@ -1,8 +1,10 @@
 """create_app 注入 AnalysisRoots，QC 路由只消费应用状态里的 roots。"""
 
+import ast
 from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
 from fastapi.testclient import TestClient
 
 from src.analysis.qc_preview import register_evidence
@@ -11,6 +13,33 @@ from src.api.app import create_app
 from src.ui.analysis_roots import AnalysisRoots
 from src.ui.session_store import SessionStore
 from tests.unit.fakes import QC_HEADER, FakeAgent, fake_qc_executor
+
+_API_DIR = Path(__file__).resolve().parents[2] / "src" / "api"
+
+
+def _roots_attributes(tree: ast.Module) -> list[ast.Attribute]:
+    return [
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Attribute) and node.attr == "analysis_roots"
+    ]
+
+
+def _is_app_state_roots(node: ast.Attribute) -> bool:
+    """`request.app.state.analysis_roots` 的 AST 形状。"""
+    state, app, request = node.value, None, None
+    if isinstance(state, ast.Attribute):
+        app = state.value
+    if isinstance(app, ast.Attribute):
+        request = app.value
+    return (
+        isinstance(state, ast.Attribute)
+        and state.attr == "state"
+        and isinstance(app, ast.Attribute)
+        and app.attr == "app"
+        and isinstance(request, ast.Name)
+        and request.id == "request"
+    )
 
 
 def _register_qc(
@@ -64,6 +93,34 @@ def test_create_app_falls_back_to_cwd_without_recorder(tmp_path, monkeypatch):
         roots.qc_root({"directory": "data/analysis/sc_qc/run-1"})
         == (tmp_path / "data" / "analysis" / "sc_qc").resolve()
     )
+
+
+def test_create_app_roots_follow_replaced_store_factory(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    app = create_app(FakeAgent())
+    store = SessionStore(tmp_path / "custom.db")
+    project_id = store.create_project("项目")
+    session_id = store.create_session(project_id=project_id)
+
+    with pytest.raises(ValueError, match="会话不存在"):
+        app.state.analysis_roots.for_session(session_id)
+
+    app.state.store_factory = lambda: store
+    assert (
+        app.state.analysis_roots.for_session(session_id)
+        == (tmp_path / "data" / "projects" / project_id / "analysis").resolve()
+    )
+
+
+def test_stage_routes_take_roots_from_app_state_not_agent():
+    """PCA/cluster/marker 路由同样只读 app.state，不读 agent 上的 roots。"""
+    offenders: list[str] = []
+    for name in ("routes_pca.py", "routes_clusters.py", "routes_markers.py"):
+        tree = ast.parse((_API_DIR / name).read_text(encoding="utf-8"), filename=name)
+        roots = _roots_attributes(tree)
+        assert roots, f"{name} 未使用 analysis_roots"
+        offenders.extend(name for node in roots if not _is_app_state_roots(node))
+    assert offenders == []
 
 
 def test_qc_route_reads_injected_analysis_roots(tmp_path, monkeypatch):

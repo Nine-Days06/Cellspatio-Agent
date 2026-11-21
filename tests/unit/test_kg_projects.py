@@ -90,6 +90,20 @@ def test_project_memory_uses_isolated_working_dirs(tmp_path):
         memory.close()
 
 
+def test_project_memory_reads_sessions_from_injected_store(tmp_path):
+    """注入自定义 DB 的 store 后，项目归属来自该 store 而非默认库。"""
+    store = SessionStore(tmp_path / "custom.db")
+    project_id = store.create_project("注入项目")
+    project_session = store.create_session("项目会话", project_id=project_id)
+    plain_session = store.create_session("未归类会话")
+    memory = ProjectKGMemory(tmp_path / "kg", store=store)
+    try:
+        assert memory.memory_for(project_session).working_dir == tmp_path / "kg" / project_id
+        assert memory.memory_for(plain_session).working_dir == tmp_path / "kg" / "unclassified"
+    finally:
+        memory.close()
+
+
 def test_project_memory_is_singleton_under_concurrency(tmp_path):
     store = SessionStore()
     pid = store.create_project("并发项目")
