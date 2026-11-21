@@ -600,6 +600,116 @@ describe('ChatPage 确认卡片接线', () => {
     expect(screen.queryByText('该会话已有任务在进行')).not.toBeInTheDocument()
   })
 
+  it('换卡（hydrate 恢复新卡）时清掉上一张卡的失败错误', async () => {
+    const sid = nextSid()
+    await renderReady(sid)
+    act(() => useChatStore.setState({ scriptCard: pendingCard() }))
+    confirmActionMock.mockRejectedValueOnce(new ApiError(409, '该会话已有任务在进行'))
+
+    fireEvent.click(screen.getByRole('button', { name: '执行脚本' }))
+    await waitFor(() => expect(screen.getByText('该会话已有任务在进行')).toBeInTheDocument())
+
+    act(() => {
+      useChatStore.getState().setScriptCard(pendingCard({ message_id: 8, script: 'y <- 2' }))
+    })
+
+    await waitFor(() =>
+      expect(screen.queryByText('该会话已有任务在进行')).not.toBeInTheDocument(),
+    )
+    expect(useChatStore.getState().scriptCard?.status).toBe('pending')
+    expect(screen.getByRole('button', { name: '执行脚本' })).toBeEnabled()
+  })
+
+  it('提交后切会话：旧确认成功不写新卡，只清确认状态', async () => {
+    const sid = nextSid()
+    await renderReady(sid)
+    act(() => useChatStore.setState({ scriptCard: pendingCard() }))
+    let resolveConfirm!: (value: { message: WireMessage }) => void
+    confirmActionMock.mockReturnValue(
+      new Promise<{ message: WireMessage }>((resolve) => {
+        resolveConfirm = resolve
+      }),
+    )
+
+    fireEvent.click(screen.getByRole('button', { name: '执行脚本' }))
+
+    const otherSid = nextSid()
+    const pendingB: PendingScript = {
+      script: 'y <- 2',
+      analysis_type: null,
+      params: {},
+      method_context: null,
+      user_request: '另一个分析',
+      status: 'pending',
+    }
+    const holderB = makeMsg(otherSid, { pending_script: pendingB })
+    seedMessages(otherSid, [holderB], { pending_script: pendingB })
+    act(() => useChatStore.getState().setSession(otherSid, []))
+    await waitFor(() => expect(screen.getByText('y <- 2')).toBeInTheDocument())
+
+    await act(async () => {
+      resolveConfirm({ message: makeMsg(sid) })
+    })
+
+    expect(useChatStore.getState().scriptCard?.message_id).toBe(holderB.id)
+    expect(useChatStore.getState().scriptCard?.status).toBe('pending')
+    expect(screen.queryByText('已确认执行')).not.toBeInTheDocument()
+  })
+
+  it('脚本确认在途时出现数据卡：不重置提交态', async () => {
+    const sid = nextSid()
+    await renderReady(sid)
+    act(() => useChatStore.setState({ scriptCard: pendingCard() }))
+    let resolveConfirm!: (value: { message: WireMessage }) => void
+    confirmActionMock.mockReturnValue(
+      new Promise<{ message: WireMessage }>((resolve) => {
+        resolveConfirm = resolve
+      }),
+    )
+
+    const button = screen.getByRole('button', { name: '执行脚本' })
+    fireEvent.click(button)
+    expect(button).toBeDisabled()
+
+    act(() => {
+      useChatStore.setState({
+        dataCard: { message_id: 99, candidates: [], query: 'q', message: '候选' },
+      })
+    })
+    expect(button).toBeDisabled()
+
+    await act(async () => {
+      resolveConfirm({ message: makeMsg(sid) })
+    })
+  })
+
+  it('点确认后立即锁定，请求在途时重复点击只提交一次', async () => {
+    const sid = nextSid()
+    await renderReady(sid)
+    act(() => {
+      useChatStore.setState({ scriptCard: pendingCard() })
+    })
+    let resolveConfirm!: (value: { message: WireMessage }) => void
+    confirmActionMock.mockReturnValue(
+      new Promise<{ message: WireMessage }>((resolve) => {
+        resolveConfirm = resolve
+      }),
+    )
+
+    const button = screen.getByRole('button', { name: '执行脚本' })
+    fireEvent.click(button)
+    expect(button).toBeDisabled()
+    expect(screen.getByText(/已提交/)).toBeInTheDocument()
+    fireEvent.click(button)
+    fireEvent.click(button)
+    expect(confirmActionMock).toHaveBeenCalledTimes(1)
+
+    await act(async () => {
+      resolveConfirm({ message: makeMsg(sid) })
+    })
+    await waitFor(() => expect(useChatStore.getState().scriptCard?.status).toBe('confirmed'))
+  })
+
   it('数据确认成功：调用 confirmAction 后清除数据卡', async () => {
     const sid = nextSid()
     await renderReady(sid)

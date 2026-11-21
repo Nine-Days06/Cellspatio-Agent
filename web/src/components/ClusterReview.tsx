@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react'
 import { Button } from '@/components/ui/button'
 import { Textarea } from '@/components/ui/textarea'
 import { clusterDiagnosticPath, executeClusters, fetchClusters } from '@/lib/api'
+import { evaluateStageGate, isAttemptedByBinding } from '@/lib/stageGate'
 import type { ClusterState } from '@/lib/types'
 import { MarkerReview } from '@/components/MarkerReview'
 import { AnalysisImage } from '@/components/AnalysisImage'
@@ -82,8 +83,18 @@ export function ClusterReview({ sessionId, runId, filterAttemptId, pcaAttemptId,
     } finally { if (ticket === generation.current) { setBusy(false); setExecuting(false) } }
   }
 
-  const attempted = state?.attempts.some((a) => a.binding_sha256 === state.binding_sha256) ?? false
-  const available = !!state?.binding_sha256 && !busy && !running && !disabled && !attempted && state.blocked.length === 0
+  const attempted = isAttemptedByBinding(state?.attempts ?? [], state?.binding_sha256)
+  const gate = evaluateStageGate({
+    stage: 'cluster',
+    bindingExists: !!state?.binding_sha256,
+    selectionExists: !!state?.selection,
+    disabled,
+    bindingAttempted: attempted,
+    blocked: state?.blocked ?? [],
+    busy,
+    running,
+    reasonProvided: reason.trim().length > 0,
+  })
   return <section aria-label="聚类与 UMAP 独立授权" className="analysis-stage space-y-3">
     <h5 className="font-medium">邻居图 → 聚类 → UMAP · 独立授权</h5>
     {error && <p role="alert">{error}</p>}
@@ -93,9 +104,9 @@ export function ClusterReview({ sessionId, runId, filterAttemptId, pcaAttemptId,
     <p className="text-xs text-muted-foreground">至少 31 细胞、人工记录至少 2 个 PCs。UMAP epochs：≤10,000 细胞 500，否则 200。图与簇大小仅供探索，不代表细胞类型或科学认可。</p>
     {state?.selection && <p className="break-words">此次来源维度：[{state.selection.dims.join(', ')}] · {state.source_summary?.cells.toLocaleString()} 细胞 · {state.source_summary?.n_epochs} epochs</p>}
     {state && <details><summary>完整固定协议与来源绑定</summary><pre className="whitespace-pre-wrap break-all text-xs">{JSON.stringify(state.protocol, null, 2)}</pre><code className="block break-all text-xs">工具 {state.tool_version} · 记录 {state.selection?.review_id ?? '无当前记录'} · 绑定 {state.binding_sha256 ?? '不可新授权'}</code></details>}
-    <label className="block space-y-1"><span>聚类与 UMAP 授权依据（仅本地）</span><Textarea maxLength={2000} value={reason} disabled={!available} onChange={(event) => setReason(event.target.value)} /></label>
+    <label className="block space-y-1"><span>聚类与 UMAP 授权依据（仅本地）</span><Textarea maxLength={2000} value={reason} disabled={!gate.available} onChange={(event) => setReason(event.target.value)} /></label>
     <div className="flex flex-wrap gap-2">
-      <Button type="button" disabled={!available || !reason.trim()} onClick={() => void execute()}>{clusterRunning ? '聚类与 UMAP 运行中…' : markerRunning.length > 0 ? '下游 marker 运行中…' : '独立授权并执行聚类与 UMAP'}</Button>
+      <span title={gate.blockerText || undefined}><Button type="button" disabled={!gate.allowed} onClick={() => void execute()}>{clusterRunning ? '聚类与 UMAP 运行中…' : markerRunning.length > 0 ? '下游 marker 运行中…' : '独立授权并执行聚类与 UMAP'}</Button></span>
     </div>
     </details>
     <Button type="button" variant="outline" disabled={busy} onClick={() => void refresh()}>只读刷新聚类记录</Button>

@@ -106,7 +106,7 @@ def record_review(
         )
         if cluster is None:
             raise ValueError("聚类关联不存在")
-        store.record_sc_cluster_rejection(
+        store.stages.record_cluster_rejection(
             session_id,
             run,
             cluster,
@@ -119,7 +119,7 @@ def record_review(
     elif kind == "marker":
         if decision not in {"accepted", "rejected"}:
             raise ValueError("marker 复核必须指定 --decision accepted|rejected")
-        store.record_sc_marker_review(
+        store.stages.record_marker_review(
             session_id,
             target_id,
             decision,

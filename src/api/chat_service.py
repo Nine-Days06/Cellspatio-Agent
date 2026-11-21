@@ -9,12 +9,13 @@ from collections.abc import Callable
 from typing import Any, Literal
 
 from src.api.events import chart_events, make_event, wire_message
-from src.control import compact
-from src.control.chat_messages import (
+from src.chat_messages import (
     build_assistant_message,
     format_script_confirmation,
     make_llm_summarize,
 )
+from src.control import compact
+from src.ui.confirm_protocol import STATUS_PENDING
 from src.ui.session_store import SessionStore
 
 logger = logging.getLogger(__name__)
@@ -211,7 +212,7 @@ def run_turn(
             "params": result.get("params") or {},
             "method_context": result.get("method_context"),
             "user_request": prompt,
-            "status": "pending",
+            "status": STATUS_PENDING,
         }
         last = _persist(
             store, session_id, format_script_confirmation(result), pending_script=pending

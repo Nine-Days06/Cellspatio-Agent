@@ -141,7 +141,7 @@ def test_database_write_failure_logged_without_exposing_details(
         """模拟数据库写入失败。"""
         raise sqlite3.OperationalError("technical database failure")
 
-    monkeypatch.setattr(type(d.store), "record_pca_dimensions", fail)
+    monkeypatch.setattr(type(d.store.stages), "record_dimensions", fail)
     response = d.client.post(d.target, json=d.body)
     assert response.status_code == 409
     assert "technical database failure" not in response.text

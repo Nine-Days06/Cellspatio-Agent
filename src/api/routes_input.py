@@ -11,9 +11,9 @@ from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, ConfigDict, Field
 
 from src.api.chat_service import _persist, is_qc_stage, register_qc_result, session_lock
+from src.api.deps import StoreDep
 from src.api.events import wire_message
-from src.control.chat_messages import build_assistant_message
-from src.ui.session_store import SessionStore
+from src.chat_messages import build_assistant_message
 
 router = APIRouter(prefix="/api/sessions/{session_id}", tags=["input"])
 logger = logging.getLogger(__name__)
@@ -29,14 +29,13 @@ class LocalInputRequest(BaseModel):
 
 @router.post("/local-input")
 def register_local_input(
-    session_id: str, body: LocalInputRequest, request: Request
+    session_id: str, body: LocalInputRequest, request: Request, store: StoreDep
 ) -> dict[str, Any]:
     """登记本机 10x 目录/counts CSV 并运行固定 QC；之后仍走人工 gate。
 
     shortcut: 接受任意本机路径，仅适用于 loopback 客户端；多用户服务端需先加认证与路径白名单。
     """
     agent = request.app.state.agent
-    store = SessionStore()
     session = store.get_session(session_id)
     if session is None:
         raise HTTPException(404, "会话不存在")
