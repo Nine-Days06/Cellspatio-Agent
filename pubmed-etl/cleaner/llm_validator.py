@@ -707,7 +707,8 @@ def export_no_abstract_csv(db_path: Path = DB_PATH) -> Path | None:
                   SELECT pmid FROM filter_log WHERE stage = 'hard_filter'
               )
               AND a.pmid NOT IN (
-                  SELECT pmid FROM llm_validation WHERE llm_verdict IS NOT NULL
+                  SELECT pmid FROM llm_validation
+                  WHERE llm_verdict IS NOT NULL OR human_review IS NOT NULL
               )
             ORDER BY a.pub_year DESC, a.pmid
         """).fetchall()
@@ -1321,7 +1322,9 @@ def _download_and_parse_batch(client, batch_status, chk: dict):
                         continue
                     try:
                         item = json.loads(line)
-                        error_pmids.append(item.get("custom_id", ""))
+                        pmid = _pmid_from_custom_id(item.get("custom_id", ""))
+                        if pmid:
+                            error_pmids.append(pmid)
                     except json.JSONDecodeError:
                         pass
         except Exception as e:
