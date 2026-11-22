@@ -73,7 +73,9 @@ def _run_loop(root: Path) -> dict:
         "hits": hits,
         "after_withdraw": store.search(),
         "events": [event["action"] for event in store.events(sid)],
-        "tombstone": store.get(sid),
+        "tombstone": store.get(
+            sid, include_unaccepted=True, viewer_actor="carl", viewer_role=ROLE_COMPLIANCE
+        ),
     }
 
 

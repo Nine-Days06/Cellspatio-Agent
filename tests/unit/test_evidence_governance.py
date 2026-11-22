@@ -270,7 +270,10 @@ def test_rejection_requires_reason_and_is_not_searchable(tmp_path):
     assert store.search() == []
     tombstone = store.get(sid)
     assert tombstone["status"] == "rejected"
-    assert tombstone["reason"] == "方法描述不足"
+    # 匿名墓碑不带账号/理由；理由只在复核事件流里可见。
+    assert "reason" not in tombstone
+    assert "actor_id" not in tombstone
+    assert store.events(sid)[-1]["reason"] == "方法描述不足"
     assert "card" not in tombstone
 
 
@@ -318,7 +321,9 @@ def test_withdraw_hides_from_search_and_returns_tombstone(tmp_path):
     store.withdraw(sid, actor_id="alice", role=ROLE_CONTRIBUTOR, reason="发现方法错误")
 
     assert store.search() == []
-    tombstone = store.get(sid)
+    tombstone = store.get(
+        sid, include_unaccepted=True, viewer_actor="carl", viewer_role=ROLE_COMPLIANCE
+    )
     assert tombstone["status"] == "withdrawn"
     assert tombstone["reason"] == "发现方法错误"
     assert "card" not in tombstone
