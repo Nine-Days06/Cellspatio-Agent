@@ -359,38 +359,23 @@ class WorkflowManager:
         de_params = {"input_file": input_file, "output_file": output_file}
         if params.get("group_csv"):
             de_params["group_csv"] = params["group_csv"]
-        code = self.r_script_generator.generate_code(
-            "differential_expression",
-            de_params,
-            method_context=method_context,
+        # 与 spatial/单细胞共用同一确认构造，避免返回体字段各写一份。
+        result = self._generate_or_finish(
+            "differential_expression", de_params, method_context, context
         )
-
-        # HITL: 需要脚本确认且未通过 context 批准
-        if self.require_script_confirmation and not context.get("script_approved"):
-            result = {
-                "status": "needs_script_confirmation",
-                "analysis_type": "differential_expression",
-                "script": code,
-                "params": de_params,
-                "method_context": method_context,
-            }
+        if result.get("status") == "needs_script_confirmation":
             self._record_step(
                 run_id,
                 step_id="de_analysis_script_generated",
                 step_type="analysis",
                 tool="run_analysis",
                 params={"analysis_type": "differential_expression"},
-                output={"status": "needs_script_confirmation", "script": code[:100]},
+                output={
+                    "status": "needs_script_confirmation",
+                    "script": str(result["script"])[:100],
+                },
             )
             return result
-
-        result = self._finish_analysis(
-            "differential_expression",
-            de_params,
-            code,
-            method_context,
-            context,
-        )
 
         self._record_step(
             run_id,
