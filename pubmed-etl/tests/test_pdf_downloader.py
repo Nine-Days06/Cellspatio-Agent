@@ -965,6 +965,41 @@ class TestRunPdfWriteCheckpoint(unittest.TestCase):
     @patch("downloader.pdf_downloader.download_oa_pdf")
     @patch("downloader.pdf_downloader.load_cached_oa_links")
     @patch("downloader.pdf_downloader.export_oa_links_csv")
+    def test_shared_pmc_downloads_for_every_pmid(
+        self,
+        mock_export_csv,
+        mock_cached,
+        mock_dl,
+        mock_fetch,
+    ):
+        mock_fetch.return_value = ({"PMC1": {"pdf": "https://a/1.pdf"}}, [])
+        mock_dl.return_value = True
+        mock_export_csv.return_value = Path("links.csv")
+        with tempfile.TemporaryDirectory() as td:
+            td_path = Path(td)
+            db = self._make_db_with_pmc(td_path, pmid="1111")
+            import sqlite3
+
+            conn = sqlite3.connect(db)
+            conn.execute("INSERT INTO articles (pmid, pmc_id) VALUES ('2222', 'PMC1')")
+            conn.execute(
+                "INSERT INTO llm_validation (pmid, llm_verdict) VALUES ('2222', 'RELEVANT')"
+            )
+            conn.commit()
+            conn.close()
+            with patch("downloader.pdf_downloader.PDF_DIR", td_path):
+                with patch("downloader.pdf_downloader.OUTPUT_DIR", td_path):
+                    from downloader.pdf_downloader import run_pdf_download
+
+                    run_pdf_download(db_path=db)
+
+        paths = {call.args[1].name for call in mock_dl.call_args_list}
+        self.assertEqual(paths, {"1111.pdf", "2222.pdf"})
+
+    @patch("downloader.pdf_downloader.fetch_oa_links")
+    @patch("downloader.pdf_downloader.download_oa_pdf")
+    @patch("downloader.pdf_downloader.load_cached_oa_links")
+    @patch("downloader.pdf_downloader.export_oa_links_csv")
     def test_should_write_checkpoint_on_failure(
         self,
         mock_export_csv,

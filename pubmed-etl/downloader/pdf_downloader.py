@@ -427,13 +427,16 @@ def export_oa_links_csv(
         for pmc_id in sorted(oa_links.keys()):
             info = pmc_to_info.get(pmc_id, {})
             links = oa_links[pmc_id]
-            writer.writerow(
-                [
-                    info.get("pmid", ""),
-                    pmc_id,
-                    links.get("pdf", ""),
-                ]
-            )
+            # 同一 PMC 可被多条 PMID 引用，必须逐条输出，否则会漏记录。
+            pmids = info.get("pmids") or ([info["pmid"]] if info.get("pmid") else [""])
+            for pmid in pmids:
+                writer.writerow(
+                    [
+                        pmid,
+                        pmc_id,
+                        links.get("pdf", ""),
+                    ]
+                )
 
     return csv_path
 
@@ -709,7 +712,9 @@ def run_pdf_download(db_path: Path = DB_PATH):
         if not pid:
             invalid_pmc_count += 1
             continue
-        pmc_to_info[pid] = {"pmid": r["pmid"]}
+        # 勘误/重复记录会让多条 PMID 共享同一个 PMC，不能用 dict 覆盖。
+        entry = pmc_to_info.setdefault(pid, {"pmid": r["pmid"], "pmids": []})
+        entry["pmids"].append(r["pmid"])
 
     if invalid_pmc_count:
         logger.warning(f"已跳过 {invalid_pmc_count} 条格式无效的 PMC ID。")
@@ -742,18 +747,18 @@ def run_pdf_download(db_path: Path = DB_PATH):
     network_failed_items: list[dict] = []
     for pid in network_failed:
         info = pmc_to_info.get(pid, {})
-        pmid = info.get("pmid", "")
-        if _local_fulltext_exists(pmid):
-            skip_count += 1
-            continue
-        network_failed_items.append(
-            {
-                "pmc_id": pid,
-                "links": {},
-                "pdf_path": PDF_DIR / f"{pmid}.pdf",
-                "pmid": pmid,
-            }
-        )
+        for pmid in info.get("pmids") or [info.get("pmid", "")]:
+            if _local_fulltext_exists(pmid):
+                skip_count += 1
+                continue
+            network_failed_items.append(
+                {
+                    "pmc_id": pid,
+                    "links": {},
+                    "pdf_path": PDF_DIR / f"{pmid}.pdf",
+                    "pmid": pmid,
+                }
+            )
 
     # 使用线程池并发下载，提高效率
     with ThreadPoolExecutor(max_workers=DOWNLOAD_MAX_WORKERS) as executor:
@@ -761,24 +766,26 @@ def run_pdf_download(db_path: Path = DB_PATH):
         for pmc_id, links in oa_links.items():
             info = pmc_to_info[pmc_id]
             dest_dir = PDF_DIR
-            pdf_path = dest_dir / f"{info['pmid']}.pdf"
+            # shortcut: 共享 PMC 时每个 PMID 各下载一次；若成为常态再改为下载后复制
+            for pmid in info.get("pmids") or [info["pmid"]]:
+                pdf_path = dest_dir / f"{pmid}.pdf"
 
-            if _local_fulltext_exists(info["pmid"]):
-                skip_count += 1
-                continue
+                if _local_fulltext_exists(pmid):
+                    skip_count += 1
+                    continue
 
-            meta = {
-                "pmc_id": pmc_id,
-                "links": links,
-                "pdf_path": pdf_path,
-                "pmid": info["pmid"],
-            }
-            future = executor.submit(
-                download_oa_pdf,
-                links,
-                pdf_path,
-            )
-            future_to_meta[future] = meta
+                meta = {
+                    "pmc_id": pmc_id,
+                    "links": links,
+                    "pdf_path": pdf_path,
+                    "pmid": pmid,
+                }
+                future = executor.submit(
+                    download_oa_pdf,
+                    links,
+                    pdf_path,
+                )
+                future_to_meta[future] = meta
 
         for future in as_completed(future_to_meta):
             ok = future.result()
