@@ -374,6 +374,11 @@ def review_markers(
         attempt = run.attempt("marker", attempt_id, cluster_attempt_id)
         if attempt is None:
             raise HTTPException(404, "marker 关联不存在")
+        if attempt["status"] == "completed":
+            # 写入复核前重验产物：markers.csv 被替换后不能继续接受旧结果。
+            checked_completed_marker(
+                run, attempt, run_qc_root(request.app.state.analysis_roots, run)
+            )
         store.stages.record_marker_review(
             session_id,
             attempt_id,

@@ -796,3 +796,12 @@ def test_marker_review_records_accept_reject_and_rejects_stale_revision(marker_r
     history = d.client.get(d.marker_path).json()["attempts"][0]
     assert history["invalidated_reason"]
     assert history["review"]["invalidated_reason"]
+    blocked = d.client.post(
+        review_path,
+        json={
+            "decision": "rejected",
+            "revision": accepted.json()["revision"],
+            "reason": "篡改后复审",
+        },
+    )
+    assert blocked.status_code == 409, blocked.text
