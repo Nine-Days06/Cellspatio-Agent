@@ -16,6 +16,7 @@ const state = {
   view: "review",
   mine: [],
   preview: null,
+  uploading: false,
   revisesId: null,
   withdrawId: null,
 };
@@ -323,7 +324,9 @@ async function confirmWithdraw() {
 }
 
 async function uploadPreview() {
-  if (!state.preview) return;
+  if (!state.preview || state.uploading) return;
+  state.uploading = true;
+  renderContribute();
   try {
     const result = await api.uploadSubmission(state.preview, true);
     toast(`已提交，等待复核：${result.evidence_id}`);
@@ -332,11 +335,17 @@ async function uploadPreview() {
     await loadWorkspace();
   } catch (error) {
     toast(error.message);
+  } finally {
+    state.uploading = false;
+    renderContribute();
   }
 }
 
+let cardLoadToken = 0;
+
 async function loadCardFile(event) {
   const file = event.target.files?.[0];
+  const token = ++cardLoadToken;
   state.preview = null;
   renderContribute();
   if (!file) return;
@@ -347,11 +356,14 @@ async function loadCardFile(event) {
   } catch {
     return toast("文件不是有效的 JSON。");
   }
+  if (token !== cardLoadToken) return;
   try {
-    state.preview = await api.preview(card, state.revisesId);
+    const preview = await api.preview(card, state.revisesId);
+    if (token !== cardLoadToken) return;
+    state.preview = preview;
     renderContribute();
   } catch (error) {
-    toast(error.message);
+    if (token === cardLoadToken) toast(error.message);
   }
 }
 
@@ -364,10 +376,10 @@ function previewBlock(preview) {
     type: "button",
     class: "primary",
     disabled: "",
-    text: "同意并上传",
+    text: state.uploading ? "提交中…" : "同意并上传",
   });
   consent.addEventListener("change", () => {
-    upload.disabled = !consent.checked || !passed;
+    upload.disabled = state.uploading || !consent.checked || !passed;
   });
   upload.addEventListener("click", uploadPreview);
 

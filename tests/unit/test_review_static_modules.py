@@ -70,6 +70,25 @@ def test_load_card_clears_previous_preview_before_reading() -> None:
     assert body.index("state.preview = null") < body.index("api.preview")
 
 
+def test_card_file_load_drops_stale_preview() -> None:
+    """连续选卡时只认最新一次预览响应，迟到的旧响应不得写回 preview。"""
+    text = (STATIC / "review.js").read_text(encoding="utf-8")
+    start = text.index("async function loadCardFile")
+    body = text[start : text.index("\nfunction previewBlock", start)]
+    assert body.count("cardLoadToken") >= 3
+    assert re.search(r"if \(token !== cardLoadToken\) return;", body)
+    assert body.index("cardLoadToken") < body.index("api.preview")
+
+
+def test_upload_preview_is_single_flight() -> None:
+    """上传在途时重复点击不得再次提交同一预览。"""
+    text = (STATIC / "review.js").read_text(encoding="utf-8")
+    start = text.index("async function uploadPreview")
+    body = text[start : text.index("\nlet cardLoadToken", start)]
+    assert "state.uploading" in body
+    assert body.index("state.uploading = true") < body.index("api.uploadSubmission")
+
+
 def test_review_api_has_no_dom() -> None:
     """review-api.js 只封装 HTTP，不读写 document/window。"""
     path = STATIC / "review-api.js"
