@@ -13,6 +13,7 @@ from src.control.kg_memory import KGMemory
 
 def _memory(answer: object, monkeypatch: pytest.MonkeyPatch) -> KGMemory:
     """构造不初始化后端的 KGMemory，aquery 直接返回给定 answer。"""
+
     async def aquery(*_args: object, **_kwargs: object) -> object:
         return answer
 
