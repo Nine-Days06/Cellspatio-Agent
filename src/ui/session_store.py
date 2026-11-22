@@ -794,6 +794,8 @@ class SessionStore:
     def set_script_status(self, session_id: str, status: str) -> None:
         """仅更新该会话最新一条状态为 pending/expired 的脚本消息。"""
         with self._conn() as conn:
+            # 与 claim_script 共用写锁：避免 restore 把刚 confirmed 的卡片改回 expired。
+            conn.execute("BEGIN IMMEDIATE")
             row = conn.execute(
                 "SELECT id, pending_script FROM messages "
                 "WHERE session_id = ? AND pending_script IS NOT NULL "
