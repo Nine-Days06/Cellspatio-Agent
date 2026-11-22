@@ -557,12 +557,16 @@ class ScStages:
         revision: int,
         reason: str,
         reviewer: str = "local-user",
+        *,
+        review_binding: str | None = None,
     ) -> None:
         """追加聚类拒绝事实；不改写既有接受历史，不授权 marker。"""
         reason = reason.strip()
         if not reason:
             raise ValueError("拒绝必须填写原因")
         reviewer = reviewer.strip() or "local-user"
+        # 执行绑定（attempt 自校验）与复核绑定（接受事实身份）不是同一个值。
+        fact_binding = review_binding or binding
 
         def validate(conn: sqlite3.Connection) -> None:
             """锁内重查 run、聚类完成态与 revision。"""
@@ -586,7 +590,7 @@ class ScStages:
             if conn.execute(
                 "SELECT 1 FROM sc_cluster_reviews WHERE cluster_attempt_id = ? "
                 "AND binding_sha256 = ? AND record_version = ? AND source_revision = ?",
-                (cluster["attempt_id"], binding, version, revision),
+                (cluster["attempt_id"], fact_binding, version, revision),
             ).fetchone():
                 raise ValueError("同一 revision 已有聚类接受事实")
             self._require_no_filter(conn, run["run_id"])
@@ -598,7 +602,7 @@ class ScStages:
         def same_latest(latest: sqlite3.Row) -> bool:
             """latest+1 的绑定、版本、原因与复核人一致时抑制重复。"""
             return (
-                latest["binding_sha256"] == binding
+                latest["binding_sha256"] == fact_binding
                 and latest["record_version"] == version
                 and latest["reason"] == reason
                 and latest["reviewer"] == reviewer
@@ -620,7 +624,7 @@ class ScStages:
 
         identity = {
             "cluster_attempt_id": cluster["attempt_id"],
-            "binding_sha256": binding,
+            "binding_sha256": fact_binding,
             "record_version": version,
             "source_revision": revision,
         }

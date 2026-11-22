@@ -450,6 +450,7 @@ def reject_review(
             CLUSTER_RECORD_VERSION,
             body.revision,
             body.reason,
+            review_binding=state["binding_sha256"],
         )
         return _review_view(
             store, session_id, run_id, filter_attempt_id, pca_attempt_id, attempt_id, request
