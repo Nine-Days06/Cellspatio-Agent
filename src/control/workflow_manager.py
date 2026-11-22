@@ -20,6 +20,7 @@ from src.control.kb_coverage import (
 from src.data.tenx import validate_tenx
 from src.schemas.workflow import AnalysisType, StepType
 from src.ui.analysis_roots import AnalysisRoots
+from src.ui.confirm_protocol import script_binding
 from src.ui.session_store import SessionStore
 
 logger = logging.getLogger(__name__)
@@ -30,23 +31,6 @@ __all__ = [
     "LAZY_INGEST_MIN_CONTEXT",
     "LAZY_INGEST_SOURCES",
 ]
-
-
-def _script_binding(
-    analysis_type: str,
-    params: dict[str, Any],
-    script: str,
-    method_context: str | None,
-    session_id: str | None,
-) -> dict[str, Any]:
-    """确认与取消核验同一组准备事实，避免两条授权路径的绑定字段漂移。"""
-    return {
-        "session_id": session_id,
-        "analysis_type": analysis_type,
-        "script": script,
-        "params": params,
-        "method_context": method_context,
-    }
 
 
 class WorkflowManager:
@@ -737,7 +721,7 @@ class WorkflowManager:
         try:
             execution = recorder.restore_pending_script(
                 run_id,
-                _script_binding(analysis_type, params, script, method_context, session_id),
+                script_binding(analysis_type, params, script, method_context, session_id),
             )
         except (OSError, ValueError, KeyError, TypeError) as exc:
             logger.warning("confirmed run restore rejected: run_id=%s: %s", run_id, exc)
@@ -819,7 +803,7 @@ class WorkflowManager:
         try:
             execution = self.workflow_recorder.restore_pending_script(
                 run_id,
-                _script_binding(analysis_type, params, script, method_context, session_id),
+                script_binding(analysis_type, params, script, method_context, session_id),
             )
         except OSError as exc:
             # 临时读取故障未取得取消事实；由上层释放本次取消领取以明确重试。

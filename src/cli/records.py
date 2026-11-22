@@ -35,7 +35,9 @@ from src.ui.session_store import SessionStore
 
 SCHEMA_VERSION = "cellspatio-record/1.2.0"
 # 路径可能含空格；宁可多吞同行文本，也不能只脱敏空格前的目录而泄露用户名/文件名。
-# URL 边界只限制 ASCII 词字符；中文紧邻的绝对路径仍须脱敏。
+# 中文紧邻的绝对路径仍须脱敏；HTTP(S) URL 在匹配本地路径前单独保留。
+# 引用以空白、引号、中文语句标点或非法 URL 反斜杠结束；保留 URL 内的 /、# 和英文标点。
+_URL_RE = re.compile(r'(https?://[^\s"\'<>`\\，。；：！？、（）【】《》“”‘’]+)', re.IGNORECASE)
 _PATH_RE = re.compile(
     r'(?:(?<![A-Za-z0-9_])[A-Za-z]:[\\/][^\n\r"\'<>]*'
     r'|\\{2,}[^\n\r"\'<>]*|(?<![A-Za-z0-9_:/])/[^\n\r"\'<>]*)'
@@ -60,8 +62,11 @@ def _now() -> str:
 
 
 def _redact_text(text: str) -> str:
-    """把文本中的绝对路径替换为占位符。"""
-    return _PATH_RE.sub("<redacted-path>", text)
+    """保留完整 HTTP(S) 引用，把其余文本中的绝对路径替换为占位符。"""
+    return "".join(
+        part if index % 2 else _PATH_RE.sub("<redacted-path>", part)
+        for index, part in enumerate(_URL_RE.split(text))
+    )
 
 
 def _json_safe(value: Any, redact: bool) -> Any:

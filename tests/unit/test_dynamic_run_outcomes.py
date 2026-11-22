@@ -71,14 +71,16 @@ def test_known_failure_survives_reconstruction_and_explicit_retry(
         """仅替代外部 R 执行失败。"""
         raise RExecutorError("真实执行失败")
 
-    first.workflow_manager.r_executor = FakeExec(side_effect=fail)
+    first.workflow_manager.r_executor = FakeExec(track_codes=True, side_effect=fail)
     with TestClient(app) as client:
-        assert (
-            client.post(
-                "/api/confirm", json={"session_id": sid, "action": "script_confirm"}
-            ).status_code
-            == 200
-        )
+        response = client.post("/api/confirm", json={"session_id": sid, "action": "script_confirm"})
+    assert response.status_code == 200
+    message = response.json()["message"]
+    assert "分析完成" not in message["content"]
+    assert "真实执行失败" in message["content"]
+    assert message["results"]["repair_count"] == 0
+    assert store.get_messages(sid)[-1]["content"] == message["content"]
+    assert len(first.workflow_manager.r_executor.codes) == 1
     failed = first.workflow_manager.workflow_recorder.restore_run(prepared["run_id"])
     assert failed.meta["dynamic_script"]["status"] == "failed"
     assert failed.steps[-1].output.status.value == "error"
@@ -89,12 +91,9 @@ def test_known_failure_survives_reconstruction_and_explicit_retry(
         restored = client.get(f"/api/sessions/{sid}/messages?restore=1")
         assert restored.json()["pending_script"]["run_id"] == prepared["run_id"]
         assert second.workflow_manager.r_executor.codes == []
-        assert (
-            client.post(
-                "/api/confirm", json={"session_id": sid, "action": "script_confirm"}
-            ).status_code
-            == 200
-        )
+        retried = client.post("/api/confirm", json={"session_id": sid, "action": "script_confirm"})
+        assert retried.status_code == 200
+        assert retried.json()["message"]["content"].startswith("分析完成: ")
     after = second.workflow_manager.workflow_recorder.restore_run(prepared["run_id"])
     assert after.meta["dynamic_script"]["status"] == "success"
     assert after.steps[: len(failed.steps)] == failed.steps

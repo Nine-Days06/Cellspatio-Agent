@@ -112,8 +112,23 @@ def test_redacted_export_covers_dynamic_scripts_params_and_old_record_paths(
     store = SessionStore(tmp_path / "sessions.db")
     project = store.create_project("脱敏项目")
     sid = store.create_session("脱敏会话", project_id=project)
+    references = [
+        "https://example.org/#/paper",
+        "https://example.org/foo-/bar",
+        "http://example.org:8080/foo./bar?q=a%2Fb#/paper",
+        "HTTPS://example.org/paper_(2026)/part?x=1&y=2#section/path",
+    ]
     store.append_message(sid, "user", r"读取C:\Users\private-person\patient\counts.csv")
     store.append_message(sid, "user", "读取/home/private-person/patient/counts.csv")
+    adjacent_paths = [
+        r"C:\Users\private-person\patient\counts.csv",
+        "/home/private-person/patient/counts.csv",
+        r"\\private-server\private-share\patient\counts.csv",
+    ]
+    for separator in "，。；：！？、）】》”’":
+        for path in adjacent_paths:
+            store.append_message(sid, "user", f"资料{references[0]}{separator}输入{path}")
+    store.append_message(sid, "user", "/home/private-person/counts.csv " + " ".join(references))
     workflow = tmp_path / ".wrroc" / "old-run" / "workflow.json"
     workflow.parent.mkdir(parents=True)
     workflow.write_text(
@@ -121,17 +136,23 @@ def test_redacted_export_covers_dynamic_scripts_params_and_old_record_paths(
             {
                 "run_id": "old-run",
                 "input": {
-                    "context": {"session_id": sid, "reference_url": "https://example.org/paper"}
+                    "context": {
+                        "session_id": sid,
+                        "reference_url": "https://example.org/paper",
+                        "reference_urls": references,
+                    }
                 },
                 "meta": {
                     "dynamic_script": {
                         "script": (
                             "read.csv('/srv/private sample/input.csv')\nwrite.csv(x, '/opt/private output/out.csv')\n"
+                            f"# 文献 {' '.join(references)}\n"
                             r"read.csv(r'(\\private-server\private-share\patient\counts.csv)')"
                         ),
                         "params": {
                             "input_file": "/srv/private sample/input.csv",
                             "custom_path": "/opt/private output/out.csv",
+                            "references": references,
                         },
                     }
                 },
@@ -150,6 +171,17 @@ def test_redacted_export_covers_dynamic_scripts_params_and_old_record_paths(
     with zipfile.ZipFile(hidden) as archive:
         record_name = "record.json" if scope == "session" else f"sessions/{sid}/record.json"
         assert "https://example.org/paper" in archive.read(record_name).decode("utf-8")
+        record = json.loads(archive.read(record_name))
+        run = record["workflow_runs"][0]
+        assert run["input"]["context"]["reference_urls"] == references
+        assert run["meta"]["dynamic_script"]["params"]["references"] == references
+        for reference in references:
+            assert reference in run["meta"]["dynamic_script"]["script"]
+            assert reference in record["messages"][-1]["content"]
+        for message in record["messages"]:
+            if message["content"].startswith("资料"):
+                assert references[0] in message["content"]
+                assert "<redacted-path>" in message["content"]
         for name in archive.namelist():
             content = archive.read(name).decode("utf-8")
             assert "private sample" not in content

@@ -31,6 +31,7 @@ from src.schemas.workflow import (
     WorkflowRun,
     WorkflowStep,
 )
+from src.ui.confirm_protocol import script_binding
 
 
 class WorkflowRecorder:
@@ -195,11 +196,13 @@ class WorkflowRecorder:
         exec_.meta["dynamic_script"] = deepcopy(
             {
                 "status": "pending",
-                "session_id": exec_.meta.get("context", {}).get("session_id"),
-                "analysis_type": result["analysis_type"],
-                "script": result["script"],
-                "params": result["params"],
-                "method_context": result.get("method_context"),
+                **script_binding(
+                    result["analysis_type"],
+                    result["params"],
+                    result["script"],
+                    result.get("method_context"),
+                    exec_.meta.get("context", {}).get("session_id"),
+                ),
             }
         )
         return self.save_run(run_id)

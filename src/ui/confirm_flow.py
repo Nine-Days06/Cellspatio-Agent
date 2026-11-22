@@ -13,6 +13,7 @@ from src.ui.confirm_protocol import (
     STATUS_EXPIRED,
     STATUS_PENDING,
     PendingScript,
+    script_binding,
 )
 
 if TYPE_CHECKING:
@@ -56,13 +57,13 @@ def restore_pending(
                 try:
                     recorder.restore_pending_script(
                         pending["run_id"],
-                        {
-                            "session_id": session_id,
-                            "analysis_type": pending.get("analysis_type"),
-                            "script": pending.get("script", ""),
-                            "params": pending.get("params") or {},
-                            "method_context": pending.get("method_context"),
-                        },
+                        script_binding(
+                            pending.get("analysis_type"),
+                            pending.get("params") or {},
+                            pending.get("script", ""),
+                            pending.get("method_context"),
+                            session_id,
+                        ),
                     )
                     return dict(pending)
                 except (OSError, ValueError, KeyError, TypeError) as exc:

@@ -43,6 +43,40 @@ def confirmed_app(root: Path, store: SessionStore, analysis_type: str) -> tuple[
     return app, agent
 
 
+def test_nested_preparation_params_are_copied_and_confirmed_after_restore(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """准备事实与调用方嵌套参数隔离，落盘卡刷新后按完整绑定确认原运行。"""
+    monkeypatch.setenv("CELLSPATIO_LOCAL", "1")
+    store, sid, prepared, original = prepare_card(tmp_path, "differential_expression")
+    prepared["params"]["options"] = {"groups": ["control", "treated"], "threshold": 0.05}
+    recorder = original.workflow_manager.workflow_recorder
+    recorder.save_pending_script(prepared["run_id"], prepared)
+    pending = store.get_messages(sid)[-1]["pending_script"]
+    pending["params"] = prepared["params"]
+    store.append_message(sid, "assistant", "带嵌套参数的准备卡", pending_script=pending)
+    prepared["params"]["options"]["groups"][0] = "changed"
+    expected = {"groups": ["control", "treated"], "threshold": 0.05}
+    assert (
+        recorder.get_record(prepared["run_id"]).meta["dynamic_script"]["params"]["options"]
+        == expected
+    )
+
+    app, rebuilt = confirmed_app(tmp_path, store, "differential_expression")
+    with TestClient(app) as client:
+        restored = client.get(f"/api/sessions/{sid}/messages?restore=1")
+        assert restored.status_code == 200
+        assert restored.json()["pending_script"]["status"] == "pending"
+        assert restored.json()["pending_script"]["params"]["options"] == expected
+        assert rebuilt.workflow_manager.r_executor.codes == []
+        response = client.post("/api/confirm", json={"session_id": sid, "action": "script_confirm"})
+    assert response.status_code == 200
+    assert response.json()["message"]["content"].startswith("分析完成: ")
+    assert len(rebuilt.workflow_manager.r_executor.codes) == 1
+    facts = rebuilt.workflow_manager.workflow_recorder.restore_run(prepared["run_id"])
+    assert facts.meta["dynamic_script"]["params"]["options"] == expected
+
+
 @pytest.mark.parametrize("analysis_type", ["differential_expression", "spatial"])
 def test_confirm_after_reconstruction_records_repaired_outputs_on_prepared_run(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, analysis_type: str
