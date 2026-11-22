@@ -317,13 +317,65 @@ def test_reviewer_queue_unpublished_access_and_events(app, client: TestClient):
     ).json()["events"]
     assert [event["action"] for event in events] == ["submit", ACTION_DOMAIN_PASS]
 
+
+def test_dual_role_reviewer_signs_both_and_cannot_repeat(app, client: TestClient):
+    """同一账号持双角色时先领域后合规；两角色都签过再签领域应冲突。"""
+    _account(app, "contributor-dual", (ROLE_CONTRIBUTOR,))
+    _account(app, "dual-reviewer", (ROLE_DOMAIN, ROLE_COMPLIANCE))
+    contributor_token = _login(client, "contributor-dual")
+    reviewer_token = _login(client, "dual-reviewer")
+
+    preview = preview_card(_card("evc-service-dual"), contributor_id="local")
+    uploaded = client.post(
+        "/api/public/evidence/submissions",
+        json={"preview": preview, "consent": True},
+        headers=_headers(contributor_token),
+    )
+    evidence_id = uploaded.json()["evidence_id"]
+
+    assert (
+        client.post(
+            f"/api/public/evidence/submissions/{evidence_id}/review",
+            json={"action": ACTION_DOMAIN_PASS, "checklist": _checks(DOMAIN_CHECKLIST)},
+            headers=_headers(reviewer_token),
+        ).status_code
+        == 200
+    )
+
+    capability = client.get(
+        f"/api/public/evidence/{evidence_id}/events", headers=_headers(reviewer_token)
+    ).json()["review"]
+    assert capability["role"] == ROLE_COMPLIANCE
+    assert [spec["id"] for spec in capability["actions"]] == [
+        ACTION_COMPLIANCE_PASS,
+        ACTION_COMPLIANCE_NEEDS_CHANGES,
+        ACTION_COMPLIANCE_REJECT,
+    ]
+
+    assert (
+        client.post(
+            f"/api/public/evidence/submissions/{evidence_id}/review",
+            json={"action": ACTION_COMPLIANCE_PASS, "checklist": _checks(COMPLIANCE_CHECKLIST)},
+            headers=_headers(reviewer_token),
+        ).status_code
+        == 200
+    )
+    events = client.get(
+        f"/api/public/evidence/{evidence_id}/events", headers=_headers(reviewer_token)
+    ).json()["events"]
+    assert [event["action"] for event in events] == [
+        "submit",
+        ACTION_DOMAIN_PASS,
+        ACTION_COMPLIANCE_PASS,
+    ]
+
     again = client.post(
         f"/api/public/evidence/submissions/{evidence_id}/review",
         json={
             "action": ACTION_DOMAIN_PASS,
             "checklist": _checks(DOMAIN_CHECKLIST),
         },
-        headers=_headers(domain_token),
+        headers=_headers(reviewer_token),
     )
     assert again.status_code == 409
 

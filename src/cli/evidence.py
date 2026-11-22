@@ -4,7 +4,6 @@ python -m src.cli.evidence export qc <session_id> <run_id>
 python -m src.cli.evidence export cluster <session_id> <run_id> [--attempt <id>]
 python -m src.cli.evidence export pca <session_id> <run_id> [--attempt <id>]
 python -m src.cli.evidence export marker <session_id> <run_id> [--attempt <id>]
-python -m src.cli.evidence export qa <session_id> <answer_id>
 python -m src.cli.evidence review qc|cluster|marker <session_id> <run_id> <target_id> --reason ...
 python -m src.cli.evidence validate <card.json>
 python -m src.cli.evidence schema
@@ -24,7 +23,6 @@ from src.evidence.builder import (
     build_cluster_card,
     build_marker_card,
     build_pca_dimensions_card,
-    build_qa_card,
     build_qc_card,
 )
 from src.evidence.schema import SCHEMA_VERSION, EvidenceCard, License, json_schema, validate_card
@@ -71,10 +69,8 @@ def export_card(
         card = build_marker_card(
             store, session_id, target_id, attempt_id=attempt_id, license=license
         )
-    elif kind == "qa":
-        card = build_qa_card(store, session_id, target_id, license=license)
     else:
-        raise ValueError("kind 必须是 qc、cluster、pca、marker 或 qa")
+        raise ValueError("kind 必须是 qc、cluster、pca 或 marker")
     path = _write(card, base, out)
     return {"status": "ok", "card_id": card.card_id, "gate": card.gate, "path": str(path)}
 
@@ -150,9 +146,9 @@ def main(argv: list[str] | None = None) -> int:
     subparsers = parser.add_subparsers(dest="command", required=True)
 
     export_parser = subparsers.add_parser("export")
-    export_parser.add_argument("kind", choices=("qc", "cluster", "pca", "marker", "qa"))
+    export_parser.add_argument("kind", choices=("qc", "cluster", "pca", "marker"))
     export_parser.add_argument("session_id")
-    export_parser.add_argument("target_id", help="qc/pca/marker 为 run_id；qa 为 answer_id")
+    export_parser.add_argument("target_id", help="qc/pca/marker 为 run_id")
     export_parser.add_argument("--attempt", default=None, help="聚类/PCA/marker attempt_id")
     export_parser.add_argument("--out", default=None)
     export_parser.add_argument("--root", default=None, help="数据目录（默认 cwd）")
