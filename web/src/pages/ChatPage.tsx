@@ -109,7 +109,8 @@ export function ChatPage() {
     const state = useChatStore.getState()
     if (state.busy || state.sessionId !== data.session.id) return
     hydratedQueryRef.current = data
-    setSession(data.session.id, data.messages)
+    // 只刷历史：同会话刷新不能走“切会话”语义，确认卡与输入草稿必须保留。
+    useChatStore.setState({ history: data.messages })
     if (data.soft_warn) useChatStore.setState({ softWarn: true })
     if (data.pending_script) {
       const holder = [...data.messages].reverse().find((m) => m.pending_script !== null)

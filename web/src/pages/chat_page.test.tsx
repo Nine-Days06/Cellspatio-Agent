@@ -16,6 +16,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { EMPTY_FALLBACK } from '@/components/MessageList'
 import { ChatPage } from '@/pages/ChatPage'
 import { ApiError } from '@/lib/api'
+import { queryKeys } from '@/lib/queries'
 import type {
   DataCardPayload,
   MessagesResponse,
@@ -101,7 +102,8 @@ function routeFetch(url: unknown): Promise<unknown> {
   const payload =
     payloads.get(sid) ??
     ({ session: sessionFor(sid), messages: [], pending_script: null, soft_warn: false } as MessagesResponse)
-  return Promise.resolve({ ok: true, status: 200, json: async () => payload })
+  // 每次响应返回新对象，模拟真实 JSON 解析；否则 React Query 复用同一引用会掩盖 hydrate。
+  return Promise.resolve({ ok: true, status: 200, json: async () => structuredClone(payload) })
 }
 
 let sidSeq = 0
@@ -158,7 +160,7 @@ interface ReadyOptions {
 }
 
 /** 渲染 ChatPage 并等待「自动选中首个会话 → 拉历史 → hydrate」完成。 */
-async function renderReady(sid: string, options: ReadyOptions = {}): Promise<void> {
+async function renderReady(sid: string, options: ReadyOptions = {}): Promise<QueryClient> {
   const messages = options.messages ?? [makeMsg(sid)]
   seedMessages(sid, messages, options.extra)
   listSessionsMock.mockResolvedValue({ sessions: options.sessions ?? [makeSummary(sid)] })
@@ -172,6 +174,7 @@ async function renderReady(sid: string, options: ReadyOptions = {}): Promise<voi
   )
   // history 深等于种子载荷 = hydrate 已落地（初始 history 为空，不会误判）
   await waitFor(() => expect(useChatStore.getState().history).toEqual(messages))
+  return client
 }
 
 beforeEach(() => {
@@ -618,6 +621,18 @@ describe('ChatPage 确认卡片接线', () => {
     expect(screen.getByTestId('script-card')).toHaveTextContent('已过期（会话已恢复，需重新发起）')
     expect(screen.queryByRole('button', { name: '执行脚本' })).not.toBeInTheDocument()
     expect(useChatStore.getState().scriptCard?.message_id).toBe(holder.id)
+  })
+
+  it('同会话历史重拉保留 pending 脚本卡', async () => {
+    const sid = nextSid()
+    const client = await renderReady(sid)
+    act(() => useChatStore.setState({ scriptCard: pendingCard() }))
+
+    await act(() => client.invalidateQueries({ queryKey: queryKeys.messages(sid) }))
+
+    await waitFor(() => expect(useChatStore.getState().history.length).toBeGreaterThan(0))
+    expect(useChatStore.getState().scriptCard?.message_id).toBe(7)
+    expect(screen.getByTestId('script-card')).toBeInTheDocument()
   })
 
   it('脚本确认成功：按 action 回写 status（confirmed）', async () => {
