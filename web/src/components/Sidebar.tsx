@@ -520,9 +520,17 @@ export function Sidebar({
               ))}
               {archivedSessions.map((session) => (
                 <li key={session.id} className="flex items-center gap-1">
-                  <span className="flex min-h-11 min-w-0 flex-1 items-center rounded-lg px-3 text-sm text-muted-foreground">
+                  <button
+                    type="button"
+                    aria-label={`打开会话 ${session.title}`}
+                    onClick={() => {
+                      onSelect(session.id)
+                      setMobileOpen(false)
+                    }}
+                    className="flex min-h-11 min-w-0 flex-1 items-center rounded-lg px-3 text-left text-sm text-muted-foreground hover:bg-card/60"
+                  >
                     <span className="line-clamp-2 break-words">{session.title}</span>
-                  </span>
+                  </button>
                   <Button
                     variant="ghost"
                     size="sm"
