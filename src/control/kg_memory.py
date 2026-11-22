@@ -120,7 +120,11 @@ class KGMemory:
         self._ensure_initialized()
         param = QueryParam(mode="mix")
         result = async_runtime.run(self._rag.aquery(query, param=param))
-        return [str(r) for r in result] if result else []
+        if not result:
+            return []
+        # LightRAG aquery 默认返回整段字符串；按字符拆会变成单字列表。
+        items = result if isinstance(result, (list, tuple)) else [result]
+        return [str(item) for item in items]
 
     def query_text(self, query: str, mode: str = "mix") -> str:
         """生成式查询；file/pg 后端共用同一调用。"""
@@ -133,4 +137,7 @@ class KGMemory:
         self._ensure_initialized()
         param = QueryParam(mode="mix")
         result = async_runtime.run(self._rag.aquery(f"Relations of {entity}", param=param))
-        return [{"text": str(r)} for r in result] if result else []
+        if not result:
+            return []
+        items = result if isinstance(result, (list, tuple)) else [result]
+        return [{"text": str(item)} for item in items]
