@@ -402,16 +402,46 @@ class TestBatchCustomId(unittest.TestCase):
             init_db(db_path)
             # 必须显式传 db_path：_parse_batch_results 的默认参数在定义时即绑定
             # DB_PATH，patch 模块全局对它无效（曾因此把测试数据写进生产库）
-            ok, failed = mod._parse_batch_results(str(result_path), db_path=db_path)
+            ok, failed, parsed = mod._parse_batch_results(str(result_path), db_path=db_path)
 
             self.assertEqual(ok, 1)
             self.assertEqual(failed, [])
+            self.assertEqual(parsed, {"94600"})
             import sqlite3
 
             conn = sqlite3.connect(db_path)
             got = conn.execute("SELECT pmid FROM llm_validation").fetchall()
             conn.close()
             self.assertEqual(got, [("94600",)])
+
+    def test_null_content_and_shapes_are_reported_not_crashing(self):
+        """content:null、body/choices 非预期形状只能记失败，不能让整批中断。"""
+        import cleaner.llm_validator as mod
+
+        lines = [
+            json.dumps({"custom_id": "request-1", "response": {"status_code": 200, "body": None}}),
+            json.dumps(
+                {
+                    "custom_id": "request-2",
+                    "response": {
+                        "status_code": 200,
+                        "body": {"choices": [{"message": {"content": None}}]},
+                    },
+                }
+            ),
+            "[1,2]",
+        ]
+        with tempfile.TemporaryDirectory() as td:
+            result_path = Path(td) / "res.jsonl"
+            result_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+            db_path = Path(td) / "t.db"
+            init_db(db_path)
+
+            ok, failed, parsed = mod._parse_batch_results(str(result_path), db_path=db_path)
+
+        self.assertEqual(ok, 0)
+        self.assertEqual(sorted(failed), ["", "1", "2"])
+        self.assertEqual(parsed, set())
 
 
 class TestParseBatchResults(unittest.TestCase):
@@ -444,7 +474,7 @@ class TestParseBatchResults(unittest.TestCase):
         path = self._make_result_jsonl([result_line])
         from cleaner.llm_validator import _parse_batch_results as parser
 
-        success, failed = parser(path, db_path=self.db_path)
+        success, failed, _ = parser(path, db_path=self.db_path)
         self.assertEqual(success, 1)
         self.assertEqual(len(failed), 0)
 
@@ -461,7 +491,7 @@ class TestParseBatchResults(unittest.TestCase):
         path = self._make_result_jsonl([result_line])
         from cleaner.llm_validator import _parse_batch_results as parser
 
-        success, failed = parser(path, db_path=self.db_path)
+        success, failed, _ = parser(path, db_path=self.db_path)
         self.assertEqual(success, 1, "markdown 包裹的单 JSON 对象应能成功解析")
         self.assertEqual(len(failed), 0)
 
@@ -470,7 +500,7 @@ class TestParseBatchResults(unittest.TestCase):
         path = self._make_result_jsonl([result_line])
         from cleaner.llm_validator import _parse_batch_results as parser
 
-        success, failed = parser(path, db_path=self.db_path)
+        success, failed, _ = parser(path, db_path=self.db_path)
         self.assertEqual(success, 0)
         self.assertEqual(len(failed), 1)
 
@@ -480,7 +510,7 @@ class TestParseBatchResults(unittest.TestCase):
             f.write("this is not json\n")
         from cleaner.llm_validator import _parse_batch_results as parser
 
-        success, failed = parser(path, db_path=self.db_path)
+        success, failed, _ = parser(path, db_path=self.db_path)
         self.assertEqual(success, 0)
 
     def test_parse_mixed_results(self):
@@ -496,7 +526,7 @@ class TestParseBatchResults(unittest.TestCase):
         path = self._make_result_jsonl([ok, err])
         from cleaner.llm_validator import _parse_batch_results as parser
 
-        success, failed = parser(path, db_path=self.db_path)
+        success, failed, _ = parser(path, db_path=self.db_path)
         self.assertEqual(success, 1)
         self.assertEqual(len(failed), 1)
         self.assertEqual(failed[0], "ERR1")
@@ -517,7 +547,7 @@ class TestParseBatchResults(unittest.TestCase):
             path = self._make_result_jsonl([item])
             from cleaner.llm_validator import _parse_batch_results as parser
 
-            success, failed = parser(path, db_path=self.db_path)
+            success, failed, _ = parser(path, db_path=self.db_path)
             self.assertEqual(success, 0, content)
             self.assertEqual(len(failed), 1, content)
 
@@ -949,3 +979,4 @@ class TestBatchResultDbTarget(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+

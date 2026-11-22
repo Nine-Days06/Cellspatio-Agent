@@ -989,10 +989,12 @@ def _build_jsonl(rows: list) -> Path:
     return groups[0][0]
 
 
-def _parse_batch_results(jsonl_path: str, db_path: Path = DB_PATH) -> tuple[int, list[str]]:
+def _parse_batch_results(
+    jsonl_path: str, db_path: Path = DB_PATH
+) -> tuple[int, list[str], set[str]]:
     """
     解析 batch 输出结果 JSONL，写入 llm_validation 表。
-    返回 (成功数, 失败 PMID 列表)。
+    返回 (成功数, 失败 PMID 列表, 已落库 PMID 集合)；调用方用后者发现输出缺行。
 
     Args:
         jsonl_path: batch 结果 JSONL 文件路径
@@ -1001,6 +1003,7 @@ def _parse_batch_results(jsonl_path: str, db_path: Path = DB_PATH) -> tuple[int,
     """
     success_count = 0
     failed_pmids = []
+    parsed_pmids: set[str] = set()
 
     with open(jsonl_path, encoding="utf-8") as f:
         for line_num, line in enumerate(f, 1):
@@ -1013,23 +1016,36 @@ def _parse_batch_results(jsonl_path: str, db_path: Path = DB_PATH) -> tuple[int,
                 logger.warning(f"Batch 结果行 {line_num} JSON 解析失败")
                 failed_pmids.append("")
                 continue
+            if not isinstance(item, dict):
+                logger.warning(f"Batch 结果行 {line_num} 不是对象")
+                failed_pmids.append("")
+                continue
 
             custom_id = item.get("custom_id", "")
             pmid = _pmid_from_custom_id(custom_id)
 
-            resp = item.get("response", {})
+            resp = item.get("response") or {}
+            if not isinstance(resp, dict):
+                failed_pmids.append(pmid)
+                continue
             if resp.get("status_code") != 200:
                 logger.warning(f"Batch 请求失败: pmid={pmid}, status={resp.get('status_code')}")
                 failed_pmids.append(pmid)
                 continue
 
-            body = resp.get("body", {})
-            choices = body.get("choices", [])
-            if not choices:
+            body = resp.get("body") or {}
+            choices = (body.get("choices") or []) if isinstance(body, dict) else []
+            if not isinstance(choices, list) or not choices:
                 failed_pmids.append(pmid)
                 continue
 
-            content = choices[0].get("message", {}).get("content", "").strip()
+            choice = choices[0] if isinstance(choices[0], dict) else {}
+            message = choice.get("message") or {}
+            content = message.get("content") if isinstance(message, dict) else None
+            if not isinstance(content, str):
+                failed_pmids.append(pmid)
+                continue
+            content = content.strip()
             if not content:
                 failed_pmids.append(pmid)
                 continue
@@ -1075,8 +1091,9 @@ def _parse_batch_results(jsonl_path: str, db_path: Path = DB_PATH) -> tuple[int,
             with get_conn(db_path) as conn:
                 conn.execute(INSERT_SQL, (pmid, verdict, reason, now))
             success_count += 1
+            parsed_pmids.add(pmid)
 
-    return success_count, failed_pmids
+    return success_count, failed_pmids, parsed_pmids
 
 
 def _run_zhipu_batch():
@@ -1312,7 +1329,13 @@ def _download_and_parse_batch(client, batch_status, chk: dict, db_path: Path = D
             tmp_path.parent.mkdir(parents=True, exist_ok=True)
             content.write_to_file(str(tmp_path))
 
-            success_total, error_pmids = _parse_batch_results(str(tmp_path), db_path=db_path)
+            success_total, error_pmids, parsed = _parse_batch_results(
+                str(tmp_path), db_path=db_path
+            )
+            missing = set(all_pmids) - parsed - set(error_pmids)
+            if missing:
+                logger.warning(f"Batch 输出缺少 {len(missing)} 篇 PMID，降级为同步补验")
+                error_pmids.extend(sorted(missing))
             logger.info(f"结果已写入 DB: {success_total} 篇成功, {len(error_pmids)} 篇解析失败")
         except Exception as e:
             logger.error(f"下载/解析输出文件失败: {e}")
