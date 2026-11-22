@@ -5,8 +5,9 @@
     python sync_pubmed.py --no-import     # 只导出不导入
     python sync_pubmed.py --reimport-all  # 忽略台账，全量重导 data/import/ 下的契约批次
 
-导入侧为增量：每次只导入本次复制的那一个 CSV，data/import/import_ledger.json
-记录已导入批次，重复运行为空操作；删除该台账文件即触发一次有意的全量重导。
+导入侧为增量：优先导入本次复制的那一个 CSV；没有新导出时补导导入目录中台账尚未
+记录的遗留批次（上一轮导入失败的重试）。data/import/import_ledger.json 记录已导入
+批次，重复运行为空操作；删除该台账文件即触发一次有意的全量重导。
 """
 
 import argparse
@@ -77,6 +78,16 @@ def import_via_cli(
     )
 
 
+def pending_batches(import_dir: Path) -> list[Path]:
+    """返回导入目录里台账尚未记录的契约批次（上一轮导入失败留下的重试对象）。"""
+    if not import_dir.is_dir():
+        return []
+    from src.knowledge.knowledge_importer import ImportLedger
+
+    ledger = ImportLedger(import_dir / ImportLedger.LEDGER_FILENAME)
+    return [path for path in discover_batches(import_dir) if not ledger.is_imported(path.name)]
+
+
 def sync_and_import(
     etl_dir: Path,
     import_dir: Path,
@@ -94,21 +105,40 @@ def sync_and_import(
             逐文档去重信号，该数字在本层不可观测，故不虚构。
         failed: 导入是否失败（0=成功，1=失败）
         csv: 本次复制到 data/import/ 的文件路径（无新数据时为 None）
+
+    没有新导出但导入目录里还有台账未记录的批次时，会重试该批次：导出侧的
+    exported_pmids.txt 在导出时即记账，若上次导入失败，这里必须把遗留 CSV 补导完，
+    否则这批文献不会再被自动重试。
     """
     csv_path = run_etl_export(etl_dir)
-    if csv_path is None:
-        return {"exported": 0, "imported": 0, "failed": 0, "csv": None}
+    dest = copy_to_import(csv_path, import_dir) if csv_path is not None else None
+    result = {
+        "exported": 1 if dest else 0,
+        "imported": None if dest else 0,
+        "failed": 0,
+        "csv": str(dest) if dest else None,
+    }
+    if not do_import:
+        return result
 
-    dest = copy_to_import(csv_path, import_dir)
-    result = {"exported": 1, "imported": None, "failed": 0, "csv": str(dest)}
-    if do_import:
-        import_result = import_via_cli(
-            import_dir,
-            csv_name=None if reimport_all else dest.name,
-            reimport_all=reimport_all,
-        )
-        result["imported"] = import_result.get("new_count", 0)
-        result["failed"] = 0 if import_result.get("success") else 1
+    if reimport_all:
+        target = None
+    elif dest is not None:
+        target = dest.name
+    else:
+        pending = pending_batches(import_dir)
+        if not pending:
+            return result
+        target = pending[-1].name
+        result["csv"] = str(import_dir / target)
+
+    import_result = import_via_cli(
+        import_dir,
+        csv_name=target,
+        reimport_all=reimport_all,
+    )
+    result["imported"] = import_result.get("new_count", 0)
+    result["failed"] = 0 if import_result.get("success") else 1
     return result
 
 

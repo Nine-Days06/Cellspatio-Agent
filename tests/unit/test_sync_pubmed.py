@@ -230,6 +230,51 @@ def test_sync_and_import_no_new_data(tmp_path):
     assert result["csv"] is None
 
 
+def test_sync_and_import_retries_leftover_batch_after_failed_import(tmp_path):
+    """导出已记账但没有新数据时，仍要补导上一轮导入失败的遗留批次。"""
+    output_dir = tmp_path / "data" / "output"
+    output_dir.mkdir(parents=True)
+    import_dir = tmp_path / "import"
+    import_dir.mkdir()
+    leftover = import_dir / "articles_20260921_170000.csv"
+    leftover.write_text("pmid,title,abstract\n1,a,b\n", encoding="utf-8")
+
+    fake_import = {"success": True, "new_count": 1, "imported_files": [leftover.name]}
+    with (
+        mock.patch("sync_pubmed.subprocess.run"),
+        mock.patch("sync_pubmed.import_via_cli", return_value=fake_import) as m_cli,
+    ):
+        result = sync_pubmed.sync_and_import(etl_dir=tmp_path, import_dir=import_dir)
+
+    assert m_cli.call_args.kwargs["csv_name"] == leftover.name
+    assert result["exported"] == 0
+    assert result["imported"] == 1
+    assert result["csv"] == str(leftover)
+
+
+def test_sync_and_import_does_not_retry_imported_batch(tmp_path):
+    """台账已记录的批次不再重复导入。"""
+    output_dir = tmp_path / "data" / "output"
+    output_dir.mkdir(parents=True)
+    import_dir = tmp_path / "import"
+    import_dir.mkdir()
+    imported = import_dir / "articles_20260921_180000.csv"
+    imported.write_text("pmid,title,abstract\n1,a,b\n", encoding="utf-8")
+    (import_dir / "import_ledger.json").write_text(
+        '{"files": {"articles_20260921_180000.csv": {"sha256": "x"}}}', encoding="utf-8"
+    )
+
+    with (
+        mock.patch("sync_pubmed.subprocess.run"),
+        mock.patch("sync_pubmed.import_via_cli") as m_cli,
+    ):
+        result = sync_pubmed.sync_and_import(etl_dir=tmp_path, import_dir=import_dir)
+
+    m_cli.assert_not_called()
+    assert result["imported"] == 0
+    assert result["csv"] is None
+
+
 def test_main_parses_args_and_calls_sync(tmp_path):
     etl_dir = tmp_path / "etl"
     etl_dir.mkdir()
