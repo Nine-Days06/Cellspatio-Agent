@@ -449,6 +449,13 @@ class SessionStore:
             previous = conn.execute(
                 "SELECT project_id FROM sessions WHERE id=?", (session_id,)
             ).fetchone()
+            if previous is None:
+                raise StoreError("not_found", "会话不存在")
+            if previous["project_id"] != project_id:
+                # 运行中换项目会让后续产物落到新根，已有产物留在旧项目下。
+                running = _running_stage(conn, session_id)
+                if running is not None:
+                    raise StoreError("conflict", f"{running}运行中，不能移动会话")
             cursor = conn.execute(
                 "UPDATE sessions SET project_id=?, updated_at=? WHERE id=?",
                 (project_id, _now(), session_id),

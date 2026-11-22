@@ -11,6 +11,7 @@ from src.ui.session_store import (
     _decode_results,
     _encode_results,
 )
+from src.ui.store_errors import StoreError
 
 
 def test_create_and_list_sessions():
@@ -450,3 +451,19 @@ def test_record_knowledge_qa_review_leaves_session_messages_and_run_untouched(tm
 
     assert store.get_messages(sid) == []
     assert store.get_qc_run(sid, "r")["revision"] == 0
+
+
+def test_move_session_rejects_running_stage():
+    """运行中换项目会让后续产物落到新根，必须在写事务内拦住。"""
+    store = SessionStore()
+    source = store.create_project("源项目", "D:/data/a")
+    target = store.create_project("目标项目", "D:/data/b")
+    sid = store.create_session(project_id=source)
+    _seed_running_filter(store, sid)
+
+    with pytest.raises(StoreError, match="过滤运行中，不能移动会话"):
+        store.move_session(sid, target)
+    assert store.get_session(sid)["project_id"] == source
+
+    store.move_session(sid, source)
+    assert store.get_session(sid)["project_id"] == source
