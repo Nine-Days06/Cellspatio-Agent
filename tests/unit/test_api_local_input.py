@@ -86,6 +86,25 @@ def test_local_input_merges_assets_read_under_lock(tmp_path, source):
     assert {a["source"] for a in store.get_session(sid)["downloaded_assets"]} == {"geo", "local"}
 
 
+def test_register_qc_prefers_agent_analysis_roots(tmp_path, source):
+    """登记 QC 必须复用 agent 的产物根，不能用 recorder.cwd 推导另一份。"""
+    result = _qc_result(tmp_path, source)
+    sid = SessionStore().create_session()
+    agent = FakeAgent()
+    agent.workflow_manager = SimpleNamespace(
+        workflow_recorder=SimpleNamespace(repo_root=tmp_path / "elsewhere"),
+        run_analysis_for_agent=lambda *args: result,
+    )
+    agent.analysis_roots = AnalysisRoots(SessionStore(), tmp_path)
+
+    response = TestClient(create_app(agent)).post(
+        f"/api/sessions/{sid}/local-input", json={"path": str(source)}
+    )
+
+    assert response.status_code == 200, response.text
+    assert response.json()["status"] == "needs_confirmation"
+
+
 def test_invalid_input_returns_400_without_message(tmp_path, source):
     result = {
         "status": "needs_input",
