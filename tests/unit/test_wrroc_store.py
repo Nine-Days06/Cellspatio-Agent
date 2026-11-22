@@ -71,6 +71,18 @@ def test_wrroc_list_runs():
         assert ids == {"run-001", "run-002"}
 
 
+def test_wrroc_persist_is_atomic_and_leaves_no_temp_files():
+    """落盘经临时文件 + 原子替换，目录里不留半截记录。"""
+    with tempfile.TemporaryDirectory() as tmp:
+        base = Path(tmp) / ".wrroc"
+        store = WRROCStore(base_dir=base)
+        store.persist(_make_run("run-001"))
+
+        files = sorted(p.name for p in (base / "run-001").iterdir())
+        assert files == ["workflow.json"]
+        assert store.load("run-001").run_id == "run-001"
+
+
 def test_wrroc_list_runs_skips_deleted_records():
     """索引残留但文件已删除时，list_runs 不应返回 None 占位。"""
     with tempfile.TemporaryDirectory() as tmp:

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import os
+import tempfile
 from pathlib import Path
 
 from src.schemas.lineage import LineageEdge, LineageGraph, LineageNode
@@ -37,7 +39,15 @@ class WRROCStore:
         run_dir = self.base_dir / run.run_id
         run_dir.mkdir(parents=True, exist_ok=True)
         wf_file = run_dir / "workflow.json"
-        wf_file.write_text(run.to_json(), encoding="utf-8")
+        # 原子替换：进程中断不能留下半截 JSON，否则读者会静默跳过整条运行记录。
+        fd, tmp_name = tempfile.mkstemp(dir=run_dir, prefix=".workflow-", suffix=".tmp")
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as handle:
+                handle.write(run.to_json())
+            os.replace(tmp_name, wf_file)
+        except BaseException:
+            Path(tmp_name).unlink(missing_ok=True)
+            raise
         self._index[run.run_id] = wf_file
         return wf_file
 
