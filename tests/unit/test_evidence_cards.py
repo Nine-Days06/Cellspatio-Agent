@@ -12,7 +12,6 @@ from src.evidence.builder import (
     build_cluster_card,
     build_marker_card,
     build_pca_dimensions_card,
-    build_qa_card,
     build_qc_card,
 )
 from src.evidence.governance import admission_problems
@@ -24,7 +23,7 @@ EXAMPLES = Path(__file__).resolve().parents[2] / "docs" / "examples" / "evidence
 
 def test_example_cards_pass_validation():
     cards = sorted(EXAMPLES.glob("*.json"))
-    assert {path.stem for path in cards} == {"qc", "cluster", "qa"}
+    assert {path.stem for path in cards} == {"qc", "cluster"}
     for path in cards:
         card = EvidenceCard.model_validate_json(path.read_text(encoding="utf-8"))
         assert validate_card(card).card_id == card.card_id
@@ -130,21 +129,16 @@ class _Store:
         self,
         run: dict | None,
         messages: list | None = None,
-        reviews: list | None = None,
     ):
-        """保存预置的 run、消息与复核事实。"""
+        """保存预置的 run 与消息。"""
         self.run = run
         self.messages = messages or []
-        self.reviews = reviews or []
 
     def get_qc_run(self, _session_id, _run_id):
         return RunSnapshot(self.run) if self.run is not None else None
 
     def get_messages(self, _session_id):
         return self.messages
-
-    def get_knowledge_qa_reviews(self, _answer_id):
-        return self.reviews
 
 
 def test_build_qc_card_drops_input_paths(tmp_path):
@@ -316,43 +310,6 @@ def test_build_qc_card_rejects_superseded_preview(tmp_path):
     }
     with pytest.raises(ValueError, match="已被更新的预览替代"):
         build_qc_card(_Store(run), "s", "r")
-
-
-def test_build_qa_card_hashes_question():
-    package = {
-        "answer_id": "qa1",
-        "question": "TP53 在肝癌中的作用？",
-        "outcome": "supported_answer",
-        "answer": "TP53 常作为抑癌基因失活。",
-        "claims": [{"text": "x", "evidence_ids": ["E1"], "basis": "fact"}],
-        "limitations": ["检索有限"],
-        "evidence": [{"evidence_id": "E1"}],
-        "sources": [{"pmid": "12345678"}],
-        "config": {"lightrag_version": "1.0", "max_evidence": 8},
-    }
-    store = _Store(
-        run=None,
-        messages=[{"results": {"knowledge_qa": package}}],
-        reviews=[
-            {
-                "decision": "accepted",
-                "binding_sha256": "d" * 64,
-                "source_revision": 0,
-                "record_version": "knowledge-qa-review/1",
-                "reason": "ok",
-                "reviewer": "u",
-                "created_at": "2026-11-12T00:00:00+00:00",
-            }
-        ],
-    )
-
-    card = build_qa_card(store, "s", "qa1")
-
-    _assert_envelope(card)
-    assert card.observation["question_chars"] == len(package["question"])
-    assert card.provenance.source_ids == ["12345678"]
-    assert card.claim.text == "x"
-    assert package["question"] not in card.to_json()
 
 
 def test_build_qc_rejected_card(tmp_path):

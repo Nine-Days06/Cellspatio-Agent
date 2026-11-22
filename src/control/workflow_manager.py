@@ -14,6 +14,7 @@ from src.control.kb_coverage import (
     LAZY_INGEST_MIN_CONTEXT,
     LAZY_INGEST_SOURCES,
     KnowledgeCoverage,
+    auto_ingest_enabled,
 )
 from src.data.tenx import validate_tenx
 from src.schemas.workflow import AnalysisType, StepType
@@ -546,16 +547,20 @@ class WorkflowManager:
             self._record_analysis_to_kb(
                 analysis_type, input_file, output_file, params.get("question", "")
             )
+        stats = (
+            self._de_output_stats(output_file)
+            if analysis_type == "differential_expression"
+            else None
+        )
         explanation = None
         if self.explainer is not None:
             try:
-                stats = self._de_output_stats(output_file)
                 explanation = self.explainer.generate_llm_explanation(
                     {
                         "input_file": input_file,
                         "output_file": output_file,
                         "analysis_type": analysis_type,
-                        **stats,
+                        **(stats or {}),
                     },
                     question=params.get(
                         "question", f"{self._analysis_type_zh(analysis_type)}分析结果说明"
@@ -580,10 +585,13 @@ class WorkflowManager:
             )
         except Exception as e:  # noqa: BLE001
             logger.warning("capsule export failed: %s", e)
+        message = f"{self._analysis_type_zh(analysis_type)}分析完成"
+        if stats is not None:
+            message += f"：共 {stats['total_genes']} 个基因，{stats['significant_genes']} 个显著（padj<0.05）"
         return {
             "status": "success",
             "analysis_type": analysis_type,
-            "message": f"{self._analysis_type_zh(analysis_type)}分析完成",
+            "message": message,
             "method_context": method_context,
             "results": {
                 "returncode": result.returncode,
@@ -669,7 +677,7 @@ class WorkflowManager:
 
         coverage = self._current_coverage()
         lazy_ingested: list[dict[str, Any]] = []
-        if coverage.should_ingest(query, params):
+        if auto_ingest_enabled() and coverage.should_ingest(query, params):
             lazy_ingested = coverage.ingest_missing(query, params)
             if lazy_ingested:
                 context["lazy_ingested"] = lazy_ingested

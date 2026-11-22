@@ -17,7 +17,6 @@ Gate = Literal[
     "pca_dimensions",
     "cluster_review",
     "marker_review",
-    "knowledge_qa_review",
 ]
 Outcome = Literal["accepted", "rejected", "needs_changes", "withdrawn"]
 

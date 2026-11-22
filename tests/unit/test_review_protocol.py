@@ -131,17 +131,18 @@ def test_viewer_access_returns_role_specific_actions():
         status="pending",
         contributor_id="alice",
         viewer_actor="dora",
-        viewer_role=ROLE_DOMAIN,
+        viewer_roles=(ROLE_DOMAIN,),
         events=(),
     )
     assert access.actions == ("domain_pass", "domain_needs_changes", "domain_reject")
     assert access.blocked_reason is None
+    assert access.role == ROLE_DOMAIN
 
     compliance = viewer_access(
         status="pending",
         contributor_id="alice",
         viewer_actor="cara",
-        viewer_role=ROLE_COMPLIANCE,
+        viewer_roles=(ROLE_COMPLIANCE,),
         events=(),
     )
     assert compliance.actions == (
@@ -150,39 +151,52 @@ def test_viewer_access_returns_role_specific_actions():
         "compliance_reject",
     )
     assert compliance.blocked_reason is None
+    assert compliance.role == ROLE_COMPLIANCE
+
+
+def test_dual_role_reviewer_signs_remaining_role():
+    """同一账号持双角色时，签完领域后可继续签合规。"""
+    access = viewer_access(
+        status="pending",
+        contributor_id="alice",
+        viewer_actor="dora",
+        viewer_roles=(ROLE_DOMAIN, ROLE_COMPLIANCE),
+        events=(("dora", "domain_pass"),),
+    )
+    assert access.actions == (
+        "compliance_pass",
+        "compliance_needs_changes",
+        "compliance_reject",
+    )
+    assert access.role == ROLE_COMPLIANCE
+    assert access.blocked_reason is None
 
 
 @pytest.mark.parametrize(
     ("kwargs", "reason", "code"),
     [
-        ({"viewer_role": ROLE_CONTRIBUTOR}, "当前账号没有复核角色。", "no_role"),
+        ({"viewer_roles": (ROLE_CONTRIBUTOR,)}, "当前账号没有复核角色。", "no_role"),
         ({"status": "accepted"}, "该提交已结束审核。", "finished"),
         ({"contributor_id": "dora"}, "贡献者不得审核自己的提交", "self_review"),
         (
-            {"events": (("sam", "domain_pass"),)},
+            {"viewer_roles": (ROLE_DOMAIN,), "events": (("sam", "domain_pass"),)},
             "本角色已签署，等待另一角色复核。",
             "role_signed",
         ),
         (
-            {"events": (("dora", "domain_pass"),)},
+            {"viewer_roles": (ROLE_DOMAIN,), "events": (("dora", "domain_pass"),)},
             "本角色已签署，等待另一角色复核。",
             "role_signed",
         ),
-        (
-            {"contributor_id": "dora", "events": (("sam", "domain_pass"),)},
-            "本角色已签署，等待另一角色复核。",
-            "role_signed",
-        ),
-        ({"events": (("dora", "compliance_pass"),)}, "你已复核过该提交。", "already_reviewed"),
     ],
 )
 def test_viewer_access_blocked_reasons(kwargs, reason, code):
-    """阻断原因按现有页面顺序：角色、状态、本角色已签、自审、本人已审。"""
+    """阻断原因顺序：角色、状态、自审、本角色已签。"""
     base = {
         "status": "pending",
         "contributor_id": "alice",
         "viewer_actor": "dora",
-        "viewer_role": ROLE_DOMAIN,
+        "viewer_roles": (ROLE_DOMAIN,),
         "events": (),
     }
     access = viewer_access(**{**base, **kwargs})
@@ -317,18 +331,16 @@ def test_review_decision_blocks_existing_review_errors(overrides, kind, message)
     assert message in str(blocked.value)
 
 
-def test_review_decision_rejects_same_actor_signing_both_roles():
-    """双签必须由不同 actor 完成，校验在协议内。"""
-    with pytest.raises(EvidenceError) as blocked:
-        review_decision(
-            status="pending",
-            contributor_id="alice",
-            actor_id="dora",
-            role=ROLE_COMPLIANCE,
-            action="compliance_pass",
-            checklist=_checks(ROLE_COMPLIANCE),
-            reason=None,
-            events=(("dora", "domain_pass"),),
-        )
-    assert blocked.value.kind == "invalid_input"
-    assert "不能同时签署" in str(blocked.value)
+def test_review_decision_allows_same_actor_signing_both_roles():
+    """同一账号持双角色时可依次签领域与合规，协议只拦同角色重复签署。"""
+    state = review_decision(
+        status="pending",
+        contributor_id="alice",
+        actor_id="dora",
+        role=ROLE_COMPLIANCE,
+        action="compliance_pass",
+        checklist=_checks(ROLE_COMPLIANCE),
+        reason=None,
+        events=(("dora", "domain_pass"),),
+    )
+    assert state == "accepted"

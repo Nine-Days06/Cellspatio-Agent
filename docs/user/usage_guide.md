@@ -186,7 +186,8 @@ SCRIPT_REQUIRE_CONFIRM=1
 # 便携客户端默认关闭 KG 记忆；置 1 使用文件型 LightRAG（不需要 PostgreSQL）
 # CELLSPATIO_LOCAL_KG=1
 
-# 问答上下文不足时自动补库
+# 问答上下文不足时自动补库（默认关闭；置 1 开启）
+# KB_AUTO_INGEST=1
 # LAZY_INGEST_MIN_CONTEXT=300
 # LAZY_INGEST_MAX_ASSETS=3
 ```
@@ -412,7 +413,6 @@ python -m src.cli.evidence export qc <session_id> <run_id>
 python -m src.cli.evidence export cluster <session_id> <run_id>
 python -m src.cli.evidence export pca <session_id> <run_id>
 python -m src.cli.evidence export marker <session_id> <run_id>
-python -m src.cli.evidence export qa <session_id> <answer_id>
 ```
 
 公共证据服务的账号、上传、双签、检索、备份和 Caddy/TLS 部署见

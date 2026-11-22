@@ -130,9 +130,10 @@ class PublicEvidenceService:
             status=summary["status"],
             contributor_id=summary["contributor_id"],
             viewer_actor=ctx.actor_id,
-            viewer_role=ctx.role,
+            viewer_roles=viewer.get("roles") or [ctx.role],
             events=[(event["actor_id"], event["action"]) for event in records],
         )
+        role = access.role or ctx.role
         try:
             evidence = self._store.get(
                 evidence_id,
@@ -148,11 +149,11 @@ class PublicEvidenceService:
             "evidence": evidence,
             "events": records,
             "review": {
-                "role": ctx.role,
+                "role": role,
                 "actions": [action_spec(action) for action in access.actions],
                 "blocked_reason": access.blocked_reason,
                 "blocked_code": access.blocked_code,
-                "checklists": {ctx.role: list(checklist_for_role(ctx.role))},
+                "checklists": {role: list(checklist_for_role(role))},
             },
         }
 

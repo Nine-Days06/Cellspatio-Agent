@@ -174,8 +174,6 @@ def admission_problems(card: EvidenceCard) -> list[str]:
         problems.append("license.spdx 为空")
     if not _clean(card.license.attribution):
         problems.append("license.attribution 为空")
-    if card.gate == "knowledge_qa_review" and not card.provenance.source_ids:
-        problems.append("问答卡必须至少有一个来源 ID")
     for source_id in card.provenance.source_ids:
         if not _SOURCE_ID_RE.match(source_id):
             problems.append(f"来源 ID 格式不支持：{source_id}")
@@ -614,8 +612,6 @@ class GovernanceStore:
             ]
         results.sort(key=lambda item: item["evidence_id"])
         results.sort(key=lambda item: item["accepted_at"] or "", reverse=True)
-        results.sort(key=lambda item: item["donor_count"] or 0, reverse=True)
-        results.sort(key=lambda item: item["independent_replications"], reverse=True)
         results.sort(key=lambda item: item["superseded_by"] is not None)
         return results
 
