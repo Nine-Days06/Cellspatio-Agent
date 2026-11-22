@@ -62,6 +62,14 @@ def test_review_reads_selection_snapshot() -> None:
     assert not re.search(r"\bPromise\.all\b", text), "证据详情与事件必须来自同一次读取"
 
 
+def test_review_revision_preview_is_bound_to_target() -> None:
+    """修订预览必须捕获发起时的 revisesId，并在上传前比对预览目标。"""
+    text = (STATIC / "review.js").read_text(encoding="utf-8")
+    assert "const revisesId = state.revisesId;" in text
+    assert "revisesId !== state.revisesId" in text
+    assert "revises_submission_id" in text
+
+
 def test_load_card_clears_previous_preview_before_reading() -> None:
     """选择新卡时先清空旧 preview，避免预览失败后仍可上传上一张卡。"""
     text = (STATIC / "review.js").read_text(encoding="utf-8")

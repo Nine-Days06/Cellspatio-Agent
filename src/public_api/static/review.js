@@ -294,6 +294,7 @@ function renderMine() {
 }
 
 function startRevision(evidenceId) {
+  cardLoadToken += 1;
   state.revisesId = evidenceId;
   state.preview = null;
   showView("contribute");
@@ -325,6 +326,12 @@ async function confirmWithdraw() {
 
 async function uploadPreview() {
   if (!state.preview || state.uploading) return;
+  const target = state.preview.will_send?.submission?.revises_submission_id ?? null;
+  if (target !== state.revisesId) {
+    state.preview = null;
+    renderContribute();
+    return toast("修订目标已变化，请重新选择文件。");
+  }
   state.uploading = true;
   renderContribute();
   try {
@@ -357,9 +364,10 @@ async function loadCardFile(event) {
     return toast("文件不是有效的 JSON。");
   }
   if (token !== cardLoadToken) return;
+  const revisesId = state.revisesId;
   try {
-    const preview = await api.preview(card, state.revisesId);
-    if (token !== cardLoadToken) return;
+    const preview = await api.preview(card, revisesId);
+    if (token !== cardLoadToken || revisesId !== state.revisesId) return;
     state.preview = preview;
     renderContribute();
   } catch (error) {
@@ -485,6 +493,7 @@ function renderContribute() {
               class: "ghost",
               text: "取消修订",
               onclick: () => {
+                cardLoadToken += 1;
                 state.revisesId = null;
                 state.preview = null;
                 renderContribute();
