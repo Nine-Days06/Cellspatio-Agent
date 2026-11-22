@@ -9,6 +9,7 @@ NCBI E-utilities 批量下载器
 """
 
 import json
+import os
 import re
 import threading
 import time
@@ -313,10 +314,13 @@ def _download_single_batch(
     }
 
     _rate_limiter.wait()
+    part_file = batch_file.with_name(batch_file.name + ".part")
     try:
         r = _get(f"{EUTILS_BASE}/efetch.fcgi", params)
-        with open(batch_file, "wb") as f:
+        # 先写 .part 再原子改名：中断不会留下“大小 >0 但内容截断”的批次被永久跳过。
+        with open(part_file, "wb") as f:
             f.write(r.content)
+        os.replace(part_file, batch_file)
         logger.info(
             f"  [批次 {batch_idx + 1}/{total_batches}] "
             f"下载 {len(chunk)} 篇 → {batch_file.name} "
@@ -324,6 +328,7 @@ def _download_single_batch(
         )
         return batch_file
     except Exception as e:
+        part_file.unlink(missing_ok=True)
         logger.error(f"  [批次 {batch_idx + 1}] 下载失败: {e}")
         return None
 

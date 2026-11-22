@@ -9,6 +9,7 @@ import requests
 from config.settings import SEARCH_YEAR_MAX, SEARCH_YEAR_MIN
 from downloader.pubmed_downloader import (
     _collect_pmids,
+    _download_single_batch,
     _fetch_count,
     _get,
     _split_range,
@@ -258,6 +259,17 @@ class TestBatchCacheInvalidation(unittest.TestCase):
 
             self.assertTrue(batch.exists())
             self.assertEqual(json.loads(manifest.read_text(encoding="utf-8"))["pmids"], ["9"])
+
+    def test_batch_download_is_atomic_and_cleans_partial_file(self):
+        """中断只能留下 .part 临时文件被清理，不能留下截断的 batch_*.xml。"""
+        with tempfile.TemporaryDirectory() as td:
+            out = Path(td)
+
+            with patch("downloader.pubmed_downloader._get", side_effect=RuntimeError("boom")):
+                got = _download_single_batch(0, ["1"], out, 10, 1)
+
+            self.assertIsNone(got)
+            self.assertEqual(list(out.iterdir()), [])
 
 
 if __name__ == "__main__":
