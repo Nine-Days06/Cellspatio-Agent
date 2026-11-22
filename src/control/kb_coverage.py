@@ -2,7 +2,6 @@ import logging
 import os
 import re
 from collections.abc import Callable
-from pathlib import Path
 from typing import Any
 
 from src.knowledge.knowledge_index import KnowledgeIndex
@@ -104,35 +103,6 @@ class KnowledgeCoverage:
                 found.append(("uniprot", acc))
         return found
 
-    def kb_working_dir(self) -> Path | None:
-        """知识库工作目录；无 working_dir 或类型非法时返回 None。"""
-        wd = getattr(self.knowledge_client, "working_dir", None)
-        if not wd:
-            return None
-        try:
-            return Path(wd)
-        except TypeError:
-            return None
-
-    def kb_asset_ids(self) -> set[str] | None:
-        """专属文档头里的资产 ID（小写）；无法定位 working_dir 时返回 None。
-
-        仅认 `# KEGG 通路: map…` / `# UniProt 蛋白: P…` 这类入库头，
-        不把实体交叉引用当作「已有该通路/蛋白文档」。
-        """
-        return self.index.asset_ids() if self.index is not None else None
-
-    def kb_entity_names(self) -> set[str] | None:
-        """实体表实体名（小写）；用于 genes 是否已在图中"""
-        return self.index.entity_names() if self.index is not None else None
-
-    def kb_known_ids(self) -> set[str] | None:
-        """兼容旧调用：文档头资产 ID ∪ 实体名（小写）"""
-        snapshot = self.index.snapshot() if self.index is not None else None
-        if snapshot is None:
-            return None
-        return snapshot[0] | snapshot[1]
-
     def context_for_miss_check(self, query: str) -> str | None:
         """取 only_need_context 文本；无法检查时返回 None（跳过补库）"""
         if self.knowledge_client is None:
@@ -176,10 +146,6 @@ class KnowledgeCoverage:
                     "lazy ingest %s/%s: %s", source, asset_id, result.get("message")
                 )
         return ingested
-
-    def lazy_ingest(self, query: str, params: dict[str, Any] | None = None) -> list[dict[str, Any]]:
-        """兼容旧命名：按需补库。"""
-        return self.ingest_missing(query, params)
 
     def collect_candidates(self, query: str, params: dict[str, Any]) -> list[tuple[str, str]]:
         """显式 ID 优先，不足再 search 兜底；仅 kegg/uniprot，上限 MAX"""
