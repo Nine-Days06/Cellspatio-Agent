@@ -36,6 +36,30 @@ XML_WITH_REFS = """<PubmedArticle>
 
 
 class TestParseArticleIdType(unittest.TestCase):
+    def test_empty_journal_language_nodes_do_not_drop_article(self):
+        """空 <Title/>、<Language/>、<Year/> 节点不能让整篇解析失败。"""
+        xml = """<PubmedArticle>
+  <MedlineCitation>
+    <PMID>1</PMID>
+    <Article>
+      <ArticleTitle>t</ArticleTitle>
+      <Journal>
+        <Title /><ISOAbbreviation />
+        <JournalIssue><PubDate><Year /></PubDate></JournalIssue>
+      </Journal>
+      <Language />
+      <AuthorList><Author><LastName>Doe</LastName></Author></AuthorList>
+    </Article>
+  </MedlineCitation>
+</PubmedArticle>"""
+        rec = parse_article(etree.fromstring(xml), "batch_test.xml")
+
+        self.assertIsNotNone(rec)
+        self.assertEqual(rec["pmid"], "1")
+        self.assertEqual(rec["journal"], "")
+        self.assertEqual(rec["language"], "")
+        self.assertEqual(rec["authors"], "Doe")
+
     def test_should_not_take_article_id_from_reference_list(self):
         root = etree.fromstring(XML_WITH_REFS)
         rec = parse_article(root, "batch_test.xml")

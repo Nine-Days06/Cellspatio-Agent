@@ -118,14 +118,14 @@ def parse_article(article_el: etree._Element, source_file: str) -> dict | None:
             month_el = pub_date.find("Month")
             # MedlineDate 格式 "2021 Jan-Feb"
             medline_el = pub_date.find("MedlineDate")
-            if year_el is not None:
+            if year_el is not None and (year_el.text or "").strip():
                 try:
-                    pub_year = int(year_el.text)
+                    pub_year = int((year_el.text or "").strip())
                 except ValueError:
                     pass
-            elif medline_el is not None:
+            elif medline_el is not None and (medline_el.text or "").strip():
                 try:
-                    pub_year = int(medline_el.text[:4])
+                    pub_year = int((medline_el.text or "").strip()[:4])
                 except ValueError:
                     pass
             if month_el is not None:
@@ -133,9 +133,9 @@ def parse_article(article_el: etree._Element, source_file: str) -> dict | None:
 
         # ── 期刊 ─────────────────────────────────────────────
         journal_el = art.find(".//Journal/Title")
-        journal = journal_el.text.strip() if journal_el is not None else ""
+        journal = (journal_el.text or "").strip() if journal_el is not None else ""
         jabbr_el = art.find(".//Journal/ISOAbbreviation")
-        journal_abbr = jabbr_el.text.strip() if jabbr_el is not None else ""
+        journal_abbr = (jabbr_el.text or "").strip() if jabbr_el is not None else ""
 
         # ── DOI / PMC ────────────────────────────────────────
         # 仅从 ArticleIdList 提取；不得用 .//ArticleId，
@@ -181,7 +181,7 @@ def parse_article(article_el: etree._Element, source_file: str) -> dict | None:
 
         # ── 语言 ─────────────────────────────────────────────
         lang_el = art.find("Language")
-        language = lang_el.text.strip() if lang_el is not None else ""
+        language = (lang_el.text or "").strip() if lang_el is not None else ""
 
         return {
             "pmid": pmid,
