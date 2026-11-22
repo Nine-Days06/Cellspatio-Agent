@@ -723,6 +723,17 @@ class TestExportRawCsv(unittest.TestCase):
         path = self._export()
         self.assertIsNone(path)
 
+    def test_export_large_ledger_does_not_hit_variable_limit(self):
+        """账本超过 SQLite 3.2 万变量上限时仍能导出新增批次。"""
+        ledger = Path(self.temp_dir) / "exported_pmids.txt"
+        ledger.write_text("\n".join(f"X{i:06d}" for i in range(33000)) + "\n", encoding="utf-8")
+
+        path = self._export()
+
+        self.assertIsNotNone(path)
+        with open(path, encoding="utf-8-sig") as f:
+            self.assertEqual(sorted(r["pmid"] for r in csv.DictReader(f)), ["A", "B"])
+
 
 class TestExportArticlesCsv(unittest.TestCase):
     """_export_articles_csv：主项目兼容格式 + 增量导出"""
@@ -905,9 +916,7 @@ class TestBatchResultDbTarget(unittest.TestCase):
         class FakeClient:
             files = FakeFiles()
 
-        status = SimpleNamespace(
-            status="completed", output_file_id="f1", error_file_id=None
-        )
+        status = SimpleNamespace(status="completed", output_file_id="f1", error_file_id=None)
         with tempfile.TemporaryDirectory() as td:
             db_path = Path(td) / "t.db"
             init_db(db_path)

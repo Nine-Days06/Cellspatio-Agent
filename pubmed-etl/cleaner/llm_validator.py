@@ -1585,6 +1585,13 @@ def _export_articles_csv(db_path: Path = DB_PATH) -> Path | None:
     """
     exported = _load_exported_pmids()
     with get_conn(db_path) as conn:
+        # 账本可能远超 SQLite 变量上限（32766），用临时表关联而不是展开 NOT IN (...)。
+        conn.execute("DROP TABLE IF EXISTS temp._exported_pmids")
+        conn.execute("CREATE TEMP TABLE _exported_pmids (pmid TEXT PRIMARY KEY)")
+        conn.executemany(
+            "INSERT OR IGNORE INTO _exported_pmids (pmid) VALUES (?)",
+            [(pmid,) for pmid in exported],
+        )
         rows = conn.execute(
             """
             SELECT a.pmid, a.title, a.abstract, a.keywords, a.mesh_terms,
@@ -1593,9 +1600,8 @@ def _export_articles_csv(db_path: Path = DB_PATH) -> Path | None:
             JOIN llm_validation v ON a.pmid = v.pmid
             WHERE (v.human_review = 'Y'
                OR (v.human_review IS NULL AND v.llm_verdict = 'RELEVANT'))
-              AND a.pmid NOT IN ({})
-        """.format(",".join("?" * len(exported))),
-            tuple(sorted(exported)),
+              AND NOT EXISTS (SELECT 1 FROM _exported_pmids e WHERE e.pmid = a.pmid)
+        """
         ).fetchall()
 
     rows = [dict(r) for r in rows]
