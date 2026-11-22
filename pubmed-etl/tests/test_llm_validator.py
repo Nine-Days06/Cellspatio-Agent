@@ -735,6 +735,23 @@ class TestExportRawCsv(unittest.TestCase):
             self.assertEqual(sorted(r["pmid"] for r in csv.DictReader(f)), ["A", "B"])
 
 
+class TestResultsByPmid(unittest.TestCase):
+    """同步降级遇到脏 LLM 条目时不能中止整轮。"""
+
+    def test_skips_non_dict_and_missing_pmid(self):
+        import cleaner.llm_validator as mod
+
+        results = [
+            {"pmid": "A", "verdict": "RELEVANT"},
+            {"verdict": "NOT_RELEVANT"},
+            None,
+            "garbage",
+            {"pmid": "B"},
+        ]
+
+        self.assertEqual(set(mod._results_by_pmid(results)), {"A", "B"})
+
+
 class TestExportArticlesCsv(unittest.TestCase):
     """_export_articles_csv：主项目兼容格式 + 增量导出"""
 

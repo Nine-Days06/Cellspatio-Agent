@@ -406,6 +406,11 @@ def _normalize_verdict(value) -> str | None:
     return None
 
 
+def _results_by_pmid(results):
+    """按 pmid 索引 LLM 结果，跳过非 dict 与缺 pmid 的脏条目。"""
+    return {r["pmid"]: r for r in results if isinstance(r, dict) and r.get("pmid")}
+
+
 def _build_log_rows(batch, pmid_to_result, failed_set, now):
     """
     将一批 LLM 结果整理为待入库 log_rows（4 元组：pmid, verdict, reason, now）
@@ -512,7 +517,8 @@ def _run_sync_validation():
                 failed_set = set(failed_pmids)
                 if results:
                     now = now_iso()
-                    pmid_to_result = {r["pmid"]: r for r in results}
+                    # LLM 偶尔返回缺 pmid 或非 dict 的条目；不能让单条脏数据中止整轮。
+                    pmid_to_result = _results_by_pmid(results)
                     log_rows, batch_failed = _build_log_rows(batch, pmid_to_result, failed_set, now)
                     round_failed.extend(batch_failed)
 
@@ -607,7 +613,7 @@ def _run_sync_validation_for_pmids(pmid_list: list):
                 failed_set = set(failed_pmids)
                 if results:
                     now = now_iso()
-                    pmid_to_result = {r["pmid"]: r for r in results}
+                    pmid_to_result = _results_by_pmid(results)
                     log_rows, batch_failed = _build_log_rows(batch, pmid_to_result, failed_set, now)
                     round_failed.extend(batch_failed)
                     if log_rows:
