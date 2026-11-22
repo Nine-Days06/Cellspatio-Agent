@@ -99,6 +99,9 @@ def confirm_script(
             # 执行失败不能把卡片留在终态，否则用户既看不到结果也无法重试。
             store.release_script(session_id, claimed_id)
             raise
+        if result.get("status") == "error":
+            # 修复次数用尽/产物缺失以正常返回值报告失败，同样要把卡片退回 pending。
+            store.release_script(session_id, claimed_id)
         content = build_assistant_message(result)["content"]
         results = result.get("results")
 

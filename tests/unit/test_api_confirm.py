@@ -197,6 +197,31 @@ def test_script_confirm_failure_releases_card(client):
     assert statuses[card_id] == STATUS_PENDING
 
 
+def test_script_confirm_error_result_releases_card(client):
+    """执行链以 error 结果报告失败时，卡片也要退回 pending 供用户重试。"""
+    sid = _with_pending_script(client)
+    card_id = _latest_pending(sid)["id"]
+    client.app.state.agent.execute_confirmed_script = lambda *a, **k: {
+        "status": "error",
+        "analysis_type": "differential_expression",
+        "message": "差异表达未产出结果文件: de.csv",
+    }
+
+    response = client.post(
+        "/api/confirm",
+        json={"session_id": sid, "action": ACTION_SCRIPT_CONFIRM, "message_id": card_id},
+    )
+
+    assert response.status_code == 200
+    statuses = {
+        m["id"]: m["pending_script"]["status"]
+        for m in SessionStore().get_messages(sid)
+        if m["pending_script"]
+    }
+    assert statuses[card_id] == STATUS_PENDING
+    assert "未产出结果文件" in SessionStore().get_messages(sid)[-1]["content"]
+
+
 def test_script_confirm_on_expired_returns_409(client):
     sid = _with_pending_script(client, status=STATUS_EXPIRED)
 
