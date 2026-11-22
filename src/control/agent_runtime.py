@@ -33,12 +33,9 @@ ABORTED_RESULT: dict[str, Any] = {
     "message": "已中断",
 }
 
-# 流式模式下的终态集合：仅 success/error/needs_confirmation/needs_script_confirmation 即刻返回。
-# needs_input/no_results 在流式下需让 LLM 再跑一轮生成面向用户的回复，故不在此集合中。
-# 与 TERMINAL_STATUSES (src/control/tools.py) 的区别：后者包含所有终态，用于非流式路径。
-STREAM_TERMINAL_STATUSES: frozenset[str] = frozenset(
-    {"success", "error", "needs_confirmation", "needs_script_confirmation"}
-)
+# 流式模式下的终态集合：needs_input/no_results 需让 LLM 再跑一轮生成面向用户的回复，
+# 因此只是 TERMINAL_STATUSES 的子集；与枚举同步，避免两处手写清单漂移。
+STREAM_TERMINAL_STATUSES: frozenset[str] = TERMINAL_STATUSES - {"needs_input", "no_results"}
 
 
 class AgentRuntime:

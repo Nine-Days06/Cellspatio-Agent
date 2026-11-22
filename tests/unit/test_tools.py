@@ -52,6 +52,15 @@ def test_terminal_statuses_cover_hitl_and_outcomes():
     }
 
 
+def test_stream_terminal_statuses_are_terminal_subset():
+    """流式终态必须由同一枚举派生，不能是第二份手写清单。"""
+    from src.control.agent_runtime import STREAM_TERMINAL_STATUSES
+    from src.control.tools import TERMINAL_STATUSES
+
+    assert STREAM_TERMINAL_STATUSES < TERMINAL_STATUSES
+    assert TERMINAL_STATUSES - STREAM_TERMINAL_STATUSES == {"needs_input", "no_results"}
+
+
 def test_search_datasets_enum_includes_new_sources():
     from src.control.tools import TOOL_SCHEMAS
 

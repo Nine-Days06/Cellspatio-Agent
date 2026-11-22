@@ -10,21 +10,14 @@ from __future__ import annotations
 from typing import Any
 
 from src.control.intent_vocabulary import ANALYSIS_TYPES
+from src.schemas.workflow import TerminalStatus
 
 # Only types WorkflowManager._execute_analysis_workflow truly routes & executes
 SUPPORTED_ANALYSIS_TYPES: tuple[str, ...] = tuple(ANALYSIS_TYPES)
 
 # When tool returns these statuses, AgentRuntime immediately bubbles to UI (HITL gate / terminal), no further LLM round
-TERMINAL_STATUSES: frozenset[str] = frozenset(
-    {
-        "success",
-        "error",
-        "needs_confirmation",
-        "needs_script_confirmation",
-        "needs_input",
-        "no_results",
-    }
-)
+# 唯一来源是 TerminalStatus 枚举，避免与 schemas/workflow.py 漂移。
+TERMINAL_STATUSES: frozenset[str] = frozenset(item.value for item in TerminalStatus)
 
 TOOL_SCHEMAS: list[dict[str, Any]] = [
     {
