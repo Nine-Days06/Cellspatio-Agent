@@ -79,9 +79,19 @@ def test_privacy_allows_method_metadata_keys():
         validate_card(card)
 
 
-def test_privacy_rejects_absolute_paths():
+@pytest.mark.parametrize(
+    "text",
+    [
+        r"读取 D:\secret\matrix.mtx",
+        "读取 /root/project/matrix.mtx",
+        "读取 /workspace/run/summary.json",
+        "读取 /scratch/tmp/evidence.json",
+        "读取 /Volumes/disk/data.csv",
+    ],
+)
+def test_privacy_rejects_absolute_paths(text: str):
     card = _card()
-    card.claim.text = r"读取 D:\secret\matrix.mtx"
+    card.claim.text = text
     with pytest.raises(ValueError, match="绝对路径"):
         validate_card(card)
 
@@ -93,14 +103,15 @@ def test_privacy_rejects_cell_level_lists():
         validate_card(card)
 
 
-def test_privacy_rejects_barcodes_and_sample_ids():
+@pytest.mark.parametrize("sample_id", ["GSM1234567", "SAMN11223344", "SAMEA11223344", "ERS123456"])
+def test_privacy_rejects_barcodes_and_sample_ids(sample_id: str):
     card = _card()
     card.observation["example"] = "AAACCTGAGAAACCAT-1"
     with pytest.raises(ValueError, match="barcode"):
         validate_card(card)
 
     card = _card()
-    card.review.reason = "样本 GSM1234567 复核通过"
+    card.review.reason = f"样本 {sample_id} 复核通过"
     with pytest.raises(ValueError, match="样本级 ID"):
         validate_card(card)
 

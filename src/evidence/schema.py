@@ -45,8 +45,10 @@ _FORBIDDEN_KEYS = {
     "umap_1",
     "umap_2",
 }
-_PATH_RE = re.compile(r"(?:[A-Za-z]:[\\/]|^\\\\|/(?:Users|home|mnt|data|tmp|var|opt|srv)/)")
-_SAMPLE_RE = re.compile(r"\b(?:GSM|SRR|ERR|SRS|DRS)\d{3,}\b")
+_PATH_RE = re.compile(
+    r"(?:[A-Za-z]:[\\/]|^\\\\|/(?:Users|home|mnt|data|tmp|var|opt|srv|root|workspace|scratch|Volumes)/)"
+)
+_SAMPLE_RE = re.compile(r"\b(?:SAMEA|SAMN|GSM|SRR|ERR|SRS|DRS|ERS)\d{3,}\b")
 _BARCODE_RE = re.compile(r"\b[ACGT]{16}-\d+\b")
 _MAX_LIST = 64
 _MIN_AGGREGATE_CELLS = 5
