@@ -244,6 +244,21 @@ class TestBatchCacheInvalidation(unittest.TestCase):
                 with self.assertRaisesRegex(RuntimeError, "批次下载失败"):
                     download_xml_batches(["1", "2"], out_dir=out, batch_size=1, query="q")
 
+    def test_empty_pmid_list_keeps_existing_cache(self):
+        """空 PMID 不能删除已有批次或写入空清单。"""
+        with tempfile.TemporaryDirectory() as td:
+            out = Path(td)
+            batch = out / "batch_00000.xml"
+            batch.write_text("<xml/>", encoding="utf-8")
+            manifest = out / "pmid_list.json"
+            manifest.write_text(json.dumps({"pmids": ["9"]}), encoding="utf-8")
+
+            with self.assertRaisesRegex(RuntimeError, "拒绝清空"):
+                download_xml_batches([], out_dir=out, batch_size=10, query="q")
+
+            self.assertTrue(batch.exists())
+            self.assertEqual(json.loads(manifest.read_text(encoding="utf-8"))["pmids"], ["9"])
+
 
 if __name__ == "__main__":
     unittest.main()

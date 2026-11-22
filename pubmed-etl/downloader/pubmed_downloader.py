@@ -342,6 +342,10 @@ def download_xml_batches(
     out_dir = Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
 
+    if not pmids:
+        # 空结果常见于查询拼错或 NCBI 瞬时异常；清空缓存不可恢复。
+        raise RuntimeError("PMID 列表为空，拒绝清空现有 XML 缓存")
+
     total_batches = (len(pmids) + batch_size - 1) // batch_size
     chunks = [pmids[i * batch_size : (i + 1) * batch_size] for i in range(total_batches)]
 
