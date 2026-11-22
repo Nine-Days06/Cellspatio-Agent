@@ -12,7 +12,7 @@ from unittest.mock import Mock
 import pytest
 from fastapi.testclient import TestClient
 
-from src.analysis.qc_preview import _identity
+from src.analysis.evidence import identity
 from src.analysis.r_executor import RExecutorError
 from src.analysis.sc_filter import FILTER_TOOL_VERSION, verified_selection
 from src.api import authorized_run
@@ -255,7 +255,7 @@ def test_selection_recomputed_even_if_artifact_identity_replaced(ready):
     preview = run["previews"][0]
     path = Path(run["directory"]) / "previews" / pid / "selection.csv"
     path.write_bytes(b"barcode,keep,reasons\nc1,1,\nc2,0,mt_above_max\n")
-    preview["artifacts"]["selection.csv"] = _identity(path.read_bytes())
+    preview["artifacts"]["selection.csv"] = identity(path.read_bytes())
     with pytest.raises(ValueError, match="重算"):
         verified_selection(run, root, preview)
 

@@ -36,3 +36,41 @@ def test_build_cache_writes_and_reports(tmp_path):
     assert json.loads(cache_path.read_text(encoding="utf-8")) == {
         "9704485": ["NCBIGene:947", "NCBIGene:952"]
     }
+    assert stats["added"] == 1
+    assert stats["updated"] == 0
+
+
+def test_build_cache_merges_existing_by_default(tmp_path):
+    """增量批次只含新 PMID，旧 PMID 映射必须保留。"""
+    csv_path = tmp_path / "articles.csv"
+    csv_path.write_text("pmid,title,abstract\n2,T,A\n", encoding="utf-8-sig")
+    cache_path = tmp_path / "gene_ids.json"
+    cache_path.write_text(json.dumps({"1": {"OLD": "NCBIGene:1"}}), encoding="utf-8")
+
+    stats = bpc.build_cache(
+        csv_path,
+        fetch=lambda pmids: {"2": {"NEW": "NCBIGene:2"}},
+        cache_path=cache_path,
+    )
+
+    assert json.loads(cache_path.read_text(encoding="utf-8")) == {
+        "1": {"OLD": "NCBIGene:1"},
+        "2": {"NEW": "NCBIGene:2"},
+    }
+    assert stats["added"] == 1
+
+
+def test_build_cache_replace_drops_existing(tmp_path):
+    csv_path = tmp_path / "articles.csv"
+    csv_path.write_text("pmid,title,abstract\n2,T,A\n", encoding="utf-8-sig")
+    cache_path = tmp_path / "gene_ids.json"
+    cache_path.write_text(json.dumps({"1": {"OLD": "NCBIGene:1"}}), encoding="utf-8")
+
+    bpc.build_cache(
+        csv_path,
+        fetch=lambda pmids: {"2": {"NEW": "NCBIGene:2"}},
+        cache_path=cache_path,
+        replace=True,
+    )
+
+    assert json.loads(cache_path.read_text(encoding="utf-8")) == {"2": {"NEW": "NCBIGene:2"}}

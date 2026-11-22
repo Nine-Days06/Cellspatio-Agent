@@ -12,6 +12,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import shutil
 import sys
 from pathlib import Path
 
@@ -159,12 +160,10 @@ def clear_kb(*, force: bool = False) -> None:
     for p in KB_DIR.iterdir():
         if p.name in KEEP:
             continue
-        if p.is_file():
+        if p.is_symlink() or p.is_file():
             p.unlink()
         elif p.is_dir():
-            for c in p.iterdir():
-                if c.is_file():
-                    c.unlink()
+            shutil.rmtree(p)
 
 
 def _all_sources_fully_inserted(results: list[tuple[str, dict]]) -> bool:

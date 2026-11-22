@@ -14,9 +14,9 @@ from unittest.mock import Mock
 import pytest
 from fastapi.testclient import TestClient
 
-from src.analysis.qc_preview import _identity
+from src.analysis.evidence import identity
 from src.analysis.r_executor import RExecutorError
-from src.analysis.sc_pca import PCA_TOOL_VERSION, PROTOCOL, checked_parent
+from src.analysis.sc_pca import PCA_TOOL_VERSION, PROTOCOL, checked_parent, pca_script
 from src.analysis.sc_qc import run_sc_qc
 from src.api import authorized_run
 from src.api.app import create_app
@@ -474,8 +474,17 @@ def test_semantic_parent_checks_even_with_replaced_hash(parent_ready):
     file.write_bytes(b"barcode,keep,reasons\nc1,0,x\nc2,1,\nc3,1,\n")
     parent["result"]["artifacts"]["selection.csv"] = {
         "path": str(file),
-        **_identity(file.read_bytes()),
+        **identity(file.read_bytes()),
     }
     (file.parent / "metadata.json").write_text(json.dumps(parent["result"]))
     with pytest.raises(ValueError, match="选择副本"):
         checked_parent(run, parent, root)
+
+
+def test_pca_script_derives_from_protocol(monkeypatch: pytest.MonkeyPatch) -> None:
+    """协议值改动必须进入 R 脚本，避免脚本与 PROTOCOL 两处手工同步。"""
+    original = PROTOCOL["variable"]["nfeatures"]
+    monkeypatch.setitem(PROTOCOL["variable"], "nfeatures", original + 17)
+    script = pca_script(Path("/tmp/parent"), Path("/tmp/out"))
+    assert f"nfeatures={original + 17}" in script
+    assert f"nfeatures={original}," not in script

@@ -16,6 +16,7 @@ const state = {
   view: "review",
   mine: [],
   preview: null,
+  uploading: false,
   revisesId: null,
   withdrawId: null,
 };
@@ -23,8 +24,8 @@ const state = {
 api.setToken(state.token);
 
 const selection = createEvidenceSelection(async (id) => {
-  const [detail, events] = await Promise.all([api.evidence(id), api.events(id)]);
-  return { detail, events: events.events, review: events.review };
+  const payload = await api.events(id);
+  return { detail: payload.evidence, events: payload.events, review: payload.review };
 });
 
 const view = {
@@ -293,6 +294,7 @@ function renderMine() {
 }
 
 function startRevision(evidenceId) {
+  cardLoadToken += 1;
   state.revisesId = evidenceId;
   state.preview = null;
   showView("contribute");
@@ -323,7 +325,15 @@ async function confirmWithdraw() {
 }
 
 async function uploadPreview() {
-  if (!state.preview) return;
+  if (!state.preview || state.uploading) return;
+  const target = state.preview.will_send?.submission?.revises_submission_id ?? null;
+  if (target !== state.revisesId) {
+    state.preview = null;
+    renderContribute();
+    return toast("修订目标已变化，请重新选择文件。");
+  }
+  state.uploading = true;
+  renderContribute();
   try {
     const result = await api.uploadSubmission(state.preview, true);
     toast(`已提交，等待复核：${result.evidence_id}`);
@@ -332,11 +342,19 @@ async function uploadPreview() {
     await loadWorkspace();
   } catch (error) {
     toast(error.message);
+  } finally {
+    state.uploading = false;
+    renderContribute();
   }
 }
 
+let cardLoadToken = 0;
+
 async function loadCardFile(event) {
   const file = event.target.files?.[0];
+  const token = ++cardLoadToken;
+  state.preview = null;
+  renderContribute();
   if (!file) return;
   if (file.size > MAX_CARD_BYTES) return toast("证据卡 JSON 不能超过 512 KB。");
   let card;
@@ -345,11 +363,15 @@ async function loadCardFile(event) {
   } catch {
     return toast("文件不是有效的 JSON。");
   }
+  if (token !== cardLoadToken) return;
+  const revisesId = state.revisesId;
   try {
-    state.preview = await api.preview(card, state.revisesId);
+    const preview = await api.preview(card, revisesId);
+    if (token !== cardLoadToken || revisesId !== state.revisesId) return;
+    state.preview = preview;
     renderContribute();
   } catch (error) {
-    toast(error.message);
+    if (token === cardLoadToken) toast(error.message);
   }
 }
 
@@ -362,10 +384,10 @@ function previewBlock(preview) {
     type: "button",
     class: "primary",
     disabled: "",
-    text: "同意并上传",
+    text: state.uploading ? "提交中…" : "同意并上传",
   });
   consent.addEventListener("change", () => {
-    upload.disabled = !consent.checked || !passed;
+    upload.disabled = state.uploading || !consent.checked || !passed;
   });
   upload.addEventListener("click", uploadPreview);
 
@@ -471,6 +493,7 @@ function renderContribute() {
               class: "ghost",
               text: "取消修订",
               onclick: () => {
+                cardLoadToken += 1;
                 state.revisesId = null;
                 state.preview = null;
                 renderContribute();

@@ -165,6 +165,19 @@ describe('streamChat 帧解析', () => {
 
     expect(c.ends).toEqual(['error'])
   })
+
+  it('末帧损坏时按 error 收尾并抛错，不当作正常断开', async () => {
+    // 后端已先落库再发 done；把截断帧当 closed 会诱导用户重试产生重复提问。
+    const c = capture()
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+      sseResponse([frame({ type: 'delta', text: '部分' }), 'data: {"type": "done", "messa']),
+    )
+
+    await expect(streamChat(options(c))).rejects.toMatchObject({
+      message: '响应解析失败，请刷新会话后重试。',
+    })
+    expect(c.ends).toEqual(['error'])
+  })
 })
 
 describe('streamChat 错误分支', () => {

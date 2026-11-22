@@ -96,6 +96,29 @@ def test_capacity_cleanup_keeps_active_keys():
     assert limiter.blocked("active")
 
 
+def test_capacity_is_bounded_even_with_all_active_keys():
+    """随机用户名持续涌入时，字典不能无限增长。"""
+    limiter = LoginLimiter(window=300.0, clock=FakeClock())
+    for index in range(5000):
+        limiter.blocked(f"user-{index}")
+    assert len(limiter._attempts) <= 1024
+
+
+def test_locked_bucket_survives_capacity_pressure():
+    """容量驱逐不能清掉已锁定的账号，否则爆破窗口被重新打开。"""
+    clock = FakeClock()
+    limiter = LoginLimiter(window=300.0, max_attempts=5, clock=clock)
+    for _ in range(5):
+        limiter.blocked("victim")
+    assert limiter.blocked("victim")
+
+    for index in range(5000):
+        clock.now += 0.01  # 总推进 50s，仍在 victim 的 300s 窗口内
+        limiter.blocked(f"noise-{index}")
+
+    assert limiter.blocked("victim")
+
+
 def test_login_route_uses_limiter_from_app_state(tmp_path):
     """路由读取 app.state 的实例，默认窗口为 300 秒。"""
     app = create_public_app(tmp_path)

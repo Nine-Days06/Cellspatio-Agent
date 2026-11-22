@@ -59,6 +59,8 @@ interface ChatState {
   setNotice: (notice: ChatNotice | null) => void
   /** done 事件：把助手消息落进 history（约束 1：空内容照常记录） */
   finalizeTurn: (message: WireMessage) => void
+  /** 非 SSE 的成功结果（如确认执行返回的助手消息）直接追加到 history */
+  appendMessage: (message: WireMessage) => void
   /** done / aborted / closed 的幂等收尾：关 busy、清过程条；error 不走这里 */
   endTurn: (reason: TurnEndReason) => void
   /** error 收尾：关 busy + 写错误提示；busy 已关时幂等（不覆盖已有提示） */
@@ -215,14 +217,76 @@ export function createChatStore() {
         })
       },
 
-      endTurn() {
+      appendMessage(message) {
+        set((state) => ({ history: [...state.history, message] }))
+      },
+
+      endTurn(reason) {
         if (!get().busy) return // 幂等：重复收尾不改状态
-        set({ busy: false, tools: [], draft: '' })
+        const state = get()
+        if (reason === 'done' || !state.draft.trim()) {
+          // 提前 EOF 且无部分内容时，不能静默收尾：用户会以为模型没有回应。
+          set({
+            busy: false,
+            tools: [],
+            draft: '',
+            ...(reason === 'closed'
+              ? { notice: { kind: 'error' as const, text: '连接提前结束，未收到回答，请重试。' } }
+              : {}),
+          })
+          return
+        }
+        // 停止/断线时保留已生成内容，避免部分回答静默消失。
+        localSeq += 1
+        const partial: WireMessage = {
+          id: -localSeq,
+          session_id: state.sessionId ?? '',
+          seq: -localSeq,
+          role: 'assistant',
+          content: state.draft,
+          timestamp: new Date().toISOString(),
+          results: state.charts.length > 0 ? { charts: state.charts } : null,
+          pending_script: null,
+        }
+        set({
+          busy: false,
+          tools: [],
+          draft: '',
+          history: [...state.history, partial],
+          notice:
+            reason === 'aborted'
+              ? { kind: 'info', text: '已停止，保留已生成的部分回答。' }
+              : { kind: 'error', text: '连接中断，回答可能不完整。' },
+        })
       },
 
       failTurn(message) {
         if (!get().busy) return // 幂等：busy 已关时不覆盖已有提示
-        set({ busy: false, tools: [], draft: '', notice: { kind: 'error', text: message } })
+        const state = get()
+        const notice: ChatNotice = { kind: 'error', text: message }
+        if (!state.draft.trim()) {
+          set({ busy: false, tools: [], draft: '', notice })
+          return
+        }
+        // 出错前已生成的文本不能丢：落成本地 partial 消息，刷新前至少可见。
+        localSeq += 1
+        const partial: WireMessage = {
+          id: -localSeq,
+          session_id: state.sessionId ?? '',
+          seq: -localSeq,
+          role: 'assistant',
+          content: state.draft,
+          timestamp: new Date().toISOString(),
+          results: state.charts.length > 0 ? { charts: state.charts } : null,
+          pending_script: null,
+        }
+        set({
+          busy: false,
+          tools: [],
+          draft: '',
+          history: [...state.history, partial],
+          notice,
+        })
       },
 
       async send(prompt, mode = 'chat') {

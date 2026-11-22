@@ -25,23 +25,4 @@ assert.deepEqual(normalizeActions(serverSpecs), serverSpecs);
 assert.deepEqual(actionSpec(serverSpecs, "domain_pass"), serverSpecs[0]);
 assert.equal(actionSpec(serverSpecs, "missing"), null);
 
-assert.deepEqual(normalizeActions(["domain_pass", "compliance_needs_changes", "domain_reject"]), [
-  {
-    id: "domain_pass",
-    kind: "pass",
-    requires_checklist: true,
-    requires_reason: false,
-  },
-  {
-    id: "compliance_needs_changes",
-    kind: "needs_changes",
-    requires_checklist: false,
-    requires_reason: true,
-  },
-  {
-    id: "domain_reject",
-    kind: "reject",
-    requires_checklist: false,
-    requires_reason: true,
-  },
-]);
+assert.deepEqual(normalizeActions(["domain_pass"]), []);

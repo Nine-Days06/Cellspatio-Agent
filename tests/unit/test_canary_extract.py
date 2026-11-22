@@ -1,6 +1,10 @@
-"""canary_extract：实体质量判定（纯逻辑，注入假实体名）。"""
+"""canary_extract：实体质量判定与批次读取。"""
 
-from canary_extract import judge_entities
+import pytest
+
+import canary_extract
+from canary_extract import _load_articles, _read_entity_names, judge_entities, main
+from src.article_batches import ArticleBatchError
 
 
 def test_judge_flags_fake_ids_and_cjk_and_bibliographic():
@@ -24,6 +28,16 @@ def test_judge_flags_fake_ids_and_cjk_and_bibliographic():
     assert report["ok"] is False
 
 
+@pytest.mark.parametrize("name", ["NCBIGene:", "NCBIGene:12x", "ncbigene:12x"])
+def test_judge_flags_malformed_ncbi_gene_ids(name):
+    """空 ID 与尾随非数字都算假 ID，合法纯数字不误报。"""
+    assert judge_entities([name])["fake_id"] == [name]
+
+
+def test_judge_accepts_pure_numeric_ncbi_gene_id():
+    assert judge_entities(["NCBIGene:947"])["fake_id"] == []
+
+
 def test_judge_flags_title_like():
     long_title = (
         "Single cell transcriptomic analysis reveals the heterogeneity and "
@@ -37,3 +51,76 @@ def test_judge_flags_title_like():
 def test_judge_ok_on_clean_names():
     report = judge_entities(["NCBIGene:947", "CD34", "T cell", "UMAP"])
     assert report["ok"] is True
+
+
+def test_load_articles_only_contract_batches(tmp_path, monkeypatch):
+    """canary 不接受任意 CSV，只读 articles_<ts>.csv。"""
+    import_dir = tmp_path / "data" / "import"
+    import_dir.mkdir(parents=True)
+    header = ",".join(("pmid", "title", "abstract"))
+    (import_dir / "articles_20260921_100000.csv").write_text(
+        f"{header}\n1,Title,Abstract\n", encoding="utf-8-sig"
+    )
+    (import_dir / "manual.csv").write_text(f"{header}\n2,Manual,Abstract\n", encoding="utf-8-sig")
+    monkeypatch.setattr(canary_extract, "ROOT", tmp_path)
+
+    assert [row["pmid"] for row in _load_articles(5)] == ["1"]
+
+
+def test_load_articles_rejects_empty_contract_set(tmp_path, monkeypatch):
+    """只有手工 CSV 时不能静默返回空样本。"""
+    import_dir = tmp_path / "data" / "import"
+    import_dir.mkdir(parents=True)
+    (import_dir / "manual.csv").write_text("pmid,title\n1,T\n", encoding="utf-8-sig")
+    monkeypatch.setattr(canary_extract, "ROOT", tmp_path)
+
+    with pytest.raises(ArticleBatchError, match="没有可读的契约文献批次"):
+        _load_articles(5)
+
+
+def test_read_entity_names_returns_none_without_backend():
+    """无法确定后端时返回 None，调用方不能当成空库放行。"""
+    client = type("Stub", (), {"working_dir": None, "workspace": None})()
+    assert _read_entity_names(client) is None
+
+
+def test_read_entity_names_reads_file_backend(tmp_path):
+    """文件后端应读到实体名，并统一为小写。"""
+    (tmp_path / "kv_store_full_entities.json").write_text(
+        '{"e1": {"entity_names": ["CD34", "TP53"]}}', encoding="utf-8"
+    )
+    client = type("Stub", (), {"working_dir": tmp_path, "workspace": "canary"})()
+    assert _read_entity_names(client) == ["cd34", "tp53"]
+
+
+def test_canary_fails_when_entities_unreadable(monkeypatch):
+    """实体不可读时质量门必须失败，不能以空样本报 ok。"""
+
+    def _boom(**kwargs):
+        raise RuntimeError("无法读取金丝雀知识库实体，不能判定质量门")
+
+    monkeypatch.setattr(canary_extract, "run_canary", _boom)
+    assert main(["--n", "1"]) == 1
+
+
+def test_canary_fails_when_no_entities_extracted(monkeypatch):
+    """入库成功但抽出 0 个实体同样是质量门失败，不能报 ok。"""
+
+    class _Client:
+        def __init__(self, **kwargs):
+            pass
+
+        def insert_documents(self, texts):
+            pass
+
+    monkeypatch.setattr("src.knowledge.lightrag_client.LightRAGClient", _Client)
+    monkeypatch.setattr("src.data.pubtator.load_pmid_genes", lambda: {})
+    monkeypatch.setattr(
+        "src.knowledge.article_text.convert_article_to_text",
+        lambda row, genes=None: "text",
+    )
+    monkeypatch.setattr(canary_extract, "_load_articles", lambda n: [{"pmid": "1", "title": "T"}])
+    monkeypatch.setattr(canary_extract, "_read_entity_names", lambda client: [])
+
+    with pytest.raises(RuntimeError, match="未抽取到实体"):
+        canary_extract.run_canary(1)

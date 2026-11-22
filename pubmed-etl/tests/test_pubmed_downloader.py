@@ -1,9 +1,21 @@
+import json
+import tempfile
 import unittest
+from pathlib import Path
 from unittest.mock import Mock, patch
 from urllib.parse import urlencode
 
+import requests
 from config.settings import SEARCH_YEAR_MAX, SEARCH_YEAR_MIN
-from downloader.pubmed_downloader import _collect_pmids, _fetch_count, _split_range, fetch_pmid_list
+from downloader.pubmed_downloader import (
+    _collect_pmids,
+    _download_single_batch,
+    _fetch_count,
+    _get,
+    _split_range,
+    download_xml_batches,
+    fetch_pmid_list,
+)
 
 
 class TestPubmedDownloaderDateRange(unittest.TestCase):
@@ -146,15 +158,14 @@ class TestCollectPmidsAdaptiveSplit(unittest.TestCase):
 
     @patch("downloader.pubmed_downloader.fetch_pmid_list")
     @patch("downloader.pubmed_downloader._fetch_count")
-    def test_single_day_overflow_falls_back_to_fetch(self, mock_count, mock_fetch):
-        # 单日仍超限（理论不可达）→ 降级直接翻页，不无限递归
+    def test_single_day_overflow_raises_instead_of_truncating(self, mock_count, mock_fetch):
+        # 单日仍超限（理论不可达）→ 必须报错，不能截断后当作完整结果
         mock_count.return_value = 10001
-        mock_fetch.return_value = ["9"]
 
-        pmids = _collect_pmids("q", "2025/06/01", "2025/06/01")
+        with self.assertRaises(RuntimeError):
+            _collect_pmids("q", "2025/06/01", "2025/06/01")
 
-        self.assertEqual(pmids, ["9"])
-        mock_fetch.assert_called_once_with("q", mindate="2025/06/01", maxdate="2025/06/01")
+        mock_fetch.assert_not_called()
 
     @patch("downloader.pubmed_downloader.fetch_pmid_list")
     @patch("downloader.pubmed_downloader._fetch_count")
@@ -166,6 +177,99 @@ class TestCollectPmidsAdaptiveSplit(unittest.TestCase):
 
         self.assertEqual(pmids, ["1"])
         mock_fetch.assert_called_once()
+
+
+class TestRateLimitExhaustion(unittest.TestCase):
+    """连续 429 必须抛错，不能返回 None 让调用方 AttributeError。"""
+
+    @patch("downloader.pubmed_downloader.time.sleep")
+    @patch("downloader.pubmed_downloader.requests.get")
+    def test_get_raises_after_retries(self, mock_get, _mock_sleep):
+        mock_get.return_value = Mock(status_code=429)
+        with self.assertRaises(requests.HTTPError):
+            _get("https://example.test", {}, retries=2)
+
+
+class TestTenKTruncation(unittest.TestCase):
+    """撞到 NCBI 10k 硬限制时必须报错，不能返回不完整列表。"""
+
+    @patch("downloader.pubmed_downloader.time.sleep")
+    @patch("downloader.pubmed_downloader._safe_json")
+    @patch("downloader.pubmed_downloader._get")
+    @patch("downloader.pubmed_downloader._post")
+    def test_fetch_pmid_list_raises_on_truncation(
+        self, mock_post, mock_get, mock_safe_json, _mock_sleep
+    ):
+        mock_post.return_value = Mock()
+        mock_safe_json.return_value = {
+            "esearchresult": {"count": "12000", "webenv": "webenv", "querykey": "1"}
+        }
+        mock_get.return_value = Mock(text="1\n2\n")
+
+        with self.assertRaises(RuntimeError):
+            fetch_pmid_list("q", mindate="2025/01/01", maxdate="2025/01/01")
+
+
+class TestBatchCacheInvalidation(unittest.TestCase):
+    """PMID 列表变化后不能按序号复用旧 XML。"""
+
+    def test_changed_pmids_discard_old_batches(self):
+        with tempfile.TemporaryDirectory() as td:
+            out = Path(td)
+            stale = out / "batch_00000.xml"
+            stale.write_text("old", encoding="utf-8")
+            (out / "pmid_list.json").write_text(json.dumps({"pmids": ["9"]}), encoding="utf-8")
+
+            def fake_batch(index, chunk, out_dir, batch_size, total):
+                path = out_dir / f"batch_{index:05d}.xml"
+                path.write_text("new", encoding="utf-8")
+                return path
+
+            with patch(
+                "downloader.pubmed_downloader._download_single_batch", side_effect=fake_batch
+            ):
+                files = download_xml_batches(["1"], out_dir=out, batch_size=10, query="q")
+
+            self.assertEqual(files, [stale])
+            self.assertEqual(stale.read_text(encoding="utf-8"), "new")
+
+    def test_failed_batch_aborts_instead_of_reporting_complete(self):
+        """任一批次下载失败必须抛错，不能只返回成功文件。"""
+        with tempfile.TemporaryDirectory() as td:
+            out = Path(td)
+
+            with patch(
+                "downloader.pubmed_downloader._download_single_batch",
+                side_effect=lambda index, chunk, out_dir, batch_size, total: None,
+            ):
+                with self.assertRaisesRegex(RuntimeError, "批次下载失败"):
+                    download_xml_batches(["1", "2"], out_dir=out, batch_size=1, query="q")
+
+    def test_empty_pmid_list_keeps_existing_cache(self):
+        """空 PMID 不能删除已有批次或写入空清单。"""
+        with tempfile.TemporaryDirectory() as td:
+            out = Path(td)
+            batch = out / "batch_00000.xml"
+            batch.write_text("<xml/>", encoding="utf-8")
+            manifest = out / "pmid_list.json"
+            manifest.write_text(json.dumps({"pmids": ["9"]}), encoding="utf-8")
+
+            with self.assertRaisesRegex(RuntimeError, "拒绝清空"):
+                download_xml_batches([], out_dir=out, batch_size=10, query="q")
+
+            self.assertTrue(batch.exists())
+            self.assertEqual(json.loads(manifest.read_text(encoding="utf-8"))["pmids"], ["9"])
+
+    def test_batch_download_is_atomic_and_cleans_partial_file(self):
+        """中断只能留下 .part 临时文件被清理，不能留下截断的 batch_*.xml。"""
+        with tempfile.TemporaryDirectory() as td:
+            out = Path(td)
+
+            with patch("downloader.pubmed_downloader._get", side_effect=RuntimeError("boom")):
+                got = _download_single_batch(0, ["1"], out, 10, 1)
+
+            self.assertIsNone(got)
+            self.assertEqual(list(out.iterdir()), [])
 
 
 if __name__ == "__main__":

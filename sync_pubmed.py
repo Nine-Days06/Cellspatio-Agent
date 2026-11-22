@@ -3,26 +3,23 @@
 用法：
     python sync_pubmed.py                 # 导出 + 增量导入本次新 CSV（默认）
     python sync_pubmed.py --no-import     # 只导出不导入
-    python sync_pubmed.py --reimport-all  # 忽略台账，全量重导 data/import/ 下所有文件
+    python sync_pubmed.py --reimport-all  # 忽略台账，全量重导 data/import/ 下的契约批次
 
-导入侧为增量：每次只导入本次复制的那一个 CSV，data/import/import_ledger.json
-记录已导入批次，重复运行为空操作；删除该台账文件即触发一次有意的全量重导。
+导入侧为增量：优先导入本次复制的那一个 CSV；没有新导出时补导导入目录中台账尚未
+记录的遗留批次（上一轮导入失败的重试）。data/import/import_ledger.json 记录已导入
+批次，重复运行为空操作；删除该台账文件即触发一次有意的全量重导。
 """
 
 import argparse
-import re
+import os
 import shutil
 import subprocess
 import sys
 from pathlib import Path
 
-REPO_ROOT = Path(__file__).resolve().parent
+from src.article_batches import discover_batches
 
-#: 主项目兼容 CSV 的文件名契约：articles_YYYYMMDD_HHMMSS.csv。
-#: output 目录里同时存在 articles_raw_<ts>.csv（ETL 导出侧的未筛选版，不得导入），
-#: 松散 glob "articles_*.csv" 会连它一起匹配，且 'r' > 数字使其在 sorted()
-#: 里恒定排最后——必须按契约模式精确过滤，只认筛选后的导出文件。
-_ARTICLES_CSV_RE = re.compile(r"articles_\d{8}_\d{6}\.csv")
+REPO_ROOT = Path(__file__).resolve().parent
 
 
 def run_etl_export(etl_dir: Path, python: str | None = None) -> Path | None:
@@ -33,27 +30,38 @@ def run_etl_export(etl_dir: Path, python: str | None = None) -> Path | None:
     且按字典序恒定排在筛选版之后，必须显式排除。
     """
     python = python or sys.executable
+    output_dir = etl_dir / "data" / "output"
+    before = _batch_stamps(output_dir)
     subprocess.run(
         [python, str(etl_dir / "main.py"), "--step", "export"],
         cwd=str(etl_dir),
         check=True,
     )
-    output_dir = etl_dir / "data" / "output"
-    if not output_dir.exists():
-        return None
-    csvs = sorted(
-        p for p in output_dir.glob("articles_*.csv") if _ARTICLES_CSV_RE.fullmatch(p.name)
-    )
-    if not csvs:
-        return None
-    return csvs[-1]
+    after = _batch_stamps(output_dir)
+    changed = [name for name, stamp in after.items() if before.get(name) != stamp]
+    return output_dir / max(changed) if changed else None
+
+
+def _batch_stamps(output_dir: Path) -> dict[str, tuple[int, int]]:
+    """记录批次文件的修改时间与大小，用来判断导出是否真的产生新批次。"""
+    return {
+        path.name: (path.stat().st_mtime_ns, path.stat().st_size)
+        for path in discover_batches(output_dir)
+    }
 
 
 def copy_to_import(csv_path: Path, import_dir: Path) -> Path:
     """复制导出的 CSV 到主项目 data/import/，返回目标路径"""
     import_dir.mkdir(parents=True, exist_ok=True)
     dest = import_dir / csv_path.name
-    shutil.copy2(csv_path, dest)
+    partial = dest.with_suffix(dest.suffix + ".part")
+    # 消费者按文件名 + 表头判定批次，半文件同样合法 → 必须原子替换。
+    try:
+        shutil.copy2(csv_path, partial)
+    except Exception:
+        partial.unlink(missing_ok=True)
+        raise
+    os.replace(partial, dest)
     return dest
 
 
@@ -65,7 +73,7 @@ def import_via_cli(
     Args:
         import_dir: 导入目录（台账位于该目录下 import_ledger.json）
         csv_name: 本次复制的文件名，只导入这一个文件；None 表示扫描整个目录
-        reimport_all: True 时忽略台账过滤，全量重导目录下所有文件
+        reimport_all: True 时忽略台账过滤，全量重导目录下的契约批次
     """
     if str(REPO_ROOT) not in sys.path:
         sys.path.insert(0, str(REPO_ROOT))
@@ -76,6 +84,16 @@ def import_via_cli(
         files=[csv_name] if csv_name else None,
         reimport_all=reimport_all,
     )
+
+
+def pending_batches(import_dir: Path) -> list[Path]:
+    """返回导入目录里台账尚未记录的契约批次（上一轮导入失败留下的重试对象）。"""
+    if not import_dir.is_dir():
+        return []
+    from src.knowledge.knowledge_importer import ImportLedger
+
+    ledger = ImportLedger(import_dir / ImportLedger.LEDGER_FILENAME)
+    return [path for path in discover_batches(import_dir) if not ledger.is_imported(path.name)]
 
 
 def sync_and_import(
@@ -95,21 +113,40 @@ def sync_and_import(
             逐文档去重信号，该数字在本层不可观测，故不虚构。
         failed: 导入是否失败（0=成功，1=失败）
         csv: 本次复制到 data/import/ 的文件路径（无新数据时为 None）
+
+    没有新导出但导入目录里还有台账未记录的批次时，会重试该批次：导出侧的
+    exported_pmids.txt 在导出时即记账，若上次导入失败，这里必须把遗留 CSV 补导完，
+    否则这批文献不会再被自动重试。
     """
     csv_path = run_etl_export(etl_dir)
-    if csv_path is None:
-        return {"exported": 0, "imported": 0, "failed": 0, "csv": None}
+    dest = copy_to_import(csv_path, import_dir) if csv_path is not None else None
+    result = {
+        "exported": 1 if dest else 0,
+        "imported": None if dest else 0,
+        "failed": 0,
+        "csv": str(dest) if dest else None,
+    }
+    if not do_import:
+        return result
 
-    dest = copy_to_import(csv_path, import_dir)
-    result = {"exported": 1, "imported": None, "failed": 0, "csv": str(dest)}
-    if do_import:
-        import_result = import_via_cli(
-            import_dir,
-            csv_name=None if reimport_all else dest.name,
-            reimport_all=reimport_all,
-        )
-        result["imported"] = import_result.get("new_count", 0)
-        result["failed"] = 0 if import_result.get("success") else 1
+    if reimport_all:
+        target = None
+    elif dest is not None:
+        target = dest.name
+    else:
+        pending = pending_batches(import_dir)
+        if not pending:
+            return result
+        target = pending[-1].name
+        result["csv"] = str(import_dir / target)
+
+    import_result = import_via_cli(
+        import_dir,
+        csv_name=target,
+        reimport_all=reimport_all,
+    )
+    result["imported"] = import_result.get("new_count", 0)
+    result["failed"] = 0 if import_result.get("success") else 1
     return result
 
 
@@ -121,7 +158,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--reimport-all",
         action="store_true",
-        help="忽略台账，全量重导 data/import 下所有文件（默认只导入本次新 CSV）",
+        help="忽略台账，全量重导 data/import 下的契约批次（默认只导入本次新 CSV）",
     )
     args = parser.parse_args(argv)
 
@@ -132,7 +169,7 @@ def main(argv: list[str] | None = None) -> int:
         reimport_all=args.reimport_all,
     )
     print(result)
-    return 0
+    return int(bool(result.get("failed")))
 
 
 if __name__ == "__main__":

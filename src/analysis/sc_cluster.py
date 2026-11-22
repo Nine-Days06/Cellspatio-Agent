@@ -11,12 +11,14 @@ from typing import Any
 
 import numpy as np
 
-from src.analysis.qc_preview import _digest
+from src.analysis.evidence import digest, records
 from src.analysis.r_executor import RExecutorError
+from src.analysis.r_values import r_value
 from src.analysis.sc_pca import PROTOCOL as PCA_PROTOCOL
-from src.analysis.sc_pca import _records, checked_completed_pca, dimension_binding
-from src.analysis.sc_qc import _fingerprints
-from src.analysis.stage_run import executor_streams, finish_stage, start_stage
+from src.analysis.sc_pca import checked_completed_pca, dimension_binding
+from src.analysis.stage_run import FixedStageRun, PreparedStage, run_fixed_stage
+from src.analysis.stage_verify import CompletedStageCheck, verify_completed
+from src.stage_defs import CLUSTER, stage_directory
 
 CLUSTER_TOOL_VERSION = "1.0.0"
 PROTOCOL = {
@@ -137,7 +139,7 @@ def checked_source(
     ):
         raise ValueError("需要当前有效的至少 2 个连续前缀 PCs；请回上游明确记录，不自动补维")
     directory = Path(pca["directory"]).resolve()
-    rows = _records((directory / "pca_embeddings.csv").read_bytes())
+    rows = records((directory / "pca_embeddings.csv").read_bytes())
     if len(rows) < PROTOCOL["minimum_cells"]:
         raise ValueError("本项目固定 30-NN 协议要求至少 31 细胞；不缩邻居数或放宽 QC")
     values = np.array([[float(row[f"PC_{d}"]) for d in dims] for row in rows])
@@ -177,18 +179,7 @@ def execution_binding(run: dict[str, Any], snapshot: dict[str, Any]) -> str:
         "tool_version": CLUSTER_TOOL_VERSION,
         "protocol": PROTOCOL,
     }
-    return _digest(json.dumps(payload, sort_keys=True, ensure_ascii=False).encode())
-
-
-def _r_value(value: Any) -> str:
-    """只序列化服务端固定协议到 R 字面量。"""
-    if value is None:
-        return "NULL"
-    if isinstance(value, bool):
-        return "TRUE" if value else "FALSE"
-    if isinstance(value, list):
-        return "c(" + ",".join(_r_value(v) for v in value) + ")"
-    return json.dumps(value)
+    return digest(json.dumps(payload, sort_keys=True, ensure_ascii=False).encode())
 
 
 def cluster_script(
@@ -196,7 +187,7 @@ def cluster_script(
 ) -> str:
     """参数从同一固定协议展开；两次读取对象与稀疏图均验证。"""
     args = {
-        stage: ",\n    ".join(f"{k}={_r_value(v)}" for k, v in PROTOCOL[stage].items())
+        stage: ",\n    ".join(f"{k}={r_value(v)}" for k, v in PROTOCOL[stage].items())
         for stage in ("neighbors", "clusters", "umap")
     }
     return f"""
@@ -206,9 +197,9 @@ suppressPackageStartupMessages(library(jsonlite))
 pca_dir <- {json.dumps(pca_directory.as_posix())}
 parent_dir <- {json.dumps(parent_directory.as_posix())}
 output_dir <- {json.dumps(directory.as_posix())}
-dims <- {_r_value(source["dims"])}
+dims <- {r_value(source["dims"])}
 n_epochs <- {source["n_epochs"]}L
-required <- unlist(fromJSON({_r_value(json.dumps(PROTOCOL["packages"]))}))
+required <- unlist(fromJSON({r_value(json.dumps(PROTOCOL["packages"]))}))
 versions <- c(R=as.character(getRversion()), sapply(names(required)[-1], function(p) as.character(packageVersion(p))))
 stopifnot(identical(unname(versions), unname(required)))
 writeLines(paste(names(versions), versions), file.path(output_dir, "versions.txt"))
@@ -309,7 +300,7 @@ def check_outputs(directory: Path, pca_directory: Path, source: dict[str, Any]) 
         for n in OUTPUT_FILES
     ):
         raise ValueError("聚类产物缺失、空或路径非法")
-    barcodes = [r["barcode"] for r in _records((pca_directory / "pca_embeddings.csv").read_bytes())]
+    barcodes = [r["barcode"] for r in records((pca_directory / "pca_embeddings.csv").read_bytes())]
     tables = {}
     for name, fields in (
         ("clusters.csv", ["barcode", "cluster_id"]),
@@ -388,7 +379,6 @@ def run_sc_cluster(
     snapshot = attempt["snapshot"]
     parent, pca, review = snapshot["parent"], snapshot["pca"], snapshot["review"]
     directory = Path(attempt["directory"]).resolve()
-    started = start_stage(directory)
     metadata = {
         "tool": "sc_cluster",
         "tool_version": CLUSTER_TOOL_VERSION,
@@ -413,44 +403,47 @@ def run_sc_cluster(
         "status": "failed",
         "timeout_seconds": 300,
     }
-    stdout = stderr = ""
-    try:
+
+    def prepare() -> PreparedStage:
+        """校验聚类授权来源并返回执行上下文。"""
         before = checked_source(run, parent, pca, review, root, review["record_version"])
         if (
             before != snapshot["source"]
             or execution_binding(run, snapshot) != attempt["binding_sha256"]
         ):
             raise ValueError("聚类授权来源已变化")
-        metadata["source_before"] = before
-        script = directory / "script.R"
-        code = cluster_script(
-            Path(pca["directory"]).resolve(), Path(parent["directory"]).resolve(), directory, before
+        return PreparedStage(
+            source=before,
+            data=(Path(pca["directory"]).resolve(), Path(parent["directory"]).resolve(), before),
         )
-        script.write_text(code, encoding="utf-8")
-        completed = executor.execute_script(str(script))
-        stdout, stderr = completed.stdout or "", completed.stderr or ""
-        metadata["returncode"] = completed.returncode
-        if completed.returncode != 0:
-            raise ValueError("聚类 R 执行失败；请检查本地证据")
-        summary = check_outputs(directory, Path(pca["directory"]).resolve(), before)
-        if script.read_text(encoding="utf-8") != code:
-            raise ValueError("聚类固定脚本已变化")
+
+    def check(prepared: PreparedStage) -> dict[str, Any]:
+        """校验聚类产物并返回汇总。"""
+        pca_directory, _, before = prepared.data
+        return check_outputs(directory, pca_directory, before)
+
+    def after(prepared: PreparedStage) -> dict[str, Any]:
+        """重读聚类父身份并返回当前来源。"""
         after = checked_source(run, parent, pca, review, root, review["record_version"])
-        metadata["source_after"] = after
-        if before != after:
-            raise ValueError("聚类运行中父证据变化")
-        metadata.update(summary, status="completed")
-    except (RExecutorError, OSError, ValueError, KeyError, TypeError, OverflowError) as exc:
-        metadata["error"] = "聚类执行或证据校验失败；请检查本地证据，不会自动重跑"
-        # 异常可能含私有路径；只保存到本地 stderr，不进入响应、消息或日志。
-        stderr = f"{stderr}\n{exc}"
-        if isinstance(exc, RExecutorError):
-            stdout, stderr = executor_streams(exc)
-    finally:
-        finish_stage(
-            directory, metadata, started, stdout, stderr, artifacts=True, fingerprints=_fingerprints
-        )
-    return metadata
+        return after
+
+    plan = FixedStageRun(
+        directory=directory,
+        metadata=metadata,
+        prepare=prepare,
+        script=lambda prepared: cluster_script(
+            prepared.data[0], prepared.data[1], directory, prepared.source
+        ),
+        check=check,
+        after=after,
+        returncode_error="聚类 R 执行失败；请检查本地证据",
+        script_error="聚类固定脚本已变化",
+        errors=(RExecutorError, OSError, ValueError, KeyError, TypeError, OverflowError),
+        source_keys=("source_before", "source_after"),
+        source_error="聚类运行中父证据变化",
+        failure_error="聚类执行或证据校验失败；请检查本地证据，不会自动重跑",
+    )
+    return run_fixed_stage(plan, executor)
 
 
 def checked_completed_cluster(
@@ -470,38 +463,35 @@ def checked_completed_cluster(
     ):
         raise ValueError("聚类源证据或协议已变化；本次结果仅为历史")
     directory = Path(attempt["directory"]).resolve()
-    if directory != root.parent / "sc_clusters" / attempt["attempt_id"]:
-        raise ValueError("聚类目录非法")
-    meta_path = directory / "metadata.json"
-    if meta_path.resolve().parent != directory:
-        raise ValueError("聚类 metadata 路径非法")
-    meta = json.loads(meta_path.read_bytes())
-    if (
-        attempt["status"] != "completed"
-        or attempt["tool_version"] != CLUSTER_TOOL_VERSION
-        or json.loads(attempt["protocol"]) != PROTOCOL
-        or meta != attempt["result"]
-        or meta.get("status") != "completed"
-        or meta.get("returncode") != 0
-        or meta.get("source_before") != source
-        or meta.get("source_after") != source
-        or meta.get("protocol") != PROTOCOL
-        or meta.get("binding_sha256") != attempt["binding_sha256"]
-    ):
-        raise ValueError("聚类权威结果与协议不符")
+    pca_directory = Path(pca["directory"]).resolve()
+    parent_directory = Path(parent["directory"]).resolve()
     names = set(OUTPUT_FILES) | {"stdout.txt", "stderr.txt"}
-    if set(meta["artifacts"]) != names or any(
-        (directory / n).resolve().parent != directory for n in names
-    ):
-        raise ValueError("聚类登记白名单不符")
-    identities = {Path(r["path"]).name: r for r in _fingerprints([directory / n for n in names])}
-    if identities != meta["artifacts"]:
-        raise ValueError("聚类文件身份已变化")
-    summary = check_outputs(directory, Path(pca["directory"]).resolve(), source)
-    if any(meta.get(k) != v for k, v in summary.items()) or (directory / "script.R").read_text(
-        encoding="utf-8"
-    ) != cluster_script(
-        Path(pca["directory"]).resolve(), Path(parent["directory"]).resolve(), directory, source
-    ):
-        raise ValueError("聚类固定脚本或汇总不一致")
+    plan = CompletedStageCheck(
+        directory=directory,
+        expected_directory=stage_directory(CLUSTER, root, attempt["attempt_id"])[1],
+        attempt=attempt,
+        tool_version=CLUSTER_TOOL_VERSION,
+        protocol=PROTOCOL,
+        required_fields={
+            "status": "completed",
+            "returncode": 0,
+            "source_before": source,
+            "source_after": source,
+            "protocol": PROTOCOL,
+            "binding_sha256": attempt["binding_sha256"],
+        },
+        required_files=tuple(names),
+        exact_files=True,
+        summary=lambda: check_outputs(directory, pca_directory, source),
+        script=lambda: cluster_script(pca_directory, parent_directory, directory, source),
+        result_error="聚类权威结果与协议不符",
+        directory_error="聚类目录非法",
+        metadata_path_error="聚类 metadata 路径非法",
+        files_error="聚类登记白名单不符",
+        artifact_error="聚类登记白名单不符",
+        identity_error="聚类文件身份已变化",
+        summary_error="聚类固定脚本或汇总不一致",
+        script_error="聚类固定脚本或汇总不一致",
+    )
+    summary, _ = verify_completed(plan)
     return summary

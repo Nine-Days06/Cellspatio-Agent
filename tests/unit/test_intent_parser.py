@@ -37,6 +37,14 @@ def test_parse_uniprot_query_intent():
     assert "uniprot" in parser.extract_parameters("下载 TP53 蛋白信息")["sources"]
 
 
+def test_extract_windows_path_with_spaces():
+    """含空格的绝对路径不能被截成残片。"""
+    from src.control.intent_parser import IntentParser
+
+    params = IntentParser().extract_parameters(r"分析 D:\Users\Jane Doe\counts.csv 的差异表达")
+    assert params["input_files"] == [r"D:\Users\Jane Doe\counts.csv"]
+
+
 def test_parse_analysis_priority_over_fetch():
     """含分析关键词时 analysis 优先（如『下载后做差异分析』）"""
     from src.control.intent_parser import IntentParser

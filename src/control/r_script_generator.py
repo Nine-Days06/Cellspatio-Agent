@@ -6,10 +6,14 @@ from typing import Any
 
 logger = logging.getLogger(__name__)
 
+
+def _r_string(value: Any) -> str:
+    """把 Python 字符串写成安全的 R 字面量（Windows 反斜杠不能直接进双引号）。"""
+    return json.dumps(str(value), ensure_ascii=False)
+
+
 ANALYSIS_TYPE_DESC = {
     "differential_expression": "两组样本差异表达分析（输出 gene/log2FC/pvalue/padj 表）",
-    "pathway_analysis": "差异基因的 KEGG/GO 通路富集分析",
-    "visualization": "按 params['plot_type'] 绘制火山图/热图/PCA 图并保存",
     "single_cell": "单细胞 RNA-seq QC→标准化→降维→聚类，输出每细胞 cluster 与 UMAP 坐标、marker 表",
     "spatial": "空间转录组加载→标准化→聚类→空间位置染色图",
 }
@@ -54,10 +58,6 @@ class RScriptGenerator:
     def _template_for(self, analysis_type: str, params: dict[str, Any]) -> str:
         if analysis_type == "differential_expression":
             return self._generate_de_code(params)
-        if analysis_type == "pathway_analysis":
-            return self._generate_pathway_code(params)
-        if analysis_type == "visualization":
-            return self._generate_visualization_code(params)
         if analysis_type == "single_cell":
             return self._generate_single_cell_code(params)
         if analysis_type == "spatial":
@@ -143,13 +143,13 @@ class RScriptGenerator:
         分组：params['group_csv'] 指向样本注释 CSV（行名=样本名，一列 group）；
         否则前 floor(n/2) 为 control、其余为 treatment。
         """
-        input_file = params.get("input_file", "input.csv")
-        output_file = params.get("output_file", "output.csv")
-        group_csv = params.get("group_csv", "")
+        input_file = _r_string(params.get("input_file", "input.csv"))
+        output_file = _r_string(params.get("output_file", "output.csv"))
+        group_csv = _r_string(params.get("group_csv", ""))
 
-        if group_csv:
+        if params.get("group_csv"):
             group_block = (
-                f'coldata_df <- read.csv("{group_csv}", row.names = 1, '
+                f"coldata_df <- read.csv({group_csv}, row.names = 1, "
                 "stringsAsFactors = FALSE)\n"
                 "groups <- factor(coldata_df[colnames(counts), 1])\n"
             )
@@ -160,10 +160,10 @@ class RScriptGenerator:
                 'rep("treatment", ceiling(n / 2))))\n'
             )
 
-        return f'''#!/usr/bin/env Rscript
+        return f"""#!/usr/bin/env Rscript
 # 差异表达分析（DESeq2）
-input_file <- "{input_file}"
-output_file <- "{output_file}"
+input_file <- {input_file}
+output_file <- {output_file}
 
 if (!requireNamespace("DESeq2", quietly = TRUE)) {{
     stop("请先安装 DESeq2: BiocManager::install('DESeq2')")
@@ -199,168 +199,7 @@ write.csv(
 sig <- sum(res$padj < 0.05, na.rm = TRUE)
 cat("总基因数:", nrow(res), "显著差异基因(padj<0.05):", sig, "\\n")
 cat("结果已保存至:", output_file, "\\n")
-'''
-
-    def _generate_pathway_code(self, params: dict[str, Any]) -> str:
-        """真实 clusterProfiler KEGG 富集（回退模板）。
-
-        输入约定：DE 输出 CSV（含 gene 与 padj 列）。
-        """
-        input_file = params.get("input_file", "de_results.csv")
-        output_file = params.get("output_file", "pathway_enrichment.csv")
-
-        return f'''#!/usr/bin/env Rscript
-# 通路富集分析（clusterProfiler + KEGG）
-input_file <- "{input_file}"
-output_file <- "{output_file}"
-
-if (!requireNamespace("clusterProfiler", quietly = TRUE)) {{
-    stop("请先安装: BiocManager::install('clusterProfiler')")
-}}
-if (!requireNamespace("org.Hs.eg.db", quietly = TRUE)) {{
-    stop("请先安装: BiocManager::install('org.Hs.eg.db')")
-}}
-library(clusterProfiler)
-library(org.Hs.eg.db)
-
-de <- read.csv(input_file, stringsAsFactors = FALSE)
-if (!all(c("gene", "padj") %in% colnames(de))) {{
-    stop("输入需要 gene 与 padj 列（差异表达输出）")
-}}
-genes <- de$gene[which(de$padj < 0.05)]
-genes <- genes[!is.na(genes)]
-if (length(genes) == 0) {{
-    write.csv(data.frame(), output_file, row.names = FALSE)
-    cat("无显著差异基因，跳过富集\\n")
-    quit(save = "no", status = 0)
-}}
-
-ek <- enrichKEGG(gene = genes, organism = "hsa", pvalueCutoff = 0.05)
-ek_df <- as.data.frame(ek)
-write.csv(ek_df, output_file, row.names = FALSE)
-cat("富集通路数:", nrow(ek_df), "输入基因数:", length(genes), "\\n")
-cat("结果已保存至:", output_file, "\\n")
-'''
-
-    def _generate_visualization_code(self, params: dict[str, Any]) -> str:
-        """生成可视化 R 代码（真实 base R 绘图：火山图/热图/PCA）。
-
-        输入约定：CSV 文件。
-        - volcano: 需 log2FC 与 padj 列。
-        - heatmap: 首列为标识符时作行名，其余列为数值矩阵。
-        - pca: 数值矩阵，行=样本/特征，列=变量。
-        输出：PNG 图片写入 output_file；cat() 打印关键统计。
-        """
-        input_file = params.get("input_file", "input.csv")
-        output_file = params.get("output_file", "plot.png")
-        plot_type = params.get("plot_type", "volcano")
-
-        return f'''#!/usr/bin/env Rscript
-# 可视化（base R：火山图 / 热图 / PCA）
-input_file <- "{input_file}"
-output_file <- "{output_file}"
-plot_type <- "{plot_type}"
-
-if (!(plot_type %in% c("volcano", "heatmap", "pca"))) {{
-    stop("不支持的绘图类型: ", plot_type)
-}}
-
-# 读取数据
-data <- read.csv(input_file, stringsAsFactors = FALSE)
-
-if (plot_type == "volcano") {{
-    # 火山图：需 log2FC 与 padj 列
-    if (!("log2FC" %in% colnames(data))) {{
-        stop("Column 'log2FC' not found in input file")
-    }}
-    if (!("padj" %in% colnames(data))) {{
-        stop("Column 'padj' not found in input file")
-    }}
-
-    # 剔除缺失值，显著点（padj < 0.05）标红，其余灰色
-    volcano_data <- data[!is.na(data$log2FC) & !is.na(data$padj), ]
-    if (nrow(volcano_data) == 0) {{
-        stop("No valid points after removing NA values in 'log2FC'/'padj'")
-    }}
-    colors <- ifelse(volcano_data$padj < 0.05, "red", "gray")
-
-    # 生成火山图 PNG
-    png(output_file)
-    plot(volcano_data$log2FC, -log10(volcano_data$padj),
-         col = colors, pch = 20,
-         xlab = "log2 Fold Change",
-         ylab = "-log10(Adjusted P-value)",
-         main = "Volcano Plot")
-    abline(h = -log10(0.05), lty = 2, col = "blue")
-    dev.off()
-
-    cat("Plot type: volcano\\n")
-    cat("Total points:", nrow(volcano_data), "\\n")
-    cat("Significant points (padj < 0.05):", sum(volcano_data$padj < 0.05), "\\n")
-}} else if (plot_type == "heatmap") {{
-    # 热图：第一列为标识符时转为行名，其余列转为数值矩阵
-    if (is.character(data[[1]]) || is.factor(data[[1]])) {{
-        row_labels <- data[[1]]
-        matrix_data <- as.matrix(data[, -1, drop = FALSE])
-        rownames(matrix_data) <- row_labels
-    }} else {{
-        matrix_data <- as.matrix(data)
-    }}
-    storage.mode(matrix_data) <- "numeric"
-
-    # 校验数据满足热图聚类要求（hclust 需要至少 2 行 2 列，且含非 NA 数值）
-    if (nrow(matrix_data) < 2 || ncol(matrix_data) < 2 || all(is.na(matrix_data))) {{
-        stop("No numeric data found for heatmap")
-    }}
-
-    # 生成热图 PNG
-    png(output_file, width = 800, height = 600)
-    heatmap(matrix_data, col = heat.colors(100))
-    dev.off()
-
-    cat("Plot type: heatmap\\n")
-    cat("Rows:", nrow(matrix_data), "\\n")
-    cat("Columns:", ncol(matrix_data), "\\n")
-}} else {{
-    # PCA：数值矩阵，行=观测，列=变量
-    if (is.character(data[[1]]) || is.factor(data[[1]])) {{
-        row_labels <- data[[1]]
-        matrix_data <- as.matrix(data[, -1, drop = FALSE])
-        rownames(matrix_data) <- row_labels
-    }} else {{
-        matrix_data <- as.matrix(data)
-    }}
-    storage.mode(matrix_data) <- "numeric"
-
-    # 剔除全 NA 列
-    matrix_data <- matrix_data[, colSums(!is.na(matrix_data)) > 0, drop = FALSE]
-    if (nrow(matrix_data) < 2 || ncol(matrix_data) < 2) {{
-        stop("Insufficient numeric data for PCA")
-    }}
-
-    # 中心化并计算 PCA
-    pca_res <- prcomp(matrix_data, center = TRUE, scale. = TRUE, na.action = na.omit)
-    var_exp <- round(summary(pca_res)$importance[2, 1:2] * 100, 1)
-
-    # 绘制 PCA 散点图（PC1 vs PC2）
-    png(output_file, width = 800, height = 600)
-    plot(pca_res$x[, 1], pca_res$x[, 2],
-         pch = 20, col = "steelblue",
-         xlab = paste0("PC1 (", var_exp[1], "%)"),
-         ylab = paste0("PC2 (", var_exp[2], "%)"),
-         main = "PCA Plot")
-    text(pca_res$x[, 1], pca_res$x[, 2], labels = rownames(pca_res$x), cex = 0.6, pos = 3)
-    dev.off()
-
-    cat("Plot type: pca\\n")
-    cat("Observations:", nrow(pca_res$x), "\\n")
-    cat("Variables:", ncol(matrix_data), "\\n")
-    cat("PC1 variance:", var_exp[1], "%\\n")
-    cat("PC2 variance:", var_exp[2], "%\\n")
-}}
-
-cat("Saved to:", output_file, "\\n")
-'''
+"""
 
     @staticmethod
     def _single_cell_input_code(params: dict[str, Any]) -> str:
@@ -476,16 +315,16 @@ cat("cluster 表:", output_file, "marker 表:", marker_file, "\\n")
 
         输入约定：spaceranger 输出目录（含 spatial/ 与 filtered_feature_bc_matrix/）。
         """
-        input_file = params.get("input_file", "spatial_dir")
-        output_file = params.get("output_file", "spatial_clusters.csv")
-        plot_file = params.get("plot_file", "spatial_plot.png")
+        input_file = _r_string(params.get("input_file", "spatial_dir"))
+        output_file = _r_string(params.get("output_file", "spatial_clusters.csv"))
+        plot_file = _r_string(params.get("plot_file", "spatial_plot.png"))
         resolution = params.get("resolution", 0.5)
 
-        return f'''#!/usr/bin/env Rscript
+        return f"""#!/usr/bin/env Rscript
 # 空间转录组分析（Seurat Visium）
-input_dir <- "{input_file}"
-output_file <- "{output_file}"
-plot_file <- "{plot_file}"
+input_dir <- {input_file}
+output_file <- {output_file}
+plot_file <- {plot_file}
 
 if (!requireNamespace("Seurat", quietly = TRUE)) {{
     stop("请先安装 Seurat（>= 4.1 含空间接口）")
@@ -520,4 +359,4 @@ dev.off()
 cat("spot 数:", ncol(obj),
     "聚类数:", length(levels(obj$seurat_clusters)), "\\n")
 cat("cluster 表:", output_file, "空间图:", plot_file, "\\n")
-'''
+"""

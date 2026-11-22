@@ -3,6 +3,8 @@
 import tempfile
 from pathlib import Path
 
+import pytest
+
 from src.control.wrroc_store import WRROCStore
 from src.schemas.workflow import (
     StepOutput,
@@ -67,6 +69,38 @@ def test_wrroc_list_runs():
         assert len(runs) == 2
         ids = {r.run_id for r in runs}
         assert ids == {"run-001", "run-002"}
+
+
+def test_wrroc_persist_is_atomic_and_leaves_no_temp_files():
+    """落盘经临时文件 + 原子替换，目录里不留半截记录。"""
+    with tempfile.TemporaryDirectory() as tmp:
+        base = Path(tmp) / ".wrroc"
+        store = WRROCStore(base_dir=base)
+        store.persist(_make_run("run-001"))
+
+        files = sorted(p.name for p in (base / "run-001").iterdir())
+        assert files == ["workflow.json"]
+        assert store.load("run-001").run_id == "run-001"
+
+
+def test_wrroc_list_runs_skips_deleted_records():
+    """索引残留但文件已删除时，list_runs 不应返回 None 占位。"""
+    with tempfile.TemporaryDirectory() as tmp:
+        store = WRROCStore(base_dir=Path(tmp) / ".wrroc")
+        path = store.persist(_make_run("run-001"))
+        store.persist(_make_run("run-002"))
+        path.unlink()
+        runs = store.list_runs()
+        assert [run.run_id for run in runs] == ["run-002"]
+
+
+def test_wrroc_persist_rejects_path_traversal():
+    """run_id 不能把记录写出 .wrroc 目录。"""
+    with tempfile.TemporaryDirectory() as tmp:
+        store = WRROCStore(base_dir=Path(tmp) / ".wrroc")
+        for run_id in ("../outside", "a/b", "a\\b", str(Path(tmp) / "abs")):
+            with pytest.raises(ValueError):
+                store.persist(_make_run(run_id))
 
 
 def test_wrroc_lineage_graph():

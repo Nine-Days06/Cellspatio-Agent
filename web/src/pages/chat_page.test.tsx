@@ -16,6 +16,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { EMPTY_FALLBACK } from '@/components/MessageList'
 import { ChatPage } from '@/pages/ChatPage'
 import { ApiError } from '@/lib/api'
+import { queryKeys } from '@/lib/queries'
 import type {
   DataCardPayload,
   MessagesResponse,
@@ -101,7 +102,8 @@ function routeFetch(url: unknown): Promise<unknown> {
   const payload =
     payloads.get(sid) ??
     ({ session: sessionFor(sid), messages: [], pending_script: null, soft_warn: false } as MessagesResponse)
-  return Promise.resolve({ ok: true, status: 200, json: async () => payload })
+  // 每次响应返回新对象，模拟真实 JSON 解析；否则 React Query 复用同一引用会掩盖 hydrate。
+  return Promise.resolve({ ok: true, status: 200, json: async () => structuredClone(payload) })
 }
 
 let sidSeq = 0
@@ -158,7 +160,7 @@ interface ReadyOptions {
 }
 
 /** 渲染 ChatPage 并等待「自动选中首个会话 → 拉历史 → hydrate」完成。 */
-async function renderReady(sid: string, options: ReadyOptions = {}): Promise<void> {
+async function renderReady(sid: string, options: ReadyOptions = {}): Promise<QueryClient> {
   const messages = options.messages ?? [makeMsg(sid)]
   seedMessages(sid, messages, options.extra)
   listSessionsMock.mockResolvedValue({ sessions: options.sessions ?? [makeSummary(sid)] })
@@ -172,6 +174,7 @@ async function renderReady(sid: string, options: ReadyOptions = {}): Promise<voi
   )
   // history 深等于种子载荷 = hydrate 已落地（初始 history 为空，不会误判）
   await waitFor(() => expect(useChatStore.getState().history).toEqual(messages))
+  return client
 }
 
 beforeEach(() => {
@@ -277,6 +280,26 @@ describe('ChatPage 本地输入', () => {
 })
 
 describe('ChatPage 输入区：键位 / 停止 / 错误提示（约束 3）', () => {
+  it('无会话发送时保留输入并提示先选择会话', async () => {
+    const client = new QueryClient({
+      defaultOptions: { queries: { retry: false, refetchOnWindowFocus: false } },
+    })
+    render(
+      <QueryClientProvider client={client}>
+        <ChatPage />
+      </QueryClientProvider>,
+    )
+    const field = screen.getByLabelText('输入你的问题')
+    fireEvent.change(field, { target: { value: '看看 PBMC' } })
+    fireEvent.click(screen.getByRole('button', { name: '发送' }))
+
+    expect(field).toHaveValue('看看 PBMC')
+    await waitFor(() =>
+      expect(screen.getByText('请先新建或选择会话')).toBeInTheDocument(),
+    )
+    expect(streamChatMock).not.toHaveBeenCalled()
+  })
+
   it('起步提示填入问题、切换模式并聚焦，不自动发送或创建会话', async () => {
     await renderReady(nextSid(), { messages: [] })
     fireEvent.click(screen.getByRole('button', { name: /查阅文献证据/ }))
@@ -521,6 +544,41 @@ describe('ChatPage 约束落点（1/2）', () => {
     expect(screen.getAllByText(/上下文接近压缩阈值/)).toHaveLength(1)
   })
 
+  it('历史在生成期间返回时，结束后仍会 hydrate 一次', async () => {
+    const sid = nextSid()
+    const messages = [makeMsg(sid)]
+    seedMessages(sid, messages)
+    listSessionsMock.mockResolvedValue({ sessions: [makeSummary(sid)] })
+    let release: (() => void) | undefined
+    fetchMock.mockImplementation((url: unknown) => {
+      if (!String(url).includes(`/sessions/${sid}/messages`)) return routeFetch(url)
+      return new Promise((resolve) => {
+        release = () =>
+          resolve({ ok: true, status: 200, json: async () => payloads.get(sid) })
+      })
+    })
+
+    render(
+      <QueryClientProvider
+        client={new QueryClient({
+          defaultOptions: { queries: { retry: false, refetchOnWindowFocus: false } },
+        })}
+      >
+        <ChatPage />
+      </QueryClientProvider>,
+    )
+
+    await waitFor(() => expect(useChatStore.getState().sessionId).toBe(sid))
+    act(() => useChatStore.setState({ busy: true }))
+    await waitFor(() => expect(release).toBeTypeOf('function'))
+    act(() => release?.())
+    await waitFor(() => expect(fetchMock).toHaveBeenCalled())
+    expect(useChatStore.getState().history).toEqual([])
+
+    act(() => useChatStore.setState({ busy: false }))
+    await waitFor(() => expect(useChatStore.getState().history).toEqual(messages))
+  })
+
   it('历史消息的图表渲染进 charts-slot（ChartBlock 接线）', async () => {
     const sid = nextSid()
     const withChart = makeMsg(sid, {
@@ -565,6 +623,18 @@ describe('ChatPage 确认卡片接线', () => {
     expect(useChatStore.getState().scriptCard?.message_id).toBe(holder.id)
   })
 
+  it('同会话历史重拉保留 pending 脚本卡', async () => {
+    const sid = nextSid()
+    const client = await renderReady(sid)
+    act(() => useChatStore.setState({ scriptCard: pendingCard() }))
+
+    await act(() => client.invalidateQueries({ queryKey: queryKeys.messages(sid) }))
+
+    await waitFor(() => expect(useChatStore.getState().history.length).toBeGreaterThan(0))
+    expect(useChatStore.getState().scriptCard?.message_id).toBe(7)
+    expect(screen.getByTestId('script-card')).toBeInTheDocument()
+  })
+
   it('脚本确认成功：按 action 回写 status（confirmed）', async () => {
     const sid = nextSid()
     await renderReady(sid)
@@ -576,11 +646,35 @@ describe('ChatPage 确认卡片接线', () => {
     fireEvent.click(screen.getByRole('button', { name: '执行脚本' }))
 
     await waitFor(() =>
-      expect(confirmActionMock).toHaveBeenCalledWith({ session_id: sid, action: 'script_confirm' }),
+      expect(confirmActionMock).toHaveBeenCalledWith({
+        session_id: sid,
+        action: 'script_confirm',
+        message_id: 7,
+      }),
     )
     await waitFor(() => expect(useChatStore.getState().scriptCard?.status).toBe('confirmed'))
     expect(screen.getByText('已确认执行')).toBeInTheDocument()
   })
+
+  it('脚本确认成功：后端返回的助手消息立即进入历史', async () => {
+    const sid = nextSid()
+    await renderReady(sid)
+    act(() => {
+      useChatStore.setState({ scriptCard: pendingCard() })
+    })
+    confirmActionMock.mockResolvedValue({
+      message: makeMsg(sid, { content: '脚本执行完成：差异表达结果已保存' }),
+    })
+
+    fireEvent.click(screen.getByRole('button', { name: '执行脚本' }))
+
+    await waitFor(() =>
+      expect(screen.getByTestId('message-list').textContent).toContain(
+        '脚本执行完成：差异表达结果已保存',
+      ),
+    )
+  })
+
 
   it('脚本确认失败展示后端 detail，再次提交先清错误并可成功', async () => {
     const sid = nextSid()

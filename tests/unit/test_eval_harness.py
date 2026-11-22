@@ -42,3 +42,17 @@ def test_run_eval_scripted_mode_scores_perfect_on_oracle():
     assert report["total"] == report["passed"]
     assert report["accuracy"] == 1.0
     assert report["failures"] == []
+
+
+def test_every_case_is_covered_by_p3d_categories():
+    """p3d 汇总只统计已分类用例，缺分类的用例会被静默丢弃、准确率假绿。"""
+    categories = (
+        "expect_skill",
+        "expect_kg_write",
+        "expect_kg_read",
+        "expect_kg_query",
+        "expect_best_practice",
+        "expect_tool",
+    )
+    uncovered = [c["id"] for c in _load_cases() if not any(k in c for k in categories)]
+    assert uncovered == []

@@ -406,6 +406,11 @@ def _normalize_verdict(value) -> str | None:
     return None
 
 
+def _results_by_pmid(results):
+    """按 pmid 索引 LLM 结果，跳过非 dict 与缺 pmid 的脏条目。"""
+    return {r["pmid"]: r for r in results if isinstance(r, dict) and r.get("pmid")}
+
+
 def _build_log_rows(batch, pmid_to_result, failed_set, now):
     """
     将一批 LLM 结果整理为待入库 log_rows（4 元组：pmid, verdict, reason, now）
@@ -512,7 +517,8 @@ def _run_sync_validation():
                 failed_set = set(failed_pmids)
                 if results:
                     now = now_iso()
-                    pmid_to_result = {r["pmid"]: r for r in results}
+                    # LLM 偶尔返回缺 pmid 或非 dict 的条目；不能让单条脏数据中止整轮。
+                    pmid_to_result = _results_by_pmid(results)
                     log_rows, batch_failed = _build_log_rows(batch, pmid_to_result, failed_set, now)
                     round_failed.extend(batch_failed)
 
@@ -607,7 +613,7 @@ def _run_sync_validation_for_pmids(pmid_list: list):
                 failed_set = set(failed_pmids)
                 if results:
                     now = now_iso()
-                    pmid_to_result = {r["pmid"]: r for r in results}
+                    pmid_to_result = _results_by_pmid(results)
                     log_rows, batch_failed = _build_log_rows(batch, pmid_to_result, failed_set, now)
                     round_failed.extend(batch_failed)
                     if log_rows:
@@ -707,7 +713,8 @@ def export_no_abstract_csv(db_path: Path = DB_PATH) -> Path | None:
                   SELECT pmid FROM filter_log WHERE stage = 'hard_filter'
               )
               AND a.pmid NOT IN (
-                  SELECT pmid FROM llm_validation WHERE llm_verdict IS NOT NULL
+                  SELECT pmid FROM llm_validation
+                  WHERE llm_verdict IS NOT NULL OR human_review IS NOT NULL
               )
             ORDER BY a.pub_year DESC, a.pmid
         """).fetchall()
@@ -982,10 +989,12 @@ def _build_jsonl(rows: list) -> Path:
     return groups[0][0]
 
 
-def _parse_batch_results(jsonl_path: str, db_path: Path = DB_PATH) -> tuple[int, list[str]]:
+def _parse_batch_results(
+    jsonl_path: str, db_path: Path = DB_PATH
+) -> tuple[int, list[str], set[str]]:
     """
     解析 batch 输出结果 JSONL，写入 llm_validation 表。
-    返回 (成功数, 失败 PMID 列表)。
+    返回 (成功数, 失败 PMID 列表, 已落库 PMID 集合)；调用方用后者发现输出缺行。
 
     Args:
         jsonl_path: batch 结果 JSONL 文件路径
@@ -994,6 +1003,7 @@ def _parse_batch_results(jsonl_path: str, db_path: Path = DB_PATH) -> tuple[int,
     """
     success_count = 0
     failed_pmids = []
+    parsed_pmids: set[str] = set()
 
     with open(jsonl_path, encoding="utf-8") as f:
         for line_num, line in enumerate(f, 1):
@@ -1006,23 +1016,36 @@ def _parse_batch_results(jsonl_path: str, db_path: Path = DB_PATH) -> tuple[int,
                 logger.warning(f"Batch 结果行 {line_num} JSON 解析失败")
                 failed_pmids.append("")
                 continue
+            if not isinstance(item, dict):
+                logger.warning(f"Batch 结果行 {line_num} 不是对象")
+                failed_pmids.append("")
+                continue
 
             custom_id = item.get("custom_id", "")
             pmid = _pmid_from_custom_id(custom_id)
 
-            resp = item.get("response", {})
+            resp = item.get("response") or {}
+            if not isinstance(resp, dict):
+                failed_pmids.append(pmid)
+                continue
             if resp.get("status_code") != 200:
                 logger.warning(f"Batch 请求失败: pmid={pmid}, status={resp.get('status_code')}")
                 failed_pmids.append(pmid)
                 continue
 
-            body = resp.get("body", {})
-            choices = body.get("choices", [])
-            if not choices:
+            body = resp.get("body") or {}
+            choices = (body.get("choices") or []) if isinstance(body, dict) else []
+            if not isinstance(choices, list) or not choices:
                 failed_pmids.append(pmid)
                 continue
 
-            content = choices[0].get("message", {}).get("content", "").strip()
+            choice = choices[0] if isinstance(choices[0], dict) else {}
+            message = choice.get("message") or {}
+            content = message.get("content") if isinstance(message, dict) else None
+            if not isinstance(content, str):
+                failed_pmids.append(pmid)
+                continue
+            content = content.strip()
             if not content:
                 failed_pmids.append(pmid)
                 continue
@@ -1068,8 +1091,9 @@ def _parse_batch_results(jsonl_path: str, db_path: Path = DB_PATH) -> tuple[int,
             with get_conn(db_path) as conn:
                 conn.execute(INSERT_SQL, (pmid, verdict, reason, now))
             success_count += 1
+            parsed_pmids.add(pmid)
 
-    return success_count, failed_pmids
+    return success_count, failed_pmids, parsed_pmids
 
 
 def _run_zhipu_batch():
@@ -1280,7 +1304,7 @@ def _poll_until_done(client, batch_id: str, chk: dict):
         time.sleep(LLM_BATCH_POLL_INTERVAL)
 
 
-def _download_and_parse_batch(client, batch_status, chk: dict):
+def _download_and_parse_batch(client, batch_status, chk: dict, db_path: Path = DB_PATH):
     """下载 Batch 结果并解析写入 DB，处理 error_file 降级"""
     all_pmids = chk.get("pmid_list", [])
 
@@ -1290,6 +1314,13 @@ def _download_and_parse_batch(client, batch_status, chk: dict):
     output_id = getattr(batch_status, "output_file_id", None)
     error_id = getattr(batch_status, "error_file_id", None)
 
+    if not output_id:
+        # completed 却无输出文件时，整批 PMID 都没有落库；直接同步补验。
+        logger.error("Batch 已完成但没有输出文件，降级为同步模式")
+        _clear_batch_checkpoint()
+        _run_sync_validation_for_pmids(all_pmids)
+        return
+
     if output_id:
         logger.info("下载结果文件...")
         try:
@@ -1298,7 +1329,13 @@ def _download_and_parse_batch(client, batch_status, chk: dict):
             tmp_path.parent.mkdir(parents=True, exist_ok=True)
             content.write_to_file(str(tmp_path))
 
-            success_total, error_pmids = _parse_batch_results(str(tmp_path))
+            success_total, error_pmids, parsed = _parse_batch_results(
+                str(tmp_path), db_path=db_path
+            )
+            missing = set(all_pmids) - parsed - set(error_pmids)
+            if missing:
+                logger.warning(f"Batch 输出缺少 {len(missing)} 篇 PMID，降级为同步补验")
+                error_pmids.extend(sorted(missing))
             logger.info(f"结果已写入 DB: {success_total} 篇成功, {len(error_pmids)} 篇解析失败")
         except Exception as e:
             logger.error(f"下载/解析输出文件失败: {e}")
@@ -1321,7 +1358,9 @@ def _download_and_parse_batch(client, batch_status, chk: dict):
                         continue
                     try:
                         item = json.loads(line)
-                        error_pmids.append(item.get("custom_id", ""))
+                        pmid = _pmid_from_custom_id(item.get("custom_id", ""))
+                        if pmid:
+                            error_pmids.append(pmid)
                     except json.JSONDecodeError:
                         pass
         except Exception as e:
@@ -1575,6 +1614,13 @@ def _export_articles_csv(db_path: Path = DB_PATH) -> Path | None:
     """
     exported = _load_exported_pmids()
     with get_conn(db_path) as conn:
+        # 账本可能远超 SQLite 变量上限（32766），用临时表关联而不是展开 NOT IN (...)。
+        conn.execute("DROP TABLE IF EXISTS temp._exported_pmids")
+        conn.execute("CREATE TEMP TABLE _exported_pmids (pmid TEXT PRIMARY KEY)")
+        conn.executemany(
+            "INSERT OR IGNORE INTO _exported_pmids (pmid) VALUES (?)",
+            [(pmid,) for pmid in exported],
+        )
         rows = conn.execute(
             """
             SELECT a.pmid, a.title, a.abstract, a.keywords, a.mesh_terms,
@@ -1583,9 +1629,8 @@ def _export_articles_csv(db_path: Path = DB_PATH) -> Path | None:
             JOIN llm_validation v ON a.pmid = v.pmid
             WHERE (v.human_review = 'Y'
                OR (v.human_review IS NULL AND v.llm_verdict = 'RELEVANT'))
-              AND a.pmid NOT IN ({})
-        """.format(",".join("?" * len(exported))),
-            tuple(sorted(exported)),
+              AND NOT EXISTS (SELECT 1 FROM _exported_pmids e WHERE e.pmid = a.pmid)
+        """
         ).fetchall()
 
     rows = [dict(r) for r in rows]
@@ -1603,13 +1648,22 @@ def _export_articles_csv(db_path: Path = DB_PATH) -> Path | None:
     out_dir.mkdir(parents=True, exist_ok=True)
     ts = datetime.now().strftime("%Y%m%d_%H%M%S")
     csv_path = out_dir / f"articles_{ts}.csv"
+    partial = csv_path.with_suffix(csv_path.suffix + ".part")
 
-    with open(csv_path, "w", newline="", encoding="utf-8-sig") as f:
+    with open(partial, "w", newline="", encoding="utf-8-sig") as f:
         writer = csv.DictWriter(f, fieldnames=ARTICLES_EXPORT_FIELDS)
         writer.writeheader()
         for r in rows:
             writer.writerow(r)
+        f.flush()
+        os.fsync(f.fileno())
 
-    _append_exported_pmids([r["pmid"] for r in rows])
+    try:
+        _append_exported_pmids([r["pmid"] for r in rows])
+    except Exception:
+        # 账本没写成，产物也不能留：否则下轮会换个文件名重新导出 → 重复入库。
+        partial.unlink(missing_ok=True)
+        raise
+    os.replace(partial, csv_path)
     logger.info(f"主项目兼容文献已导出: {csv_path} ({len(rows)} 篇)")
     return csv_path

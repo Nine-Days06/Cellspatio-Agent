@@ -1,10 +1,13 @@
+import json
 from pathlib import Path
 
 from src.control.intent_parser import IntentParser
 from src.control.workflow_manager import WorkflowManager
 from src.control.workflow_recorder import WorkflowRecorder
 from src.data.fetchers.base import AssetInfo, AssetMeta
-from tests.unit.fakes import FakeExec, FakeGen, FakeIntent
+from src.ui.analysis_roots import AnalysisRoots
+from src.ui.session_store import SessionStore
+from tests.unit.fakes import FakeExec, FakeGen, FakeIntent, write_declared_output
 
 
 class MockKnowledgeClient:
@@ -16,12 +19,17 @@ class MockRExecutor:
     def execute_code(self, code):
         from types import SimpleNamespace
 
+        write_declared_output(code)
         return SimpleNamespace(returncode=0, stdout="", stderr="")
 
 
 class MockRScriptGenerator:
     def generate_code(self, analysis_type, params, method_context=None):
-        return f"# R code for {analysis_type}"
+        output = params.get("output_file")
+        script = f"# R code for {analysis_type}"
+        if output:
+            script += f'\noutput_file <- "{output}"\n'
+        return script
 
 
 class MockVisualizer:
@@ -166,6 +174,46 @@ def test_de_analysis_uses_downloaded_asset(tmp_path):
     assert result["analysis_type"] == "differential_expression"
 
 
+def test_explicit_input_wins_over_downloaded_asset(tmp_path):
+    """显式输入存在时优先于最近下载资产。"""
+    explicit = tmp_path / "explicit.csv"
+    explicit.write_text("gene,log2FC\nTP53,1\n", encoding="utf-8")
+    downloaded = tmp_path / "downloaded.csv"
+    downloaded.write_text("gene,log2FC\nBRCA1,1\n", encoding="utf-8")
+    manager = _make_manager()
+    context = {"downloaded_assets": [{"access_path": str(downloaded)}]}
+
+    assert manager._resolve_input_file({"input_files": [str(explicit)]}, context) == str(explicit)
+    missing = tmp_path / "missing.csv"
+    assert manager._resolve_input_file({"input_files": [str(missing)]}, context) == str(downloaded)
+
+
+def test_de_group_csv_reaches_script_and_confirmation(tmp_path):
+    """分组注释表必须进入生成参数与待确认参数，不能被丢弃。"""
+    counts = tmp_path / "counts.csv"
+    counts.write_text("gene,S1\nTP53,1\n", encoding="utf-8")
+    groups = tmp_path / "groups.csv"
+    groups.write_text("sample,group\nS1,case\n", encoding="utf-8")
+    gen = FakeGen()
+    manager = WorkflowManager(
+        intent_parser=FakeIntent(),
+        knowledge_client=MockKnowledgeClient(),
+        r_executor=MockRExecutor(),
+        visualizer=MockVisualizer(),
+        fetcher_registry=_DEFAULT_REGISTRY,
+        knowledge_builder=FakeBuilder(),
+        r_script_generator=gen,
+        require_script_confirmation=True,
+    )
+    result = manager._execute_de_analysis(
+        {"input_files": [str(counts)], "group_csv": str(groups)}, {}
+    )
+    assert gen.last is not None
+    assert gen.last["params"]["group_csv"] == str(groups)
+    assert result["status"] == "needs_script_confirmation"
+    assert result["params"]["group_csv"] == str(groups)
+
+
 def test_de_analysis_without_data_needs_input():
     manager = _make_manager()
     result = manager.execute_workflow("做差异表达分析")
@@ -176,6 +224,14 @@ def test_de_analysis_without_data_needs_input():
         or "下载" in result["message"]
         or "数据" in result["message"]
     )
+
+
+def test_de_missing_explicit_input_needs_input(tmp_path):
+    """显式路径不存在且无下载资产时，不能带着无效路径进入脚本确认。"""
+    manager = _make_manager()
+    result = manager._execute_de_analysis({"input_files": [str(tmp_path / "missing.csv")]}, {})
+    assert result["status"] == "needs_input"
+    assert result["analysis_type"] == "differential_expression"
 
 
 def test_de_analysis_queries_methods_kb_and_injects_context():
@@ -247,6 +303,10 @@ def test_de_success_writes_summary_to_knowledge_builder():
     assert result["status"] == "success"
     assert builder.texts, "成功后应写回知识库"
     assert "差异表达" in builder.texts[0]
+    # 共享知识库不应记录本机绝对路径
+    assert "counts.csv" in builder.texts[0]
+    assert str(Path.cwd()) not in builder.texts[0]
+    assert ":\\" not in builder.texts[0]
 
 
 def test_de_failure_does_not_write_knowledge():
@@ -293,6 +353,34 @@ def test_de_success_returns_explanation_field():
     )
     result = wm.execute_workflow("做差异表达")
     assert result.get("explanation") == "解说文本"
+
+
+def test_de_success_without_output_file_is_error():
+    """R 正常退出但没有产物文件时不能算成功。"""
+    wm = WorkflowManager(
+        intent_parser=FakeIntent(),
+        knowledge_client=None,
+        r_executor=FakeExec(outputs=False),
+        visualizer=None,
+        r_script_generator=FakeGen(return_value="# s"),
+    )
+    result = wm.execute_workflow("做差异表达")
+    assert result["status"] == "error"
+    assert "未产出结果文件" in result["message"]
+
+
+def test_de_success_with_empty_output_file_is_error():
+    """产物是 0 字节时同样算失败。"""
+    wm = WorkflowManager(
+        intent_parser=FakeIntent(),
+        knowledge_client=None,
+        r_executor=FakeExec(output_text=""),
+        visualizer=None,
+        r_script_generator=FakeGen(return_value="# s"),
+    )
+    result = wm.execute_workflow("做差异表达")
+    assert result["status"] == "error"
+    assert "未产出结果文件" in result["message"]
 
 
 def test_fetch_candidates_include_reason_and_confirm_detail():
@@ -395,7 +483,8 @@ def test_de_retries_after_repair_then_succeeds():
 
         def repair(self, code, err):
             self.calls.append(err)
-            return "# repaired"
+            output = ((gen.last or {}).get("params") or {}).get("output_file")
+            return f'# repaired\noutput_file <- "{output}"\n'
 
     rep = FakeRepairer()
     call_count = {"n": 0}
@@ -405,17 +494,20 @@ def test_de_retries_after_repair_then_succeeds():
         if call_count["n"] == 1:
             raise RExecutorError("first fail")
 
+        write_declared_output(code)
+
         class R:
             returncode = 0
 
         return R()
 
+    gen = FakeGen(return_value="# attempt")
     wm = WorkflowManager(
         intent_parser=FakeIntent(),
         knowledge_client=None,
         r_executor=FakeExec(side_effect=flaky_side_effect),
         visualizer=None,
-        r_script_generator=FakeGen(return_value="# attempt"),
+        r_script_generator=gen,
         code_repairer=rep,
         max_repair_attempts=2,
     )
@@ -718,6 +810,16 @@ def test_lazy_ingest_max_assets_cap():
     assert kegg.ingested == ["map00010", "map00020", "map00030"]
 
 
+def test_env_int_falls_back_on_invalid_value(monkeypatch):
+    """非法整数环境变量不能炸导入期。"""
+    from src.control.kb_coverage import _env_int
+
+    monkeypatch.setenv("SOME_TEST_INT", "abc")
+    assert _env_int("SOME_TEST_INT", 7) == 7
+    monkeypatch.delenv("SOME_TEST_INT")
+    assert _env_int("SOME_TEST_INT", 7) == 7
+
+
 def test_lazy_ingest_search_fallback_when_no_explicit_id():
     """无显式 ID → search 兜底（gene: 前缀优先 uniprot）"""
     kegg = FakeBioFetcher("kegg", metas=[_meta("kegg", "map04115", "p53 signaling pathway")])
@@ -1003,6 +1105,7 @@ def test_de_explanation_receives_real_stats(tmp_path):
 
     csv_file = tmp_path / "in.csv"
     csv_file.write_text("gene,s1,s2\nG1,1,2\nG2,3,4\nG3,5,6\n", encoding="utf-8")
+    gen = FakeGen(return_value="# s")
 
     class CapturingExplainer:
         def __init__(self):
@@ -1013,7 +1116,7 @@ def test_de_explanation_receives_real_stats(tmp_path):
             return "ok"
 
     def exec_side_effect(code: str):
-        out = str(csv_file.with_suffix(".de_results.csv"))
+        out = gen.last["params"]["output_file"]
         with open(out, "w", encoding="utf-8") as f:
             f.write("gene,padj\nG1,0.001\nG2,0.2\nG3,0.8\n")
 
@@ -1024,13 +1127,14 @@ def test_de_explanation_receives_real_stats(tmp_path):
 
     exp = CapturingExplainer()
     wm = WorkflowManager(
-        intent_parser=FakeIntent(),
+        intent_parser=FakeIntent(extract_params_return={"input_files": []}),
         knowledge_client=None,
         r_executor=FakeExec(side_effect=exec_side_effect),
         visualizer=None,
-        r_script_generator=FakeGen(return_value="# s"),
+        r_script_generator=gen,
         explainer=exp,
         require_script_confirmation=False,
+        analysis_roots=AnalysisRoots(SessionStore(), tmp_path),
     )
     context = {"downloaded_assets": [{"access_path": str(csv_file)}]}
     result = wm.execute_workflow("做差异表达", context=context)
@@ -1061,6 +1165,32 @@ def test_unsupported_analysis_type_returns_error():
     result = manager.execute_workflow("做通路富集")
     assert result["status"] == "error"
     assert "pathway_analysis" in result["message"]
+
+
+def test_unsupported_analysis_type_still_records(tmp_path, monkeypatch):
+    """未执行的分析子类型不能把记录阶段变成 500。"""
+    monkeypatch.setenv("CELLSPATIO_LOCAL", "1")
+    recorder = WorkflowRecorder(
+        wrroc_base_dir=str(tmp_path / ".wrroc"),
+        repo_root=tmp_path,
+    )
+    manager = WorkflowManager(
+        intent_parser=FakeIntent(
+            parse_return={"type": "analysis", "analysis_type": "visualization"},
+            extract_params_return={},
+        ),
+        knowledge_client=MockKnowledgeClient(),
+        r_executor=MockRExecutor(),
+        visualizer=MockVisualizer(),
+        r_script_generator=MockRScriptGenerator(),
+        workflow_recorder=recorder,
+    )
+    result = manager.execute_workflow("画个火山图")
+    assert result["status"] == "error"
+    runs = recorder.store.list_runs()
+    assert len(runs) == 1
+    assert runs[0].intent.type.value == "analysis"
+    assert runs[0].intent.analysis_type is None
 
 
 def test_query_memory_for_agent_returns_memory_response():
@@ -1101,6 +1231,7 @@ class SpyRecorder:
         self.starts = []
         self.steps = []
         self.finishes = []
+        self.outputs = []
 
     def start_execution(self, intent, parameters, user_input, context, run_id=None):
         rid = run_id or f"run-spy-{len(self.starts) + 1}"
@@ -1121,6 +1252,9 @@ class SpyRecorder:
     def finish_run(self, run_id):
         self.finishes.append(run_id)
         return Path("spy") / run_id / "workflow.json"
+
+    def record_output(self, run_id, name, path, type):
+        self.outputs.append({"run_id": run_id, "name": name, "path": path, "type": type})
 
 
 def _make_spy_manager(**kwargs):
@@ -1150,6 +1284,41 @@ def test_run_analysis_for_agent_records_run():
     assert result["status"] == "needs_input"
 
 
+def test_run_analysis_for_agent_records_outputs(tmp_path):
+    """Agent 入口也必须记录产物，否则 lineage / KG 输出节点缺失。"""
+    counts = tmp_path / "counts.csv"
+    counts.write_text("gene,s1,s2\nG1,1,2\n", encoding="utf-8")
+    gen = FakeGen(return_value="# s")
+
+    def exec_side_effect(code: str):
+        Path(gen.last["params"]["output_file"]).write_text("gene,padj\nG1,0.01\n", encoding="utf-8")
+
+        class R:
+            returncode = 0
+
+        return R()
+
+    manager = _make_spy_manager()
+    manager.r_executor = FakeExec(side_effect=exec_side_effect)
+    manager.r_script_generator = gen
+    manager.analysis_roots = AnalysisRoots(SessionStore(), tmp_path)
+    result = manager.run_analysis_for_agent(
+        "differential_expression",
+        {"input_files": [str(counts)], "question": "差异表达"},
+        {"last_user_input": "做差异表达分析"},
+    )
+
+    spy = manager.workflow_recorder
+    assert result["status"] == "success"
+    by_name = {o["name"]: o for o in spy.outputs}
+    assert set(by_name) == {"run-spy-1.de_results.csv", "capsule"}
+    assert Path(by_name["run-spy-1.de_results.csv"]["path"]).parent == (
+        tmp_path / "data" / "analysis" / "de"
+    )
+    assert Path(by_name["capsule"]["path"]).parent == tmp_path / "data" / "analysis" / "capsules"
+    assert all(o["run_id"] == spy.starts[0]["run_id"] for o in spy.outputs)
+
+
 def test_execute_workflow_records_single_run():
     """legacy execute_workflow 同样只产生一条 run，显式 user_input 优先于 context。"""
     manager = _make_spy_manager()
@@ -1171,7 +1340,7 @@ def test_execute_workflow_records_single_run():
             "run_id": spy.starts[0]["run_id"],
             "step_id": "general_workflow",
             "step_type": "general",
-            "tool": "none",
+            "tool": None,
             "params": {},
         }
     ]
@@ -1186,7 +1355,7 @@ def test_record_step_without_recorder_is_noop():
             None,
             step_id="general_workflow",
             step_type="general",
-            tool="none",
+            tool=None,
             params={},
         )
         is None
@@ -1196,7 +1365,7 @@ def test_record_step_without_recorder_is_noop():
             "run-fake",
             step_id="general_workflow",
             step_type="general",
-            tool="none",
+            tool=None,
             params={},
         )
         is None
@@ -1207,7 +1376,7 @@ def test_run_analysis_for_agent_finish_run_persists_wrroc(tmp_path, monkeypatch)
     """真实 WorkflowRecorder：finish_run 应落盘 .wrroc/<run_id>/workflow.json。"""
     monkeypatch.setattr(
         "src.control.snapshot_manager.SnapshotManager.create_snapshot",
-        lambda self, run_id, commit_msg=None: tmp_path / "snap",
+        lambda self, run_id: tmp_path / "snap",
     )
     manager = _make_manager()
     manager.workflow_recorder = WorkflowRecorder(wrroc_base_dir=str(tmp_path / "wrroc"))
@@ -1223,6 +1392,47 @@ def test_run_analysis_for_agent_finish_run_persists_wrroc(tmp_path, monkeypatch)
     assert len(wf_files) == 1
     assert wf_files[0].parent.name.startswith("run-")
     assert "run_id" in wf_files[0].read_text(encoding="utf-8")
+
+
+def test_general_workflow_records_with_real_recorder(tmp_path, monkeypatch):
+    """真实 recorder 接受 general 回退：step_type=general，tool 为 null。"""
+    monkeypatch.setattr(
+        "src.control.snapshot_manager.SnapshotManager.create_snapshot",
+        lambda self, run_id: tmp_path / "snap",
+    )
+    manager = _make_manager()
+    manager.intent_parser = FakeIntent(
+        parse_return={"type": "general", "original_input": ""},
+        extract_params_return={},
+    )
+    manager.workflow_recorder = WorkflowRecorder(wrroc_base_dir=str(tmp_path / "wrroc"))
+
+    result = manager.execute_workflow("你好", {"last_user_input": "你好"})
+
+    wf_files = list((tmp_path / "wrroc").glob("*/workflow.json"))
+    assert result["type"] == "general_response"
+    assert len(wf_files) == 1
+    payload = json.loads(wf_files[0].read_text(encoding="utf-8"))
+    assert payload["steps"][0]["step_type"] == "general"
+    assert payload["steps"][0]["tool"] is None
+
+
+def test_record_finalize_failure_does_not_fail_workflow(tmp_path, monkeypatch):
+    """记录落盘失败不能把已执行的分析变成异常，否则调用方会重跑整轮。"""
+    manager = _make_manager()
+    manager.intent_parser = FakeIntent(
+        parse_return={"type": "general", "original_input": ""},
+        extract_params_return={},
+    )
+    recorder = WorkflowRecorder(wrroc_base_dir=str(tmp_path / "wrroc"))
+    manager.workflow_recorder = recorder
+
+    def _fail(*args, **kwargs):
+        raise RuntimeError("snapshot down")
+
+    monkeypatch.setattr(recorder, "finish_run", _fail)
+    result = manager.execute_workflow("你好", {"last_user_input": "你好"})
+    assert result["type"] == "general_response"
 
 
 def test_search_datasets_for_agent_records_run():

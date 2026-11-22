@@ -3,8 +3,8 @@
 from __future__ import annotations
 
 import logging
+import sqlite3
 from contextlib import nullcontext
-from pathlib import Path
 from typing import Any
 
 from fastapi import APIRouter, HTTPException, Request
@@ -12,6 +12,7 @@ from pydantic import BaseModel
 
 from src.api.chat_service import soft_warn_for
 from src.api.deps import StoreDep
+from src.api.errors import store_status
 from src.api.events import wire_message
 from src.api.session_locks import session_guard
 from src.ui.confirm_flow import (
@@ -25,7 +26,9 @@ from src.ui.confirm_flow import (
     restore_pending,
 )
 from src.ui.confirm_protocol import ACTION_DATA_CONFIRM, SCRIPT_ACTIONS
+from src.ui.record_delete import delete_records
 from src.ui.session_store import SessionStore
+from src.ui.store_errors import StoreError
 from src.ui.usage import session_usage
 
 logger = logging.getLogger(__name__)
@@ -66,17 +69,16 @@ def create_session(store: StoreDep, body: CreateSessionRequest | None = None) ->
     title = body.title if body and body.title else "新会话"
     try:
         session_id = store.create_session(title, body.project_id if body else None)
-    except ValueError as exc:
-        status = 409 if "归档" in str(exc) else 404
-        raise HTTPException(status_code=status, detail=str(exc)) from exc
+    except StoreError as exc:
+        raise HTTPException(status_code=store_status(exc), detail=str(exc)) from exc
     return {"session": store.get_session(session_id)}
 
 
 @router.get("/sessions/{session_id}/usage")
-def get_session_usage(session_id: str, store: StoreDep) -> dict[str, Any]:
+def get_session_usage(session_id: str, request: Request, store: StoreDep) -> dict[str, Any]:
     """返回会话产物、.wrroc 与 snapshots 的只读占用汇总。"""
     try:
-        return session_usage(store, session_id, Path.cwd())
+        return session_usage(store, session_id, request.app.state.repo_root)
     except ValueError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
 
@@ -102,22 +104,29 @@ def update_session(session_id: str, body: UpdateSessionRequest, store: StoreDep)
                 store.set_session_pinned(session_id, body.pinned)
             if body.archived is not None:
                 store.archive_session(session_id, body.archived)
-        except ValueError as exc:
-            status = 409 if "归档" in str(exc) else 404
-            raise HTTPException(status_code=status, detail=str(exc)) from exc
+        except StoreError as exc:
+            raise HTTPException(status_code=store_status(exc), detail=str(exc)) from exc
     return {"session": store.get_session(session_id)}
 
 
 @router.delete("/sessions/{session_id}")
-def delete_session(session_id: str, store: StoreDep) -> dict[str, Any]:
-    """删除会话；先取非阻塞会话锁，避免删掉生成中的会话。"""
+def delete_session(session_id: str, request: Request, store: StoreDep) -> dict[str, Any]:
+    """删除会话与磁盘产物；复用 CLI 的“先暂存再删库”实现。"""
     _require_session(store, session_id)
     # 生成中删除会让 worker 落库失败 → 与 chat/confirm 同一把非阻塞会话锁
     with session_guard(session_id):
         try:
-            store.delete_session(session_id)
-        except ValueError as exc:
-            raise HTTPException(409, str(exc)) from exc
+            result = delete_records(
+                "session", session_id, store=store, root=request.app.state.repo_root
+            )
+        except StoreError as exc:
+            raise HTTPException(status_code=store_status(exc), detail=str(exc)) from exc
+        except (OSError, ValueError, sqlite3.Error) as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+    if result.get("status") != "ok":
+        # 产物暂存或 DB 删除失败时 delete_records 已回滚；对客户端是服务端故障而非冲突
+        logger.error("删除会话 %s 未完成: %s", session_id, result)
+        raise HTTPException(status_code=500, detail="删除未完成")
     return {"deleted": session_id}
 
 
@@ -135,10 +144,11 @@ def list_messages(session_id: str, store: StoreDep, restore: int = 0) -> dict[st
 
 
 class ConfirmRequest(BaseModel):
-    """POST /api/confirm 请求体。action 决定分支，data_confirm 需带三项来源信息。"""
+    """POST /api/confirm 请求体。action 决定分支；脚本动作可用 message_id 锁定卡片。"""
 
     session_id: str
     action: str
+    message_id: int | None = None
     source: str | None = None
     asset_id: str | None = None
     query: str | None = None
@@ -166,7 +176,9 @@ def confirm(body: ConfirmRequest, request: Request, store: StoreDep) -> dict[str
                     query=body.query,
                 )
             elif body.action in SCRIPT_ACTIONS:
-                last = confirm_script(agent, store, body.session_id, body.action)
+                last = confirm_script(
+                    agent, store, body.session_id, body.action, message_id=body.message_id
+                )
             else:
                 raise HTTPException(status_code=400, detail=f"未知动作: {body.action}")
             return {"message": wire_message(last)}

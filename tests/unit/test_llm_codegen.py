@@ -68,8 +68,10 @@ def test_llm_failure_falls_back_to_template():
 
 def test_no_llm_uses_template():
     gen = RScriptGenerator()
-    code = gen.generate_code("visualization", {})
-    assert 'plot_type <- "volcano"' in code
+    code = gen.generate_code(
+        "differential_expression", {"input_file": "a.csv", "output_file": "b.csv"}
+    )
+    assert "DESeqDataSetFromMatrix" in code
 
 
 def test_unknown_type_unchanged():

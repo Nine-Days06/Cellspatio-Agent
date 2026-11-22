@@ -54,6 +54,21 @@ def test_curated_only_pass_and_clear(monkeypatch, tmp_path):
     assert not (kb / rebuild_kb.DOCS_FILE).exists()  # 连同公共库文档一并清空
 
 
+def test_clear_removes_nested_directories(monkeypatch, tmp_path):
+    """清库必须递归删除嵌套目录，而不是只删第一层文件。"""
+    kb = tmp_path / "knowledge_base"
+    nested = kb / "cache" / "deep"
+    nested.mkdir(parents=True)
+    (nested / "stale.json").write_text("{}", encoding="utf-8")
+    (kb / "EMBEDDING_MODEL.json").write_text("{}", encoding="utf-8")
+    monkeypatch.setattr(rebuild_kb, "KB_DIR", kb)
+
+    rebuild_kb.clear_kb()
+
+    assert not (kb / "cache").exists()
+    assert (kb / "EMBEDDING_MODEL.json").exists()
+
+
 def test_literature_reject_and_keep(monkeypatch, tmp_path):
     """含文献：拒绝（SystemExit 2），文档原样保留"""
     kb = tmp_path / "knowledge_base"

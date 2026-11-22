@@ -22,7 +22,11 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from evals.run_qa_eval import latest_reviews, quality_claim_allowed, review_counts  # noqa: E402
+from evals.review_common import (  # noqa: E402
+    latest_reviews,
+    quality_claim_allowed,
+    review_counts,
+)
 from src.knowledge.qa import answer_binding_sha256  # noqa: E402
 from src.ui.session_store import SessionStore  # noqa: E402
 

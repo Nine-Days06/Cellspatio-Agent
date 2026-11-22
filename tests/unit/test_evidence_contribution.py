@@ -14,6 +14,7 @@ from src.evidence.contribution import (
     ContributionPreview,
     WillSend,
     WillSendSubmission,
+    _payload_sha256,
     build_envelope,
     preview_card,
 )
@@ -73,7 +74,9 @@ def _run_loop(root: Path) -> dict:
         "hits": hits,
         "after_withdraw": store.search(),
         "events": [event["action"] for event in store.events(sid)],
-        "tombstone": store.get(sid),
+        "tombstone": store.get(
+            sid, include_unaccepted=True, viewer_actor="carl", viewer_role=ROLE_COMPLIANCE
+        ),
     }
 
 
@@ -135,6 +138,24 @@ def test_tampered_preview_is_rejected():
 
     with pytest.raises(ValueError, match="预览内容已被修改"):
         build_envelope(tampered, consent=True)
+
+
+def test_client_cannot_set_ranking_fields():
+    """preview_sha256 客户端可重算，排序字段不能由客户端指定。"""
+    preview = preview_card(_example_card(), contributor_id="alice")
+    forged = copy.deepcopy(preview)
+    forged["will_send"]["submission"]["independent_replications"] = 999
+    forged["preview_sha256"] = _payload_sha256(forged)
+
+    with pytest.raises(ValueError, match="治理字段由服务端生成"):
+        build_envelope(forged, consent=True)
+
+    donor = copy.deepcopy(preview)
+    donor["will_send"]["submission"]["donor_count"] = 42
+    donor["preview_sha256"] = _payload_sha256(donor)
+
+    with pytest.raises(ValueError, match="治理字段由服务端生成"):
+        build_envelope(donor, consent=True)
 
 
 def test_end_to_end_loop_is_rerunnable(tmp_path):

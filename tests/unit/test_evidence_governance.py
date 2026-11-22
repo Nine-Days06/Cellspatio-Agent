@@ -7,6 +7,7 @@ import json
 import pytest
 
 from src.cli import evidence_governance
+from src.evidence.errors import EvidenceError
 from src.evidence.governance import (
     ACTION_COMPLIANCE_NEEDS_CHANGES,
     ACTION_COMPLIANCE_PASS,
@@ -91,6 +92,20 @@ def _accept(store: GovernanceStore, submission_id: str) -> dict:
     )
 
 
+def test_submit_removes_card_when_db_write_fails(tmp_path, monkeypatch):
+    """数据库写入失败时不能留下孤儿卡文件。"""
+    store = GovernanceStore(tmp_path)
+    card = _card("evc-rollback")
+
+    def _fail_event(*args, **kwargs):
+        raise RuntimeError("db write failed")
+
+    monkeypatch.setattr(store, "_event", _fail_event)
+    with pytest.raises(RuntimeError, match="db write failed"):
+        store.submit(_envelope(card, submission_id="evs-rollback"))
+    assert not (tmp_path / "cards" / "evc-rollback.json").exists()
+
+
 def test_submit_and_dual_sign_make_accepted(tmp_path):
     store = GovernanceStore(tmp_path)
     submitted = store.submit(_envelope(_card()))
@@ -105,6 +120,24 @@ def test_submit_and_dual_sign_make_accepted(tmp_path):
     assert results[0]["evidence_id"] == submitted["evidence_id"]
 
 
+def test_view_returns_summary_and_events_in_one_read(tmp_path):
+    """复核页一次读取摘要与事件，字段与分开读取一致。"""
+    store = GovernanceStore(tmp_path)
+    sid = store.submit(_envelope(_card()))["evidence_id"]
+    store.review(
+        sid,
+        actor_id="r1",
+        role=ROLE_DOMAIN,
+        action=ACTION_DOMAIN_PASS,
+        checklist=_checks(DOMAIN_CHECKLIST),
+    )
+
+    view = store.view(sid)
+
+    assert view["summary"] == store.summary(sid)
+    assert view["events"] == store.events(sid)
+
+
 def test_contributor_cannot_review_own_submission(tmp_path):
     store = GovernanceStore(tmp_path)
     sid = store.submit(_envelope(_card(), contributor="alice"))["evidence_id"]
@@ -117,6 +150,23 @@ def test_contributor_cannot_review_own_submission(tmp_path):
             action=ACTION_DOMAIN_PASS,
             checklist=_checks(DOMAIN_CHECKLIST),
         )
+
+
+def test_contributor_cannot_supersede_other_submission(tmp_path):
+    """supersedes 不能作废他人的已接受证据。"""
+    store = GovernanceStore(tmp_path)
+    original = store.submit(_envelope(_card("evc-a"), contributor="alice"))
+    _accept(store, original["evidence_id"])
+
+    with pytest.raises(EvidenceError, match="只能取代自己的证据") as exc:
+        store.submit(
+            _envelope(
+                _card("evc-b"),
+                contributor="bob",
+                supersedes=[original["evidence_id"]],
+            )
+        )
+    assert exc.value.kind == "permission_denied"
 
 
 def test_same_actor_cannot_sign_both_roles(tmp_path):
@@ -220,7 +270,10 @@ def test_rejection_requires_reason_and_is_not_searchable(tmp_path):
     assert store.search() == []
     tombstone = store.get(sid)
     assert tombstone["status"] == "rejected"
-    assert tombstone["reason"] == "方法描述不足"
+    # 匿名墓碑不带账号/理由；理由只在复核事件流里可见。
+    assert "reason" not in tombstone
+    assert "actor_id" not in tombstone
+    assert store.events(sid)[-1]["reason"] == "方法描述不足"
     assert "card" not in tombstone
 
 
@@ -268,7 +321,9 @@ def test_withdraw_hides_from_search_and_returns_tombstone(tmp_path):
     store.withdraw(sid, actor_id="alice", role=ROLE_CONTRIBUTOR, reason="发现方法错误")
 
     assert store.search() == []
-    tombstone = store.get(sid)
+    tombstone = store.get(
+        sid, include_unaccepted=True, viewer_actor="carl", viewer_role=ROLE_COMPLIANCE
+    )
     assert tombstone["status"] == "withdrawn"
     assert tombstone["reason"] == "发现方法错误"
     assert "card" not in tombstone

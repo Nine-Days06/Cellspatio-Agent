@@ -175,6 +175,9 @@ export function useStageReview<T>(options: StageReviewOptions<T>): StageReview<T
     if (!running || busy) return
     let cancelled = false
     let timer: number | undefined
+    // 连续失败时按指数退避并最终停止，避免后端故障期间每秒无休止打请求。
+    let failures = 0
+    const MAX_FAILURES = 5
     const tick = async () => {
       const ticket = generation.current
       try {
@@ -182,6 +185,7 @@ export function useStageReview<T>(options: StageReviewOptions<T>): StageReview<T
         if (cancelled || !mounted.current || ticket !== generation.current) return
         apply(next)
         setError('')
+        failures = 0
         if (isRunningRef.current(next, false)) {
           timer = window.setTimeout(() => void tick(), pollMs)
         } else if (recordOnPoll && !recordedNotified.current) {
@@ -191,7 +195,11 @@ export function useStageReview<T>(options: StageReviewOptions<T>): StageReview<T
       } catch (err) {
         if (cancelled || !mounted.current || ticket !== generation.current) return
         setError(messageOf(err))
-        timer = window.setTimeout(() => void tick(), pollMs)
+        failures += 1
+        if (failures >= MAX_FAILURES) return
+        // 首次失败仍按常规间隔重试，连续失败后再指数退避。
+        const delay = Math.min(pollMs * 2 ** (failures - 1), pollMs * 8)
+        timer = window.setTimeout(() => void tick(), delay)
       }
     }
     timer = window.setTimeout(() => void tick(), pollMs)

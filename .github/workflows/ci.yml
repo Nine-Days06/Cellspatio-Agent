@@ -44,6 +44,7 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt
+          pip install -r pubmed-etl/requirements.txt
           pip install -e ".[dev]"
 
       - name: Ruff lint
@@ -53,7 +54,7 @@ jobs:
         run: ruff format --check src/ tests/ pubmed-etl/ *.py
 
       - name: Unit tests
-        run: pytest tests/unit/ -q
+        run: pytest tests/unit/ pubmed-etl/tests -q
 
   web:
     name: Web (typecheck + test + build)

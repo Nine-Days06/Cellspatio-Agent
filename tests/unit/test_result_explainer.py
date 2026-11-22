@@ -13,6 +13,18 @@ def test_fallback_when_no_llm_returns_template_not_placeholder():
     assert "20" in out  # 规则模板仍可读
 
 
+def test_spatial_fallback_does_not_claim_differential_expression():
+    """无 LLM 时空间结果不能套用差异表达模板。"""
+    ex = ResultExplainer(llm_client=None)
+    out = ex.generate_llm_explanation(
+        {"analysis_type": "spatial", "output_file": "clusters.csv"},
+        "空间分析说明",
+    )
+    assert "空间转录组分析完成" in out
+    assert "差异表达" not in out
+    assert "clusters.csv" in out
+
+
 def test_llm_path_uses_knowledge_context_and_llm():
     captured = {}
 

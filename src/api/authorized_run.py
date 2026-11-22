@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import uuid
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
@@ -14,6 +15,7 @@ from fastapi import HTTPException
 from src.api.session_locks import lock_for as session_lock
 
 RunT = TypeVar("RunT", bound=Mapping[str, Any])
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -68,9 +70,23 @@ def run_authorized(
         if attempt["claimed"]:
             try:
                 result = claim.execute(attempt)
-            except OSError as exc:
+            except Exception as exc:
+                # 未枚举异常若逃逸，attempt 会永久停在 running 并锁死下游阶段。
+                logger.exception("阶段执行失败，改落失败终态")
+                # 非 OSError 的原文可能含私有细节，只把异常类型交给阶段文案。
+                safe = (
+                    exc
+                    if isinstance(exc, OSError)
+                    else RuntimeError(f"未预期错误: {type(exc).__name__}")
+                )
+                result = claim.on_error(safe)
+            try:
+                saved = claim.finish(result)
+            except Exception as exc:
+                # 收尾失败若直接抛出，attempt 会永久停在 running 并锁死后续阶段。
+                logger.exception("阶段收尾失败，改落失败终态")
                 result = claim.on_error(exc)
-            saved = claim.finish(result)
+                saved = claim.finish(result)
             if saved is not None and saved != result:
                 (directory / "metadata.json").write_text(
                     json.dumps(saved, ensure_ascii=False, indent=2), encoding="utf-8"

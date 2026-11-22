@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import tempfile
 from collections.abc import Mapping
 from pathlib import Path
@@ -10,6 +11,8 @@ from typing import Any
 
 from src.ui.run_snapshot import RunSnapshot
 from src.ui.session_store import SessionStore
+
+logger = logging.getLogger(__name__)
 
 _PROTECTED_NAMES = {".cellspatio", ".trash", ".wrroc", "snapshots", "data"}
 
@@ -38,7 +41,8 @@ def wrroc_index(root: Path) -> dict[str, list[tuple[str, dict[str, Any]]]]:
     for wf_file in sorted(base.glob("*/workflow.json")):
         try:
             data = json.loads(wf_file.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError):
+        except (OSError, json.JSONDecodeError) as exc:
+            logger.warning("跳过损坏的 WRROC 记录 %s: %s", wf_file, exc)
             continue
         context = ((data.get("input") or {}).get("context") or {}) or (
             (data.get("meta") or {}).get("context") or {}

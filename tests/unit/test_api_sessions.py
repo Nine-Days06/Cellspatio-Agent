@@ -137,6 +137,26 @@ def test_delete_session_removes_it(client):
     assert client.get("/api/sessions").json()["sessions"] == []
 
 
+def test_delete_session_removes_disk_artifacts(client, tmp_path):
+    """UI 删除与 CLI 同一实现：阶段目录、WRROC 与快照一并移走。"""
+    root = tmp_path.resolve()
+    client.app.state.repo_root = root
+    sid = client.post("/api/sessions", json={}).json()["session"]["id"]
+    run_dir = root / "data" / "analysis" / "qc" / "run-x"
+    run_dir.mkdir(parents=True)
+    SessionStore().register_qc_run(sid, "run-x", str(run_dir), {"cells": 1})
+    for rel in (".wrroc/run-x/workflow.json", "snapshots/run-x/snapshot.txt"):
+        path = root / rel
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("{}", encoding="utf-8")
+
+    assert client.delete(f"/api/sessions/{sid}").status_code == 200
+
+    assert not run_dir.exists()
+    assert not (root / ".wrroc" / "run-x").exists()
+    assert not (root / "snapshots" / "run-x").exists()
+
+
 def test_delete_unknown_session_returns_404(client):
     assert client.delete("/api/sessions/nope").status_code == 404
 
@@ -155,6 +175,19 @@ def test_delete_while_task_running_returns_409(client):
     assert response.json()["detail"] == "该会话已有任务在进行"
     # 会话未被删除
     assert client.get(f"/api/sessions/{sid}/messages").status_code == 200
+
+
+def test_delete_while_controlled_stage_running_returns_409(
+    client, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """store 的阶段运行冲突走 StoreError→409，不依赖中文文案推断。"""
+    sid = client.post("/api/sessions", json={}).json()["session"]["id"]
+    monkeypatch.setattr(SessionStore, "running_stage", lambda _self, _sid: "过滤")
+
+    response = client.delete(f"/api/sessions/{sid}")
+
+    assert response.status_code == 409
+    assert response.json()["detail"] == "过滤运行中，不能删除会话"
 
 
 def test_messages_of_unknown_session_returns_404(client):
@@ -245,6 +278,22 @@ def test_only_latest_pending_script_is_considered(client):
     assert body["pending_script"]["user_request"] == "做差异表达"
 
 
+def test_restore_does_not_expire_newer_card(client):
+    """restore 读到旧卡时只能过期这一条，不能误废并发新建的最新卡。"""
+    sid = client.post("/api/sessions", json={}).json()["session"]["id"]
+    store = SessionStore()
+    _pending_message(store, sid)
+    older = store.get_messages(sid)[-1]
+
+    # 模拟另一个标签页在 restore 读到消息之后、写库之前插入了新卡。
+    _pending_message(store, sid)
+    store.set_script_status(sid, STATUS_EXPIRED, message_id=older["id"])
+
+    by_id = {m["id"]: m for m in store.get_messages(sid)}
+    assert by_id[older["id"]]["pending_script"]["status"] == STATUS_EXPIRED
+    assert by_id[max(by_id)]["pending_script"]["status"] == STATUS_PENDING
+
+
 def test_soft_warn_flag_reflects_context_size(client, monkeypatch):
     from src.control import compact
 
@@ -307,7 +356,7 @@ def test_soft_warn_uses_offset_window_across_rest_sidebar_and_chat(client, monke
 
 
 def test_unhandled_store_error_returns_structured_500(monkeypatch):
-    """Important#1：端点内部异常 → 500 且为 {"detail":...} JSON，不再泄漏 text/plain。"""
+    """端点内部异常 → 500 JSON，且不把异常原文/本地路径回给客户端。"""
     client = TestClient(create_app(FakeAgent()), raise_server_exceptions=False)
     sid = client.post("/api/sessions", json={}).json()["session"]["id"]
 
@@ -320,7 +369,8 @@ def test_unhandled_store_error_returns_structured_500(monkeypatch):
 
     assert response.status_code == 500
     assert response.headers["content-type"].startswith("application/json")
-    assert "db down" in response.json()["detail"]
+    assert response.json()["detail"] == "服务内部错误"
+    assert "db down" not in response.text
 
 
 def test_create_app_mounts_web_dist_only_when_present(monkeypatch, tmp_path):

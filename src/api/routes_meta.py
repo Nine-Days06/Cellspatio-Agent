@@ -27,7 +27,8 @@ def _kb_stats(agent: Any) -> dict[str, Any]:
         stats = agent.knowledge_client.get_statistics()
     except Exception as exc:  # noqa: BLE001 - UI 状态区容错
         logger.warning("kb statistics failed: %s", exc)
-        return {"error": str(exc), "initialized": False}
+        # 异常原文可能含本地绝对路径，不回传给浏览器。
+        return {"error": "知识库统计不可用", "initialized": False}
     if not isinstance(stats, dict):  # 非 dict 会让前端拿到 null 而崩
         logger.warning("kb statistics not a dict: %r", type(stats).__name__)
         return {"error": "invalid stats", "initialized": False}

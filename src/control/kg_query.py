@@ -5,10 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-from lightrag.lightrag import QueryParam
-
 from src.control.kg_memory import KGMemory
-from src.knowledge.async_runtime import runtime as async_runtime
 
 
 class KGQuery:
@@ -30,10 +27,7 @@ class KGQuery:
     ) -> str:
         """自然语言提问，返回生成式回答。"""
         _ = context  # 全局 KGQuery 不区分会话；项目型实现另行消费
-        self._kg_memory._ensure_initialized()
-        param = QueryParam(mode=mode)
-        result = async_runtime.run(self._kg_memory._rag.aquery(question, param=param))
-        return str(result) if result else "未找到相关信息。"
+        return self._kg_memory.query_text(question, mode)
 
     def query_entities(self, query: str) -> list[str]:
         """实体检索：返回相关实体文本片段。"""

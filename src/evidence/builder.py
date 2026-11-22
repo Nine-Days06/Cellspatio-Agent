@@ -10,7 +10,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from src.analysis.sc_pca import DIMENSION_RECORD_VERSION, dimension_binding
+from src.analysis.review_standing import review_is_current
+from src.analysis.sc_pca import DIMENSION_RECORD_VERSION, current_dimensions, dimension_binding
 from src.evidence.schema import (
     Artifact,
     Claim,
@@ -116,6 +117,9 @@ def build_qc_card(
     if not reviewed:
         raise ValueError("QC 尚未人工复核，不能生成证据卡")
     preview = reviewed[-1]
+    active_id = run.get("active_preview_id")
+    if active_id and preview["preview_id"] != active_id:
+        raise ValueError("QC 复核已被更新的预览替代，不能生成证据卡")
     outcome = "accepted" if preview["status"] == "approved" else "rejected"
     reviewed_at = (
         preview.get("approved_at") if outcome == "accepted" else preview.get("rejected_at")
@@ -133,7 +137,7 @@ def build_qc_card(
             session_id=session_id,
             run_id=run_id,
             binding_sha256=preview["binding_sha256"],
-            source_revision=run["revision"],
+            source_revision=int(preview.get("source_revision", run["revision"])),
         ),
         method=Method(
             tool="sc_qc",
@@ -205,6 +209,8 @@ def build_cluster_card(
         raise ValueError("聚类尚未人工复核，不能生成证据卡")
     facts.sort(key=lambda fact: (fact["created_at"], fact.get("review_id", "")))
     review = facts[-1]
+    if not review_is_current(review, run["revision"]):
+        raise ValueError("聚类复核已失效，不能生成证据卡")
     outcome = review["outcome"]
     attempt = run.attempt("cluster", review["cluster_attempt_id"])
     if attempt is None or not attempt.get("result"):
@@ -290,7 +296,7 @@ def build_pca_dimensions_card(
         {"artifacts": result.get("artifacts") or {}},
         DIMENSION_RECORD_VERSION,
     )
-    if review["binding_sha256"] != binding or review["record_version"] != DIMENSION_RECORD_VERSION:
+    if current_dimensions(run, attempt, binding, DIMENSION_RECORD_VERSION) != review:
         raise ValueError("维度记录与 PCA 身份不符")
     dims = review["dims"]
     card = _card(
@@ -362,6 +368,8 @@ def build_marker_card(
     attempt = run.attempt("marker", review["marker_attempt_id"])
     if attempt is None or attempt["status"] != "completed" or not attempt.get("result"):
         raise ValueError("marker 结果缺失")
+    if not review_is_current(review, run["revision"]):
+        raise ValueError("marker 复核已失效，不能生成证据卡")
     if review["binding_sha256"] != attempt["binding_sha256"]:
         raise ValueError("marker 复核与结果身份不符")
     result = attempt["result"]

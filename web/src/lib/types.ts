@@ -452,6 +452,8 @@ export type ConfirmAction = 'script_confirm' | 'script_cancel' | 'data_confirm'
 export interface ScriptConfirmRequest {
   session_id: string
   action: 'script_confirm' | 'script_cancel'
+  /** 卡片消息 id：后端据此锁定要执行的脚本，避免多标签页执行错卡 */
+  message_id?: number
 }
 
 export interface DataConfirmRequest {

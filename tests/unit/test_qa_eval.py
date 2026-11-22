@@ -293,3 +293,11 @@ def test_sheet_exposes_manual_checks_and_executable_report_path(tmp_path: Path) 
     assert "chunk-1" in text
     assert "a" * 64 in text
     assert str(report_path.resolve()) in text
+
+
+def test_qa_review_does_not_import_the_evaluator():
+    """复核 CLI 与评测器共用 review_common，不能再反向依赖评测器重依赖。"""
+    source = (Path(__file__).resolve().parents[2] / "evals" / "qa_review.py").read_text(
+        encoding="utf-8"
+    )
+    assert "run_qa_eval" not in source

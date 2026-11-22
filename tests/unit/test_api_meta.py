@@ -83,7 +83,8 @@ def test_sidebar_degrades_when_knowledge_client_raises(tmp_path):
 
     assert response.status_code == 200
     body = response.json()
-    assert body["kb_stats"] == {"error": "kb down", "initialized": False}
+    # 异常原文只进日志：可能含本地绝对路径，不能回传浏览器。
+    assert body["kb_stats"] == {"error": "知识库统计不可用", "initialized": False}
     assert body["env"]["kb_path"] == str(missing)
     assert body["env"]["kb_ok"] is False
 

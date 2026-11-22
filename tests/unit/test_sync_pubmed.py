@@ -2,6 +2,8 @@
 
 from unittest import mock
 
+import pytest
+
 import sync_pubmed
 
 
@@ -9,13 +11,26 @@ def test_run_etl_export_returns_latest_csv(tmp_path):
     output_dir = tmp_path / "data" / "output"
     output_dir.mkdir(parents=True)
     (output_dir / "articles_20260921_100000.csv").write_text("a", encoding="utf-8")
-    (output_dir / "articles_20260921_110000.csv").write_text("b", encoding="utf-8")
 
-    with mock.patch("sync_pubmed.subprocess.run") as m_run:
+    def _write(*args, **kwargs):
+        (output_dir / "articles_20260921_110000.csv").write_text("b", encoding="utf-8")
+
+    with mock.patch("sync_pubmed.subprocess.run", side_effect=_write) as m_run:
         latest = sync_pubmed.run_etl_export(tmp_path)
 
     m_run.assert_called_once()
     assert latest.name == "articles_20260921_110000.csv"
+
+
+def test_run_etl_export_existing_batch_is_not_new(tmp_path):
+    """导出没有产生新文件时不能把旧批次当成本次结果。"""
+    output_dir = tmp_path / "data" / "output"
+    output_dir.mkdir(parents=True)
+    (output_dir / "articles_20260921_100000.csv").write_text("a", encoding="utf-8")
+
+    with mock.patch("sync_pubmed.subprocess.run"):
+        latest = sync_pubmed.run_etl_export(tmp_path)
+    assert latest is None
 
 
 def test_run_etl_export_no_csv_returns_none(tmp_path):
@@ -35,11 +50,14 @@ def test_run_etl_export_ignores_raw_csv(tmp_path):
     (output_dir / "articles_20260921_110000.csv").write_text("filtered", encoding="utf-8")
     (output_dir / "articles_raw_20260921_120000.csv").write_text("raw", encoding="utf-8")
 
-    with mock.patch("sync_pubmed.subprocess.run"):
+    def _write(*args, **kwargs):
+        (output_dir / "articles_20260921_130000.csv").write_text("filtered", encoding="utf-8")
+
+    with mock.patch("sync_pubmed.subprocess.run", side_effect=_write):
         latest = sync_pubmed.run_etl_export(tmp_path)
 
     assert latest is not None
-    assert latest.name == "articles_20260921_110000.csv"
+    assert latest.name == "articles_20260921_130000.csv"
 
 
 def test_run_etl_export_only_raw_csv_returns_none(tmp_path):
@@ -61,12 +79,31 @@ def test_copy_to_import(tmp_path):
     dest = sync_pubmed.copy_to_import(src, import_dir)
     assert dest.exists()
     assert dest.read_text(encoding="utf-8") == "data"
+    # 原子替换：不能留下中间文件让下游读到半截 CSV。
+    assert list(import_dir.glob("*.part")) == []
+
+
+def test_copy_to_import_leaves_no_partial_on_failure(tmp_path, monkeypatch):
+    src = tmp_path / "articles_20260921_120000.csv"
+    src.write_text("data", encoding="utf-8")
+    import_dir = tmp_path / "import"
+
+    def boom(*args, **kwargs):
+        raise OSError("disk full")
+
+    monkeypatch.setattr(sync_pubmed.shutil, "copy2", boom)
+
+    with pytest.raises(OSError):
+        sync_pubmed.copy_to_import(src, import_dir)
+    assert list(import_dir.glob("articles_*.csv")) == []
 
 
 def test_sync_and_import_full(tmp_path):
     output_dir = tmp_path / "data" / "output"
     output_dir.mkdir(parents=True)
-    (output_dir / "articles_20260921_130000.csv").write_text("x", encoding="utf-8")
+
+    def _write(*args, **kwargs):
+        (output_dir / "articles_20260921_130000.csv").write_text("x", encoding="utf-8")
 
     import_dir = tmp_path / "import"
     fake_import = {
@@ -78,7 +115,7 @@ def test_sync_and_import_full(tmp_path):
     }
 
     with (
-        mock.patch("sync_pubmed.subprocess.run"),
+        mock.patch("sync_pubmed.subprocess.run", side_effect=_write),
         mock.patch("sync_pubmed.import_via_cli", return_value=fake_import) as m_cli,
     ):
         result = sync_pubmed.sync_and_import(etl_dir=tmp_path, import_dir=import_dir)
@@ -92,7 +129,9 @@ def test_sync_and_import_only_imports_the_new_csv(tmp_path):
     """默认路径只导入本次复制的单个 CSV，不扫描整个目录"""
     output_dir = tmp_path / "data" / "output"
     output_dir.mkdir(parents=True)
-    (output_dir / "articles_20260921_140000.csv").write_text("x", encoding="utf-8")
+
+    def _write(*args, **kwargs):
+        (output_dir / "articles_20260921_140000.csv").write_text("x", encoding="utf-8")
 
     import_dir = tmp_path / "import"
     # 历史 CSV 已在台账中，目录里也真实存在
@@ -108,7 +147,7 @@ def test_sync_and_import_only_imports_the_new_csv(tmp_path):
     }
 
     with (
-        mock.patch("sync_pubmed.subprocess.run"),
+        mock.patch("sync_pubmed.subprocess.run", side_effect=_write),
         mock.patch("sync_pubmed.import_via_cli", return_value=fake_import) as m_cli,
     ):
         sync_pubmed.sync_and_import(etl_dir=tmp_path, import_dir=import_dir)
@@ -122,7 +161,9 @@ def test_sync_and_import_imported_is_new_count_not_scanned(tmp_path):
     """imported 反映新批次文章数，而非本次扫描提交的总数"""
     output_dir = tmp_path / "data" / "output"
     output_dir.mkdir(parents=True)
-    (output_dir / "articles_20260921_150000.csv").write_text("x", encoding="utf-8")
+
+    def _write(*args, **kwargs):
+        (output_dir / "articles_20260921_150000.csv").write_text("x", encoding="utf-8")
 
     fake_import = {
         "success": True,
@@ -133,7 +174,7 @@ def test_sync_and_import_imported_is_new_count_not_scanned(tmp_path):
     }
 
     with (
-        mock.patch("sync_pubmed.subprocess.run"),
+        mock.patch("sync_pubmed.subprocess.run", side_effect=_write),
         mock.patch("sync_pubmed.import_via_cli", return_value=fake_import),
     ):
         result = sync_pubmed.sync_and_import(etl_dir=tmp_path, import_dir=tmp_path / "import")
@@ -145,7 +186,9 @@ def test_sync_and_import_reimport_all_scans_whole_directory(tmp_path):
     """--reimport-all 时忽略台账，改为全量导入目录"""
     output_dir = tmp_path / "data" / "output"
     output_dir.mkdir(parents=True)
-    (output_dir / "articles_20260921_160000.csv").write_text("x", encoding="utf-8")
+
+    def _write(*args, **kwargs):
+        (output_dir / "articles_20260921_160000.csv").write_text("x", encoding="utf-8")
 
     fake_import = {
         "success": True,
@@ -156,7 +199,7 @@ def test_sync_and_import_reimport_all_scans_whole_directory(tmp_path):
     }
 
     with (
-        mock.patch("sync_pubmed.subprocess.run"),
+        mock.patch("sync_pubmed.subprocess.run", side_effect=_write),
         mock.patch("sync_pubmed.import_via_cli", return_value=fake_import) as m_cli,
     ):
         result = sync_pubmed.sync_and_import(
@@ -172,11 +215,13 @@ def test_sync_and_import_reimport_all_scans_whole_directory(tmp_path):
 def test_sync_and_import_skips_import_when_requested(tmp_path):
     output_dir = tmp_path / "data" / "output"
     output_dir.mkdir(parents=True)
-    (output_dir / "articles_20260921_130001.csv").write_text("x", encoding="utf-8")
+
+    def _write(*args, **kwargs):
+        (output_dir / "articles_20260921_130001.csv").write_text("x", encoding="utf-8")
 
     import_dir = tmp_path / "import"
     with (
-        mock.patch("sync_pubmed.subprocess.run"),
+        mock.patch("sync_pubmed.subprocess.run", side_effect=_write),
         mock.patch("sync_pubmed.import_via_cli") as m_cli,
     ):
         result = sync_pubmed.sync_and_import(
@@ -204,6 +249,51 @@ def test_sync_and_import_no_new_data(tmp_path):
     assert result["csv"] is None
 
 
+def test_sync_and_import_retries_leftover_batch_after_failed_import(tmp_path):
+    """导出已记账但没有新数据时，仍要补导上一轮导入失败的遗留批次。"""
+    output_dir = tmp_path / "data" / "output"
+    output_dir.mkdir(parents=True)
+    import_dir = tmp_path / "import"
+    import_dir.mkdir()
+    leftover = import_dir / "articles_20260921_170000.csv"
+    leftover.write_text("pmid,title,abstract\n1,a,b\n", encoding="utf-8")
+
+    fake_import = {"success": True, "new_count": 1, "imported_files": [leftover.name]}
+    with (
+        mock.patch("sync_pubmed.subprocess.run"),
+        mock.patch("sync_pubmed.import_via_cli", return_value=fake_import) as m_cli,
+    ):
+        result = sync_pubmed.sync_and_import(etl_dir=tmp_path, import_dir=import_dir)
+
+    assert m_cli.call_args.kwargs["csv_name"] == leftover.name
+    assert result["exported"] == 0
+    assert result["imported"] == 1
+    assert result["csv"] == str(leftover)
+
+
+def test_sync_and_import_does_not_retry_imported_batch(tmp_path):
+    """台账已记录的批次不再重复导入。"""
+    output_dir = tmp_path / "data" / "output"
+    output_dir.mkdir(parents=True)
+    import_dir = tmp_path / "import"
+    import_dir.mkdir()
+    imported = import_dir / "articles_20260921_180000.csv"
+    imported.write_text("pmid,title,abstract\n1,a,b\n", encoding="utf-8")
+    (import_dir / "import_ledger.json").write_text(
+        '{"files": {"articles_20260921_180000.csv": {"sha256": "x"}}}', encoding="utf-8"
+    )
+
+    with (
+        mock.patch("sync_pubmed.subprocess.run"),
+        mock.patch("sync_pubmed.import_via_cli") as m_cli,
+    ):
+        result = sync_pubmed.sync_and_import(etl_dir=tmp_path, import_dir=import_dir)
+
+    m_cli.assert_not_called()
+    assert result["imported"] == 0
+    assert result["csv"] is None
+
+
 def test_main_parses_args_and_calls_sync(tmp_path):
     etl_dir = tmp_path / "etl"
     etl_dir.mkdir()
@@ -213,6 +303,16 @@ def test_main_parses_args_and_calls_sync(tmp_path):
     assert rc == 0
     m_sync.assert_called_once()
     assert m_sync.call_args.kwargs["reimport_all"] is False
+
+
+def test_main_returns_nonzero_when_import_failed(tmp_path):
+    """导入失败必须反映到进程退出码。"""
+    etl_dir = tmp_path / "etl"
+    etl_dir.mkdir()
+    fake = {"exported": 1, "imported": 0, "failed": 1}
+    with mock.patch("sync_pubmed.sync_and_import", return_value=fake):
+        rc = sync_pubmed.main(["--etl-dir", str(etl_dir), "--import-dir", str(tmp_path / "import")])
+    assert rc == 1
 
 
 def test_main_parses_reimport_all_flag(tmp_path):

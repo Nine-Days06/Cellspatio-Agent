@@ -65,7 +65,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--reimport-all",
         action="store_true",
-        help="忽略台账，全量重导目录下所有文件（默认仅导入台账未记录的新文件）",
+        help="忽略台账，全量重导目录下的契约批次（默认仅导入台账未记录的新文件）",
     )
 
     args = parser.parse_args(argv)

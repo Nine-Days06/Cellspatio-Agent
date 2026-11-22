@@ -345,6 +345,18 @@ it('归档项目下的会话整组隐藏，不进入活动列表', () => {
   expect(screen.getByRole('button', { name: /^新会话/ })).toBeInTheDocument()
 })
 
+it('已归档会话可点开只读查看', () => {
+  const { onSelected } = renderSidebar({
+    sessions: [{ ...sessions[0], archived_at: '2026-10-02T00:00:00' }, sessions[1]],
+  })
+
+  fireEvent.click(screen.getByRole('button', { name: '显示已归档' }))
+  const region = screen.getByRole('region', { name: '已归档' })
+  fireEvent.click(within(region).getByRole('button', { name: '打开会话 肝癌项目' }))
+
+  expect(onSelected).toHaveBeenCalledWith('s1')
+})
+
 it('搜索态下打开已归档仍可找到归档项', () => {
   renderSidebar({
     sessions: [{ ...sessions[0], archived_at: '2026-10-02T00:00:00' }, sessions[1]],

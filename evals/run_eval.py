@@ -92,6 +92,10 @@ class _RecordingWM:
         self.last = ("query_knowledge", {"query": query})
         return {"status": "success", "type": "knowledge_response", "response": "scripted", "references": []}
 
+    def query_memory_for_agent(self, query, context):
+        self.last = ("query_memory", {"query": query})
+        return {"status": "success", "type": "memory_response", "response": "scripted", "references": []}
+
     def execute_workflow(self, user_input, context=None):
         self.last = ("fallback", {"input": user_input})
         return {"status": "success", "type": "general_response", "message": "fallback"}
@@ -256,9 +260,11 @@ def _run_kg_ingest(cases: list[dict]) -> dict[str, Any]:
                 # 完成运行（自动写入 KG）- 只要不报错即算通过
                 try:
                     wf_path = recorder.finish_run(run_id)
-                    kg_dir = Path(tmp) / "kg"
-                    workspace_dirs = list(kg_dir.glob("kg_*"))
-                    ok = len(workspace_dirs) == 1  # 只要创建了 workspace 目录即算通过
+                    record = json.loads(wf_path.read_text(encoding="utf-8"))
+                    # 记录必须真的属于本 case；KG 查询能返回列表，证明 ingest 链路已初始化。
+                    ok = record.get("run_id") == run_id and isinstance(
+                        kg_mem.query_entities(run_id), list
+                    )
                 except Exception as e:
                     ok = False
                     failures.append({"id": case["id"], "error": str(e)})
@@ -307,7 +313,13 @@ def _run_kg_query(cases: list[dict]) -> dict[str, Any]:
             try:
                 if case.get("expect_kg_read"):
                     entities = kg_query.query_entities(case["input"])
-                    ok = isinstance(entities, list)  # 只要返回列表即通过
+                    expected = case.get("expect_match") or []
+                    # 实体检索没有命中时退回生成式回答，仍要求回答包含期望关键词。
+                    joined = "\n".join(entities) or kg_query.query(case["input"])
+                    ok = bool(joined) and (
+                        not expected
+                        or any(token.lower() in joined.lower() for token in expected)
+                    )
                 else:
                     answer = kg_query.query(case["input"])
                     ok = isinstance(answer, str) and len(answer) > 0
@@ -392,9 +404,14 @@ def _run_best_practice(cases: list[dict]) -> dict[str, Any]:
 # ─────────────────────────────────────────────────────────────
 
 def run_scripted(cases_path: str | Path) -> dict[str, Any]:
+    """按用例期望的工具调用做离线回放。"""
+    return _run_scripted_cases(load_cases(cases_path))
+
+
+def _run_scripted_cases(cases: list[dict[str, Any]]) -> dict[str, Any]:
+    """run_scripted 的列表入口；p3d 复用同一匹配逻辑。"""
     from src.control.agent_runtime import AgentRuntime
 
-    cases = load_cases(cases_path)
     failures = []
     passed = 0
     for case in cases:
@@ -433,6 +450,15 @@ def run_p3d(cases_path: str | Path) -> dict[str, Any]:
     kg_ingest_cases = [c for c in cases if c.get("expect_kg_write")]
     kg_query_cases = [c for c in cases if c.get("expect_kg_read") or c.get("expect_kg_query")]
     bp_cases = [c for c in cases if c.get("expect_best_practice")]
+    # 工具路由用例同样属于 p3d 覆盖面：漏跑会让 accuracy 分母偏小、报告假绿。
+    covered = {c["id"] for c in skill_cases + kg_ingest_cases + kg_query_cases + bp_cases}
+    tool_cases = [
+        c for c in cases if c["id"] not in covered and "expect_tool" in c
+    ]
+    # 没有任何已知期望字段的用例无法判定，必须显式暴露而不是静默丢弃。
+    uncovered = sorted(
+        c["id"] for c in cases if c["id"] not in covered and "expect_tool" not in c
+    )
     
     reports = {}
     
@@ -444,6 +470,8 @@ def run_p3d(cases_path: str | Path) -> dict[str, Any]:
         reports["kg_query"] = _run_kg_query(kg_query_cases)
     if bp_cases:
         reports["best_practice"] = _run_best_practice(bp_cases)
+    if tool_cases:
+        reports["tool_routing"] = _run_scripted_cases(tool_cases)
     
     # 汇总
     total = sum(r["total"] for r in reports.values())
@@ -458,6 +486,7 @@ def run_p3d(cases_path: str | Path) -> dict[str, Any]:
         "passed": passed,
         "failures": failures,
         "accuracy": passed / total if total else 0.0,
+        "uncovered": uncovered,
         "sub_reports": reports,
     }
 
