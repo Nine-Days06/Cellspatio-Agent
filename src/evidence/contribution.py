@@ -158,6 +158,12 @@ def build_envelope(
     card_payload = will_send.get("card")
     if not isinstance(submission, dict) or not isinstance(card_payload, dict):
         raise EvidenceError("invalid_input", "预览缺少 submission 或 card")
+    # preview_sha256 由客户端可重算，不能作为这些治理字段的防篡改依据。
+    # 目前没有服务端事实源，只能拒绝任何非默认值，避免提交者自抬排序。
+    if submission.get("donor_count") is not None or submission.get(
+        "independent_replications"
+    ) not in (0, None):
+        raise EvidenceError("invalid_input", "治理字段由服务端生成，不能由客户端指定")
     card = EvidenceCard.model_validate(card_payload)
     if _sha256(card.model_dump_json()) != preview.get("card_sha256"):
         raise EvidenceError("invalid_input", "预览中的证据卡已被修改")
