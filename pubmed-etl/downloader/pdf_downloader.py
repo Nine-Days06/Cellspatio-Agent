@@ -678,9 +678,9 @@ def _local_fulltext_exists(pmid: str) -> bool:
     )
 
 
-def run_pdf_download(db_path: Path = DB_PATH):
+def run_pdf_download(db_path: Path = DB_PATH) -> int:
     """
-    执行 PDF 下载主流程。
+    执行 PDF 下载主流程，返回最终失败篇数。
     """
     logger.info("=" * 60)
     logger.info("阶段四：下载 OA 全文（仅 PDF）")
@@ -700,7 +700,7 @@ def run_pdf_download(db_path: Path = DB_PATH):
 
     if not records:
         logger.info("未发现符合下载条件（有 PMC ID 且 LLM 判定相关）的文献。")
-        return
+        return 0
 
     logger.info(f"符合条件的文献共 {len(records)} 篇，开始获取下载链接...")
 
@@ -864,12 +864,13 @@ def run_pdf_download(db_path: Path = DB_PATH):
         logger.info("本次无下载任务执行，保留既有检查点。")
 
     logger.info(f"存储位置: {PDF_DIR}")
+    return len(failed_items)
 
 
 # ── 失败重试（断点续传） ─────────────────────────────────────
 
 
-def run_pdf_retry(db_path: Path = DB_PATH):
+def run_pdf_retry(db_path: Path = DB_PATH) -> int:
     """
     仅重试之前失败的 PDF 下载，支持断点续传。
     优先恢复 checkpoint；无 checkpoint 时读取最新失败清单 CSV。
@@ -885,7 +886,7 @@ def run_pdf_retry(db_path: Path = DB_PATH):
         pending = load_failed_items_from_csv()
         if not pending:
             logger.info("无检查点且无失败清单，没有可重试项。")
-            return
+            return 0
 
     # 与 run_pdf_download 使用同一判据过滤本地已有全文，避免两阶段口径不一致
     pending = [item for item in pending if not _local_fulltext_exists(item.get("pmid") or "")]
@@ -894,7 +895,7 @@ def run_pdf_retry(db_path: Path = DB_PATH):
     if not pending:
         _clear_pdf_checkpoint()
         logger.info("所有待重试项均已存在，无需下载。")
-        return
+        return 0
 
     # 混合取链：已有链接的直接用；链接缺失的重新查 OA API
     missing = [item for item in pending if not item.get("links")]
@@ -939,3 +940,4 @@ def run_pdf_retry(db_path: Path = DB_PATH):
     else:
         _clear_pdf_checkpoint()
         logger.info("全部重试成功。")
+    return len(failed_items)

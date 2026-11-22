@@ -4,7 +4,7 @@
 人类多组学文献批量下载与清洗系统 — 一键运行入口
 
 用法：
-  python main.py                   # 完整流程（下载 → 解析 → 硬过滤）
+  python main.py                   # 默认流程（下载 → 解析 → 硬过滤；不含 pdf/validate）
   python main.py --step download   # 仅下载 XML
   python main.py --step parse      # 仅解析 XML → SQLite
   python main.py --step clean      # 仅硬过滤
@@ -50,16 +50,16 @@ def step_clean():
     run_hard_filter(db_path=DB_PATH)
 
 
-def step_pdf():
+def step_pdf() -> int:
     from downloader.pdf_downloader import run_pdf_download
 
-    run_pdf_download(db_path=DB_PATH)
+    return run_pdf_download(db_path=DB_PATH)
 
 
-def step_pdf_retry():
+def step_pdf_retry() -> int:
     from downloader.pdf_downloader import run_pdf_retry
 
-    run_pdf_retry(db_path=DB_PATH)
+    return run_pdf_retry(db_path=DB_PATH)
 
 
 def step_validate(batch=False):
@@ -152,11 +152,13 @@ def main():
     if step in ("clean", "all"):
         step_clean()
 
+    failures = 0
+
     if step == "pdf":
-        step_pdf()
+        failures += step_pdf()
 
     if step == "pdf-retry":
-        step_pdf_retry()
+        failures += step_pdf_retry()
 
     if step == "validate":
         step_validate(args.batch)
@@ -169,6 +171,11 @@ def main():
 
     if step == "export-no-abstract":
         step_export_no_abstract()
+
+    if failures:
+        logger.error(f"✖  有 {failures} 篇全文未完成，请查看失败清单后重试")
+        logger.info(f"   输出目录: {OUTPUT_DIR}")
+        raise SystemExit(1)
 
     logger.info("✔  全部流程完成")
     logger.info(f"   输出目录: {OUTPUT_DIR}")
