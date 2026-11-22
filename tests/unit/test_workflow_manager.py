@@ -1,6 +1,8 @@
 import json
 from pathlib import Path
 
+import pytest
+
 from src.control.intent_parser import IntentParser
 from src.control.workflow_manager import WorkflowManager
 from src.control.workflow_recorder import WorkflowRecorder
@@ -638,6 +640,26 @@ def _make_lazy_manager(
     ), client
 
 
+@pytest.fixture(autouse=True)
+def _enable_auto_ingest(monkeypatch: pytest.MonkeyPatch) -> None:
+    """既有 lazy ingest 用例验证开启后的行为，默认关闭另有用例覆盖。"""
+    monkeypatch.setenv("KB_AUTO_INGEST", "1")
+
+
+def test_auto_ingest_is_off_by_default(monkeypatch: pytest.MonkeyPatch):
+    """未设置 KB_AUTO_INGEST 时，即便缺目标 ID 也不补库。"""
+    monkeypatch.delenv("KB_AUTO_INGEST", raising=False)
+    kegg = FakeBioFetcher("kegg")
+    registry = FakeBioRegistry({"kegg": kegg})
+    wm, client = _make_lazy_manager(context_len=50, registry=registry, builder=FakeBuilder())
+
+    result = wm.execute_workflow("p53 通路 map04115 是什么")
+
+    assert result["lazy_ingested"] == []
+    assert kegg.ingested == []
+    assert client.query_calls
+
+
 def test_lazy_ingest_triggers_on_short_context_with_explicit_kegg_id():
     """context < 300 且问题含 map04115 → 自动 kegg 入库，再 query"""
     kegg = FakeBioFetcher("kegg")
@@ -1142,6 +1164,40 @@ def test_de_explanation_receives_real_stats(tmp_path):
     assert exp.data["total_genes"] == 3
     assert exp.data["significant_genes"] == 1
     assert exp.data.get("input_file")
+    assert "3 个基因" in result["message"]
+    assert "1 个显著" in result["message"]
+
+
+def test_de_success_with_zero_significant_genes_is_reported(tmp_path):
+    """0 个显著基因仍是成功结果，但消息必须显式写出来。"""
+    csv_file = tmp_path / "counts.csv"
+    csv_file.write_text("gene,count\nG1,1\n", encoding="utf-8")
+    gen = FakeGen()
+
+    def exec_side_effect(code: str):
+        with open(gen.last["params"]["output_file"], "w", encoding="utf-8") as f:
+            f.write("gene,padj\nG1,0.9\nG2,0.5\n")
+
+        class R:
+            returncode = 0
+
+        return R()
+
+    wm = WorkflowManager(
+        intent_parser=FakeIntent(extract_params_return={"input_files": []}),
+        knowledge_client=None,
+        r_executor=FakeExec(side_effect=exec_side_effect),
+        visualizer=None,
+        r_script_generator=gen,
+        require_script_confirmation=False,
+        analysis_roots=AnalysisRoots(SessionStore(), tmp_path),
+    )
+    result = wm.execute_workflow(
+        "做差异表达", context={"downloaded_assets": [{"access_path": str(csv_file)}]}
+    )
+    assert result["status"] == "success"
+    assert "2 个基因" in result["message"]
+    assert "0 个显著" in result["message"]
 
 
 def test_unsupported_analysis_type_returns_error():

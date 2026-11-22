@@ -35,7 +35,6 @@ BLOCKED_NO_ROLE = "no_role"
 BLOCKED_FINISHED = "finished"
 BLOCKED_SELF = "self_review"
 BLOCKED_ROLE_SIGNED = "role_signed"
-BLOCKED_ALREADY_REVIEWED = "already_reviewed"
 
 DOMAIN_CHECKLIST = ("method_complete", "claim_matches_observation", "limitations_present")
 COMPLIANCE_CHECKLIST = (
@@ -68,6 +67,8 @@ class ReviewAccess:
     actions: tuple[str, ...]
     blocked_reason: str | None
     blocked_code: str | None = None
+    # 双角色账号可先签领域再签合规；页面据此展示当前待签角色。
+    role: str | None = None
 
 
 def action_role(action: str) -> str | None:
@@ -165,12 +166,7 @@ def review_decision(
 
     if action in PASS_ACTIONS:
         require_checklist(role, checklist)
-        other_pass = ACTION_COMPLIANCE_PASS if action == ACTION_DOMAIN_PASS else ACTION_DOMAIN_PASS
-        if any(
-            prior_actor == actor_id and prior_action == other_pass
-            for prior_actor, prior_action in records
-        ):
-            raise EvidenceError("invalid_input", "同一 actor 不能同时签署领域与合规")
+        # 双角色账号可依次签领域与合规；同角色重复签署仍由下面的 duplicate 拦截。
         if any(prior_action == action for _, prior_action in records):
             raise EvidenceError("duplicate", "该角色已经通过")
     elif not str(reason or "").strip():
@@ -204,28 +200,30 @@ def viewer_access(
     status: str,
     contributor_id: str,
     viewer_actor: str,
-    viewer_role: str,
+    viewer_roles: Iterable[str],
     events: Iterable[Event],
 ) -> ReviewAccess:
     """查看者可执行的动作；不可执行时给出与现有页面一致的阻断原因。"""
-    if viewer_role not in (ROLE_DOMAIN, ROLE_COMPLIANCE):
+    held = set(viewer_roles)
+    roles = [role for role in (ROLE_DOMAIN, ROLE_COMPLIANCE) if role in held]
+    if not roles:
         return ReviewAccess((), "当前账号没有复核角色。", BLOCKED_NO_ROLE)
     if status != STATE_PENDING:
         return ReviewAccess((), "该提交已结束审核。", BLOCKED_FINISHED)
 
-    prefix = "domain" if viewer_role == ROLE_DOMAIN else "compliance"
-    pass_action = f"{prefix}_pass"
     records = list(events)
-    if any(action == pass_action for _, action in records):
-        return ReviewAccess((), "本角色已签署，等待另一角色复核。", BLOCKED_ROLE_SIGNED)
     if contributor_id == viewer_actor:
         return ReviewAccess((), "贡献者不得审核自己的提交", BLOCKED_SELF)
-    if any(actor_id == viewer_actor for actor_id, _ in records):
-        return ReviewAccess((), "你已复核过该提交。", BLOCKED_ALREADY_REVIEWED)
-    return ReviewAccess(
-        (f"{prefix}_pass", f"{prefix}_needs_changes", f"{prefix}_reject"),
-        None,
-    )
+    for role in roles:
+        prefix = "domain" if role == ROLE_DOMAIN else "compliance"
+        if any(action == f"{prefix}_pass" for _, action in records):
+            continue
+        return ReviewAccess(
+            (f"{prefix}_pass", f"{prefix}_needs_changes", f"{prefix}_reject"),
+            None,
+            role=role,
+        )
+    return ReviewAccess((), "本角色已签署，等待另一角色复核。", BLOCKED_ROLE_SIGNED)
 
 
 def withdraw_role(*, actor_id: str, contributor_id: str, roles: Iterable[str]) -> str:

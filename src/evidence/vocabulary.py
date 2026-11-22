@@ -7,7 +7,6 @@ GATE_LABELS = {
     "pca_dimensions": "PCA 维度",
     "cluster_review": "聚类复核",
     "marker_review": "Marker 复核",
-    "knowledge_qa_review": "知识问答复核",
 }
 
 STATUS_LABELS = {

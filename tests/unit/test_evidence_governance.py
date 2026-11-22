@@ -120,6 +120,25 @@ def test_submit_and_dual_sign_make_accepted(tmp_path):
     assert results[0]["evidence_id"] == submitted["evidence_id"]
 
 
+def test_search_ignores_unset_ranking_fields(tmp_path):
+    """贡献者数/独立复现没有事实源，检索只按受理时间与来源稳定排序。"""
+    store = GovernanceStore(tmp_path)
+    older = store.submit(_envelope(_card("evc-old")))["evidence_id"]
+    newer = store.submit(_envelope(_card("evc-new")))["evidence_id"]
+    _accept(store, older)
+    _accept(store, newer)
+    with store._conn() as conn:
+        conn.execute(
+            "UPDATE submissions SET accepted_at=?, donor_count=999 WHERE submission_id=?",
+            ("2026-01-01T00:00:00+00:00", older),
+        )
+        conn.execute(
+            "UPDATE submissions SET accepted_at=?, donor_count=0 WHERE submission_id=?",
+            ("2026-01-02T00:00:00+00:00", newer),
+        )
+    assert [item["evidence_id"] for item in store.search()] == [newer, older]
+
+
 def test_view_returns_summary_and_events_in_one_read(tmp_path):
     """复核页一次读取摘要与事件，字段与分开读取一致。"""
     store = GovernanceStore(tmp_path)
@@ -169,7 +188,8 @@ def test_contributor_cannot_supersede_other_submission(tmp_path):
     assert exc.value.kind == "permission_denied"
 
 
-def test_same_actor_cannot_sign_both_roles(tmp_path):
+def test_dual_role_actor_can_sign_both_roles(tmp_path):
+    """同一账号持领域与合规角色时，可依次签完两角色并受理。"""
     store = GovernanceStore(tmp_path)
     sid = store.submit(_envelope(_card()))["evidence_id"]
     store.review(
@@ -180,14 +200,14 @@ def test_same_actor_cannot_sign_both_roles(tmp_path):
         checklist=_checks(DOMAIN_CHECKLIST),
     )
 
-    with pytest.raises(ValueError, match="不能同时签署"):
-        store.review(
-            sid,
-            actor_id="same",
-            role=ROLE_COMPLIANCE,
-            action=ACTION_COMPLIANCE_PASS,
-            checklist=_checks(COMPLIANCE_CHECKLIST),
-        )
+    accepted = store.review(
+        sid,
+        actor_id="same",
+        role=ROLE_COMPLIANCE,
+        action=ACTION_COMPLIANCE_PASS,
+        checklist=_checks(COMPLIANCE_CHECKLIST),
+    )
+    assert accepted["status"] == "accepted"
 
 
 def test_pass_requires_full_checklist(tmp_path):
@@ -303,15 +323,11 @@ def test_duplicate_card_id_rejected(tmp_path):
         store.submit(_envelope(_card(), contributor="bob"))
 
 
-def test_qa_card_requires_valid_source_id(tmp_path):
+def test_source_ids_must_match_supported_format(tmp_path):
     store = GovernanceStore(tmp_path)
 
-    with pytest.raises(ValueError, match="至少有一个来源"):
-        store.submit(_envelope(_card(gate="knowledge_qa_review")))
     with pytest.raises(ValueError, match="来源 ID 格式"):
-        store.submit(
-            _envelope(_card("evc-qa", gate="knowledge_qa_review", source_ids=["not-a-source"]))
-        )
+        store.submit(_envelope(_card("evc-source", source_ids=["not-a-source"])))
 
 
 def test_withdraw_hides_from_search_and_returns_tombstone(tmp_path):

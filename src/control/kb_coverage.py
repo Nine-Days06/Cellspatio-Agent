@@ -37,6 +37,11 @@ _UNIPROT_ACC_RE = re.compile(
 logger = logging.getLogger(__name__)
 
 
+def auto_ingest_enabled() -> bool:
+    """是否允许知识问答自动补库；默认关闭，显式 KB_AUTO_INGEST=1 开启。"""
+    return os.environ.get("KB_AUTO_INGEST", "0") == "1"
+
+
 class KnowledgeCoverage:
     """知识覆盖判断与按需补库。"""
 

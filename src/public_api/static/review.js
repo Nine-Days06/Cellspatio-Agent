@@ -413,8 +413,6 @@ function previewBlock(preview) {
         归属账号: submission.contributor_id,
         目标库: submission.target_library,
         修订: submission.revises_submission_id || "—",
-        贡献者数: submission.donor_count ?? "—",
-        独立复现: submission.independent_replications,
         同意版本: submission.consent_text_version,
       }),
     ),
