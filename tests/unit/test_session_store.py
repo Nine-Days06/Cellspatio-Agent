@@ -140,14 +140,57 @@ def test_archived_project_hides_its_sessions_and_rejects_new_ones():
         store.create_session("新会话", project_id=pid)
 
 
-def test_archive_project_rejects_running_session(monkeypatch):
+def test_archive_project_checks_running_inside_write_transaction():
+    """归档项目不再走 running_stage 预检，而是在写事务内用同一连接查询。"""
     store = SessionStore()
     pid = store.create_project("运行中项目")
-    store.create_session("会话", project_id=pid)
-    monkeypatch.setattr(store, "running_stage", lambda _sid: "PCA")
+    sid = store.create_session("会话", project_id=pid)
+    _seed_running_filter(store, sid)
 
-    with pytest.raises(ValueError, match="运行中"):
+    with pytest.raises(ValueError, match="过滤运行中，不能归档项目"):
         store.update_project(pid, archived=True)
+    assert store.get_project(pid)["archived_at"] is None
+
+
+def _seed_running_filter(store: SessionStore, session_id: str) -> None:
+    """在写事务外插入一个 running 过滤 attempt，模拟并发领取。"""
+    now = "2026-11-12T00:00:00+00:00"
+    with store._conn() as conn:
+        conn.execute(
+            "INSERT INTO qc_runs (run_id, session_id, directory, evidence) VALUES (?, ?, ?, '{}')",
+            ("run-x", session_id, "sc_qc"),
+        )
+        conn.execute(
+            "INSERT INTO qc_previews (preview_id, run_id, payload) VALUES ('p1', 'run-x', '{}')"
+        )
+        conn.execute(
+            "INSERT INTO sc_filter_attempts "
+            "(attempt_id, run_id, preview_id, binding_sha256, tool_version, directory, status, "
+            "created_at) VALUES ('f1', 'run-x', 'p1', 'a', '1', 'sc_filter/f1', 'running', ?)",
+            (now,),
+        )
+
+
+def test_delete_session_rejects_running_stage():
+    """预检与删除在同一写事务内：运行中的阶段必须拦住删除。"""
+    store = SessionStore()
+    sid = store.create_session()
+    _seed_running_filter(store, sid)
+
+    with pytest.raises(ValueError, match="过滤运行中，不能删除会话"):
+        store.delete_session(sid)
+    assert store.get_session(sid) is not None
+
+
+def test_archive_session_rejects_running_stage():
+    """归档同样在写事务内复检，避免检查后被并发领取。"""
+    store = SessionStore()
+    sid = store.create_session()
+    _seed_running_filter(store, sid)
+
+    with pytest.raises(ValueError, match="过滤运行中，不能归档会话"):
+        store.archive_session(sid)
+    assert store.get_session(sid)["archived_at"] is None
 
 
 def test_append_message_sets_title_from_first_user_message():

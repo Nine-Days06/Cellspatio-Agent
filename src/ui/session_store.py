@@ -253,6 +253,18 @@ def _decode_results(text: str | None) -> dict[str, Any] | None:
     return payload
 
 
+def _running_stage(conn: sqlite3.Connection, session_id: str) -> str | None:
+    """在给定连接（含写事务）内查正在运行的受控阶段。"""
+    for spec in STAGE_SPECS:
+        sql = (
+            f"SELECT 1 FROM {spec.table} a JOIN qc_runs r USING(run_id) "
+            "WHERE r.session_id=? AND a.status='running'"
+        )
+        if conn.execute(sql, (session_id,)).fetchone():
+            return spec.label
+    return None
+
+
 class SessionStore:
     """会话/消息 CRUD。每次操作独立短连接，不做连接池。"""
 
@@ -375,16 +387,6 @@ class SessionStore:
         archived: bool | None = None,
     ) -> None:
         """None = 不更新；archived 显式切换归档时间。"""
-        if archived:
-            with self._conn() as conn:
-                rows = conn.execute(
-                    "SELECT id FROM sessions WHERE project_id=? AND archived_at IS NULL",
-                    (project_id,),
-                ).fetchall()
-            for row in rows:
-                running = self.running_stage(row["id"])
-                if running:
-                    raise StoreError("conflict", f"{running}运行中，不能归档项目")
         sets, vals = [], []
         if label is not None:
             sets.append("label=?")
@@ -400,6 +402,17 @@ class SessionStore:
         sets.append("updated_at=?")
         vals.extend([_now(), project_id])
         with self._conn() as conn:
+            if archived:
+                # 与归档写入同一写事务，避免预检后会话被并发领取阶段
+                conn.execute("BEGIN IMMEDIATE")
+                rows = conn.execute(
+                    "SELECT id FROM sessions WHERE project_id=? AND archived_at IS NULL",
+                    (project_id,),
+                ).fetchall()
+                for row in rows:
+                    running = _running_stage(conn, row["id"])
+                    if running:
+                        raise StoreError("conflict", f"{running}运行中，不能归档项目")
             cursor = conn.execute(f"UPDATE projects SET {', '.join(sets)} WHERE id=?", vals)
             if cursor.rowcount == 0:
                 raise StoreError("not_found", "项目不存在")
@@ -450,11 +463,13 @@ class SessionStore:
 
     def archive_session(self, session_id: str, archived: bool = True) -> None:
         """归档或恢复会话；运行中的受控阶段拒绝归档。"""
-        if archived:
-            running = self.running_stage(session_id)
-            if running:
-                raise StoreError("conflict", f"{running}运行中，不能归档会话")
         with self._conn() as conn:
+            if archived:
+                # 预检与写入同一写事务，避免检查后被并发领取阶段
+                conn.execute("BEGIN IMMEDIATE")
+                running = _running_stage(conn, session_id)
+                if running:
+                    raise StoreError("conflict", f"{running}运行中，不能归档会话")
             cursor = conn.execute(
                 "UPDATE sessions SET archived_at=?, updated_at=? WHERE id=?",
                 (_now() if archived else None, _now(), session_id),
@@ -464,25 +479,18 @@ class SessionStore:
 
     def delete_session(self, session_id: str) -> None:
         """删除会话及其消息；运行中的受控阶段拒绝删除。"""
-        running = self.running_stage(session_id)
-        if running:
-            raise StoreError("conflict", f"{running}运行中，不能删除会话")
         with self._conn() as conn:
             conn.execute("BEGIN IMMEDIATE")
+            running = _running_stage(conn, session_id)
+            if running:
+                raise StoreError("conflict", f"{running}运行中，不能删除会话")
             conn.execute("DELETE FROM messages WHERE session_id = ?", (session_id,))
             conn.execute("DELETE FROM sessions WHERE id = ?", (session_id,))
 
     def running_stage(self, session_id: str) -> str | None:
         """返回正在运行的受控阶段名；供删除/归档前预检。"""
         with self._conn() as conn:
-            for spec in STAGE_SPECS:
-                sql = (
-                    f"SELECT 1 FROM {spec.table} a JOIN qc_runs r USING(run_id) "
-                    "WHERE r.session_id=? AND a.status='running'"
-                )
-                if conn.execute(sql, (session_id,)).fetchone():
-                    return spec.label
-        return None
+            return _running_stage(conn, session_id)
 
     def append_message(
         self,
