@@ -211,10 +211,15 @@ class CellSpatioAgent:
         params: dict[str, Any],
         script: str,
         method_context: str | None = None,
+        session_id: str | None = None,
     ) -> dict[str, Any]:
         """用户确认脚本后执行（含 repair 循环）"""
         return self.workflow_manager.execute_confirmed_script(
-            analysis_type, params, script, method_context=method_context
+            analysis_type,
+            params,
+            script,
+            method_context=method_context,
+            session_id=session_id,
         )
 
     def replay(self, run_id: str) -> dict[str, Any]:

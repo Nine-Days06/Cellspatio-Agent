@@ -94,6 +94,7 @@ def confirm_script(
                 pending.get("params") or {},
                 pending.get("script", ""),
                 method_context=pending.get("method_context"),
+                session_id=session_id,
             )
         except Exception:
             # 执行失败不能把卡片留在终态，否则用户既看不到结果也无法重试。

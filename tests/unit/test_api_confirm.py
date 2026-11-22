@@ -93,6 +93,7 @@ def test_script_confirm_runs_script_and_persists_result(client):
             "params": {"group_by": "condition"},
             "script": "library(DESeq2)",
             "method_context": "DESeq2 常规流程",
+            "session_id": sid,
         }
     ]
     assert _latest_pending(sid)["pending_script"]["status"] == STATUS_CONFIRMED

@@ -1,6 +1,10 @@
 """脚本执行前人工确认（HITL）"""
 
+from pathlib import Path
+
 from src.control.workflow_manager import WorkflowManager
+from src.ui.analysis_roots import AnalysisRoots
+from src.ui.session_store import SessionStore
 from tests.unit.fakes import FakeExec, FakeGen, FakeIntent
 
 
@@ -54,3 +58,28 @@ def test_execute_confirmed_script_runs_repair_loop(tmp_path):
     assert result["status"] == "success"
     assert "user-approved" in wm.r_executor.codes[0]
     assert result["repair_count"] == 0
+
+
+def test_confirmed_script_uses_session_analysis_root(tmp_path):
+    """人工确认执行必须沿用会话根，胶囊不能落全局 data/analysis。"""
+    store = SessionStore()
+    project_id = store.create_project("proj", str(tmp_path))
+    session_id = store.create_session("s", project_id=project_id)
+    wm = _make(require=True)
+    wm.analysis_roots = AnalysisRoots(store, tmp_path)
+    f = tmp_path / "c.csv"
+    f.write_text("g,a,b\nG1,1,2\n", encoding="utf-8")
+    out = tmp_path / "out.de_results.csv"
+
+    result = wm.execute_confirmed_script(
+        "differential_expression",
+        {"input_file": str(f), "output_file": str(out)},
+        f'#!/usr/bin/env Rscript\noutput_file <- "{out}"\n',
+        session_id=session_id,
+    )
+
+    assert result["status"] == "success"
+    capsule = Path(result["capsule_dir"])
+    assert capsule.parent.parent.name == "analysis"
+    assert capsule.parent.parent.parent.name == project_id
+    assert "projects" in capsule.parts

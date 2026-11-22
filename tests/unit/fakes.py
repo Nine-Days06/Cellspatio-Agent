@@ -201,13 +201,16 @@ class FakeAgent:
         self.confirm_calls: list[dict[str, Any]] = []
         self.download_calls: list[dict[str, Any]] = []
 
-    def execute_confirmed_script(self, analysis_type, params, script, method_context=None):
+    def execute_confirmed_script(
+        self, analysis_type, params, script, method_context=None, session_id=None
+    ):
         self.confirm_calls.append(
             {
                 "analysis_type": analysis_type,
                 "params": params,
                 "script": script,
                 "method_context": method_context,
+                "session_id": session_id,
             }
         )
         return self.confirm_result or {"status": "success", "message": "分析完成"}

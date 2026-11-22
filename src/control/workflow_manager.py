@@ -624,8 +624,9 @@ class WorkflowManager:
         params: dict[str, Any],
         script: str,
         method_context: str | None = None,
+        session_id: str | None = None,
     ) -> dict[str, Any]:
-        """用户确认脚本后执行（含 repair 循环）"""
+        """用户确认脚本后执行（含 repair 循环）；session_id 决定产物与胶囊根目录"""
         if analysis_type not in ("differential_expression", "spatial"):
             return {
                 "status": "error",
@@ -637,7 +638,7 @@ class WorkflowManager:
             params,
             script,
             method_context,
-            {"script_approved": True},
+            {"script_approved": True, "session_id": session_id},
         )
 
     def _record_analysis_to_kb(
