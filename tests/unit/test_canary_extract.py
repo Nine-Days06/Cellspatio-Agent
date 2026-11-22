@@ -91,3 +91,26 @@ def test_canary_fails_when_entities_unreadable(monkeypatch):
 
     monkeypatch.setattr(canary_extract, "run_canary", _boom)
     assert main(["--n", "1"]) == 1
+
+
+def test_canary_fails_when_no_entities_extracted(monkeypatch):
+    """入库成功但抽出 0 个实体同样是质量门失败，不能报 ok。"""
+
+    class _Client:
+        def __init__(self, **kwargs):
+            pass
+
+        def insert_documents(self, texts):
+            pass
+
+    monkeypatch.setattr("src.knowledge.lightrag_client.LightRAGClient", _Client)
+    monkeypatch.setattr("src.data.pubtator.load_pmid_genes", lambda: {})
+    monkeypatch.setattr(
+        "src.knowledge.article_text.convert_article_to_text",
+        lambda row, genes=None: "text",
+    )
+    monkeypatch.setattr(canary_extract, "_load_articles", lambda n: [{"pmid": "1", "title": "T"}])
+    monkeypatch.setattr(canary_extract, "_read_entity_names", lambda client: [])
+
+    with pytest.raises(RuntimeError, match="未抽取到实体"):
+        canary_extract.run_canary(1)

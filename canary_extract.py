@@ -95,6 +95,8 @@ def run_canary(n: int = 15, working_dir: str = ".canary_kb") -> dict[str, Any]:
     names = _read_entity_names(client)
     if names is None:
         raise RuntimeError("无法读取金丝雀知识库实体，不能判定质量门")
+    if not names:
+        raise RuntimeError("金丝雀知识库未抽取到实体，不能判定质量门")
     report = judge_entities(names, banned)
     print(f"金丝雀：{len(texts)} 篇入库，抽取实体 {len(names)} 个")
     print(json.dumps(report, ensure_ascii=False, indent=2))
