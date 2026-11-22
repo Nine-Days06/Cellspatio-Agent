@@ -267,6 +267,9 @@ data/raw/geo/GSE123456/
 - 执行失败时，差异表达/空间脚本最多自动携带报错修复 2 次；
 - 单次 R 执行上限 300 秒，超时按失败处理。
 
+待确认脚本已关联本地准备记录时，刷新页面或重启应用后会校验会话、脚本和参数，
+校验通过的卡片仍可确认。旧卡片或绑定不匹配的卡片会过期，需要重新发起分析。
+
 没有输入数据时：
 
 - 差异表达返回 `needs_input`，先下载或指定输入文件；
@@ -326,6 +329,9 @@ counts 必须是有限的非负整数，不能缺失或四舍五入；不支持 
 - 代码快照：`snapshots/<run_id>/`（Git worktree）；
 - 复现胶囊：`data/analysis/capsules/<时间戳>/`（项目会话在 `data/projects/<id>/analysis/capsules/`）；
 - 数据血缘：`data/lineage.jsonl`。
+
+差异表达与空间分析等待脚本确认时，只保存 `.wrroc/` 中的准备事实与运行身份，
+尚未执行 R，也不触发运行完成时的代码快照或知识图谱写入。
 
 ```bash
 python -m src.cli.replay <run_id>

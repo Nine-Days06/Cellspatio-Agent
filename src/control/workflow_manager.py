@@ -126,8 +126,12 @@ class WorkflowManager:
         return result
 
     def _record_outputs(self, run_id: str, result: dict[str, Any]) -> None:
-        """把分析结果中的输出文件写入本次运行记录。"""
+        """保存待确认事实，或把分析输出文件写入本次运行记录。"""
         if self.workflow_recorder is None:
+            return
+        if result.get("status") == "needs_script_confirmation":
+            self.workflow_recorder.save_pending_script(run_id, result)
+            result["run_id"] = run_id
             return
         capsule_dir = result.get("capsule_dir")
         if capsule_dir:
@@ -909,6 +913,9 @@ class WorkflowManager:
             run_id=run_id,
         )
         yield run_id
+        execution = self.workflow_recorder.get_record(run_id)
+        if execution and execution.meta.get("dynamic_script", {}).get("status") == "pending":
+            return
         try:
             self.workflow_recorder.finish_run(run_id)
         except Exception as exc:  # noqa: BLE001 - 记录失败不能触发整轮分析重跑

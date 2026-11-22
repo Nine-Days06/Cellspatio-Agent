@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import contextvars
 import uuid
+from copy import deepcopy
 from pathlib import Path
 from typing import Any
 
@@ -188,6 +189,42 @@ class WorkflowRecorder:
 
         exec_.add_output(WorkflowOutput(name=name, path=path, type=type, meta=meta or {}))
 
+    def save_pending_script(self, run_id: str, result: dict[str, Any]) -> Path:
+        """保存动态脚本准备事实；不创建完成快照或发布 KG。"""
+        exec_ = self._require_execution(run_id)
+        exec_.meta["dynamic_script"] = deepcopy(
+            {
+                "status": "pending",
+                "session_id": exec_.meta.get("context", {}).get("session_id"),
+                "analysis_type": result["analysis_type"],
+                "script": result["script"],
+                "params": result["params"],
+                "method_context": result.get("method_context"),
+            }
+        )
+        return self.store.persist(self._to_workflow_run(exec_))
+
+    def restore_run(self, run_id: str) -> WorkflowExecution:
+        """从 WRROC 恢复原运行到当前 recorder；未知或记录身份错配时拒绝。"""
+        run = self.store.load(run_id)
+        if run is None or run.run_id != run_id:
+            raise KeyError(f"Run ID not found: {run_id}")
+        execution = WorkflowExecution(
+            run_id=run.run_id,
+            timestamp=run.timestamp,
+            intent=IntentRecord(**run.intent.model_dump()),
+            parameters=ParameterRecord(**run.params),
+            steps=run.steps,
+            outputs=run.outputs,
+            meta={
+                "user_input": run.input.user_input,
+                "context": run.input.context,
+                **run.meta,
+            },
+        )
+        self._current_context()[run_id] = execution
+        return execution
+
     def finish_run(self, run_id: str) -> Path:
         """结束记录，返回完整 WorkflowExecution，并自动落盘到 WRROCStore + 创建 Git 快照 + 写入 LightRAG 知识图谱。"""
         exec_ = self._require_execution(run_id)
@@ -243,6 +280,7 @@ class WorkflowRecorder:
 
         return WorkflowRun(
             run_id=exec_.run_id,
+            timestamp=exec_.timestamp,
             intent=WorkflowIntent(
                 type=exec_.intent.type,
                 analysis_type=exec_.intent.analysis_type,

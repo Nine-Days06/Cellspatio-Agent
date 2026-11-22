@@ -1,65 +1,69 @@
-"""Phase 2 端到端：workflow → WRROC → Snapshot → Replay"""
+"""Phase 2 真实本地执行：workflow → WRROC → Snapshot → Replay。"""
 
-import tempfile
+import subprocess
 from pathlib import Path
+from typing import Any
 
-from src.main import CellSpatioAgent
+import pytest
+
+from src.analysis.r_executor import RExecutor
+from src.control.intent_parser import IntentParser
+from src.control.replay import replay_run
+from src.control.snapshot_manager import SnapshotManager
+from src.control.workflow_manager import WorkflowManager
+from src.control.workflow_recorder import WorkflowRecorder
+from src.control.wrroc_store import WRROCStore
+from src.ui.analysis_roots import AnalysisRoots
+from src.ui.session_store import SessionStore
 
 
-def test_full_workflow_with_snapshot(monkeypatch):
-    """完整链路：配置 Agent → 执行分析 → 自动生成 WRROC + Snapshot → Replay 复现"""
-    monkeypatch.setattr("src.main.get_current_llm", lambda: (None, "test-model"))
-    monkeypatch.setattr("src.main.LightRAGClient.__init__", lambda self, *a, **k: None)
+class BaseRGenerator:
+    """代替外部生成器，使用不依赖分析包的基础 R 落盘脚本。"""
 
-    with tempfile.TemporaryDirectory() as tmp:
-        repo = Path(tmp) / "repo"
-        repo.mkdir()
-        import subprocess
+    def generate_code(
+        self, analysis_type: str, params: dict[str, Any], method_context: str | None = None
+    ) -> str:
+        """为真实执行器提供一个已知产物。"""
+        output = Path(params["output_file"]).as_posix()
+        return f'write.csv(data.frame(gene="G1", padj=0.01), "{output}", row.names=FALSE)\n'
 
-        subprocess.run(["git", "init"], cwd=repo, check=True, capture_output=True)
-        subprocess.run(["git", "config", "user.email", "test@test.com"], cwd=repo, check=True)
-        subprocess.run(["git", "config", "user.name", "Test"], cwd=repo, check=True)
 
-        csv_file = repo / "counts.csv"
-        csv_file.write_text("gene,sample1,sample2\nTP53,10,12\nGAPDH,100,110\n", encoding="utf-8")
+def test_full_workflow_with_snapshot(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """直接完成路径才生成真实 Git 快照，Replay 只恢复快照。"""
+    monkeypatch.setenv("CELLSPATIO_LOCAL", "0")
+    monkeypatch.setenv("CELLSPATIO_SESSIONS_DB", str(tmp_path / "sessions.db"))
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    subprocess.run(["git", "init"], cwd=repo, check=True, capture_output=True)
+    subprocess.run(["git", "config", "user.email", "test@example.invalid"], cwd=repo, check=True)
+    subprocess.run(["git", "config", "user.name", "Test"], cwd=repo, check=True)
+    subprocess.run(["git", "commit", "--allow-empty", "-m", "test: baseline"], cwd=repo, check=True)
+    source = repo / "counts.csv"
+    source.write_text("gene,A,B\nG1,10,12\n", encoding="utf-8")
+    recorder = WorkflowRecorder(repo / ".wrroc", repo_root=repo)
+    manager = WorkflowManager(
+        intent_parser=IntentParser(),
+        knowledge_client=None,
+        r_executor=RExecutor(),
+        visualizer=None,
+        r_script_generator=BaseRGenerator(),
+        workflow_recorder=recorder,
+        require_script_confirmation=False,
+        analysis_roots=AnalysisRoots(SessionStore(tmp_path / "sessions.db"), repo),
+    )
 
-        config = {"knowledge_dir": str(repo / "kb"), "data_dir": str(repo / "data")}
-        agent = CellSpatioAgent(config)
+    result = manager.execute_workflow(
+        "分析差异表达基因", context={"downloaded_assets": [{"access_path": str(source)}]}
+    )
 
-        # 执行分析（无 LLM → 回退旧路径）
-        context = {
-            "downloaded_assets": [
-                {"source": "geo", "asset_id": "GSE1", "access_path": str(csv_file)}
-            ]
-        }
-        result = agent.execute_workflow("分析差异表达基因", context=context)
-
-        # 应进入 HITL 确认门
-        assert result["status"] in ("needs_script_confirmation", "success")
-        assert result["analysis_type"] == "differential_expression"
-
-        # 验证 WRROC 生成
-        from src.control.wrroc_store import WRROCStore
-
-        store = WRROCStore(base_dir=repo / ".wrroc")
-        runs = store.list_runs()
-        assert len(runs) >= 1
-        run = runs[-1]
-        assert run.intent.analysis_type == "differential_expression"
-        assert len(run.steps) >= 1
-        assert run.steps[0].tool == "run_analysis"
-
-        # 验证 Snapshot 生成
-        from src.control.snapshot_manager import SnapshotManager
-
-        mgr = SnapshotManager(repo_root=repo)
-        snaps = mgr.list_snapshots()
-        assert len(snaps) >= 1
-        last_snap_id = list(snaps.keys())[-1]
-        assert mgr.get_snapshot_path(last_snap_id).exists()
-
-        # Replay 复现
-        from src.control.replay import replay_run
-
-        replay_result = replay_run(last_snap_id, repo_root=repo)
-        assert replay_result["status"] == "restored"
+    assert result["status"] == "success"
+    runs = WRROCStore(repo / ".wrroc").list_runs()
+    assert len(runs) == 1
+    run = runs[0]
+    assert run.intent.analysis_type == "differential_expression"
+    assert run.steps[0].tool == "run_analysis"
+    assert Path(result["results"]["output_file"]).is_file()
+    assert any(output.path == result["results"]["output_file"] for output in run.outputs)
+    snapshots = SnapshotManager(repo).list_snapshots()
+    assert list(snapshots) == [run.run_id]
+    assert replay_run(run.run_id, repo_root=repo)["status"] == "restored"

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from typing import TYPE_CHECKING, Any
 
 from src.chat_messages import build_assistant_message
@@ -15,7 +16,10 @@ from src.ui.confirm_protocol import (
 )
 
 if TYPE_CHECKING:
+    from src.control.workflow_recorder import WorkflowRecorder
     from src.ui.session_store import SessionStore
+
+logger = logging.getLogger(__name__)
 
 ERR_NO_PENDING_SCRIPT = "no_pending_script"
 ERR_MISSING_SOURCE = "missing_source"
@@ -32,12 +36,15 @@ class ConfirmFlowError(ValueError):
 
 
 def restore_pending(
-    store: SessionStore, session_id: str, messages: list[dict[str, Any]]
+    store: SessionStore,
+    session_id: str,
+    messages: list[dict[str, Any]],
+    recorder: WorkflowRecorder | None = None,
 ) -> PendingScript | None:
     """会话加载时的待确认脚本过期语义。
 
-    只看最新一条带 pending_script 的消息：pending → 把**这一条**（按 id）落库
-    置 expired 后按 expired 返回；expired → 原样返回；其他状态 → None。
+    新卡与持久化准备事实完全匹配时保持 pending；旧卡或无法核验的新卡按原契约过期。
+    只看最新一条带 pending_script 的消息；其他终态返回 None。
     """
     for msg in reversed(messages):
         pending = msg.get("pending_script")
@@ -45,10 +52,25 @@ def restore_pending(
             continue
         status = pending.get("status")
         if status in (STATUS_PENDING, STATUS_EXPIRED):
+            if status == STATUS_PENDING and pending.get("run_id") and recorder is not None:
+                try:
+                    record = recorder.restore_run(pending["run_id"])
+                    expected = {
+                        "status": STATUS_PENDING,
+                        "session_id": session_id,
+                        "analysis_type": pending.get("analysis_type"),
+                        "script": pending.get("script", ""),
+                        "params": pending.get("params") or {},
+                        "method_context": pending.get("method_context"),
+                    }
+                    if record.meta.get("dynamic_script") == expected:
+                        return dict(pending)
+                except (OSError, ValueError, KeyError, TypeError) as exc:
+                    logger.warning("pending run restore failed: %s", exc)
             if status == STATUS_PENDING:
                 # 必须按 id 定位：并发新建的卡可能已是最新一条，不能被这里误废。
                 store.set_script_status(session_id, STATUS_EXPIRED, message_id=msg["id"])
-            return {
+            restored = {
                 "script": pending.get("script", ""),
                 "analysis_type": pending.get("analysis_type"),
                 "params": pending.get("params") or {},
@@ -56,6 +78,9 @@ def restore_pending(
                 "user_request": pending.get("user_request", ""),
                 "status": STATUS_EXPIRED,
             }
+            if pending.get("run_id"):
+                restored["run_id"] = pending["run_id"]
+            return restored
         # 只看最新一条 pending_script，更早的不再考虑
         return None
     return None
