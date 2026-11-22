@@ -2,6 +2,8 @@
 
 from unittest import mock
 
+import pytest
+
 import sync_pubmed
 
 
@@ -77,6 +79,23 @@ def test_copy_to_import(tmp_path):
     dest = sync_pubmed.copy_to_import(src, import_dir)
     assert dest.exists()
     assert dest.read_text(encoding="utf-8") == "data"
+    # 原子替换：不能留下中间文件让下游读到半截 CSV。
+    assert list(import_dir.glob("*.part")) == []
+
+
+def test_copy_to_import_leaves_no_partial_on_failure(tmp_path, monkeypatch):
+    src = tmp_path / "articles_20260921_120000.csv"
+    src.write_text("data", encoding="utf-8")
+    import_dir = tmp_path / "import"
+
+    def boom(*args, **kwargs):
+        raise OSError("disk full")
+
+    monkeypatch.setattr(sync_pubmed.shutil, "copy2", boom)
+
+    with pytest.raises(OSError):
+        sync_pubmed.copy_to_import(src, import_dir)
+    assert list(import_dir.glob("articles_*.csv")) == []
 
 
 def test_sync_and_import_full(tmp_path):

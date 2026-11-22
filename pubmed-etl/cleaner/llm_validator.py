@@ -1648,13 +1648,22 @@ def _export_articles_csv(db_path: Path = DB_PATH) -> Path | None:
     out_dir.mkdir(parents=True, exist_ok=True)
     ts = datetime.now().strftime("%Y%m%d_%H%M%S")
     csv_path = out_dir / f"articles_{ts}.csv"
+    partial = csv_path.with_suffix(csv_path.suffix + ".part")
 
-    with open(csv_path, "w", newline="", encoding="utf-8-sig") as f:
+    with open(partial, "w", newline="", encoding="utf-8-sig") as f:
         writer = csv.DictWriter(f, fieldnames=ARTICLES_EXPORT_FIELDS)
         writer.writeheader()
         for r in rows:
             writer.writerow(r)
+        f.flush()
+        os.fsync(f.fileno())
 
-    _append_exported_pmids([r["pmid"] for r in rows])
+    try:
+        _append_exported_pmids([r["pmid"] for r in rows])
+    except Exception:
+        # 账本没写成，产物也不能留：否则下轮会换个文件名重新导出 → 重复入库。
+        partial.unlink(missing_ok=True)
+        raise
+    os.replace(partial, csv_path)
     logger.info(f"主项目兼容文献已导出: {csv_path} ({len(rows)} 篇)")
     return csv_path

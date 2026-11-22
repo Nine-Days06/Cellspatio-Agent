@@ -872,6 +872,22 @@ class TestExportArticlesCsv(unittest.TestCase):
         self.assertEqual(rows["A"]["authors"], "AuthorA,AuthorB")
         self.assertEqual(rows["A"]["year"], "2021")
 
+    def test_export_rolls_back_csv_when_ledger_write_fails(self):
+        """账本写失败时不能留下 CSV，否则下轮会换名重导 → 重复入库。"""
+        import cleaner.llm_validator as mod
+
+        orig = mod.OUTPUT_DIR
+        mod.OUTPUT_DIR = self.temp_dir
+        try:
+            with patch.object(mod, "_append_exported_pmids", side_effect=OSError("disk full")):
+                with self.assertRaises(OSError):
+                    mod._export_articles_csv(db_path=self.db_path)
+        finally:
+            mod.OUTPUT_DIR = orig
+
+        self.assertEqual(list(Path(self.temp_dir).glob("articles_*.csv")), [])
+        self.assertEqual(list(Path(self.temp_dir).glob("*.part")), [])
+
     def test_export_filename_and_bom(self):
         path = self._export()
         self.assertTrue(path.name.startswith("articles_"))
@@ -979,4 +995,3 @@ class TestBatchResultDbTarget(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
-

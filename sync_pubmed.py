@@ -11,6 +11,7 @@
 """
 
 import argparse
+import os
 import shutil
 import subprocess
 import sys
@@ -53,7 +54,14 @@ def copy_to_import(csv_path: Path, import_dir: Path) -> Path:
     """复制导出的 CSV 到主项目 data/import/，返回目标路径"""
     import_dir.mkdir(parents=True, exist_ok=True)
     dest = import_dir / csv_path.name
-    shutil.copy2(csv_path, dest)
+    partial = dest.with_suffix(dest.suffix + ".part")
+    # 消费者按文件名 + 表头判定批次，半文件同样合法 → 必须原子替换。
+    try:
+        shutil.copy2(csv_path, partial)
+    except Exception:
+        partial.unlink(missing_ok=True)
+        raise
+    os.replace(partial, dest)
     return dest
 
 
