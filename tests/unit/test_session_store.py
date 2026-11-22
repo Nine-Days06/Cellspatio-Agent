@@ -212,6 +212,19 @@ def test_archive_session_rejects_running_stage():
     assert store.get_session(sid)["archived_at"] is None
 
 
+def test_batch_delete_rolls_back_when_a_later_session_is_running():
+    """批量删除必须整体失败：先删的会话不能在回滚后消失。"""
+    store = SessionStore()
+    first = store.create_session("一")
+    second = store.create_session("二")
+    _seed_running_filter(store, second)
+
+    with pytest.raises(ValueError, match="过滤运行中，不能删除会话"):
+        store.delete_sessions_and_project([first, second])
+    assert store.get_session(first) is not None
+    assert store.get_session(second) is not None
+
+
 def test_append_message_sets_title_from_first_user_message():
     store = SessionStore()
     sid = store.create_session("新会话")

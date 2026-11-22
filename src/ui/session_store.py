@@ -494,6 +494,30 @@ class SessionStore:
             conn.execute("DELETE FROM messages WHERE session_id = ?", (session_id,))
             conn.execute("DELETE FROM sessions WHERE id = ?", (session_id,))
 
+    def delete_sessions_and_project(
+        self, session_ids: list[str], project_id: str | None = None
+    ) -> None:
+        """单事务删除多个会话（可选连带项目），避免中途失败留下半删状态。"""
+        with self._conn() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            for session_id in session_ids:
+                running = _running_stage(conn, session_id)
+                if running:
+                    raise StoreError("conflict", f"{running}运行中，不能删除会话")
+                conn.execute("DELETE FROM messages WHERE session_id = ?", (session_id,))
+                conn.execute("DELETE FROM sessions WHERE id = ?", (session_id,))
+            if project_id is None:
+                return
+            row = conn.execute(
+                "SELECT COUNT(*) AS total FROM sessions WHERE project_id = ?",
+                (project_id,),
+            ).fetchone()
+            if row["total"]:
+                raise ValueError("项目仍有会话，不能删除")
+            cursor = conn.execute("DELETE FROM projects WHERE id = ?", (project_id,))
+            if cursor.rowcount == 0:
+                raise ValueError("项目不存在")
+
     def running_stage(self, session_id: str) -> str | None:
         """返回正在运行的受控阶段名；供删除/归档前预检。"""
         with self._conn() as conn:

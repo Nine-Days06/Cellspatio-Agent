@@ -335,16 +335,40 @@ def test_delete_file_failure_keeps_db(store, root, monkeypatch):
 def test_delete_rolls_back_files_when_db_fails(store, root, monkeypatch):
     sid, run_dir = _seed_session(store, root)
 
-    def fail(_session_id):
+    def fail(_session_ids, _project_id):
         raise ValueError("db down")
 
-    monkeypatch.setattr(store, "delete_session", fail)
+    monkeypatch.setattr(store, "delete_sessions_and_project", fail)
     result = records.delete_records("session", sid, store=store, root=root)
 
     assert result["status"] == "db-failed"
     assert result["restore_failures"] == []
     assert run_dir.is_dir()
     assert (root / ".wrroc" / "run-1").is_dir()
+
+
+def test_project_cascade_deletes_all_sessions_in_one_transaction(store, root, monkeypatch):
+    """第二个会话删除失败时不能留下第一个已删的半状态。"""
+    pid = store.create_project("多会话项目")
+    first, first_dir = _seed_session(store, root, title="一", run_id="run-1")
+    second, second_dir = _seed_session(store, root, title="二", run_id="run-2")
+    store.move_session(first, pid)
+    store.move_session(second, pid)
+
+    calls: list[int] = []
+    original = store.delete_sessions_and_project
+
+    def tracking(session_ids, project_id):
+        calls.append(len(session_ids))
+        return original(session_ids, project_id)
+
+    monkeypatch.setattr(store, "delete_sessions_and_project", tracking)
+    result = records.delete_records("project", pid, cascade=True, store=store, root=root)
+
+    assert result["status"] == "ok"
+    assert calls == [2]
+    assert store.get_session(first) is None and store.get_session(second) is None
+    assert not first_dir.exists() and not second_dir.exists()
 
 
 def test_project_dry_run_reports_requires_cascade(store, root):

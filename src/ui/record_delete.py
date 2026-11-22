@@ -177,10 +177,11 @@ def delete_records(
         }
 
     try:
-        for session in sessions:
-            store.delete_session(session["id"])
-        if project is not None:
-            store.delete_project(target_id)
+        # 单事务：中途失败不能留下“部分会话已删、文件已搬走”的半删状态。
+        store.delete_sessions_and_project(
+            [session["id"] for session in sessions],
+            target_id if project is not None else None,
+        )
     except (OSError, sqlite3.Error, ValueError) as exc:
         return {
             "status": "db-failed",
