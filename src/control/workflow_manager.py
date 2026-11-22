@@ -16,6 +16,7 @@ from src.control.kb_coverage import (
     KnowledgeCoverage,
 )
 from src.data.tenx import validate_tenx
+from src.schemas.workflow import AnalysisType, StepType
 from src.ui.analysis_roots import AnalysisRoots
 from src.ui.session_store import SessionStore
 
@@ -86,9 +87,16 @@ class WorkflowManager:
         intent = self.intent_parser.parse(user_input, context)
         params = self.intent_parser.extract_parameters(user_input)
 
+        analysis_type = intent.get("analysis_type")
+        try:
+            AnalysisType(analysis_type)
+        except ValueError:
+            # 解析器可返回 visualization/pathway_analysis 等未执行类型；
+            # 记录契约只接受受支持子类型，避免在 start_execution 处 500。
+            analysis_type = None
         intent_dict = {
             "type": intent.get("type", "general"),
-            "analysis_type": intent.get("analysis_type"),
+            "analysis_type": analysis_type,
             "original_input": user_input,
             "confidence": intent.get("confidence", 1.0),
         }
@@ -112,10 +120,30 @@ class WorkflowManager:
             else:
                 result = self._execute_general_workflow(intent, params, context, run_id)
 
+            self._record_outputs(run_id, result)
+
         return result
 
+    def _record_outputs(self, run_id: str, result: dict[str, Any]) -> None:
+        """把分析结果中的输出文件写入本次运行记录。"""
+        if self.workflow_recorder is None:
+            return
+        capsule_dir = result.get("capsule_dir")
+        if capsule_dir:
+            self.workflow_recorder.record_output(
+                run_id, name="capsule", path=str(capsule_dir), type="other"
+            )
+        path = (result.get("results") or {}).get("output_file")
+        if not path:
+            return
+        suffix = Path(path).suffix.lower().lstrip(".")
+        file_type = suffix if suffix in {"csv", "json", "txt", "png", "rds"} else "other"
+        self.workflow_recorder.record_output(
+            run_id, name=Path(path).name, path=str(path), type=file_type
+        )
+
     def _resolve_input_file(self, params: dict[str, Any], context: dict[str, Any]) -> str | None:
-        """解析输入文件：优先 params.input_files，其次 context.downloaded_assets"""
+        """解析输入文件：显式路径优先，不可用时回退下载资产。"""
         if params.get("input_files"):
             candidate = params["input_files"][0]
             if Path(candidate).exists():
@@ -267,10 +295,6 @@ class WorkflowManager:
         ctx = self.methods_kb.query_context(question)
         return ctx or None
 
-    def _project_output_root(self, context: dict[str, Any]) -> Path | None:
-        """项目会话的产物根；未归类会话返回 None，沿用旧输出位置。"""
-        return self.analysis_roots.project_scoped(context.get("session_id"))
-
     @staticmethod
     def _de_output_stats(output_file: str) -> dict[str, Any]:
         """读取 DE 输出 CSV，统计总基因数与 padj<0.05 显著数；失败返回 0/0"""
@@ -307,12 +331,7 @@ class WorkflowManager:
             params={"analysis_type": "differential_expression"},
         )
 
-        input_file = None
-        # 优先使用已下载的资产（context 传入），其次才用参数里的文件
-        if context.get("downloaded_assets"):
-            input_file = context["downloaded_assets"][-1].get("access_path")
-        elif params.get("input_files"):
-            input_file = params["input_files"][0]
+        input_file = self._resolve_input_file(params, context)
 
         # 无数据：返回 needs_input 终态（AgentRuntime 短路上抛 UI），不再伪造成功
         if not input_file:
@@ -333,46 +352,30 @@ class WorkflowManager:
             )
             return result
 
-        project_root = self._project_output_root(context)
-        if project_root is None:
-            output_file = str(Path(input_file).with_suffix(".de_results.csv"))
-        else:
-            output_dir = project_root / "de"
-            output_dir.mkdir(parents=True, exist_ok=True)
-            output_file = str(output_dir / f"{run_id or 'de'}.de_results.csv")
+        output_dir = self.analysis_roots.for_session(context.get("session_id")) / "de"
+        output_dir.mkdir(parents=True, exist_ok=True)
+        output_file = str(output_dir / f"{run_id or 'de'}.de_results.csv")
         method_context = self._method_context_for("differential_expression", params)
-        code = self.r_script_generator.generate_code(
-            "differential_expression",
-            {"input_file": input_file, "output_file": output_file},
-            method_context=method_context,
+        de_params = {"input_file": input_file, "output_file": output_file}
+        if params.get("group_csv"):
+            de_params["group_csv"] = params["group_csv"]
+        # 与 spatial/单细胞共用同一确认构造，避免返回体字段各写一份。
+        result = self._generate_or_finish(
+            "differential_expression", de_params, method_context, context
         )
-
-        # HITL: 需要脚本确认且未通过 context 批准
-        if self.require_script_confirmation and not context.get("script_approved"):
-            result = {
-                "status": "needs_script_confirmation",
-                "analysis_type": "differential_expression",
-                "script": code,
-                "params": {"input_file": input_file, "output_file": output_file},
-                "method_context": method_context,
-            }
+        if result.get("status") == "needs_script_confirmation":
             self._record_step(
                 run_id,
                 step_id="de_analysis_script_generated",
                 step_type="analysis",
                 tool="run_analysis",
                 params={"analysis_type": "differential_expression"},
-                output={"status": "needs_script_confirmation", "script": code[:100]},
+                output={
+                    "status": "needs_script_confirmation",
+                    "script": str(result["script"])[:100],
+                },
             )
             return result
-
-        result = self._finish_analysis(
-            "differential_expression",
-            {"input_file": input_file, "output_file": output_file},
-            code,
-            method_context,
-            context,
-        )
 
         self._record_step(
             run_id,
@@ -459,29 +462,13 @@ class WorkflowManager:
             )
             return result
 
-        project_root = self._project_output_root(context)
-        if project_root is not None:
-            output_dir = project_root / "spatial"
-            output_dir.mkdir(parents=True, exist_ok=True)
-            run_params = {
-                "input_file": input_file,
-                "output_file": str(output_dir / f"{run_id or 'spatial'}.spatial_clusters.csv"),
-                "plot_file": str(output_dir / f"{run_id or 'spatial'}.spatial_plot.png"),
-            }
-        elif Path(input_file).is_dir():
-            base = Path(input_file)
-            run_params = {
-                "input_file": input_file,
-                "output_file": str(base / ".spatial_clusters.csv"),
-                "plot_file": str(base / ".spatial_plot.png"),
-            }
-        else:
-            base = Path(input_file)
-            run_params = {
-                "input_file": input_file,
-                "output_file": str(base.with_suffix(".spatial_clusters.csv")),
-                "plot_file": str(base.with_suffix(".spatial_plot.png")),
-            }
+        output_dir = self.analysis_roots.for_session(context.get("session_id")) / "spatial"
+        output_dir.mkdir(parents=True, exist_ok=True)
+        run_params = {
+            "input_file": input_file,
+            "output_file": str(output_dir / f"{run_id or 'spatial'}.spatial_clusters.csv"),
+            "plot_file": str(output_dir / f"{run_id or 'spatial'}.spatial_plot.png"),
+        }
         method_context = self._method_context_for("spatial", params)
         return self._generate_or_finish("spatial", run_params, method_context, context)
 
@@ -541,7 +528,24 @@ class WorkflowManager:
             result.returncode,
         )
         if result.returncode == 0:
-            self._record_analysis_to_kb(analysis_type, input_file, output_file)
+            output_path = Path(output_file)
+            # R 脚本可能吞掉错误后正常退出；没有产物就不能算成功
+            if not output_path.is_file() or output_path.stat().st_size == 0:
+                return {
+                    "status": "error",
+                    "analysis_type": analysis_type,
+                    "message": (
+                        f"{self._analysis_type_zh(analysis_type)}未产出结果文件: {output_path.name}"
+                    ),
+                    "results": {
+                        "returncode": result.returncode,
+                        "repair_count": repair_count,
+                    },
+                }
+        if result.returncode == 0:
+            self._record_analysis_to_kb(
+                analysis_type, input_file, output_file, params.get("question", "")
+            )
         explanation = None
         if self.explainer is not None:
             try:
@@ -570,6 +574,8 @@ class WorkflowManager:
                     params={"input_file": input_file, "output_file": output_file},
                     script_code=current_code,
                     results={"returncode": result.returncode, "output_file": output_file},
+                    out_root=self.analysis_roots.for_session(context.get("session_id"))
+                    / "capsules",
                 )
             )
         except Exception as e:  # noqa: BLE001
@@ -603,8 +609,9 @@ class WorkflowManager:
         params: dict[str, Any],
         script: str,
         method_context: str | None = None,
+        session_id: str | None = None,
     ) -> dict[str, Any]:
-        """用户确认脚本后执行（含 repair 循环）"""
+        """用户确认脚本后执行（含 repair 循环）；session_id 决定产物与胶囊根目录"""
         if analysis_type not in ("differential_expression", "spatial"):
             return {
                 "status": "error",
@@ -616,25 +623,24 @@ class WorkflowManager:
             params,
             script,
             method_context,
-            {"script_approved": True},
+            {"script_approved": True, "session_id": session_id},
         )
 
     def _record_analysis_to_kb(
         self, analysis_type: str, input_file: str, output_file: str, user_question: str = ""
     ) -> None:
-        """分析成功后写回主知识库（闭环记忆）；失败仅告警"""
+        """分析成功后写回主知识库（闭环记忆）；失败仅告警。
+
+        只写文件名，不写绝对路径：共享知识库不应记录本机目录结构。
+        """
         if self.knowledge_builder is None:
             return
-        zh = {
-            "differential_expression": "差异表达",
-            "single_cell": "单细胞聚类",
-            "spatial": "空间转录组",
-        }.get(analysis_type, analysis_type)
+        zh = self._analysis_type_zh(analysis_type)
         text = (
             "# 分析实验记录\n"
             f"类型：{zh}（{analysis_type}）\n"
-            f"输入：{input_file}\n"
-            f"输出：{output_file}\n"
+            f"输入：{Path(input_file).name}\n"
+            f"输出：{Path(output_file).name}\n"
             f"触发问题：{user_question}\n"
             "状态：执行成功（returncode=0）\n"
         )
@@ -807,8 +813,8 @@ class WorkflowManager:
         self._record_step(
             run_id,
             step_id="general_workflow",
-            step_type="general",
-            tool="none",
+            step_type=StepType.GENERAL,
+            tool=None,
             params={},
             output={"status": "success", "message": "通用响应"},
         )
@@ -895,15 +901,18 @@ class WorkflowManager:
             run_id=run_id,
         )
         yield run_id
-        self.workflow_recorder.finish_run(run_id)
+        try:
+            self.workflow_recorder.finish_run(run_id)
+        except Exception as exc:  # noqa: BLE001 - 记录失败不能触发整轮分析重跑
+            logger.error("workflow record finalize failed: %s", exc)
 
     def _record_step(
         self,
         run_id: str | None,
         *,
         step_id: str,
-        step_type: str,
-        tool: str,
+        step_type: StepType | str,
+        tool: str | None,
         params: dict[str, Any],
         output: dict[str, Any] | None = None,
     ) -> None:
@@ -980,4 +989,6 @@ class WorkflowManager:
             "original_input": context.get("last_user_input", "") or params.get("question", ""),
         }
         with self._record_run(intent, params, context) as run_id:
-            return self._execute_analysis_workflow(intent, params, context, run_id)
+            result = self._execute_analysis_workflow(intent, params, context, run_id)
+            self._record_outputs(run_id, result)
+        return result

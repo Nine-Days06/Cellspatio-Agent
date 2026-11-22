@@ -30,7 +30,7 @@ class LoginLimiter:
         now = self._clock()
         with self._guard:
             # shortcut: 超过 1024 个 key 时清理过期项，避免随机用户名撑大内存。
-            if len(self._attempts) > _MAX_KEYS:
+            if len(self._attempts) >= _MAX_KEYS:
                 stale = [
                     k
                     for k, timestamps in self._attempts.items()
@@ -39,6 +39,18 @@ class LoginLimiter:
                 for k in stale:
                     self._attempts.pop(k, None)
             hits = [t for t in self._attempts.get(key, ()) if now - t < self._window]
+            if key not in self._attempts and len(self._attempts) >= _MAX_KEYS:
+                # 只驱逐未锁定的桶：驱逐锁定桶等于把爆破窗口重新打开。
+                evictable = [
+                    k
+                    for k, timestamps in self._attempts.items()
+                    if len([t for t in timestamps if now - t < self._window]) < self._max_attempts
+                ]
+                if not evictable:
+                    # 全部处于锁定中：fail-closed，拒绝为新 key 记账。
+                    return True
+                oldest = min(evictable, key=lambda k: self._attempts[k][-1])
+                self._attempts.pop(oldest, None)
             if len(hits) >= self._max_attempts:
                 self._attempts[key] = hits
                 return True

@@ -7,16 +7,18 @@ from collections import Counter
 from pathlib import Path
 from typing import Any
 
-from src.analysis.qc_preview import _digest
+from src.analysis.evidence import digest, records
 from src.analysis.r_executor import RExecutorError
-from src.analysis.sc_cluster import _r_value, checked_completed_cluster
+from src.analysis.r_values import r_value
+from src.analysis.sc_cluster import checked_completed_cluster
 from src.analysis.sc_marker_reviews import (
     CLUSTER_RECORD_VERSION,
     review_binding,
 )
-from src.analysis.sc_pca import DIMENSION_RECORD_VERSION, _records
-from src.analysis.sc_qc import _fingerprints
-from src.analysis.stage_run import executor_streams, finish_stage, start_stage
+from src.analysis.sc_pca import DIMENSION_RECORD_VERSION
+from src.analysis.stage_run import FixedStageRun, PreparedStage, run_fixed_stage
+from src.analysis.stage_verify import CompletedStageCheck, verify_completed
+from src.stage_defs import MARKER, stage_directory
 
 MARKER_TOOL_VERSION = "1.0.1"
 MARKER_REVIEW_VERSION = "sc-marker-review/1.0.0"
@@ -163,15 +165,15 @@ def execution_binding(run: dict[str, Any], snapshot: dict[str, Any]) -> str:
         "tool_version": MARKER_TOOL_VERSION,
         "protocol": PROTOCOL,
     }
-    return _digest(json.dumps(payload, sort_keys=True, ensure_ascii=False).encode())
+    return digest(json.dumps(payload, sort_keys=True, ensure_ascii=False).encode())
 
 
 def marker_script(cluster_directory: Path, pca_directory: Path, directory: Path) -> str:
     """只在独立 R 子进程 trace 固定版本快路径；NULL 或后备均立即失败。"""
     args = ",\n    ".join(
-        f"{k}={v if v in ('Inf', '-Inf') else _r_value(v)}"
+        f"{k}={v if v in ('Inf', '-Inf') else r_value(v)}"
         if isinstance(v, str)
-        else f"{k}={_r_value(v)}"
+        else f"{k}={r_value(v)}"
         for k, v in PROTOCOL["markers"].items()
         if k != "norm.method"
     )
@@ -181,11 +183,11 @@ suppressPackageStartupMessages(library(jsonlite))
 cluster_dir <- {json.dumps(cluster_directory.as_posix())}
 pca_dir <- {json.dumps(pca_directory.as_posix())}
 output_dir <- {json.dumps(directory.as_posix())}
-required <- unlist(fromJSON({_r_value(json.dumps(PROTOCOL["packages"]))}))
+required <- unlist(fromJSON({r_value(json.dumps(PROTOCOL["packages"]))}))
 versions <- c(R=as.character(getRversion()), sapply(names(required)[-1], function(p) as.character(packageVersion(p))))
 stopifnot(identical(unname(versions), unname(required)))
 writeLines(paste(names(versions), versions), file.path(output_dir, "versions.txt"))
-future::plan({_r_value(PROTOCOL["threads"]["future"])})
+future::plan({r_value(PROTOCOL["threads"]["future"])})
 Seurat::setThreads({PROTOCOL["threads"]["Seurat"]}L)
 set.seed({PROTOCOL["markers"]["random.seed"]})
 obj <- readRDS(file.path(cluster_dir, "seurat_clustered.rds"))
@@ -271,7 +273,7 @@ stopifnot(unchanged)
 writeLines(capture.output(sessionInfo()), file.path(output_dir, "session_info.txt"))
 write_json(list(cells=ncol(obj), features=nrow(data), clusters=length(groups), marker_rows=nrow(out),
     positive_rows=sum(positive), negative_rows=sum(negative), plot_features=as.list(selected),
-    backend={_r_value(PROTOCOL["backend"])}, fastpath_succeeded=guard$fastpath,
+    backend={r_value(PROTOCOL["backend"])}, fastpath_succeeded=guard$fastpath,
     presto_calls=guard$presto_calls, fallback_calls=guard$fallback_calls, presto_nthreads=as.list(guard$nthreads),
     source_object_unchanged=unchanged, seurat_threads=Seurat::getThreads(), warnings=as.list(warnings)),
     file.path(output_dir, "summary.json"), auto_unbox=TRUE, pretty=TRUE)
@@ -301,7 +303,7 @@ def check_outputs(directory: Path, pca_directory: Path, source: dict[str, Any]) 
         raise ValueError("marker 产物缺失、空或路径非法")
     mapping = {
         r["seurat_feature_key"]: r
-        for r in _records((pca_directory / "feature_mapping.csv").read_bytes())
+        for r in records((pca_directory / "feature_mapping.csv").read_bytes())
     }
     sizes = {r["cluster_id"]: r["cells"] for r in source["cluster_sizes"]}
     rows = _table(directory / "markers.csv", MARKER_FIELDS)
@@ -417,7 +419,6 @@ def run_sc_markers(
     cluster, review = snapshot["cluster"], snapshot["review"]
     pca = next(a for a in run["pca_attempts"] if a["attempt_id"] == cluster["pca_attempt_id"])
     directory = Path(attempt["directory"]).resolve()
-    started = start_stage(directory)
     metadata = {
         "tool": "sc_markers",
         "tool_version": MARKER_TOOL_VERSION,
@@ -442,52 +443,54 @@ def run_sc_markers(
         "status": "failed",
         "timeout_seconds": PROTOCOL["timeout_seconds"],
     }
-    stdout = stderr = ""
-    try:
+
+    def prepare() -> PreparedStage:
+        """校验 marker 授权来源并返回执行上下文。"""
         before = checked_source(run, cluster, review, root)
         if (
             before != snapshot["source"]
             or execution_binding(run, snapshot) != attempt["binding_sha256"]
         ):
             raise ValueError("marker 授权来源变化")
-        metadata["source_before"] = before
-        script = directory / "script.R"
-        code = marker_script(
-            Path(cluster["directory"]).resolve(), Path(pca["directory"]).resolve(), directory
+        return PreparedStage(
+            source=before,
+            data=(Path(cluster["directory"]).resolve(), Path(pca["directory"]).resolve()),
         )
-        script.write_text(code, encoding="utf-8")
-        completed = executor.execute_script(str(script))
-        stdout, stderr = completed.stdout or "", completed.stderr or ""
-        metadata["returncode"] = completed.returncode
-        if completed.returncode != 0:
-            raise ValueError("marker R 执行失败")
-        summary = check_outputs(directory, Path(pca["directory"]).resolve(), before)
-        if script.read_text(encoding="utf-8") != code:
-            raise ValueError("marker 固定脚本变化")
+
+    def check(prepared: PreparedStage) -> dict[str, Any]:
+        """校验 marker 产物并返回汇总。"""
+        _, pca_directory = prepared.data
+        return check_outputs(directory, pca_directory, prepared.source)
+
+    def after(prepared: PreparedStage) -> dict[str, Any]:
+        """重读 marker 父身份并返回当前来源。"""
         after = checked_source(run, cluster, review, root)
-        metadata["source_after"] = after
-        if before != after:
-            raise ValueError("marker 运行中父证据变化")
-        metadata.update(summary, status="completed")
-    except (
-        RExecutorError,
-        OSError,
-        ValueError,
-        KeyError,
-        TypeError,
-        OverflowError,
-        StopIteration,
-        IndexError,
-    ) as exc:
-        metadata["error"] = "marker 执行或证据校验失败；请检查本地证据，不会自动重跑"
-        stderr = f"{stderr}\n{exc}"
-        if isinstance(exc, RExecutorError):
-            stdout, stderr = executor_streams(exc)
-    finally:
-        finish_stage(
-            directory, metadata, started, stdout, stderr, artifacts=True, fingerprints=_fingerprints
-        )
-    return metadata
+        return after
+
+    plan = FixedStageRun(
+        directory=directory,
+        metadata=metadata,
+        prepare=prepare,
+        script=lambda prepared: marker_script(prepared.data[0], prepared.data[1], directory),
+        check=check,
+        after=after,
+        returncode_error="marker R 执行失败",
+        script_error="marker 固定脚本变化",
+        errors=(
+            RExecutorError,
+            OSError,
+            ValueError,
+            KeyError,
+            TypeError,
+            OverflowError,
+            StopIteration,
+            IndexError,
+        ),
+        source_keys=("source_before", "source_after"),
+        source_error="marker 运行中父证据变化",
+        failure_error="marker 执行或证据校验失败；请检查本地证据，不会自动重跑",
+    )
+    return run_fixed_stage(plan, executor)
 
 
 def checked_completed_marker(
@@ -501,43 +504,43 @@ def checked_completed_marker(
     if cluster != snapshot["cluster"]:
         raise ValueError("marker 聚类权威身份已变化")
     source = checked_source(run, cluster, snapshot["review"], root)
-    directory = Path(attempt["directory"]).resolve()
-    if directory != root.parent / "sc_markers" / attempt["attempt_id"]:
-        raise ValueError("marker 目录非法")
-    meta_path = directory / "metadata.json"
-    if meta_path.resolve().parent != directory:
-        raise ValueError("marker metadata 路径非法")
-    meta = json.loads(meta_path.read_bytes())
     if (
-        attempt["status"] != "completed"
-        or attempt["tool_version"] != MARKER_TOOL_VERSION
-        or json.loads(attempt["protocol"]) != PROTOCOL
-        or execution_binding(run, snapshot) != attempt["binding_sha256"]
+        execution_binding(run, snapshot) != attempt["binding_sha256"]
         or snapshot["source"] != source
-        or meta != attempt["result"]
-        or meta.get("status") != "completed"
-        or meta.get("returncode") != 0
-        or meta.get("source_before") != source
-        or meta.get("source_after") != source
-        or meta.get("protocol") != PROTOCOL
-        or meta.get("binding_sha256") != attempt["binding_sha256"]
     ):
         raise ValueError("marker 权威结果或协议不符")
-    names = set(OUTPUT_FILES) | {"stdout.txt", "stderr.txt"}
-    if set(meta["artifacts"]) != names or any(
-        (directory / n).resolve().parent != directory for n in names
-    ):
-        raise ValueError("marker 产物白名单不符")
-    if {Path(r["path"]).name: r for r in _fingerprints([directory / n for n in names])} != meta[
-        "artifacts"
-    ]:
-        raise ValueError("marker 产物身份变化")
+    directory = Path(attempt["directory"]).resolve()
     pca = next(a for a in run["pca_attempts"] if a["attempt_id"] == cluster["pca_attempt_id"])
-    summary = check_outputs(directory, Path(pca["directory"]).resolve(), source)
-    if any(meta.get(k) != v for k, v in summary.items()) or (directory / "script.R").read_text(
-        encoding="utf-8"
-    ) != marker_script(
-        Path(cluster["directory"]).resolve(), Path(pca["directory"]).resolve(), directory
-    ):
-        raise ValueError("marker 固定脚本或汇总不符")
+    pca_directory = Path(pca["directory"]).resolve()
+    names = set(OUTPUT_FILES) | {"stdout.txt", "stderr.txt"}
+    plan = CompletedStageCheck(
+        directory=directory,
+        expected_directory=stage_directory(MARKER, root, attempt["attempt_id"])[1],
+        attempt=attempt,
+        tool_version=MARKER_TOOL_VERSION,
+        protocol=PROTOCOL,
+        required_fields={
+            "status": "completed",
+            "returncode": 0,
+            "source_before": source,
+            "source_after": source,
+            "protocol": PROTOCOL,
+            "binding_sha256": attempt["binding_sha256"],
+        },
+        required_files=tuple(names),
+        exact_files=True,
+        summary=lambda: check_outputs(directory, pca_directory, source),
+        script=lambda: marker_script(
+            Path(cluster["directory"]).resolve(), pca_directory, directory
+        ),
+        result_error="marker 权威结果或协议不符",
+        directory_error="marker 目录非法",
+        metadata_path_error="marker metadata 路径非法",
+        files_error="marker 产物白名单不符",
+        artifact_error="marker 产物白名单不符",
+        identity_error="marker 产物身份变化",
+        summary_error="marker 固定脚本或汇总不符",
+        script_error="marker 固定脚本或汇总不符",
+    )
+    summary, _ = verify_completed(plan)
     return summary

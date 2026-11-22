@@ -48,6 +48,8 @@ CREATE INDEX IF NOT EXISTS idx_tokens_user ON tokens(user_id);
 """
 
 _hasher = PasswordHasher()
+# 未知/禁用账号也走一次同代价校验，避免用响应时间区分用户名是否存在。
+_DUMMY_HASH = _hasher.hash(secrets.token_urlsafe(16))
 
 
 def _now() -> str:
@@ -168,6 +170,7 @@ class AccountStore:
         """用户名 + 密码认证；失败返回 None。"""
         user = self.get_user_by_username(username)
         if user is None or user["disabled"]:
+            verify_password(_DUMMY_HASH, password)
             return None
         if not verify_password(user["password_hash"], password):
             return None

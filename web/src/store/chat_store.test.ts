@@ -110,6 +110,20 @@ describe('turn 生命周期', () => {
     expect(s.notice).toEqual({ kind: 'error', text: 'LLM 调用失败' })
   })
 
+  it('failTurn 保留出错前已生成的文本', () => {
+    const store = useChatStore.getState()
+    store.setSession('s1', [])
+    store.beginTurn('hi')
+    store.appendDelta('已生成一半')
+
+    useChatStore.getState().failTurn('上游超时')
+
+    const s = useChatStore.getState()
+    expect(s.draft).toBe('')
+    expect(s.history.at(-1)).toMatchObject({ role: 'assistant', content: '已生成一半' })
+    expect(s.notice).toEqual({ kind: 'error', text: '上游超时' })
+  })
+
   it('收尾幂等：endTurn 之后再 endTurn 不改变状态', () => {
     const store = useChatStore.getState()
     store.setSession('s1', [])
@@ -124,10 +138,14 @@ describe('turn 生命周期', () => {
     const store = useChatStore.getState()
     store.setSession('s1', [])
     store.beginTurn('hi')
+    store.appendDelta('已生成一半')
 
     useChatStore.getState().endTurn('aborted')
 
-    expect(useChatStore.getState().busy).toBe(false)
+    const s = useChatStore.getState()
+    expect(s.busy).toBe(false)
+    expect(s.history.at(-1)).toMatchObject({ role: 'assistant', content: '已生成一半' })
+    expect(s.notice).toEqual({ kind: 'info', text: '已停止，保留已生成的部分回答。' })
   })
 })
 
@@ -399,6 +417,31 @@ describe('send：SSE 接线', () => {
 
     ctl.onEnd?.('closed')
     expect(useChatStore.getState().busy).toBe(false)
+    expect(useChatStore.getState().history.at(-1)).toMatchObject({
+      role: 'assistant',
+      content: '中间文本',
+    })
+    expect(useChatStore.getState().notice).toEqual({
+      kind: 'error',
+      text: '连接中断，回答可能不完整。',
+    })
+
+    release()
+    await pending
+  })
+
+  it('提前 EOF 且无部分内容时提示连接结束，而不是静默清空', async () => {
+    const { ctl, release } = holdStream()
+    useChatStore.getState().setSession('s1', [])
+    const pending = useChatStore.getState().send('hi')
+
+    ctl.onEnd?.('closed')
+    expect(useChatStore.getState().busy).toBe(false)
+    expect(useChatStore.getState().history).toMatchObject([{ role: 'user', content: 'hi' }])
+    expect(useChatStore.getState().notice).toEqual({
+      kind: 'error',
+      text: '连接提前结束，未收到回答，请重试。',
+    })
 
     release()
     await pending

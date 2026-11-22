@@ -220,6 +220,41 @@ def test_role_guards_self_review_and_duplicate_card(app, client: TestClient):
     assert duplicate.json()["code"] == "duplicate"
 
 
+def test_anonymous_tombstone_hides_reviewer_identity_and_reason(app, client: TestClient):
+    """未发布的墓碑不向匿名者暴露复核账号与拒审理由。"""
+    _account(app, "contributor-5", (ROLE_CONTRIBUTOR,))
+    _account(app, "domain-5", (ROLE_DOMAIN,))
+    contributor_token = _login(client, "contributor-5")
+    domain_token = _login(client, "domain-5")
+
+    preview = preview_card(_card("evc-service-5"), contributor_id="local")
+    uploaded = client.post(
+        "/api/public/evidence/submissions",
+        json={"preview": preview, "consent": True},
+        headers=_headers(contributor_token),
+    )
+    evidence_id = uploaded.json()["evidence_id"]
+
+    rejected = client.post(
+        f"/api/public/evidence/submissions/{evidence_id}/review",
+        json={"action": ACTION_DOMAIN_REJECT, "reason": "内部判断：第三方数据未授权"},
+        headers=_headers(domain_token),
+    )
+    assert rejected.status_code == 200, rejected.text
+
+    tombstone = client.get(f"/api/public/evidence/{evidence_id}").json()
+    assert tombstone["status"] == "rejected"
+    assert "actor_id" not in tombstone
+    assert "reason" not in tombstone
+
+    # 复核者仍能从审计事件看到操作者与理由
+    events = client.get(
+        f"/api/public/evidence/{evidence_id}/events", headers=_headers(domain_token)
+    ).json()["events"]
+    assert events[-1]["reason"] == "内部判断：第三方数据未授权"
+    assert events[-1]["actor_id"]
+
+
 def test_reviewer_queue_unpublished_access_and_events(app, client: TestClient):
     """队列排除本人，未发布全文只给复核者，审过即出队。"""
     _account(app, "contributor-3", (ROLE_CONTRIBUTOR,))
@@ -339,6 +374,7 @@ def test_events_returns_review_capability_for_current_viewer(app, client: TestCl
         "checklists": {ROLE_DOMAIN: list(DOMAIN_CHECKLIST)},
     }
     assert [event["action"] for event in payload["events"]] == ["submit"]
+    assert payload["evidence"]["evidence_id"] == evidence_id
 
     signed = client.post(
         f"/api/public/evidence/submissions/{evidence_id}/review",

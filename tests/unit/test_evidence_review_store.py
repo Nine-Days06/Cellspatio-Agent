@@ -139,6 +139,59 @@ def test_record_qc_rejection_and_idempotency(tmp_path):
         store.approve_qc_preview("s", "r", again["revision"], "p1", "重新批准")
 
 
+def test_cluster_rejection_uses_review_binding_not_execution_binding(tmp_path):
+    """拒绝事实绑定复核视图的 binding，而不是 attempt 的执行绑定。"""
+    store = SessionStore(tmp_path / "sessions.db")
+    _seed(store, tmp_path)
+    run = store.get_qc_run("s", "r")
+    cluster = run["cluster_attempts"][0]
+    review_binding_value = "a" * 64
+
+    store.stages.record_cluster_rejection(
+        "s",
+        run,
+        cluster,
+        cluster["binding_sha256"],
+        CLUSTER_RECORD_VERSION,
+        run["revision"],
+        "簇结构不稳定",
+        "reviewer-a",
+        review_binding=review_binding_value,
+    )
+
+    saved = store.get_qc_run("s", "r")
+    assert saved["cluster_rejections"][0]["binding_sha256"] == review_binding_value
+
+
+def test_cluster_rejection_blocked_by_accept_with_same_review_binding(tmp_path):
+    """同 revision 已有接受（复核绑定）时拒绝必须冲突。"""
+    store = SessionStore(tmp_path / "sessions.db")
+    _seed(store, tmp_path)
+    run = store.get_qc_run("s", "r")
+    cluster = run["cluster_attempts"][0]
+    review_binding_value = "a" * 64
+    with store._conn() as conn:
+        conn.execute(
+            "INSERT INTO sc_cluster_reviews "
+            "(review_id, cluster_attempt_id, binding_sha256, record_version, source_revision, "
+            "accepted, reason, created_at) VALUES ('cr2', 'c1', ?, ?, ?, 1, 'ok', ?)",
+            (review_binding_value, CLUSTER_RECORD_VERSION, run["revision"], NOW),
+        )
+
+    with pytest.raises(ValueError, match="已有聚类接受"):
+        store.stages.record_cluster_rejection(
+            "s",
+            run,
+            cluster,
+            cluster["binding_sha256"],
+            CLUSTER_RECORD_VERSION,
+            run["revision"],
+            "拒绝",
+            "reviewer-a",
+            review_binding=review_binding_value,
+        )
+
+
 def test_record_cluster_rejection_and_idempotency(tmp_path):
     store = SessionStore(tmp_path / "sessions.db")
     _seed(store, tmp_path)

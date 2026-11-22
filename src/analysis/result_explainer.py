@@ -37,19 +37,6 @@ class ResultExplainer:
 - 结合文献进一步解读生物学意义。
 """
 
-    def explain_pathway_analysis(self, pathways: list[dict[str, Any]]) -> str:
-        """解释通路分析结果"""
-        if not pathways:
-            return "未发现显著富集的通路。"
-
-        explanation = "通路富集分析结果：\n\n"
-        for i, pathway in enumerate(pathways[:5], 1):
-            explanation += f"{i}. {pathway.get('name', 'Unknown')}\n"
-            explanation += f"   - 富集分数：{pathway.get('score', 'N/A')}\n"
-            explanation += f"   - p值：{pathway.get('pvalue', 'N/A')}\n\n"
-
-        return explanation
-
     def _knowledge_background(self, data: dict[str, Any]) -> str:
         """查询主知识库，取通路/问题背景；无库或失败返回空串"""
         if self.knowledge_client is None:
@@ -62,10 +49,24 @@ class ResultExplainer:
             logger.warning("knowledge background query failed: %s", e)
             return ""
 
+    def _fallback_explanation(self, data: dict[str, Any]) -> str:
+        """无 LLM 时按分析类型回退，不能把空间/单细胞结果说成差异表达。"""
+        analysis_type = data.get("analysis_type")
+        if analysis_type in (None, "differential_expression"):
+            return self.explain_differential_expression(data)
+        label = {"single_cell": "单细胞", "spatial": "空间转录组"}.get(
+            analysis_type, str(analysis_type)
+        )
+        return (
+            f"{label}分析完成。\n\n"
+            f"结果文件：{data.get('output_file', '(未记录)')}\n"
+            "请结合结果表与图检查聚类、空间分布及样本质量；本摘要未由语言模型生成。"
+        )
+
     def generate_llm_explanation(self, data: dict[str, Any], question: str) -> str:
         """LLM + 知识库背景生成解说；无 LLM 或调用失败回退规则模板"""
         if not self.llm_client:
-            return self.explain_differential_expression(data)
+            return self._fallback_explanation(data)
 
         background = self._knowledge_background(data)
         user_prompt = (
@@ -85,7 +86,7 @@ class ResultExplainer:
             text = response.choices[0].message.content or ""
             if text and text.strip():
                 return text.strip()
-            return self.explain_differential_expression(data)
+            return self._fallback_explanation(data)
         except Exception as e:  # noqa: BLE001 - 解说失败不阻断主流程
             logger.warning("LLM explanation failed, fallback: %s", e)
-            return self.explain_differential_expression(data)
+            return self._fallback_explanation(data)

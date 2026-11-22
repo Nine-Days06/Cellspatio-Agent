@@ -138,17 +138,17 @@ def test_single_cell_input_gate_through_agent_runtime(tmp_path, counts, expected
         assert "script" not in result
 
 
-def test_visualization_intent_and_script_generation():
-    """测试可视化意图解析与 R 脚本生成的整合"""
+def test_unimplemented_visualization_intent_is_not_advertised():
+    """词表只广告可执行类型：绘图请求不再被解析成假可用的 visualization。"""
     intent = IntentParser().parse("画一个火山图")
-    assert intent["type"] == "analysis"
-    assert intent["analysis_type"] == "visualization"
+    assert intent["type"] != "analysis" or intent.get("analysis_type") in (
+        "differential_expression",
+        "single_cell",
+        "spatial",
+    )
 
-    code = RScriptGenerator().generate_code(intent["analysis_type"], {"plot_type": "volcano"})
-
-    assert "#!/usr/bin/env Rscript" in code
-    assert "volcano" in code
-    assert "Volcano Plot" in code
+    code = RScriptGenerator().generate_code("visualization", {"plot_type": "volcano"})
+    assert code == "# 不支持的分析类型: visualization"
 
 
 def test_r_script_generation_to_file():

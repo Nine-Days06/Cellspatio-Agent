@@ -10,6 +10,13 @@ from typing import Any
 
 import pandas as pd
 
+from src.article_batches import (
+    REQUIRED_FIELDS,
+    ArticleBatchError,
+    discover_batches,
+    is_batch_name,
+    validate_header,
+)
 from src.data.pubtator import load_pmid_genes
 from src.knowledge.article_text import convert_article_to_text
 
@@ -190,7 +197,7 @@ class KnowledgeImporter:
     def import_from_directory(
         self, dir_path: str, file_types: list[str] | None = None
     ) -> dict[str, Any]:
-        """从目录批量导入（全量扫描，不查台账，历史行为保持不变）
+        """从目录批量导入（手动全量扫描，不参与 sync 批次交接）
 
         需要去重时请使用 import_incremental；此处始终跳过台账文件本身，
         避免把 import_ledger.json 当作文献 JSON 导入。
@@ -262,13 +269,23 @@ class KnowledgeImporter:
         else:
             if file_types is None:
                 file_types = ["json", "csv"]
-            patterns: dict[str, str] = {"json": "*.json", "csv": "*.csv", "sqlite": "*.db"}
-            candidates = sorted(
+            patterns: dict[str, str] = {"json": "*.json", "sqlite": "*.db"}
+            candidates = [
                 path
                 for file_type in file_types
+                if file_type in ("json", "sqlite")
                 for path in dir_path.glob(patterns.get(file_type, "__no_match__"))
                 if path.name != ImportLedger.LEDGER_FILENAME
-            )
+            ]
+            if "csv" in file_types:
+                batches = discover_batches(dir_path)
+                ignored = sorted(
+                    p.name for p in dir_path.glob("*.csv") if not is_batch_name(p.name)
+                )
+                if ignored:
+                    logger.info("忽略非契约 CSV: %s", ", ".join(ignored))
+                candidates.extend(batches)
+            candidates.sort()
 
         total_count = 0
         new_count = 0
@@ -282,6 +299,17 @@ class KnowledgeImporter:
                 logger.error(f"待导入文件不存在: {path}")
                 failed_files.append(name)
                 continue
+            if path.suffix.lower() == ".csv":
+                if not is_batch_name(name):
+                    logger.error(f"CSV 不是文献批次文件名: {name}")
+                    failed_files.append(name)
+                    continue
+                try:
+                    validate_header(path, required=REQUIRED_FIELDS)
+                except ArticleBatchError as e:
+                    logger.error(f"文献批次不符合交接契约: {e}")
+                    failed_files.append(name)
+                    continue
 
             sha256 = _file_sha256(path)
             previously_imported = ledger.is_imported(name)

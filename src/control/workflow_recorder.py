@@ -80,6 +80,8 @@ class WorkflowRecorder:
     ) -> str:
         """开始新的执行记录，返回 run_id。"""
         run_id = run_id or f"run-{uuid.uuid4().hex[:8]}"
+        if run_id in {".", ".."} or "/" in run_id or "\\" in run_id or Path(run_id).is_absolute():
+            raise ValueError(f"run_id 不能包含路径分隔符: {run_id!r}")
 
         # 创建初始记录
         intent_record = IntentRecord(**intent)
@@ -144,8 +146,8 @@ class WorkflowRecorder:
         self,
         run_id: str,
         step_id: str,
-        step_type: str,
-        tool: str,
+        step_type: StepType | str,
+        tool: str | None,
         params: dict[str, Any],
         output: dict[str, Any] | None = None,
     ) -> None:
@@ -169,6 +171,23 @@ class WorkflowRecorder:
         )
         exec_.add_step(step)
 
+    def record_output(
+        self,
+        run_id: str,
+        *,
+        name: str,
+        path: str,
+        type: str = "other",
+        meta: dict[str, Any] | None = None,
+    ) -> None:
+        """记录一个产物；重复路径只保留首次。"""
+        exec_ = self._require_execution(run_id)
+        if any(output.path == path for output in exec_.outputs):
+            return
+        from src.schemas.workflow import WorkflowOutput
+
+        exec_.add_output(WorkflowOutput(name=name, path=path, type=type, meta=meta or {}))
+
     def finish_run(self, run_id: str) -> Path:
         """结束记录，返回完整 WorkflowExecution，并自动落盘到 WRROCStore + 创建 Git 快照 + 写入 LightRAG 知识图谱。"""
         exec_ = self._require_execution(run_id)
@@ -183,7 +202,7 @@ class WorkflowRecorder:
             from src.control.snapshot_manager import SnapshotManager
 
             mgr = SnapshotManager(self.repo_root)
-            mgr.create_snapshot(run.run_id, commit_msg=f"Snapshot for {run.run_id}")
+            mgr.create_snapshot(run.run_id)
         # 自动写入 LightRAG 知识图谱
         if self.kg_memory:
             self.kg_memory.ingest(exec_)
@@ -197,6 +216,7 @@ class WorkflowRecorder:
             TerminalStatus,
             WorkflowInput,
             WorkflowIntent,
+            WorkflowOutput,
             WorkflowRun,
             WorkflowStep,
         )
@@ -235,7 +255,10 @@ class WorkflowRecorder:
                 context=exec_.meta.get("context", {}),
             ),
             steps=steps,
-            outputs=[],  # 由具体 workflow 方法在 finish_run 前设置
+            outputs=[
+                WorkflowOutput(name=o.name, path=o.path, type=o.type, meta=o.meta)
+                for o in exec_.outputs
+            ],
             meta=exec_.meta,
         )
 

@@ -67,6 +67,63 @@ def test_registers_qc_run_and_local_asset(tmp_path, source):
     assert client.get(f"/api/sessions/{sid}/qc/{body['qc_run_id']}").status_code == 200
 
 
+def test_local_input_merges_assets_read_under_lock(tmp_path, source):
+    """锁内重读会话：已下载的远端资产不能被本地输入快照覆盖。"""
+    result = _qc_result(tmp_path, source)
+    store = SessionStore()
+    sid = store.create_session()
+    store.update_session_meta(
+        sid,
+        downloaded_assets=[
+            {"source": "geo", "asset_id": "GSE1", "access_path": str(tmp_path / "gse1.csv")}
+        ],
+    )
+    client = _client(tmp_path, result)
+
+    response = client.post(f"/api/sessions/{sid}/local-input", json={"path": str(source)})
+
+    assert response.status_code == 200, response.text
+    assert {a["source"] for a in store.get_session(sid)["downloaded_assets"]} == {"geo", "local"}
+
+
+def test_local_input_registration_failure_leaves_no_asset(tmp_path, source, monkeypatch):
+    """QC 登记失败时不能留下"有资产、无 run"的半成品。"""
+    result = _qc_result(tmp_path, source)
+    store = SessionStore()
+    sid = store.create_session()
+    client = _client(tmp_path, result)
+
+    def boom(*args, **kwargs):
+        raise ValueError("register failed")
+
+    monkeypatch.setattr(SessionStore, "register_qc_run", boom)
+
+    response = client.post(f"/api/sessions/{sid}/local-input", json={"path": str(source)})
+
+    assert response.status_code == 200
+    assert response.json()["status"] == "error"
+    assert store.get_session(sid)["downloaded_assets"] == []
+
+
+def test_register_qc_prefers_agent_analysis_roots(tmp_path, source):
+    """登记 QC 必须复用 agent 的产物根，不能用 recorder.cwd 推导另一份。"""
+    result = _qc_result(tmp_path, source)
+    sid = SessionStore().create_session()
+    agent = FakeAgent()
+    agent.workflow_manager = SimpleNamespace(
+        workflow_recorder=SimpleNamespace(repo_root=tmp_path / "elsewhere"),
+        run_analysis_for_agent=lambda *args: result,
+    )
+    agent.analysis_roots = AnalysisRoots(SessionStore(), tmp_path)
+
+    response = TestClient(create_app(agent)).post(
+        f"/api/sessions/{sid}/local-input", json={"path": str(source)}
+    )
+
+    assert response.status_code == 200, response.text
+    assert response.json()["status"] == "needs_confirmation"
+
+
 def test_invalid_input_returns_400_without_message(tmp_path, source):
     result = {
         "status": "needs_input",

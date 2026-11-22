@@ -121,6 +121,23 @@ def test_qc_is_terminal_without_sending_results_to_llm(status):
     assert "PRIVATE_PATH" not in str(llm.calls)
 
 
+def test_qc_terminal_still_closes_tool_status():
+    """单细胞直接返回时也必须发 tool_status end，否则流式过程条不结束。"""
+    llm = FakeStreamLLM(
+        [[_tool_chunk(0, "qc1", "run_analysis", '{"analysis_type":"single_cell"}')]]
+    )
+    evidence = {"status": "needs_input", "analysis_type": "single_cell"}
+    runtime, _ = _runtime(llm, FakeWM({"run_analysis": evidence}))
+    sink = EventSink()
+
+    assert runtime.execute("单细胞 RNA 分析", on_event=sink) == evidence
+    assert [e.get("phase") for e in sink.events if e.get("type") == "tool_status"] == [
+        "start",
+        "end",
+    ]
+    assert len(llm.calls) == 1
+
+
 def test_stream_delta_events_arrive_in_order():
     """流式无工具轮：delta 按 chunk 顺序推送，最终消息为累积内容。"""
     llm = FakeStreamLLM([[_text_chunk("你"), _text_chunk("好"), _text_chunk("呀")]])

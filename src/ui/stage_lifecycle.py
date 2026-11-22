@@ -7,13 +7,15 @@
 
 from __future__ import annotations
 
-import json
 import sqlite3
 import uuid
 from collections.abc import Callable, Mapping
 from contextlib import AbstractContextManager
 from dataclasses import dataclass
 from typing import Any
+
+from src.stage_defs import StageDefinition
+from src.ui.stage_repository import StageRepository
 
 
 @dataclass(frozen=True)
@@ -28,10 +30,19 @@ class StageSpec:
     revision_error: str
     invalid_terminal: str
     not_running: str
-    directory_name: str
-    failure_stage: str
+    definition: StageDefinition
     message: Callable[[sqlite3.Row, dict[str, Any]], tuple[str, dict[str, Any]]]
     interrupt_result: dict[str, Any] | None = None
+
+    @property
+    def directory_name(self) -> str:
+        """阶段产物目录名；委托领域定义。"""
+        return self.definition.directory_name
+
+    @property
+    def failure_stage(self) -> str:
+        """失败响应中的阶段名；委托领域定义。"""
+        return self.definition.failure_stage
 
 
 def publish_message(
@@ -129,14 +140,12 @@ def append_review_fact(
         raise ValueError("validate_first 需要 validate")
     with connect() as conn:
         conn.execute("BEGIN IMMEDIATE")
+        repository = StageRepository()
         if validate_first and validate is not None:
             validate(conn)
         if before_previous is not None:
             before_previous(conn)
-        where = " AND ".join(f"{column} = ?" for column in plan.previous_match)
-        previous = conn.execute(
-            f"SELECT * FROM {plan.table} WHERE {where}", tuple(plan.previous_match.values())
-        ).fetchone()
+        previous = repository.previous(conn, plan.table, plan.previous_match)
         if previous is not None:
             if not plan.same_previous(previous):
                 raise ValueError(plan.conflict_message)
@@ -144,11 +153,7 @@ def append_review_fact(
         if not validate_first and validate is not None:
             validate(conn)
         if plan.latest_match is not None and plan.same_latest is not None:
-            latest_where = " AND ".join(f"{column} = ?" for column in plan.latest_match)
-            latest = conn.execute(
-                f"SELECT * FROM {plan.table} WHERE {latest_where} ORDER BY rowid DESC LIMIT 1",
-                tuple(plan.latest_match.values()),
-            ).fetchone()
+            latest = repository.latest(conn, plan.table, plan.latest_match)
             new_revision = plan.insert_values.get("source_revision")
             if (
                 latest is not None
@@ -168,11 +173,7 @@ def append_review_fact(
             fact["message_id"] = publish_message(
                 conn, plan.session_id, content, results, now, encode_results
             )
-        columns = ", ".join(fact)
-        conn.execute(
-            f"INSERT INTO {plan.table} ({columns}) VALUES ({', '.join('?' for _ in fact)})",
-            tuple(fact.values()),
-        )
+        repository.insert(conn, plan.table, fact)
         if plan.run_id is not None:
             advance_run(conn, plan.run_id, plan.session_id, now)
         return ReviewFactResult(True, fact)
@@ -189,6 +190,7 @@ class StageLifecycle:
         """保存连接工厂与阶段消息的编码函数。"""
         self._connect = connect
         self._encode_results = encode_results
+        self._repository = StageRepository()
 
     def claim(
         self,
@@ -216,11 +218,7 @@ class StageLifecycle:
             if run is None:
                 raise ValueError(spec.missing_run)
             match = {column: values[column] for column in spec.match_columns}
-            where = " AND ".join(f"{column} = ?" for column in match)
-            previous = conn.execute(
-                f"SELECT * FROM {spec.table} WHERE run_id = ? AND {where}",
-                (run_id, *match.values()),
-            ).fetchone()
+            previous = self._repository.previous(conn, spec.table, match, run_id=run_id)
             if previous is not None:
                 if check_previous is not None:
                     check_previous(previous)
@@ -236,11 +234,7 @@ class StageLifecycle:
                 "status": "running",
                 "created_at": now,
             }
-            conn.execute(
-                f"INSERT INTO {spec.table} ({', '.join(columns)}) "
-                f"VALUES ({', '.join('?' for _ in columns)})",
-                tuple(columns.values()),
-            )
+            self._repository.insert(conn, spec.table, columns)
             advance_run(conn, run_id, session_id, now, touch_session=False)
             if after_claim is not None:
                 return {**after_claim(conn, attempt_id), "claimed": True}
@@ -264,11 +258,7 @@ class StageLifecycle:
             raise ValueError(spec.invalid_terminal)
         with self._connect() as conn:
             conn.execute("BEGIN IMMEDIATE")
-            attempt = conn.execute(
-                f"SELECT a.*, r.session_id FROM {spec.table} a "
-                "JOIN qc_runs r USING(run_id) WHERE attempt_id = ?",
-                (attempt_id,),
-            ).fetchone()
+            attempt = self._repository.running(conn, spec.table, attempt_id)
             if attempt is None or attempt["status"] != "running":
                 raise ValueError(spec.not_running)
             if finalize is not None:
@@ -280,16 +270,14 @@ class StageLifecycle:
             message_id = publish_message(
                 conn, attempt["session_id"], content, results, now, self._encode_results
             )
-            conn.execute(
-                f"UPDATE {spec.table} SET status = ?, finished_at = ?, result = ?, message_id = ? "
-                "WHERE attempt_id = ? AND status = 'running'",
-                (
-                    result["status"],
-                    now,
-                    json.dumps(result, ensure_ascii=False),
-                    message_id,
-                    attempt_id,
-                ),
+            self._repository.finish(
+                conn,
+                spec.table,
+                attempt_id,
+                status=result["status"],
+                now=now,
+                result=result,
+                message_id=message_id,
             )
             advance_run(conn, attempt["run_id"], attempt["session_id"], now)
         return result

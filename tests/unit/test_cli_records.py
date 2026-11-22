@@ -5,6 +5,7 @@ from __future__ import annotations
 import csv
 import io
 import json
+import os
 import zipfile
 from pathlib import Path
 
@@ -56,6 +57,23 @@ def test_export_session_zip_contains_manifest(store, root):
     assert record["qc_runs"][0]["run_id"] == "run-1"
     assert str(Path("data") / "analysis" / "qc" / "run-1" / "qc.csv") in csv_text
     assert str(root) not in csv_text
+
+
+def test_export_skips_symlinked_artifacts(store, root):
+    """符号链接不得把导出范围带到项目根之外。"""
+    sid, run_dir = _seed_session(store, root)
+    outside = root.parent / "outside-secret.txt"
+    outside.write_text("secret", encoding="utf-8")
+    link = run_dir / "leak.csv"
+    try:
+        os.symlink(outside, link)
+    except (OSError, NotImplementedError):
+        pytest.skip("当前环境不允许创建符号链接")
+
+    records.export_records("session", sid, out=root / "out.zip", store=store, root=root)
+
+    with zipfile.ZipFile(root / "out.zip") as archive:
+        assert "leak.csv" not in archive.read("artifacts.csv").decode("utf-8")
 
 
 def test_session_markdown_lists_stage_attempts_in_order(monkeypatch):
@@ -131,6 +149,15 @@ def test_export_redacts_paths(store, root):
     assert "<redacted-path>" in csv_text
 
 
+def test_redact_does_not_leak_suffix_after_space_path():
+    """含空格的路径必须整体脱敏，不能只剩空格后的文件名。"""
+    from src.cli.records import _redact_text
+
+    text = _redact_text(r"读取 C:\Users\Jane Doe\results.csv 完成")
+    assert "Doe" not in text
+    assert "results.csv" not in text
+
+
 def test_export_project_nests_sessions(store, root):
     pid = store.create_project("肝癌项目")
     sid, _ = _seed_session(store, root)
@@ -188,6 +215,44 @@ def test_export_and_delete_include_non_qc_wrroc(store, root):
 
     assert records.delete_records("session", sid, store=store, root=root)["verified"] is True
     assert not wf_dir.exists()
+
+
+def test_delete_includes_workflow_outputs_and_capsules(store, root):
+    """WRROC outputs（DE CSV / capsule 目录）也在删除范围内。"""
+    sid = store.create_session()
+    de_file = root / "data" / "analysis" / "de" / "run-de.de_results.csv"
+    de_file.parent.mkdir(parents=True)
+    de_file.write_text("gene,padj\nG1,0.01\n", encoding="utf-8")
+    capsule = root / "data" / "analysis" / "capsules" / "20261122_010203_000001"
+    capsule.mkdir(parents=True)
+    outside = root.parent / f"outside-{sid}.csv"
+    outside.write_text("x", encoding="utf-8")
+
+    wf_dir = root / ".wrroc" / "run-de"
+    wf_dir.mkdir(parents=True)
+    (wf_dir / "workflow.json").write_text(
+        json.dumps(
+            {
+                "run_id": "run-de",
+                "intent": {"type": "analysis", "analysis_type": "differential_expression"},
+                "input": {"context": {"session_id": sid}},
+                "outputs": [
+                    {"name": de_file.name, "path": str(de_file), "type": "csv"},
+                    {"name": "capsule", "path": str(capsule), "type": "other"},
+                    {"name": "external", "path": str(outside), "type": "csv"},
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    result = records.delete_records("session", sid, store=store, root=root)
+
+    assert result["verified"] is True
+    assert not de_file.exists()
+    assert not capsule.exists()
+    assert outside.exists()  # 数据根外产物不删，也不阻断
+    outside.unlink()
 
 
 def test_delete_dry_run_keeps_everything(store, root):
@@ -270,16 +335,40 @@ def test_delete_file_failure_keeps_db(store, root, monkeypatch):
 def test_delete_rolls_back_files_when_db_fails(store, root, monkeypatch):
     sid, run_dir = _seed_session(store, root)
 
-    def fail(_session_id):
+    def fail(_session_ids, _project_id):
         raise ValueError("db down")
 
-    monkeypatch.setattr(store, "delete_session", fail)
+    monkeypatch.setattr(store, "delete_sessions_and_project", fail)
     result = records.delete_records("session", sid, store=store, root=root)
 
     assert result["status"] == "db-failed"
     assert result["restore_failures"] == []
     assert run_dir.is_dir()
     assert (root / ".wrroc" / "run-1").is_dir()
+
+
+def test_project_cascade_deletes_all_sessions_in_one_transaction(store, root, monkeypatch):
+    """第二个会话删除失败时不能留下第一个已删的半状态。"""
+    pid = store.create_project("多会话项目")
+    first, first_dir = _seed_session(store, root, title="一", run_id="run-1")
+    second, second_dir = _seed_session(store, root, title="二", run_id="run-2")
+    store.move_session(first, pid)
+    store.move_session(second, pid)
+
+    calls: list[int] = []
+    original = store.delete_sessions_and_project
+
+    def tracking(session_ids, project_id):
+        calls.append(len(session_ids))
+        return original(session_ids, project_id)
+
+    monkeypatch.setattr(store, "delete_sessions_and_project", tracking)
+    result = records.delete_records("project", pid, cascade=True, store=store, root=root)
+
+    assert result["status"] == "ok"
+    assert calls == [2]
+    assert store.get_session(first) is None and store.get_session(second) is None
+    assert not first_dir.exists() and not second_dir.exists()
 
 
 def test_project_dry_run_reports_requires_cascade(store, root):

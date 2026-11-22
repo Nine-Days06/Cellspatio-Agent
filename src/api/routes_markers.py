@@ -10,6 +10,7 @@ from typing import Any, Literal
 from fastapi import APIRouter, HTTPException, Query, Request, Response
 from pydantic import BaseModel, ConfigDict, Field
 
+from src.analysis.review_standing import review_is_current
 from src.analysis.sc_marker_reviews import review_view
 from src.analysis.sc_markers import (
     MARKER_FIELDS,
@@ -23,14 +24,20 @@ from src.analysis.sc_markers import (
 )
 from src.api.authorized_run import StageClaim, run_authorized
 from src.api.deps import StoreDep
-from src.api.routes_clusters import EVIDENCE_ERRORS, require_cluster
-from src.api.routes_pca import PcaRequest, require_parent, require_pca
-from src.api.routes_qc import require_run, run_qc_root
+from src.api.errors import EVIDENCE_ERRORS
+from src.api.routes_pca import PcaRequest
 from src.api.stage_history import history_entry
+from src.api.stage_lookup import (
+    require_cluster,
+    require_parent,
+    require_pca,
+    require_run,
+    run_qc_root,
+)
 from src.api.stage_runtime import has_other_marker_running, has_running
 from src.api.verified_artifact import read_verified_artifact
+from src.stage_defs import MARKER, stage_directory, stage_failure
 from src.ui.run_snapshot import RunSnapshot
-from src.ui.sc_stage_defs import MARKER_STAGE, stage_directory, stage_failure
 
 router = APIRouter(prefix="/api/sessions/{session_id}/qc/{run_id}/markers", tags=["markers"])
 logger = logging.getLogger(__name__)
@@ -80,7 +87,7 @@ def view(run: RunSnapshot, cluster: dict[str, Any], root: Path) -> dict[str, Any
                             "created_at": d["created_at"],
                             "source_revision": d["source_revision"],
                             "invalidated_reason": None
-                            if d["source_revision"] + 1 == run["revision"]
+                            if review_is_current(d, run["revision"], attempt_valid=invalid is None)
                             else "记录已失效；请刷新后重新复核",
                         }
                         for d in reversed(run.marker_reviews(a["attempt_id"]))
@@ -196,7 +203,7 @@ def execute_markers(
         snapshot = {"cluster": cluster, "review": review, "source": source}
         if execution_binding(run, snapshot) != body.binding_sha256:
             raise HTTPException(409, "marker 来源绑定已变化，请刷新")
-        directory_parent, directory = stage_directory(MARKER_STAGE, root, attempt_id)
+        directory_parent, directory = stage_directory(MARKER, root, attempt_id)
         claimed: dict[str, Any] = {}
 
         def execute(attempt: dict[str, Any]) -> dict[str, Any]:
@@ -210,7 +217,7 @@ def execute_markers(
                 raise
             except Exception as exc:  # noqa: BLE001 - 已认领任务必须安全收口，私有异常不进入消息。
                 logger.error("unexpected marker execution failure: %s", type(exc).__name__)
-                return stage_failure(MARKER_STAGE, "marker 出现未预期错误；请检查本地证据")
+                return stage_failure(MARKER, "marker 出现未预期错误；请检查本地证据")
 
         def finish(result: dict[str, Any]) -> dict[str, Any]:
             """保存终态并返回数据库权威结果。"""
@@ -233,7 +240,7 @@ def execute_markers(
             ),
             execute=execute,
             finish=finish,
-            on_error=lambda _exc: stage_failure(MARKER_STAGE, "marker 产物落盘失败"),
+            on_error=lambda _exc: stage_failure(MARKER, "marker 产物落盘失败"),
         )
 
     def refresh() -> dict[str, Any]:
@@ -367,6 +374,11 @@ def review_markers(
         attempt = run.attempt("marker", attempt_id, cluster_attempt_id)
         if attempt is None:
             raise HTTPException(404, "marker 关联不存在")
+        if attempt["status"] == "completed":
+            # 写入复核前重验产物：markers.csv 被替换后不能继续接受旧结果。
+            checked_completed_marker(
+                run, attempt, run_qc_root(request.app.state.analysis_roots, run)
+            )
         store.stages.record_marker_review(
             session_id,
             attempt_id,

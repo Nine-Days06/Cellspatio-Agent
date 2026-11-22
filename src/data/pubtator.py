@@ -5,6 +5,7 @@
 
 缓存：data/raw/pubtator/gene_ids.json（预计算一次，导入侧读取注入）。
 """
+
 import json
 import logging
 import time
@@ -17,13 +18,11 @@ from src.data.gene_map import gene_curie
 
 logger = logging.getLogger(__name__)
 
-EXPORT_URL = (
-    "https://www.ncbi.nlm.nih.gov/research/pubtator3-api/publications/export/pubtator"
-)
+EXPORT_URL = "https://www.ncbi.nlm.nih.gov/research/pubtator3-api/publications/export/pubtator"
 ROOT = Path(__file__).resolve().parents[2]
 CACHE_PATH = ROOT / "data" / "raw" / "pubtator" / "gene_ids.json"
-BATCH_SIZE = 100          # API 硬上限（实测 >100 返回 400）
-MIN_INTERVAL = 1 / 3      # 官方 ≤3 req/s
+BATCH_SIZE = 100  # API 硬上限（实测 >100 返回 400）
+MIN_INTERVAL = 1 / 3  # 官方 ≤3 req/s
 
 
 def _parse_genes(text: str) -> dict[str, dict[str, str]]:
@@ -96,7 +95,7 @@ def fetch_pmid_genes(
 
     try:
         for start in range(0, len(pmids), batch_size):
-            out.update(_resolve_batch(get, pmids[start:start + batch_size]))
+            out.update(_resolve_batch(get, pmids[start : start + batch_size]))
     finally:
         if own:
             client.close()
@@ -118,6 +117,9 @@ def load_pmid_genes(path: Path | None = None) -> dict[str, dict[str, str]]:
     except (OSError, UnicodeDecodeError, json.JSONDecodeError):
         logger.warning("PubTator 缓存损坏，按空处理: %s", path)
         return {}
+    if not isinstance(data, dict):
+        logger.warning("PubTator 缓存结构无效，按空处理: %s", path)
+        return {}
     return {
         str(k): {str(m): str(c) for m, c in v.items() if isinstance(m, str) and isinstance(c, str)}
         for k, v in data.items()
@@ -126,7 +128,9 @@ def load_pmid_genes(path: Path | None = None) -> dict[str, dict[str, str]]:
 
 
 def save_pmid_genes(mapping: dict[str, dict[str, str]], path: Path | None = None) -> None:
-    """写缓存（JSON，覆盖）"""
+    """写缓存（JSON，覆盖）；先写临时文件再替换，避免中断留下半截 JSON。"""
     path = _resolve_path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(mapping, ensure_ascii=False), encoding="utf-8")
+    tmp = path.with_name(path.name + ".part")
+    tmp.write_text(json.dumps(mapping, ensure_ascii=False), encoding="utf-8")
+    tmp.replace(path)

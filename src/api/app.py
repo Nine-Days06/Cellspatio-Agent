@@ -41,7 +41,7 @@ async def _unhandled_exception_handler(request: Request, exc: Exception) -> JSON
     logger.exception("unhandled API error on %s %s", request.method, request.url.path)
     return JSONResponse(
         status_code=500,
-        content={"detail": str(exc) or type(exc).__name__},
+        content={"detail": "服务内部错误"},
     )
 
 
@@ -58,10 +58,11 @@ def create_app(agent: Any) -> FastAPI:
     app.state.agent = agent
     app.state.store_factory = SessionStore
     recorder = getattr(getattr(agent, "workflow_manager", None), "workflow_recorder", None)
+    app.state.repo_root = Path(recorder.repo_root) if recorder else Path.cwd()
     # 惰性读取，替换 app.state.store_factory 后 roots 的会话查询立即跟随。
     app.state.analysis_roots = AnalysisRoots(
         lambda: app.state.store_factory(),
-        Path(recorder.repo_root) if recorder else Path.cwd(),
+        app.state.repo_root,
     )
     app.include_router(routes_sessions.router)
     app.include_router(routes_projects.router)

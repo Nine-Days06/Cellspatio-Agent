@@ -11,16 +11,18 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
 
-from src.ui.confirm_protocol import STATUS_EXPIRED, STATUS_PENDING
+from src.ui.confirm_protocol import STATUS_CONFIRMED, STATUS_EXPIRED, STATUS_PENDING
 from src.ui.run_snapshot import RunSnapshot
 from src.ui.sc_stage_defs import STAGE_SPECS
 from src.ui.sc_stages import ScStages
 from src.ui.session_codec import _encode_results, _now
 from src.ui.stage_lifecycle import ReviewFactPlan, advance_run, append_review_fact, publish_message
+from src.ui.store_errors import StoreError
 
 logger = logging.getLogger(__name__)
 
 DEFAULT_DB_PATH = Path(".cellspatio") / "sessions.db"
+SCHEMA_VERSION = 1
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS projects (
@@ -251,6 +253,18 @@ def _decode_results(text: str | None) -> dict[str, Any] | None:
     return payload
 
 
+def _running_stage(conn: sqlite3.Connection, session_id: str) -> str | None:
+    """在给定连接（含写事务）内查正在运行的受控阶段。"""
+    for spec in STAGE_SPECS:
+        sql = (
+            f"SELECT 1 FROM {spec.table} a JOIN qc_runs r USING(run_id) "
+            "WHERE r.session_id=? AND a.status='running'"
+        )
+        if conn.execute(sql, (session_id,)).fetchone():
+            return spec.label
+    return None
+
+
 class SessionStore:
     """会话/消息 CRUD。每次操作独立短连接，不做连接池。"""
 
@@ -271,23 +285,30 @@ class SessionStore:
             conn.row_factory = sqlite3.Row
             conn.execute("PRAGMA journal_mode=WAL")
             conn.execute("PRAGMA foreign_keys=ON")
-            conn.executescript(SCHEMA)
-            _migrate_schema(conn)
+            # shortcut: 新增/修改表结构时必须同时递增 SCHEMA_VERSION，否则旧库不会迁移
+            if conn.execute("PRAGMA user_version").fetchone()[0] < SCHEMA_VERSION:
+                conn.executescript(SCHEMA)
+                _migrate_schema(conn)
+                conn.execute(f"PRAGMA user_version={SCHEMA_VERSION}")
             yield conn
             conn.commit()
         finally:
             conn.close()
 
     def create_session(self, title: str = "新会话", project_id: str | None = None) -> str:
-        if project_id is not None:
-            project = self.get_project(project_id)
-            if project is None:
-                raise ValueError("项目不存在")
-            if project["archived_at"]:
-                raise ValueError("项目已归档")
         sid = uuid.uuid4().hex
         now = _now()
         with self._conn() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            if project_id is not None:
+                # 校验必须在写事务内：归档可与建会话并发。
+                project = conn.execute(
+                    "SELECT archived_at FROM projects WHERE id=?", (project_id,)
+                ).fetchone()
+                if project is None:
+                    raise StoreError("not_found", "项目不存在")
+                if project["archived_at"]:
+                    raise StoreError("conflict", "项目已归档")
             conn.execute(
                 "INSERT INTO sessions (id, title, created_at, updated_at, project_id) "
                 "VALUES (?, ?, ?, ?, ?)",
@@ -370,16 +391,6 @@ class SessionStore:
         archived: bool | None = None,
     ) -> None:
         """None = 不更新；archived 显式切换归档时间。"""
-        if archived:
-            with self._conn() as conn:
-                rows = conn.execute(
-                    "SELECT id FROM sessions WHERE project_id=? AND archived_at IS NULL",
-                    (project_id,),
-                ).fetchall()
-            for row in rows:
-                running = self.running_stage(row["id"])
-                if running:
-                    raise ValueError(f"{running}运行中，不能归档项目")
         sets, vals = [], []
         if label is not None:
             sets.append("label=?")
@@ -395,9 +406,20 @@ class SessionStore:
         sets.append("updated_at=?")
         vals.extend([_now(), project_id])
         with self._conn() as conn:
+            if archived:
+                # 与归档写入同一写事务，避免预检后会话被并发领取阶段
+                conn.execute("BEGIN IMMEDIATE")
+                rows = conn.execute(
+                    "SELECT id FROM sessions WHERE project_id=? AND archived_at IS NULL",
+                    (project_id,),
+                ).fetchall()
+                for row in rows:
+                    running = _running_stage(conn, row["id"])
+                    if running:
+                        raise StoreError("conflict", f"{running}运行中，不能归档项目")
             cursor = conn.execute(f"UPDATE projects SET {', '.join(sets)} WHERE id=?", vals)
             if cursor.rowcount == 0:
-                raise ValueError("项目不存在")
+                raise StoreError("not_found", "项目不存在")
 
     def delete_project(self, project_id: str) -> None:
         """只删除空项目；非空项目须先移动或归档会话。"""
@@ -414,22 +436,32 @@ class SessionStore:
 
     def move_session(self, session_id: str, project_id: str | None) -> None:
         """移动到项目；None = 移回未归类。"""
-        if project_id is not None:
-            project = self.get_project(project_id)
-            if project is None:
-                raise ValueError("项目不存在")
-            if project["archived_at"]:
-                raise ValueError("项目已归档")
         with self._conn() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            if project_id is not None:
+                project = conn.execute(
+                    "SELECT archived_at FROM projects WHERE id=?", (project_id,)
+                ).fetchone()
+                if project is None:
+                    raise StoreError("not_found", "项目不存在")
+                if project["archived_at"]:
+                    raise StoreError("conflict", "项目已归档")
             previous = conn.execute(
                 "SELECT project_id FROM sessions WHERE id=?", (session_id,)
             ).fetchone()
+            if previous is None:
+                raise StoreError("not_found", "会话不存在")
+            if previous["project_id"] != project_id:
+                # 运行中换项目会让后续产物落到新根，已有产物留在旧项目下。
+                running = _running_stage(conn, session_id)
+                if running is not None:
+                    raise StoreError("conflict", f"{running}运行中，不能移动会话")
             cursor = conn.execute(
                 "UPDATE sessions SET project_id=?, updated_at=? WHERE id=?",
                 (project_id, _now(), session_id),
             )
             if cursor.rowcount == 0:
-                raise ValueError("会话不存在")
+                raise StoreError("not_found", "会话不存在")
             for touched in {previous["project_id"], project_id} - {None}:
                 conn.execute("UPDATE projects SET updated_at=? WHERE id=?", (_now(), touched))
 
@@ -441,43 +473,62 @@ class SessionStore:
                 (1 if pinned else 0, _now(), session_id),
             )
             if cursor.rowcount == 0:
-                raise ValueError("会话不存在")
+                raise StoreError("not_found", "会话不存在")
 
     def archive_session(self, session_id: str, archived: bool = True) -> None:
         """归档或恢复会话；运行中的受控阶段拒绝归档。"""
-        if archived:
-            running = self.running_stage(session_id)
-            if running:
-                raise ValueError(f"{running}运行中，不能归档会话")
         with self._conn() as conn:
+            if archived:
+                # 预检与写入同一写事务，避免检查后被并发领取阶段
+                conn.execute("BEGIN IMMEDIATE")
+                running = _running_stage(conn, session_id)
+                if running:
+                    raise StoreError("conflict", f"{running}运行中，不能归档会话")
             cursor = conn.execute(
                 "UPDATE sessions SET archived_at=?, updated_at=? WHERE id=?",
                 (_now() if archived else None, _now(), session_id),
             )
             if cursor.rowcount == 0:
-                raise ValueError("会话不存在")
+                raise StoreError("not_found", "会话不存在")
 
     def delete_session(self, session_id: str) -> None:
         """删除会话及其消息；运行中的受控阶段拒绝删除。"""
-        running = self.running_stage(session_id)
-        if running:
-            raise ValueError(f"{running}运行中，不能删除会话")
         with self._conn() as conn:
             conn.execute("BEGIN IMMEDIATE")
+            running = _running_stage(conn, session_id)
+            if running:
+                raise StoreError("conflict", f"{running}运行中，不能删除会话")
             conn.execute("DELETE FROM messages WHERE session_id = ?", (session_id,))
             conn.execute("DELETE FROM sessions WHERE id = ?", (session_id,))
+
+    def delete_sessions_and_project(
+        self, session_ids: list[str], project_id: str | None = None
+    ) -> None:
+        """单事务删除多个会话（可选连带项目），避免中途失败留下半删状态。"""
+        with self._conn() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            for session_id in session_ids:
+                running = _running_stage(conn, session_id)
+                if running:
+                    raise StoreError("conflict", f"{running}运行中，不能删除会话")
+                conn.execute("DELETE FROM messages WHERE session_id = ?", (session_id,))
+                conn.execute("DELETE FROM sessions WHERE id = ?", (session_id,))
+            if project_id is None:
+                return
+            row = conn.execute(
+                "SELECT COUNT(*) AS total FROM sessions WHERE project_id = ?",
+                (project_id,),
+            ).fetchone()
+            if row["total"]:
+                raise ValueError("项目仍有会话，不能删除")
+            cursor = conn.execute("DELETE FROM projects WHERE id = ?", (project_id,))
+            if cursor.rowcount == 0:
+                raise ValueError("项目不存在")
 
     def running_stage(self, session_id: str) -> str | None:
         """返回正在运行的受控阶段名；供删除/归档前预检。"""
         with self._conn() as conn:
-            for spec in STAGE_SPECS:
-                sql = (
-                    f"SELECT 1 FROM {spec.table} a JOIN qc_runs r USING(run_id) "
-                    "WHERE r.session_id=? AND a.status='running'"
-                )
-                if conn.execute(sql, (session_id,)).fetchone():
-                    return spec.label
-        return None
+            return _running_stage(conn, session_id)
 
     def append_message(
         self,
@@ -486,7 +537,8 @@ class SessionStore:
         content: str,
         results: dict[str, Any] | None = None,
         pending_script: dict[str, Any] | None = None,
-    ) -> None:
+    ) -> dict[str, Any]:
+        """追加消息并返回落库行（含 id、seq、解码后的 results）。"""
         now = _now()
         with self._conn() as conn:
             conn.execute("BEGIN IMMEDIATE")
@@ -495,7 +547,7 @@ class SessionStore:
                 (session_id,),
             ).fetchone()
             seq = row["next_seq"]
-            conn.execute(
+            cursor = conn.execute(
                 "INSERT INTO messages (session_id, seq, role, content, timestamp, "
                 "results, pending_script) VALUES (?, ?, ?, ?, ?, ?, ?)",
                 (
@@ -521,6 +573,15 @@ class SessionStore:
                 "WHERE id = (SELECT project_id FROM sessions WHERE id = ?)",
                 (now, session_id),
             )
+            row = conn.execute(
+                "SELECT * FROM messages WHERE id = ?", (cursor.lastrowid,)
+            ).fetchone()
+        message = dict(row)
+        message["results"] = _decode_results(message["results"])
+        message["pending_script"] = (
+            json.loads(message["pending_script"]) if message["pending_script"] else None
+        )
+        return message
 
     def register_qc_run(
         self, session_id: str, run_id: str, directory: str, evidence: dict[str, Any]
@@ -561,7 +622,11 @@ class SessionStore:
                 raise ValueError("QC 状态已变化，请刷新后重新预览")
             conn.execute(
                 "INSERT INTO qc_previews (preview_id, run_id, payload) VALUES (?, ?, ?)",
-                (preview["preview_id"], run_id, json.dumps(preview, ensure_ascii=False)),
+                (
+                    preview["preview_id"],
+                    run_id,
+                    json.dumps({**preview, "source_revision": revision}, ensure_ascii=False),
+                ),
             )
 
     def approve_qc_preview(
@@ -772,15 +837,67 @@ class SessionStore:
         with self._conn() as conn:
             conn.execute(f"UPDATE sessions SET {', '.join(sets)} WHERE id=?", vals)
 
-    def set_script_status(self, session_id: str, status: str) -> None:
-        """仅更新该会话最新一条状态为 pending/expired 的脚本消息。"""
+    def append_downloaded_asset(
+        self, session_id: str, asset: dict[str, Any], *, source: str
+    ) -> None:
+        """在写事务内按 (source, asset_id) 去重追加，避免读-改-写丢资产。"""
         with self._conn() as conn:
+            conn.execute("BEGIN IMMEDIATE")
             row = conn.execute(
-                "SELECT id, pending_script FROM messages "
-                "WHERE session_id = ? AND pending_script IS NOT NULL "
-                "ORDER BY seq DESC LIMIT 1",
-                (session_id,),
+                "SELECT downloaded_assets FROM sessions WHERE id=?", (session_id,)
             ).fetchone()
+            if row is None:
+                return
+            assets = _decode_downloaded(row["downloaded_assets"])
+            key = (asset.get("source") or source, asset.get("asset_id"))
+            if key in {(a.get("source") or source, a.get("asset_id")) for a in assets}:
+                return
+            assets.append(asset)
+            conn.execute(
+                "UPDATE sessions SET downloaded_assets=?, updated_at=? WHERE id=?",
+                (json.dumps(assets, ensure_ascii=False), _now(), session_id),
+            )
+
+    def replace_local_asset(self, session_id: str, asset: dict[str, Any]) -> None:
+        """写事务内把 source=local 的资产替换为给定项（同一会话只留最新本地输入）。"""
+        with self._conn() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            row = conn.execute(
+                "SELECT downloaded_assets FROM sessions WHERE id=?", (session_id,)
+            ).fetchone()
+            if row is None:
+                return
+            assets = [
+                a
+                for a in _decode_downloaded(row["downloaded_assets"])
+                if a.get("source") != "local"
+            ]
+            assets.append(asset)
+            conn.execute(
+                "UPDATE sessions SET downloaded_assets=?, updated_at=? WHERE id=?",
+                (json.dumps(assets, ensure_ascii=False), _now(), session_id),
+            )
+
+    def set_script_status(
+        self, session_id: str, status: str, *, message_id: int | None = None
+    ) -> None:
+        """更新指定（缺省最新）一条 pending/expired 脚本消息的状态。"""
+        with self._conn() as conn:
+            # 与 claim_script 共用写锁：避免 restore 把刚 confirmed 的卡片改回 expired。
+            conn.execute("BEGIN IMMEDIATE")
+            if message_id is None:
+                row = conn.execute(
+                    "SELECT id, pending_script FROM messages "
+                    "WHERE session_id = ? AND pending_script IS NOT NULL "
+                    "ORDER BY seq DESC LIMIT 1",
+                    (session_id,),
+                ).fetchone()
+            else:
+                row = conn.execute(
+                    "SELECT id, pending_script FROM messages "
+                    "WHERE session_id = ? AND id = ? AND pending_script IS NOT NULL",
+                    (session_id, message_id),
+                ).fetchone()
             if row is None:
                 return
             script = json.loads(row["pending_script"])
@@ -790,6 +907,66 @@ class SessionStore:
             conn.execute(
                 "UPDATE messages SET pending_script = ? WHERE id = ?",
                 (json.dumps(script, ensure_ascii=False), row["id"]),
+            )
+
+    def claim_script(
+        self, session_id: str, status: str, *, message_id: int | None = None
+    ) -> tuple[int, dict[str, Any]] | None:
+        """把指定（缺省最新）pending 脚本原子改成 status，返回 (消息 id, 脚本)。
+
+        返回的脚本带 claim_token；执行失败时 release_script 用它做 CAS，
+        避免把别人已推进的终态覆盖回 pending。
+        """
+        with self._conn() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            if message_id is None:
+                row = conn.execute(
+                    "SELECT id, pending_script FROM messages "
+                    "WHERE session_id = ? AND pending_script IS NOT NULL "
+                    "ORDER BY seq DESC LIMIT 1",
+                    (session_id,),
+                ).fetchone()
+            else:
+                row = conn.execute(
+                    "SELECT id, pending_script FROM messages "
+                    "WHERE session_id = ? AND id = ? AND pending_script IS NOT NULL",
+                    (session_id, message_id),
+                ).fetchone()
+            if row is None:
+                return None
+            script = json.loads(row["pending_script"])
+            if script.get("status") != STATUS_PENDING:
+                return None
+            script["status"] = status
+            # 只有「确认执行」需要回滚令牌；取消是终态，不需要。
+            if status == STATUS_CONFIRMED:
+                script["claim_token"] = uuid.uuid4().hex
+            conn.execute(
+                "UPDATE messages SET pending_script = ? WHERE id = ?",
+                (json.dumps(script, ensure_ascii=False), row["id"]),
+            )
+            return int(row["id"]), script
+
+    def release_script(self, session_id: str, message_id: int, token: str) -> None:
+        """把本次领取的脚本卡退回 pending；已被他人推进则静默放弃。"""
+        with self._conn() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            row = conn.execute(
+                "SELECT pending_script FROM messages WHERE session_id = ? AND id = ?",
+                (session_id, message_id),
+            ).fetchone()
+            if row is None or not row["pending_script"]:
+                return
+            script = json.loads(row["pending_script"])
+            if script.get("status") != STATUS_CONFIRMED:
+                return
+            if script.get("claim_token") != token:
+                return
+            script["status"] = STATUS_PENDING
+            script.pop("claim_token", None)
+            conn.execute(
+                "UPDATE messages SET pending_script = ? WHERE id = ?",
+                (json.dumps(script, ensure_ascii=False), message_id),
             )
 
 

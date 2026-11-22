@@ -27,12 +27,8 @@ def test_template_generation_time_comparison():
     generator = RScriptGenerator()
     templates = {
         "differential_expression": {"input_file": "data.csv", "output_file": "results.csv"},
-        "pathway_analysis": {},
-        "visualization": {
-            "input_file": "data.csv",
-            "output_file": "output.png",
-            "plot_type": "volcano",
-        },
+        "single_cell": {"input_file": "scrna.csv", "output_file": "out.csv"},
+        "spatial": {"input_file": "spatial", "output_file": "out.csv"},
     }
 
     for analysis_type, params in templates.items():
@@ -51,7 +47,7 @@ def test_generate_code_deterministic():
     generator = RScriptGenerator()
     params = {"input_file": "data.csv", "output_file": "results.csv", "plot_type": "volcano"}
 
-    for analysis_type in ("differential_expression", "pathway_analysis", "visualization"):
+    for analysis_type in ("differential_expression", "single_cell", "spatial"):
         code1 = generator.generate_code(analysis_type, params)
         code2 = generator.generate_code(analysis_type, params)
         assert code1 == code2, f"{analysis_type} 模板生成不一致"

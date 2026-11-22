@@ -25,7 +25,7 @@ def test_replay_restores_snapshot():
 
         # 创建快照
         mgr = SnapshotManager(repo_root=repo)
-        snap_path = mgr.create_snapshot("run-replay", commit_msg="Snapshot for replay")
+        snap_path = mgr.create_snapshot("run-replay")
 
         # 模拟 WRROC 记录（在 worktree 中写入结果）
         (snap_path / "out.de_results.csv").write_text("gene,padj\nG1,0.01\n")

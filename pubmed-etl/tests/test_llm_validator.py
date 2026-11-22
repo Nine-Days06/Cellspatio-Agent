@@ -5,12 +5,14 @@ import sqlite3
 import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
 from cleaner.llm_validator import (
     _build_log_rows,
     _build_per_article_prompt,
     _count_verdicts,
+    _download_and_parse_batch,
     _extract_json,
     _normalize_verdict,
 )
@@ -400,16 +402,46 @@ class TestBatchCustomId(unittest.TestCase):
             init_db(db_path)
             # 必须显式传 db_path：_parse_batch_results 的默认参数在定义时即绑定
             # DB_PATH，patch 模块全局对它无效（曾因此把测试数据写进生产库）
-            ok, failed = mod._parse_batch_results(str(result_path), db_path=db_path)
+            ok, failed, parsed = mod._parse_batch_results(str(result_path), db_path=db_path)
 
             self.assertEqual(ok, 1)
             self.assertEqual(failed, [])
+            self.assertEqual(parsed, {"94600"})
             import sqlite3
 
             conn = sqlite3.connect(db_path)
             got = conn.execute("SELECT pmid FROM llm_validation").fetchall()
             conn.close()
             self.assertEqual(got, [("94600",)])
+
+    def test_null_content_and_shapes_are_reported_not_crashing(self):
+        """content:null、body/choices 非预期形状只能记失败，不能让整批中断。"""
+        import cleaner.llm_validator as mod
+
+        lines = [
+            json.dumps({"custom_id": "request-1", "response": {"status_code": 200, "body": None}}),
+            json.dumps(
+                {
+                    "custom_id": "request-2",
+                    "response": {
+                        "status_code": 200,
+                        "body": {"choices": [{"message": {"content": None}}]},
+                    },
+                }
+            ),
+            "[1,2]",
+        ]
+        with tempfile.TemporaryDirectory() as td:
+            result_path = Path(td) / "res.jsonl"
+            result_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+            db_path = Path(td) / "t.db"
+            init_db(db_path)
+
+            ok, failed, parsed = mod._parse_batch_results(str(result_path), db_path=db_path)
+
+        self.assertEqual(ok, 0)
+        self.assertEqual(sorted(failed), ["", "1", "2"])
+        self.assertEqual(parsed, set())
 
 
 class TestParseBatchResults(unittest.TestCase):
@@ -442,7 +474,7 @@ class TestParseBatchResults(unittest.TestCase):
         path = self._make_result_jsonl([result_line])
         from cleaner.llm_validator import _parse_batch_results as parser
 
-        success, failed = parser(path, db_path=self.db_path)
+        success, failed, _ = parser(path, db_path=self.db_path)
         self.assertEqual(success, 1)
         self.assertEqual(len(failed), 0)
 
@@ -459,7 +491,7 @@ class TestParseBatchResults(unittest.TestCase):
         path = self._make_result_jsonl([result_line])
         from cleaner.llm_validator import _parse_batch_results as parser
 
-        success, failed = parser(path, db_path=self.db_path)
+        success, failed, _ = parser(path, db_path=self.db_path)
         self.assertEqual(success, 1, "markdown 包裹的单 JSON 对象应能成功解析")
         self.assertEqual(len(failed), 0)
 
@@ -468,7 +500,7 @@ class TestParseBatchResults(unittest.TestCase):
         path = self._make_result_jsonl([result_line])
         from cleaner.llm_validator import _parse_batch_results as parser
 
-        success, failed = parser(path, db_path=self.db_path)
+        success, failed, _ = parser(path, db_path=self.db_path)
         self.assertEqual(success, 0)
         self.assertEqual(len(failed), 1)
 
@@ -478,7 +510,7 @@ class TestParseBatchResults(unittest.TestCase):
             f.write("this is not json\n")
         from cleaner.llm_validator import _parse_batch_results as parser
 
-        success, failed = parser(path, db_path=self.db_path)
+        success, failed, _ = parser(path, db_path=self.db_path)
         self.assertEqual(success, 0)
 
     def test_parse_mixed_results(self):
@@ -494,7 +526,7 @@ class TestParseBatchResults(unittest.TestCase):
         path = self._make_result_jsonl([ok, err])
         from cleaner.llm_validator import _parse_batch_results as parser
 
-        success, failed = parser(path, db_path=self.db_path)
+        success, failed, _ = parser(path, db_path=self.db_path)
         self.assertEqual(success, 1)
         self.assertEqual(len(failed), 1)
         self.assertEqual(failed[0], "ERR1")
@@ -515,7 +547,7 @@ class TestParseBatchResults(unittest.TestCase):
             path = self._make_result_jsonl([item])
             from cleaner.llm_validator import _parse_batch_results as parser
 
-            success, failed = parser(path, db_path=self.db_path)
+            success, failed, _ = parser(path, db_path=self.db_path)
             self.assertEqual(success, 0, content)
             self.assertEqual(len(failed), 1, content)
 
@@ -721,6 +753,34 @@ class TestExportRawCsv(unittest.TestCase):
         path = self._export()
         self.assertIsNone(path)
 
+    def test_export_large_ledger_does_not_hit_variable_limit(self):
+        """账本超过 SQLite 3.2 万变量上限时仍能导出新增批次。"""
+        ledger = Path(self.temp_dir) / "exported_pmids.txt"
+        ledger.write_text("\n".join(f"X{i:06d}" for i in range(33000)) + "\n", encoding="utf-8")
+
+        path = self._export()
+
+        self.assertIsNotNone(path)
+        with open(path, encoding="utf-8-sig") as f:
+            self.assertEqual(sorted(r["pmid"] for r in csv.DictReader(f)), ["A", "B"])
+
+
+class TestResultsByPmid(unittest.TestCase):
+    """同步降级遇到脏 LLM 条目时不能中止整轮。"""
+
+    def test_skips_non_dict_and_missing_pmid(self):
+        import cleaner.llm_validator as mod
+
+        results = [
+            {"pmid": "A", "verdict": "RELEVANT"},
+            {"verdict": "NOT_RELEVANT"},
+            None,
+            "garbage",
+            {"pmid": "B"},
+        ]
+
+        self.assertEqual(set(mod._results_by_pmid(results)), {"A", "B"})
+
 
 class TestExportArticlesCsv(unittest.TestCase):
     """_export_articles_csv：主项目兼容格式 + 增量导出"""
@@ -812,6 +872,22 @@ class TestExportArticlesCsv(unittest.TestCase):
         self.assertEqual(rows["A"]["authors"], "AuthorA,AuthorB")
         self.assertEqual(rows["A"]["year"], "2021")
 
+    def test_export_rolls_back_csv_when_ledger_write_fails(self):
+        """账本写失败时不能留下 CSV，否则下轮会换名重导 → 重复入库。"""
+        import cleaner.llm_validator as mod
+
+        orig = mod.OUTPUT_DIR
+        mod.OUTPUT_DIR = self.temp_dir
+        try:
+            with patch.object(mod, "_append_exported_pmids", side_effect=OSError("disk full")):
+                with self.assertRaises(OSError):
+                    mod._export_articles_csv(db_path=self.db_path)
+        finally:
+            mod.OUTPUT_DIR = orig
+
+        self.assertEqual(list(Path(self.temp_dir).glob("articles_*.csv")), [])
+        self.assertEqual(list(Path(self.temp_dir).glob("*.part")), [])
+
     def test_export_filename_and_bom(self):
         path = self._export()
         self.assertTrue(path.name.startswith("articles_"))
@@ -857,6 +933,64 @@ class TestExportArticlesCsv(unittest.TestCase):
         self.assertTrue(rec_path.exists())
         content = rec_path.read_text(encoding="utf-8").strip().splitlines()
         self.assertEqual(sorted(content), ["A", "B"])
+
+
+class TestBatchWithoutOutput(unittest.TestCase):
+    """Batch completed 但没有输出文件时不能静默跳过整批。"""
+
+    @patch("cleaner.llm_validator._run_sync_validation_for_pmids")
+    @patch("cleaner.llm_validator._clear_batch_checkpoint")
+    def test_falls_back_to_sync(self, clear, sync):
+        status = SimpleNamespace(status="completed", output_file_id=None, error_file_id=None)
+        _download_and_parse_batch(None, status, {"batch_id": "b1", "pmid_list": ["1", "2"]})
+
+        clear.assert_called_once()
+        sync.assert_called_once_with(["1", "2"])
+
+
+class TestBatchResultDbTarget(unittest.TestCase):
+    """Batch 收割必须写入调用方指定的库，不能落生产库。"""
+
+    def test_parse_uses_given_db_path(self):
+        payload = {
+            "response": {
+                "status_code": 200,
+                "body": {
+                    "choices": [
+                        {
+                            "message": {
+                                "content": '{"pmid":"94600","verdict":"RELEVANT","reason":"r"}'
+                            }
+                        }
+                    ]
+                },
+            },
+            "custom_id": "request-94600",
+        }
+
+        class FakeFile:
+            def write_to_file(self, path: str) -> None:
+                Path(path).write_text(json.dumps(payload) + "\n", encoding="utf-8")
+
+        class FakeFiles:
+            def content(self, _file_id: str) -> FakeFile:
+                return FakeFile()
+
+        class FakeClient:
+            files = FakeFiles()
+
+        status = SimpleNamespace(status="completed", output_file_id="f1", error_file_id=None)
+        with tempfile.TemporaryDirectory() as td:
+            db_path = Path(td) / "t.db"
+            init_db(db_path)
+            with patch("cleaner.llm_validator.OUTPUT_DIR", td):
+                _download_and_parse_batch(
+                    FakeClient(), status, {"batch_id": "b1", "pmid_list": ["94600"]}, db_path
+                )
+            conn = sqlite3.connect(db_path)
+            got = conn.execute("SELECT pmid FROM llm_validation").fetchall()
+            conn.close()
+        self.assertEqual(got, [("94600",)])
 
 
 if __name__ == "__main__":

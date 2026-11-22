@@ -92,7 +92,8 @@ def test_project_root_path_must_be_writable(client, tmp_path, monkeypatch):
 
 
 def test_project_root_path_rejects_internal_data_dirs(client, tmp_path, monkeypatch):
-    monkeypatch.chdir(tmp_path)
+    client.app.state.repo_root = tmp_path
+    monkeypatch.chdir(tmp_path.parent)
     internal = tmp_path / "data" / "workspace"
     internal.mkdir(parents=True)
 

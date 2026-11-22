@@ -65,7 +65,8 @@ def apply_gold(rows: list[dict], gold_path: Path) -> list[dict]:
     return [{**r, "gold": gold[r["sample_id"]]} for r in rows]
 
 
-def main() -> None:
+def main() -> int:
+    """计分并写报告；全部样本 ERROR 时返回非零，避免 CI 把失败当通过。"""
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--run", required=True, help="run_prompt_eval 输出的 JSONL")
     parser.add_argument(
@@ -85,10 +86,13 @@ def main() -> None:
 
     lines = [f"# 提示词评测报告：{run_path.name}", ""]
     lines.append(f"- 样本总数：{len(rows)}（含 ERROR {confusion(rows)['ERROR']}）")
-    lines.append(
-        f"- 总体：accuracy {overall['accuracy']:.3f} | precision {overall['precision']:.3f} "
-        f"| recall {overall['recall']:.3f} | F1 {overall['f1']:.3f} | kappa {overall['kappa']:.3f}"
-    )
+    if overall:
+        lines.append(
+            f"- 总体：accuracy {overall['accuracy']:.3f} | precision {overall['precision']:.3f} "
+            f"| recall {overall['recall']:.3f} | F1 {overall['f1']:.3f} | kappa {overall['kappa']:.3f}"
+        )
+    else:
+        lines.append("- 总体：无可计分样本（全部为 ERROR 或结果为空），不产出指标")
     lines.append("")
     lines.append("## 分层指标")
     lines.append("| 层 | n | accuracy | FP | FN | ERROR |")
@@ -116,7 +120,8 @@ def main() -> None:
     report.write_text("\n".join(lines), encoding="utf-8")
     print("\n".join(lines[:12]))
     print(f"报告已写入 {report}")
+    return 1 if not overall else 0
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())

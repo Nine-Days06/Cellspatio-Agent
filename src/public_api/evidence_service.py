@@ -124,8 +124,8 @@ class PublicEvidenceService:
     def events(self, evidence_id: str, viewer: dict[str, Any]) -> dict[str, Any]:
         """复核者查看审计事件，并一次返回当前查看者的复核能力。"""
         ctx = reviewer_context(viewer)
-        summary = self._store.summary(evidence_id)
-        records = self._store.events(evidence_id)
+        view = self._store.view(evidence_id)
+        summary, records = view["summary"], view["events"]
         access = viewer_access(
             status=summary["status"],
             contributor_id=summary["contributor_id"],
@@ -133,7 +133,19 @@ class PublicEvidenceService:
             viewer_role=ctx.role,
             events=[(event["actor_id"], event["action"]) for event in records],
         )
+        try:
+            evidence = self._store.get(
+                evidence_id,
+                include_unaccepted=True,
+                viewer_actor=ctx.actor_id,
+                viewer_role=ctx.role,
+            )
+        except EvidenceError as exc:
+            if exc.kind != "permission_denied":
+                raise
+            evidence = self._store.get(evidence_id)
         return {
+            "evidence": evidence,
             "events": records,
             "review": {
                 "role": ctx.role,

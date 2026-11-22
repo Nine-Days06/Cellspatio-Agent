@@ -33,12 +33,9 @@ ABORTED_RESULT: dict[str, Any] = {
     "message": "已中断",
 }
 
-# 流式模式下的终态集合：仅 success/error/needs_confirmation/needs_script_confirmation 即刻返回。
-# needs_input/no_results 在流式下需让 LLM 再跑一轮生成面向用户的回复，故不在此集合中。
-# 与 TERMINAL_STATUSES (src/control/tools.py) 的区别：后者包含所有终态，用于非流式路径。
-STREAM_TERMINAL_STATUSES: frozenset[str] = frozenset(
-    {"success", "error", "needs_confirmation", "needs_script_confirmation"}
-)
+# 流式模式下的终态集合：needs_input/no_results 需让 LLM 再跑一轮生成面向用户的回复，
+# 因此只是 TERMINAL_STATUSES 的子集；与枚举同步，避免两处手写清单漂移。
+STREAM_TERMINAL_STATUSES: frozenset[str] = TERMINAL_STATUSES - {"needs_input", "no_results"}
 
 
 class AgentRuntime:
@@ -70,6 +67,7 @@ class AgentRuntime:
 
         hint = self._route_hint(user_input)
         messages = self._build_messages(user_input, context, hint=hint)
+        dispatched: dict[str, Any] | None = None
         try:
             for _ in range(MAX_ROUNDS):
                 if on_event is None:
@@ -103,8 +101,12 @@ class AgentRuntime:
                 ):
                     return dict(ABORTED_RESULT)
                 result = self._dispatch(tool_calls[0], user_input, context)
+                dispatched = result
                 status = result.get("status")
                 if result.get("analysis_type") == "single_cell":
+                    # 固定单细胞链自带人工审批，不再回灌模型；但流式过程条必须收尾。
+                    if on_event is not None:
+                        on_event({"type": "tool_status", "name": name, "phase": "end"})
                     return result
 
                 # 非流式：所有 TERMINAL_STATUSES 即刻返回（保持原有行为）
@@ -132,7 +134,16 @@ class AgentRuntime:
                 "type": "general_response",
                 "message": f"已达最大工具调用轮数（{MAX_ROUNDS}），请简化请求后重试。",
             }
-        except Exception as e:  # noqa: BLE001 - SDK/网络异常一律回退旧工作流
+        except Exception as e:  # noqa: BLE001 - SDK/网络异常
+            if dispatched is not None:
+                # 工具已执行（可能已落盘/入库），不能再跑旧工作流重复副作用。
+                logger.warning("tool-calling failed after dispatch: %s", e)
+                return {
+                    "status": "error",
+                    "type": dispatched.get("type", "general_response"),
+                    "message": "工具已执行，但后续回复生成失败；请勿直接重复执行，先检查已有结果。",
+                    "results": dispatched.get("results", {}),
+                }
             logger.warning("tool-calling failed, fallback to legacy workflow: %s", e)
             return self.workflow_manager.execute_workflow(user_input, context)
 

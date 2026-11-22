@@ -18,7 +18,7 @@ import sqlite3
 from pathlib import Path
 from typing import Any
 
-from src.analysis.sc_marker_reviews import CLUSTER_RECORD_VERSION
+from src.analysis.sc_marker_reviews import CLUSTER_RECORD_VERSION, review_binding
 from src.analysis.sc_markers import MARKER_REVIEW_VERSION
 from src.evidence.builder import (
     build_cluster_card,
@@ -115,6 +115,7 @@ def record_review(
             run["revision"],
             reason,
             reviewer,
+            review_binding=review_binding(run, cluster),
         )
     elif kind == "marker":
         if decision not in {"accepted", "rejected"}:

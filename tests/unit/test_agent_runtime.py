@@ -172,6 +172,39 @@ def test_llm_exception_falls_back_to_workflow_manager():
     assert result["status"] == "success"
 
 
+def test_exception_after_dispatch_does_not_rerun_workflow():
+    """工具已执行后 LLM 再失败，不得回退旧工作流重复副作用。"""
+
+    class FailsAfterFirst(FakeLLM):
+        def _create(self, **kwargs):
+            self.calls.append(kwargs)
+            if len(self.calls) == 1:
+                return _tool_call_response(
+                    "run_analysis",
+                    {"analysis_type": "differential_expression", "question": "做差异"},
+                )
+            raise RuntimeError("api down")
+
+    wm = FakeWM(
+        {
+            "run_analysis": {
+                "status": "partial_failure",
+                "type": "analysis",
+                "message": "需要输入",
+                "results": {"output_file": "a.csv"},
+            }
+        }
+    )
+    runtime, wm = _make_runtime(FailsAfterFirst([]), wm)
+
+    result = runtime.execute("做差异表达")
+
+    assert wm.calls and not wm.fallback_calls
+    assert result["status"] == "error"
+    assert result["results"] == {"output_file": "a.csv"}
+    assert "请勿直接重复执行" in result["message"]
+
+
 def test_query_knowledge_dispatch():
     llm = FakeLLM([_tool_call_response("query_knowledge", {"query": "TP53 在癌症中的作用"})])
     wm = FakeWM(

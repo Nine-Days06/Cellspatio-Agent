@@ -156,6 +156,14 @@ FILE_STORAGE_KWARGS = {
     "doc_status_storage": "JsonDocStatusStorage",
 }
 
+PG_ENV_DEFAULTS = {
+    "POSTGRES_HOST": "127.0.0.1",
+    "POSTGRES_PORT": "5433",
+    "POSTGRES_USER": "postgres",
+    "POSTGRES_PASSWORD": "",
+    "POSTGRES_DATABASE": "rag",
+}
+
 
 def build_storage_kwargs(backend: str = "pg") -> dict[str, Any]:
     """LightRAG 四个 storage 参数；pg=PG+pgvector，file=本地文件（不需要 PG）。
@@ -169,13 +177,7 @@ def build_storage_kwargs(backend: str = "pg") -> dict[str, Any]:
     if backend != "pg":
         raise ValueError("storage backend 只能是 pg 或 file")
 
-    for key, val in {
-        "POSTGRES_HOST": "127.0.0.1",
-        "POSTGRES_PORT": "5433",
-        "POSTGRES_USER": "postgres",
-        "POSTGRES_PASSWORD": "",
-        "POSTGRES_DATABASE": "rag",
-    }.items():
+    for key, val in PG_ENV_DEFAULTS.items():
         os.environ.setdefault(key, val)
     return {
         "kv_storage": "PGKVStorage",
@@ -214,6 +216,8 @@ class LightRAGClient:
         self.working_dir = Path(working_dir)
         self.working_dir.mkdir(exist_ok=True)
         self.config = config or {}
+        #: 当前构造固定使用 PG 存储（build_storage_kwargs 默认 pg）
+        self.storage_backend = "pg"
         # LLM 抽取并发：显式传参 > MAX_ASYNC 环境变量 > None（回落默认 2）
         self._max_async = max_async if max_async is not None else resolve_max_async()
         # 文档级并发：显式传参 > MAX_PARALLEL_INSERT 环境变量 > None（回落默认 3）
@@ -229,6 +233,7 @@ class LightRAGClient:
 
         # 延迟导入 LightRAG，避免立即依赖
         self._rag = None
+        self._init_lock = threading.Lock()
         # 问答关闭缓存期间需要独占开关，避免并发检索读到半开状态
         self._cache_lock = threading.Lock()
         register_atexit(self.close)
@@ -253,7 +258,12 @@ class LightRAGClient:
 
     def _initialize_rag(self):
         """使用真实 LLM（云端 DeepSeek 等）与 embedding（本地 Ollama，默认 bge-m3:latest，见 EMBEDDING_MODEL）初始化"""
-        if self._rag is None:
+        if self._rag is not None:
+            return
+        # 并发首问只允许一个线程构造 LightRAG，避免重复 initialize_storages 泄漏连接。
+        with self._init_lock:
+            if self._rag is not None:
+                return
             try:
                 from lightrag import LightRAG
 
@@ -311,7 +321,7 @@ class LightRAGClient:
             logger.info(f"Document inserted, length: {len(document)}")
 
     def insert_documents(self, documents: list[str], file_paths: list[str] | None = None) -> int:
-        """批量插入；file_paths 缺省时按文档头/来源行推导（citation 用）"""
+        """批量插入，返回实际处理成功的文档数；file_paths 缺省时按文档头/来源行推导（citation 用）"""
         self._initialize_rag()
         if not documents or self._rag is None:
             return 0
@@ -319,11 +329,30 @@ class LightRAGClient:
             file_paths = [derive_file_path(d) for d in documents]
         # 全空则不传，兼容不支持 file_paths 的 mock
         if any(file_paths):
-            async_runtime.run(self._rag.ainsert(documents, file_paths=file_paths))
+            track_id = async_runtime.run(self._rag.ainsert(documents, file_paths=file_paths))
         else:
-            async_runtime.run(self._rag.ainsert(documents))
-        logger.info(f"Batch inserted {len(documents)} documents")
-        return len(documents)
+            track_id = async_runtime.run(self._rag.ainsert(documents))
+        inserted = self._processed_count(track_id, len(documents))
+        logger.info(f"Batch inserted {inserted}/{len(documents)} documents")
+        return inserted
+
+    def _processed_count(self, track_id: Any, requested: int) -> int:
+        """按 doc_status 统计本批真正处理完成的文档；无法查询时返回请求数"""
+        if not isinstance(track_id, str) or not hasattr(self._rag, "aget_docs_by_track_id"):
+            return requested
+        try:
+            statuses = async_runtime.run(self._rag.aget_docs_by_track_id(track_id))
+        except Exception as exc:  # noqa: BLE001 - 统计失败不能影响已完成的插入
+            logger.warning(f"统计插入结果失败，按请求数记录: {exc}")
+            return requested
+        if not statuses:
+            return requested
+        done = 0
+        for doc in statuses.values():
+            status = getattr(doc, "status", None)
+            if str(getattr(status, "value", status)) == "processed":
+                done += 1
+        return done
 
     def query(self, question: str, mode: str = "mix") -> str:
         """查询知识库（纯文本；背景/兼容调用方）"""
@@ -443,8 +472,7 @@ class LightRAGClient:
                     f"embedding 模型已锁定为 {saved}，不能改为 {model_name}；如需更换需清空知识库重建"
                 )
         else:
-            lock_file.write_text(
-                json.dumps({"model": model_name}, ensure_ascii=False),
-                encoding="utf-8",
-            )
+            tmp = lock_file.with_name(f"{lock_file.name}.{os.getpid()}.tmp")
+            tmp.write_text(json.dumps({"model": model_name}, ensure_ascii=False), encoding="utf-8")
+            os.replace(tmp, lock_file)
             logger.info("embedding 模型已锁定: %s", model_name)

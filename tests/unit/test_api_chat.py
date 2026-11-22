@@ -225,6 +225,25 @@ def test_user_message_persisted_even_when_runtime_fails(client):
     assert len(stored) == 1
 
 
+def test_partial_answer_persisted_when_runtime_fails_mid_stream(client):
+    """运行中途失败时，已推给前端的增量文本必须落库，否则刷新即丢失。"""
+    sid = _new_session(client)
+
+    class HalfRuntime:
+        def execute(self, user_input, context=None, on_event=None):
+            on_event({"type": "delta", "text": "已生成一半"})
+            raise RuntimeError("上游超时")
+
+    client.app.state.agent.agent_runtime = HalfRuntime()
+
+    events = _stream(client, sid, "问个问题")
+
+    assert events[-1]["type"] == "error"
+    stored = SessionStore().get_messages(sid)
+    assert [m["role"] for m in stored] == ["user", "assistant"]
+    assert stored[-1]["content"] == "已生成一半"
+
+
 def test_unknown_mode_is_rejected_before_creating_turn(client):
     sid = _new_session(client)
     response = client.post("/api/chat", json={"session_id": sid, "prompt": "hi", "mode": "bogus"})

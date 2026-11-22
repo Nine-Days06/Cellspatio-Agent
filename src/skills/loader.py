@@ -19,13 +19,15 @@ class SkillLoader:
     def load(
         self, skill_name: str, version: str | None = None, unique_suffix: str | None = None
     ) -> type[SkillBase]:
-        cache_key = f"{skill_name}_{unique_suffix}" if unique_suffix else skill_name
-        if cache_key in self._cache:
-            return self._cache[cache_key]
-
         manifest = self.registry.get(skill_name, version)
         if not manifest:
             raise ValueError(f"Skill not found: {skill_name}")
+
+        cache_key = f"{skill_name}@{manifest.metadata.version}"
+        if unique_suffix:
+            cache_key = f"{cache_key}_{unique_suffix}"
+        if cache_key in self._cache:
+            return self._cache[cache_key]
 
         skill_dir = self.registry.skills_dir / skill_name
         entry_point = manifest.metadata.entry_point
@@ -59,13 +61,14 @@ class SkillLoader:
         if skill_class is None:
             raise ValueError(f"No SkillBase subclass found in {module_path}")
 
-        cache_key = f"{skill_name}_{unique_suffix}" if unique_suffix else skill_name
         self._cache[cache_key] = skill_class
         return skill_class
 
     def reload(self, skill_name: str) -> type[SkillBase]:
         # 清除所有相关缓存
-        to_delete_cache = [k for k in self._cache if k.startswith(skill_name)]
+        to_delete_cache = [
+            key for key in self._cache if key == skill_name or key.startswith(f"{skill_name}@")
+        ]
         for k in to_delete_cache:
             del self._cache[k]
 

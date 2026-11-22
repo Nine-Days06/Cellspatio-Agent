@@ -427,13 +427,16 @@ def export_oa_links_csv(
         for pmc_id in sorted(oa_links.keys()):
             info = pmc_to_info.get(pmc_id, {})
             links = oa_links[pmc_id]
-            writer.writerow(
-                [
-                    info.get("pmid", ""),
-                    pmc_id,
-                    links.get("pdf", ""),
-                ]
-            )
+            # 同一 PMC 可被多条 PMID 引用，必须逐条输出，否则会漏记录。
+            pmids = info.get("pmids") or ([info["pmid"]] if info.get("pmid") else [""])
+            for pmid in pmids:
+                writer.writerow(
+                    [
+                        pmid,
+                        pmc_id,
+                        links.get("pdf", ""),
+                    ]
+                )
 
     return csv_path
 
@@ -666,15 +669,18 @@ def download_oa_pdf(links: dict[str, str], pdf_path: Path) -> bool:
 
 
 def _local_fulltext_exists(pmid: str) -> bool:
-    """本地是否已有该文献全文（.pdf 或 .txt）。pdf 下载与 pdf-retry 共用此判据，保证两阶段口径一致。"""
+    """本地是否已有有效全文（.pdf 或 .txt）；小于阈值视为半截文件。"""
     if not pmid:
         return False
-    return (PDF_DIR / f"{pmid}.pdf").exists() or (PDF_DIR / f"{pmid}.txt").exists()
+    return any(
+        path.is_file() and path.stat().st_size > MIN_VALID_FILE_BYTES
+        for path in (PDF_DIR / f"{pmid}.pdf", PDF_DIR / f"{pmid}.txt")
+    )
 
 
-def run_pdf_download(db_path: Path = DB_PATH):
+def run_pdf_download(db_path: Path = DB_PATH) -> int:
     """
-    执行 PDF 下载主流程。
+    执行 PDF 下载主流程，返回最终失败篇数。
     """
     logger.info("=" * 60)
     logger.info("阶段四：下载 OA 全文（仅 PDF）")
@@ -694,7 +700,7 @@ def run_pdf_download(db_path: Path = DB_PATH):
 
     if not records:
         logger.info("未发现符合下载条件（有 PMC ID 且 LLM 判定相关）的文献。")
-        return
+        return 0
 
     logger.info(f"符合条件的文献共 {len(records)} 篇，开始获取下载链接...")
 
@@ -706,7 +712,9 @@ def run_pdf_download(db_path: Path = DB_PATH):
         if not pid:
             invalid_pmc_count += 1
             continue
-        pmc_to_info[pid] = {"pmid": r["pmid"]}
+        # 勘误/重复记录会让多条 PMID 共享同一个 PMC，不能用 dict 覆盖。
+        entry = pmc_to_info.setdefault(pid, {"pmid": r["pmid"], "pmids": []})
+        entry["pmids"].append(r["pmid"])
 
     if invalid_pmc_count:
         logger.warning(f"已跳过 {invalid_pmc_count} 条格式无效的 PMC ID。")
@@ -739,18 +747,18 @@ def run_pdf_download(db_path: Path = DB_PATH):
     network_failed_items: list[dict] = []
     for pid in network_failed:
         info = pmc_to_info.get(pid, {})
-        pmid = info.get("pmid", "")
-        if _local_fulltext_exists(pmid):
-            skip_count += 1
-            continue
-        network_failed_items.append(
-            {
-                "pmc_id": pid,
-                "links": {},
-                "pdf_path": PDF_DIR / f"{pmid}.pdf",
-                "pmid": pmid,
-            }
-        )
+        for pmid in info.get("pmids") or [info.get("pmid", "")]:
+            if _local_fulltext_exists(pmid):
+                skip_count += 1
+                continue
+            network_failed_items.append(
+                {
+                    "pmc_id": pid,
+                    "links": {},
+                    "pdf_path": PDF_DIR / f"{pmid}.pdf",
+                    "pmid": pmid,
+                }
+            )
 
     # 使用线程池并发下载，提高效率
     with ThreadPoolExecutor(max_workers=DOWNLOAD_MAX_WORKERS) as executor:
@@ -758,24 +766,26 @@ def run_pdf_download(db_path: Path = DB_PATH):
         for pmc_id, links in oa_links.items():
             info = pmc_to_info[pmc_id]
             dest_dir = PDF_DIR
-            pdf_path = dest_dir / f"{info['pmid']}.pdf"
+            # shortcut: 共享 PMC 时每个 PMID 各下载一次；若成为常态再改为下载后复制
+            for pmid in info.get("pmids") or [info["pmid"]]:
+                pdf_path = dest_dir / f"{pmid}.pdf"
 
-            if pdf_path.exists():
-                skip_count += 1
-                continue
+                if _local_fulltext_exists(pmid):
+                    skip_count += 1
+                    continue
 
-            meta = {
-                "pmc_id": pmc_id,
-                "links": links,
-                "pdf_path": pdf_path,
-                "pmid": info["pmid"],
-            }
-            future = executor.submit(
-                download_oa_pdf,
-                links,
-                pdf_path,
-            )
-            future_to_meta[future] = meta
+                meta = {
+                    "pmc_id": pmc_id,
+                    "links": links,
+                    "pdf_path": pdf_path,
+                    "pmid": pmid,
+                }
+                future = executor.submit(
+                    download_oa_pdf,
+                    links,
+                    pdf_path,
+                )
+                future_to_meta[future] = meta
 
         for future in as_completed(future_to_meta):
             ok = future.result()
@@ -854,12 +864,13 @@ def run_pdf_download(db_path: Path = DB_PATH):
         logger.info("本次无下载任务执行，保留既有检查点。")
 
     logger.info(f"存储位置: {PDF_DIR}")
+    return len(failed_items)
 
 
 # ── 失败重试（断点续传） ─────────────────────────────────────
 
 
-def run_pdf_retry(db_path: Path = DB_PATH):
+def run_pdf_retry(db_path: Path = DB_PATH) -> int:
     """
     仅重试之前失败的 PDF 下载，支持断点续传。
     优先恢复 checkpoint；无 checkpoint 时读取最新失败清单 CSV。
@@ -875,7 +886,7 @@ def run_pdf_retry(db_path: Path = DB_PATH):
         pending = load_failed_items_from_csv()
         if not pending:
             logger.info("无检查点且无失败清单，没有可重试项。")
-            return
+            return 0
 
     # 与 run_pdf_download 使用同一判据过滤本地已有全文，避免两阶段口径不一致
     pending = [item for item in pending if not _local_fulltext_exists(item.get("pmid") or "")]
@@ -884,7 +895,7 @@ def run_pdf_retry(db_path: Path = DB_PATH):
     if not pending:
         _clear_pdf_checkpoint()
         logger.info("所有待重试项均已存在，无需下载。")
-        return
+        return 0
 
     # 混合取链：已有链接的直接用；链接缺失的重新查 OA API
     missing = [item for item in pending if not item.get("links")]
@@ -929,3 +940,4 @@ def run_pdf_retry(db_path: Path = DB_PATH):
     else:
         _clear_pdf_checkpoint()
         logger.info("全部重试成功。")
+    return len(failed_items)

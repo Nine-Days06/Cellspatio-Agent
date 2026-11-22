@@ -6,10 +6,12 @@ import sqlite3
 import pytest
 
 from src.ui.session_store import (
+    SCHEMA_VERSION,
     SessionStore,
     _decode_results,
     _encode_results,
 )
+from src.ui.store_errors import StoreError
 
 
 def test_create_and_list_sessions():
@@ -20,6 +22,18 @@ def test_create_and_list_sessions():
     assert sessions[0]["id"] == sid
     assert sessions[0]["title"] == "第一个会话"
     assert sessions[0]["message_count"] == 0
+
+
+def test_append_message_returns_inserted_row() -> None:
+    """追加即返回落库身份，调用方不必再读整段历史。"""
+    store = SessionStore()
+    sid = store.create_session()
+
+    msg = store.append_message(sid, "user", "分析这份数据", results={"steps": [1]})
+
+    assert (msg["session_id"], msg["seq"], msg["role"]) == (sid, 1, "user")
+    assert msg["results"] == {"steps": [1]}
+    assert msg["id"] == store.get_messages(sid)[-1]["id"]
 
 
 def test_migrates_legacy_sessions_table(tmp_path):
@@ -51,6 +65,18 @@ def test_migrates_legacy_sessions_table(tmp_path):
     assert session["project_id"] is None
     assert session["pinned"] is False
     assert session["archived_at"] is None
+
+
+def test_schema_version_is_stamped(tmp_path) -> None:
+    """首次打开写版本号，后续连接可跳过建表与迁移。"""
+    store = SessionStore(tmp_path / "v.db")
+    store.create_session()
+
+    conn = sqlite3.connect(tmp_path / "v.db")
+    try:
+        assert conn.execute("PRAGMA user_version").fetchone()[0] == SCHEMA_VERSION
+    finally:
+        conn.close()
 
 
 def test_project_crud_and_session_grouping():
@@ -115,14 +141,89 @@ def test_archived_project_hides_its_sessions_and_rejects_new_ones():
         store.create_session("新会话", project_id=pid)
 
 
-def test_archive_project_rejects_running_session(monkeypatch):
+def test_project_archive_check_reads_inside_write_transaction(monkeypatch):
+    """归档校验必须在写事务内读库，不能信任事务外的 get_project 快照。"""
+    store = SessionStore()
+    pid = store.create_project("归档项目")
+    sid = store.create_session("会话")
+    store.update_project(pid, archived=True)
+    # 事务外快照若被当作权威，会放行归档后的写入。
+    monkeypatch.setattr(
+        SessionStore,
+        "get_project",
+        lambda self, project_id: {"id": project_id, "archived_at": None},
+    )
+
+    with pytest.raises(ValueError, match="项目已归档"):
+        store.create_session("新会话", project_id=pid)
+    with pytest.raises(ValueError, match="项目已归档"):
+        store.move_session(sid, pid)
+
+
+def test_archive_project_checks_running_inside_write_transaction():
+    """归档项目不再走 running_stage 预检，而是在写事务内用同一连接查询。"""
     store = SessionStore()
     pid = store.create_project("运行中项目")
-    store.create_session("会话", project_id=pid)
-    monkeypatch.setattr(store, "running_stage", lambda _sid: "PCA")
+    sid = store.create_session("会话", project_id=pid)
+    _seed_running_filter(store, sid)
 
-    with pytest.raises(ValueError, match="运行中"):
+    with pytest.raises(ValueError, match="过滤运行中，不能归档项目"):
         store.update_project(pid, archived=True)
+    assert store.get_project(pid)["archived_at"] is None
+
+
+def _seed_running_filter(store: SessionStore, session_id: str) -> None:
+    """在写事务外插入一个 running 过滤 attempt，模拟并发领取。"""
+    now = "2026-11-12T00:00:00+00:00"
+    with store._conn() as conn:
+        conn.execute(
+            "INSERT INTO qc_runs (run_id, session_id, directory, evidence) VALUES (?, ?, ?, '{}')",
+            ("run-x", session_id, "sc_qc"),
+        )
+        conn.execute(
+            "INSERT INTO qc_previews (preview_id, run_id, payload) VALUES ('p1', 'run-x', '{}')"
+        )
+        conn.execute(
+            "INSERT INTO sc_filter_attempts "
+            "(attempt_id, run_id, preview_id, binding_sha256, tool_version, directory, status, "
+            "created_at) VALUES ('f1', 'run-x', 'p1', 'a', '1', 'sc_filter/f1', 'running', ?)",
+            (now,),
+        )
+
+
+def test_delete_session_rejects_running_stage():
+    """预检与删除在同一写事务内：运行中的阶段必须拦住删除。"""
+    store = SessionStore()
+    sid = store.create_session()
+    _seed_running_filter(store, sid)
+
+    with pytest.raises(ValueError, match="过滤运行中，不能删除会话"):
+        store.delete_session(sid)
+    assert store.get_session(sid) is not None
+
+
+def test_archive_session_rejects_running_stage():
+    """归档同样在写事务内复检，避免检查后被并发领取。"""
+    store = SessionStore()
+    sid = store.create_session()
+    _seed_running_filter(store, sid)
+
+    with pytest.raises(ValueError, match="过滤运行中，不能归档会话"):
+        store.archive_session(sid)
+    assert store.get_session(sid)["archived_at"] is None
+
+
+def test_batch_delete_rolls_back_when_a_later_session_is_running():
+    """批量删除必须整体失败：先删的会话不能在回滚后消失。"""
+    store = SessionStore()
+    first = store.create_session("一")
+    second = store.create_session("二")
+    _seed_running_filter(store, second)
+
+    with pytest.raises(ValueError, match="过滤运行中，不能删除会话"):
+        store.delete_sessions_and_project([first, second])
+    assert store.get_session(first) is not None
+    assert store.get_session(second) is not None
 
 
 def test_append_message_sets_title_from_first_user_message():
@@ -207,6 +308,35 @@ def test_set_script_status_ignores_confirmed():
         sid, "assistant", "s", pending_script={"script": "a", "status": "confirmed"}
     )
     store.set_script_status(sid, "expired")
+    assert store.get_messages(sid)[0]["pending_script"]["status"] == "confirmed"
+
+
+def test_release_script_only_reverts_own_claim():
+    store = SessionStore()
+    sid = store.create_session()
+    store.append_message(sid, "assistant", "s", pending_script={"script": "a", "status": "pending"})
+    claimed_id, pending = store.claim_script(sid, "confirmed")
+    token = pending["claim_token"]
+
+    store.release_script(sid, claimed_id, "not-my-token")
+    assert store.get_messages(sid)[0]["pending_script"]["status"] == "confirmed"
+
+    store.release_script(sid, claimed_id, token)
+    restored = store.get_messages(sid)[0]["pending_script"]
+    assert restored["status"] == "pending"
+    assert "claim_token" not in restored
+
+
+def test_release_script_does_not_clobber_later_claim():
+    store = SessionStore()
+    sid = store.create_session()
+    store.append_message(sid, "assistant", "s", pending_script={"script": "a", "status": "pending"})
+    claimed_id, first = store.claim_script(sid, "confirmed")
+    store.release_script(sid, claimed_id, first["claim_token"])
+
+    # 另一个 worker 已重新领取并开始执行；旧令牌的回滚不得把它打回 pending。
+    store.claim_script(sid, "confirmed")
+    store.release_script(sid, claimed_id, first["claim_token"])
     assert store.get_messages(sid)[0]["pending_script"]["status"] == "confirmed"
 
 
@@ -321,3 +451,19 @@ def test_record_knowledge_qa_review_leaves_session_messages_and_run_untouched(tm
 
     assert store.get_messages(sid) == []
     assert store.get_qc_run(sid, "r")["revision"] == 0
+
+
+def test_move_session_rejects_running_stage():
+    """运行中换项目会让后续产物落到新根，必须在写事务内拦住。"""
+    store = SessionStore()
+    source = store.create_project("源项目", "D:/data/a")
+    target = store.create_project("目标项目", "D:/data/b")
+    sid = store.create_session(project_id=source)
+    _seed_running_filter(store, sid)
+
+    with pytest.raises(StoreError, match="过滤运行中，不能移动会话"):
+        store.move_session(sid, target)
+    assert store.get_session(sid)["project_id"] == source
+
+    store.move_session(sid, source)
+    assert store.get_session(sid)["project_id"] == source

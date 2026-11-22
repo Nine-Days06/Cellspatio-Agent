@@ -10,6 +10,7 @@ from typing import Any
 
 import pytest
 
+from src.stage_defs import StageDefinition
 from src.ui.session_store import SessionStore
 from src.ui.stage_lifecycle import StageLifecycle, StageSpec
 
@@ -30,8 +31,7 @@ FAKE_STAGE = StageSpec(
     revision_error="阶段 revision 已变化，请刷新",
     invalid_terminal="fake 终态非法",
     not_running="fake 任务不在运行状态",
-    directory_name="sc_fake",
-    failure_stage="fake_review",
+    definition=StageDefinition("fake", "sc_fake", "fake_review"),
     message=fake_message,
 )
 

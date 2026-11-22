@@ -4,81 +4,32 @@ from __future__ import annotations
 
 from typing import Any, ClassVar
 
+from src.control.intent_vocabulary import (
+    ANALYSIS_KEYWORDS,
+    FETCH_KEYWORDS,
+    KNOWLEDGE_KEYWORDS,
+)
+
+# 分类器比解析器更宽松：单个"聚类"/"时空"也足以判定模态
+_ANALYSIS_EXTRA: dict[str, list[str]] = {
+    "single_cell": ["聚类"],
+    "spatial": ["时空"],
+}
+
 
 class TaskClassifier:
     """基于关键词 + LLM 兜底的任务分类器。"""
 
     # 高优先级：问题词优先匹配 knowledge
-    QUESTION_KEYWORDS: ClassVar[list[str]] = [
-        "为什么",
-        "是什么",
-        "有什么",
-        "有哪些",
-        "哪些",
-        "怎么",
-        "如何",
-        "作用",
-        "功能",
-        "关系",
-        "解释",
-        "机制",
-        "途径",
-        "含义",
-        "解释",
-        "特点",
-        "特征",
-        "特性",
-        "分类",
-        "类型",
-        "种类",
-    ]
+    QUESTION_KEYWORDS: ClassVar[list[str]] = ["为什么"] + KNOWLEDGE_KEYWORDS
 
     MODALITY_KEYWORDS: ClassVar[dict[str, dict[str, list[str]]]] = {
         "analysis": {
-            "differential_expression": ["差异表达", "差异基因", "DEG", "fold change"],
-            "single_cell": ["单细胞", "scRNA", "Seurat", "UMAP", "聚类", "细胞注释"],
-            "spatial": ["空间转录", "空间组", "Visium", "spatial", "时空"],
+            analysis_type: keywords + _ANALYSIS_EXTRA.get(analysis_type, [])
+            for analysis_type, keywords in ANALYSIS_KEYWORDS.items()
         },
-        "fetch": {
-            "search_datasets": [
-                "下载",
-                "获取",
-                "GEO",
-                "GSE",
-                "数据集",
-                "表达谱",
-                "KEGG",
-                "pathway",
-                "通路",
-                "UniProt",
-                "蛋白",
-                "protein",
-            ],
-        },
-        "knowledge": {
-            "query_knowledge": [
-                "是什么",
-                "有什么",
-                "有哪些",
-                "哪些",
-                "怎么",
-                "如何",
-                "作用",
-                "功能",
-                "关系",
-                "解释",
-                "机制",
-                "途径",
-                "含义",
-                "解释",
-                "特点",
-                "特征",
-                "特性",
-                "分类",
-                "类型",
-                "种类",
-            ],
-        },
+        "fetch": {"search_datasets": FETCH_KEYWORDS},
+        "knowledge": {"query_knowledge": KNOWLEDGE_KEYWORDS},
     }
 
     def __init__(self):

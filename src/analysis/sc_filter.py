@@ -9,16 +9,15 @@ from decimal import Decimal
 from pathlib import Path
 from typing import Any
 
+from src.analysis.evidence import identity
 from src.analysis.qc_preview import (
     Thresholds,
-    _identity,
     check_preview,
     checked_evidence,
     decisions,
 )
 from src.analysis.r_executor import RExecutorError
-from src.analysis.sc_qc import _fingerprints
-from src.analysis.stage_run import executor_streams, finish_stage, start_stage
+from src.analysis.stage_run import FixedStageRun, PreparedStage, run_fixed_stage
 from src.control.r_script_generator import RScriptGenerator
 
 FILTER_TOOL_VERSION = "1.0.0"
@@ -45,7 +44,7 @@ def verified_selection(run: dict[str, Any], root: Path, preview: dict[str, Any])
     ]
     if reader.fieldnames != ["barcode", "keep", "reasons"] or list(reader) != expected:
         raise ValueError("逐 barcode 选择与 QC 重算不一致")
-    if _identity(data) != preview["artifacts"]["selection.csv"]:
+    if identity(data) != preview["artifacts"]["selection.csv"]:
         raise ValueError("选择证据已变化")
     return data
 
@@ -91,7 +90,6 @@ def run_sc_filter(
     run: dict[str, Any], preview: dict[str, Any], root: Path, directory: Path, executor: Any
 ) -> dict[str, Any]:
     """只执行一次固定过滤；失败保留日志，成功仍等待科学审阅。"""
-    started = start_stage(directory)
     metadata: dict[str, Any] = {
         "tool": "sc_filter",
         "tool_version": FILTER_TOOL_VERSION,
@@ -104,8 +102,9 @@ def run_sc_filter(
         "binding_sha256": preview["binding_sha256"],
         "inputs": run["evidence"]["inputs"],
     }
-    stdout = stderr = ""
-    try:
+
+    def prepare() -> PreparedStage:
+        """校验输入、复制已批准选择并返回内存中的证据。"""
         from src.control.workflow_manager import WorkflowManager
 
         invalid = WorkflowManager._validate_sc_input(run["evidence"]["input_path"])
@@ -116,15 +115,11 @@ def run_sc_filter(
         (directory / "selection.csv").write_bytes(selection)
         for name in ("features.csv", "cell_qc.csv"):
             (directory / name).write_bytes(files[name])
-        script = directory / "script.R"
-        script.write_text(
-            filter_script(run["evidence"]["input_path"], directory.resolve()), encoding="utf-8"
-        )
-        completed = executor.execute_script(str(script))
-        stdout, stderr = completed.stdout or "", completed.stderr or ""
-        metadata["returncode"] = completed.returncode
-        if completed.returncode != 0:
-            raise ValueError("过滤 R 执行失败")
+        return PreparedStage(data=(selection, files))
+
+    def check(prepared: PreparedStage) -> dict[str, Any]:
+        """校验过滤产物、维度、版本与已复制证据。"""
+        selection, files = prepared.data
         for name in (
             "barcodes.csv",
             "dimensions.txt",
@@ -165,24 +160,26 @@ def run_sc_filter(
                 raise ValueError("过滤过程中 QC 副本发生变化")
         if (directory / "selection.csv").read_bytes() != selection:
             raise ValueError("过滤过程中选择发生变化")
-        if script.read_text(encoding="utf-8") != filter_script(
-            run["evidence"]["input_path"], directory.resolve()
-        ):
-            raise ValueError("过滤固定脚本发生变化")
+        return {
+            "cells": len(expected),
+            "features": dims[0],
+            "stored_entries": dims[2],
+            "versions": versions,
+        }
+
+    def after(prepared: PreparedStage) -> None:
+        """再次确认当前批准选择没有变化。"""
         verified_selection(run, root, preview)
-        metadata.update(
-            status="completed",
-            cells=len(expected),
-            features=dims[0],
-            stored_entries=dims[2],
-            versions=versions,
-        )
-    except (RExecutorError, OSError, ValueError, KeyError, StopIteration) as exc:
-        metadata["error"] = str(exc)
-        if isinstance(exc, RExecutorError):
-            stdout, stderr = executor_streams(exc)
-    finally:
-        finish_stage(
-            directory, metadata, started, stdout, stderr, artifacts=True, fingerprints=_fingerprints
-        )
-    return metadata
+
+    plan = FixedStageRun(
+        directory=directory,
+        metadata=metadata,
+        prepare=prepare,
+        script=lambda prepared: filter_script(run["evidence"]["input_path"], directory.resolve()),
+        check=check,
+        after=after,
+        returncode_error="过滤 R 执行失败",
+        script_error="过滤固定脚本发生变化",
+        errors=(RExecutorError, OSError, ValueError, KeyError, StopIteration),
+    )
+    return run_fixed_stage(plan, executor)

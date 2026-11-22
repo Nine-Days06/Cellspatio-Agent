@@ -81,4 +81,8 @@ def wire_message(msg: dict[str, Any]) -> dict[str, Any]:
     results = payload.get("results")
     if results is not None:
         payload["results"] = json.loads(_encode_results(results))
+    pending = payload.get("pending_script")
+    if isinstance(pending, dict) and "claim_token" in pending:
+        # 领取令牌只服务服务端回滚 CAS，不外发。
+        payload["pending_script"] = {k: v for k, v in pending.items() if k != "claim_token"}
     return payload

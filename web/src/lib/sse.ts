@@ -85,8 +85,10 @@ export async function streamChat(options: StreamChatOptions): Promise<void> {
   const decoder = new TextDecoder()
   let buffer = ''
   let lastEvent: SseEventType | null = null
+  // 坏帧与正常 EOF 必须区分：末尾 done 被截断时，后端其实已落库，重试会重复提问。
+  let parseError = false
 
-  // 解析一段完整文本里的所有帧；坏 JSON 跳过不中断整条流
+  // 解析一段完整文本里的所有帧；坏 JSON 不中断整条流，但会标记解析失败
   const dispatch = (raw: string) => {
     for (const line of raw.split('\n')) {
       if (!line.startsWith('data: ')) continue
@@ -95,6 +97,7 @@ export async function streamChat(options: StreamChatOptions): Promise<void> {
       try {
         parsed = JSON.parse(payload) as SseEvent
       } catch {
+        parseError = true
         continue
       }
       lastEvent = parsed.type
@@ -129,5 +132,9 @@ export async function streamChat(options: StreamChatOptions): Promise<void> {
 
   if (lastEvent === 'done') finish('done')
   else if (lastEvent === 'error') finish('error')
+  else if (parseError) {
+    finish('error')
+    throw new ApiError(0, '响应解析失败，请刷新会话后重试。')
+  }
   else finish('closed')
 }

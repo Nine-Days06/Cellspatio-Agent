@@ -128,6 +128,7 @@ describe('脚本确认卡片', () => {
     expect(onConfirm).toHaveBeenCalledWith({
       session_id: expect.any(String),
       action: 'script_confirm',
+      message_id: scriptCard.message_id,
     })
     expect(onConfirm.mock.calls[0][0]).not.toHaveProperty('source')
     expect(onConfirm.mock.calls[0][0]).not.toHaveProperty('asset_id')

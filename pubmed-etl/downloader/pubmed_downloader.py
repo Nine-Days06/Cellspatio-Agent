@@ -9,6 +9,7 @@ NCBI E-utilities 批量下载器
 """
 
 import json
+import os
 import re
 import threading
 import time
@@ -86,6 +87,7 @@ def _get(url: str, params: dict, retries: int = 5) -> requests.Response:
                 raise
             logger.warning(f"Request failed ({e}), retrying {attempt}/{retries}")
             time.sleep(2**attempt)
+    raise requests.HTTPError("NCBI 连续返回 429，重试已耗尽")
 
 
 def _post(url: str, data: dict, retries: int = 5) -> requests.Response:
@@ -108,6 +110,7 @@ def _post(url: str, data: dict, retries: int = 5) -> requests.Response:
                 raise
             logger.warning(f"Request failed ({e}), retrying {attempt}/{retries}")
             time.sleep(2**attempt)
+    raise requests.HTTPError("NCBI 连续返回 429，重试已耗尽")
 
 
 def _safe_json(r: requests.Response) -> dict:
@@ -198,9 +201,8 @@ def _collect_pmids(query: str, lo: str, hi: str) -> list[str]:
 
     parts = _split_range(lo, hi)
     if parts is None:
-        # 理论不可达：单日命中超 10k。降级取前 10k 并告警
-        logger.warning(f"  单日 {lo} 命中 {count} 仍超 10k，降级截断（请报告此问题）")
-        return fetch_pmid_list(query, mindate=lo, maxdate=hi)
+        # 理论不可达：单日命中超 10k。不能截断，否则知识库永久缺数据
+        raise RuntimeError(f"单日 {lo} 命中 {count} 篇仍超 NCBI 10k 限制，无法继续按日期切分")
 
     left, right = parts
     logger.info(f"  切片 {lo}-{hi}: {count} 篇 > {SAFE_LEAF_COUNT}，拆分 → {left} | {right}")
@@ -215,7 +217,7 @@ def fetch_pmid_list(
     mindate/maxdate 支持 "2000" 或 "2025/06/01" 两种格式。
     注意：esearch/efetch 的 retstart 硬限制为 10000；
     调用方应保证切片命中 ≤ SAFE_LEAF_COUNT（_collect_pmids 负责），
-    此处的 10k break 仅作兜底断言。
+    此处触限直接报错，不静默截断。
     """
     logger.info("开始 esearch，获取 WebEnv ...")
     lo = mindate if mindate is not None else SEARCH_YEAR_MIN
@@ -252,11 +254,10 @@ def fetch_pmid_list(
     page_size = 5000
     for start in range(0, total, page_size):
         if start >= 10000:
-            logger.error(
-                f"触发 NCBI 10k 硬限制（切片 {lo}-{hi} 命中超限未被切分），本切片结果被截断。"
+            raise RuntimeError(
+                f"切片 {lo}-{hi} 命中 NCBI 10k 硬限制，已取 {len(pmids)}/{total} 条；"
+                "继续会静默丢数据，请缩窄检索范围或按日期进一步切分"
             )
-            logger.error("这是自适应切分的兜底分支，正常不应出现，请报告。")
-            break
 
         p = {
             **_base_params(),
@@ -276,10 +277,10 @@ def fetch_pmid_list(
             logger.info(f"  PMID 列表进度: {len(pmids)}/{total}")
         except requests.exceptions.HTTPError as e:
             if e.response.status_code == 400:
-                logger.warning(
-                    f"分页请求失败 (retstart={start})，可能触发了 NCBI 的 10k 限制。停止获取 PMID。"
-                )
-                break
+                raise RuntimeError(
+                    f"切片 {lo}-{hi} 分页请求被拒 (retstart={start})，已取 {len(pmids)}/{total} 条；"
+                    "可能是 NCBI 10k 限制，继续会静默丢数据"
+                ) from e
             raise
         time.sleep(REQUEST_INTERVAL)
 
@@ -313,10 +314,13 @@ def _download_single_batch(
     }
 
     _rate_limiter.wait()
+    part_file = batch_file.with_name(batch_file.name + ".part")
     try:
         r = _get(f"{EUTILS_BASE}/efetch.fcgi", params)
-        with open(batch_file, "wb") as f:
+        # 先写 .part 再原子改名：中断不会留下“大小 >0 但内容截断”的批次被永久跳过。
+        with open(part_file, "wb") as f:
             f.write(r.content)
+        os.replace(part_file, batch_file)
         logger.info(
             f"  [批次 {batch_idx + 1}/{total_batches}] "
             f"下载 {len(chunk)} 篇 → {batch_file.name} "
@@ -324,6 +328,7 @@ def _download_single_batch(
         )
         return batch_file
     except Exception as e:
+        part_file.unlink(missing_ok=True)
         logger.error(f"  [批次 {batch_idx + 1}] 下载失败: {e}")
         return None
 
@@ -332,27 +337,59 @@ def download_xml_batches(
     pmids: list[str],
     out_dir: Path = RAW_XML_DIR,
     batch_size: int = EFETCH_BATCH_SIZE,
+    query: str = PUBMED_QUERY,
 ) -> list[Path]:
     """
     将 PMID 列表分批，通过 efetch 并发下载 PubmedArticleSet XML。
-    已存在的批次文件自动跳过（断点续传）。
+    同一 PMID 列表的批次自动跳过；列表变化时旧批次先失效，避免串数据。
     返回所有成功下载的批次文件路径。
     """
     out_dir = Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    # 保存 PMID 列表备用（便于后续复查）
-    pmid_list_path = out_dir / "pmid_list.json"
-    with open(pmid_list_path, "w") as f:
-        json.dump({"query": PUBMED_QUERY, "total": len(pmids), "pmids": pmids}, f)
-    logger.info(f"PMID 列表已保存至 {pmid_list_path}")
+    if not pmids:
+        # 空结果常见于查询拼错或 NCBI 瞬时异常；清空缓存不可恢复。
+        raise RuntimeError("PMID 列表为空，拒绝清空现有 XML 缓存")
 
     total_batches = (len(pmids) + batch_size - 1) // batch_size
-    max_workers = 3 if not NCBI_API_KEY else 8
-
     chunks = [pmids[i * batch_size : (i + 1) * batch_size] for i in range(total_batches)]
 
+    # 批次按序号复用；只失效分块内容变化的批次，保留其余断点续传。
+    pmid_list_path = out_dir / "pmid_list.json"
+    previous: dict = {}
+    if pmid_list_path.exists():
+        try:
+            previous = json.loads(pmid_list_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            previous = {}
+    if previous.get("pmids") != pmids or previous.get("batch_size") != batch_size:
+        previous_chunks = previous.get("chunks")
+        if not isinstance(previous_chunks, list):
+            previous_chunks = []
+        for index, chunk in enumerate(chunks):
+            if index >= len(previous_chunks) or previous_chunks[index] != chunk:
+                (out_dir / f"batch_{index:05d}.xml").unlink(missing_ok=True)
+        for stale in out_dir.glob("batch_*.xml"):
+            suffix = stale.stem.removeprefix("batch_")
+            if suffix.isdigit() and int(suffix) >= total_batches:
+                stale.unlink(missing_ok=True)
+    with open(pmid_list_path, "w") as f:
+        json.dump(
+            {
+                "query": query,
+                "total": len(pmids),
+                "pmids": pmids,
+                "batch_size": batch_size,
+                "chunks": chunks,
+            },
+            f,
+        )
+    logger.info(f"PMID 列表已保存至 {pmid_list_path}")
+
+    max_workers = 3 if not NCBI_API_KEY else 8
+
     xml_files = []
+    failed_batches: list[int] = []
     futures = {}
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
         for batch_idx, chunk in enumerate(chunks):
@@ -365,8 +402,16 @@ def download_xml_batches(
             result = future.result()
             if result is not None:
                 xml_files.append(result)
+            else:
+                failed_batches.append(futures[future])
 
     xml_files.sort()
+    if failed_batches:
+        # 缺批次会让下游解析静默少数据；已完成批次留在磁盘，重跑可续传。
+        raise RuntimeError(
+            f"{len(failed_batches)}/{total_batches} 个 XML 批次下载失败，"
+            f"请重试（批次 {sorted(failed_batches)}）"
+        )
     logger.info(f"下载完成，共 {len(xml_files)} 个批次文件")
     return xml_files
 
@@ -398,5 +443,5 @@ def run_download(query: str = PUBMED_QUERY) -> list[Path]:
     all_pmids = list(dict.fromkeys(all_pmids))
     logger.info(f"所有切片处理完毕，去重后共 {len(all_pmids)} 篇")
 
-    xml_files = download_xml_batches(all_pmids)
+    xml_files = download_xml_batches(all_pmids, query=query)
     return xml_files

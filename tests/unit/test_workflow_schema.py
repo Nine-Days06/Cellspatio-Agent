@@ -239,7 +239,31 @@ def test_workflow_execution_json_schema_export():
     # 验证 StepType enum 定义
     step_type_def = schema.get("$defs", {}).get("StepType", {})
     assert "enum" in step_type_def
-    assert set(step_type_def["enum"]) == {"analysis", "fetch_data", "knowledge_query"}
+    assert set(step_type_def["enum"]) == {
+        "analysis",
+        "fetch_data",
+        "knowledge_query",
+        "general",
+    }
+
+
+def test_workflow_step_general_and_open_tool():
+    """general 无工具可为 None；技能步骤仍可使用任意 tool 名。"""
+    general = WorkflowStep(
+        step_id="general",
+        step_type="general",
+        tool=None,
+        params={},
+    )
+    skill = WorkflowStep(
+        step_id="skill",
+        step_type="analysis",
+        tool="test_skill",
+        params={},
+    )
+    assert general.tool is None
+    assert general.step_type.value == "general"
+    assert skill.tool == "test_skill"
 
 
 def test_invalid_terminal_status_rejected():

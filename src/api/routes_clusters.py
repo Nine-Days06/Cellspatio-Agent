@@ -23,26 +23,24 @@ from src.analysis.sc_marker_reviews import CLUSTER_RECORD_VERSION, review_view
 from src.api import routes_pca
 from src.api.authorized_run import StageClaim, run_authorized
 from src.api.deps import StoreDep
-from src.api.routes_pca import dimension_view, require_parent, require_pca
-from src.api.routes_qc import require_run, run_qc_root
+from src.api.errors import EVIDENCE_ERRORS
+from src.api.routes_pca import dimension_view
 from src.api.stage_history import history_entry
+from src.api.stage_lookup import (
+    require_cluster,
+    require_parent,
+    require_pca,
+    require_run,
+    run_qc_root,
+)
 from src.api.stage_runtime import RUNNING, has_running, running_stages
 from src.api.verified_artifact import read_verified_artifact
+from src.stage_defs import CLUSTER, stage_directory, stage_failure
 from src.ui.run_snapshot import RunSnapshot
-from src.ui.sc_stage_defs import CLUSTER_STAGE, stage_directory, stage_failure
 from src.ui.session_store import SessionStore
 
 router = APIRouter(prefix="/api/sessions/{session_id}/qc/{run_id}/clusters", tags=["clusters"])
 logger = logging.getLogger(__name__)
-EVIDENCE_ERRORS = (
-    OSError,
-    ValueError,
-    KeyError,
-    TypeError,
-    OverflowError,
-    StopIteration,
-    IndexError,
-)
 
 
 def view(
@@ -210,7 +208,7 @@ def execute_clusters(
         }
         if execution_binding(run, snapshot) != body.binding_sha256:
             raise HTTPException(409, "聚类来源绑定已变化，请刷新")
-        directory_parent, directory = stage_directory(CLUSTER_STAGE, root, attempt_id)
+        directory_parent, directory = stage_directory(CLUSTER, root, attempt_id)
         claimed: dict[str, Any] = {}
 
         def execute(attempt: dict[str, Any]) -> dict[str, Any]:
@@ -224,9 +222,7 @@ def execute_clusters(
                 raise
             except Exception as exc:
                 logger.error("unexpected cluster execution failure: %s", type(exc).__name__)
-                return stage_failure(
-                    CLUSTER_STAGE, "聚类执行出现未预期错误；本地证据保留，请人工检查"
-                )
+                return stage_failure(CLUSTER, "聚类执行出现未预期错误；本地证据保留，请人工检查")
 
         def finish(result: dict[str, Any]) -> dict[str, Any]:
             """保存终态并返回数据库权威结果。"""
@@ -249,7 +245,7 @@ def execute_clusters(
             ),
             execute=execute,
             finish=finish,
-            on_error=lambda _exc: stage_failure(CLUSTER_STAGE, "聚类产物落盘失败"),
+            on_error=lambda _exc: stage_failure(CLUSTER, "聚类产物落盘失败"),
         )
 
     def refresh() -> dict[str, Any]:
@@ -308,14 +304,6 @@ def diagnostic(
     except EVIDENCE_ERRORS as exc:
         raise HTTPException(409, "聚类图或来源身份已变化；请检查本地证据") from exc
     return Response(data, media_type="image/png", headers={"Cache-Control": "no-store"})
-
-
-def require_cluster(run: RunSnapshot, pca_attempt_id: str, attempt_id: str) -> dict[str, Any]:
-    """只定位本 run 与 PCA 下的确切聚类尝试。"""
-    cluster = run.attempt("cluster", attempt_id, pca_attempt_id)
-    if cluster is None:
-        raise HTTPException(404, "聚类关联不存在")
-    return cluster
 
 
 class ClusterReviewRequest(routes_pca.PcaRequest):
@@ -462,6 +450,7 @@ def reject_review(
             CLUSTER_RECORD_VERSION,
             body.revision,
             body.reason,
+            review_binding=state["binding_sha256"],
         )
         return _review_view(
             store, session_id, run_id, filter_attempt_id, pca_attempt_id, attempt_id, request

@@ -16,9 +16,13 @@ def export_analysis_capsule(
 ) -> Path:
     """写入 `<out_root>/<timestamp>/` 并返回该目录路径"""
     root = Path(out_root)
-    ts = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
+    ts = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S_%f")
     capsule = root / ts
-    capsule.mkdir(parents=True, exist_ok=True)
+    index = 1
+    while capsule.exists():
+        capsule = root / f"{ts}_{index}"
+        index += 1
+    capsule.mkdir(parents=True)
 
     (capsule / "question.txt").write_text(question or "", encoding="utf-8")
     (capsule / "script.R").write_text(script_code or "", encoding="utf-8")

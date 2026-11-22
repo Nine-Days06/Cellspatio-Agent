@@ -14,61 +14,57 @@ class SnapshotManager:
         self.snapshots_dir = self.repo_root / "snapshots"
         self.snapshots_dir.mkdir(parents=True, exist_ok=True)
 
-    def create_snapshot(self, run_id: str, commit_msg: str | None = None) -> Path:
-        """创建 worktree：snapshots/<run_id>，基于当前 HEAD"""
-        snap_path = self.snapshots_dir / run_id
+    def _snapshot_path(self, run_id: str) -> Path:
+        """快照目录只能位于 snapshots/ 下，run_id 必须是单个路径段。"""
+        if (
+            not run_id
+            or run_id in {".", ".."}
+            or "/" in run_id
+            or "\\" in run_id
+            or Path(run_id).is_absolute()
+        ):
+            raise ValueError(f"run_id 不能包含路径分隔符: {run_id!r}")
+        return self.snapshots_dir / run_id
+
+    def create_snapshot(self, run_id: str) -> Path:
+        """创建 worktree：snapshots/<run_id>，基于当前 HEAD。
+
+        shortcut: 只捕获已提交状态；运行目录里的未提交改动不会进入快照，
+        需要在未提交状态下复现时再补 stash/拷贝。
+        """
+        snap_path = self._snapshot_path(run_id)
         if snap_path.exists():
-            # 已存在：更新到最新 HEAD
-            subprocess.run(
-                ["git", "fetch", "origin"], cwd=snap_path, check=False, capture_output=True
-            )
-            subprocess.run(
-                ["git", "reset", "--hard", "origin/HEAD"],
-                cwd=snap_path,
-                check=False,
-                capture_output=True,
-            )
-        else:
-            # 新建 worktree
-            branch_name = f"snapshot/{run_id}"
-            subprocess.run(
-                ["git", "worktree", "add", "-b", branch_name, str(snap_path)],
-                cwd=self.repo_root,
-                check=True,
-                capture_output=True,
-            )
-        # 可选：提交当前变更作为快照记录（仅当有暂存变更时）
-        if commit_msg:
-            # 检查是否有暂存变更
-            result = subprocess.run(
-                ["git", "diff", "--cached", "--name-only"],
-                cwd=snap_path,
-                capture_output=True,
-                text=True,
-                check=False,
-            )
-            if result.stdout.strip():
-                subprocess.run(["git", "add", "-A"], cwd=snap_path, check=True, capture_output=True)
-                subprocess.run(
-                    ["git", "commit", "-m", commit_msg],
-                    cwd=snap_path,
-                    check=True,
-                    capture_output=True,
-                )
+            # 快照是不可变证据：同名已存在时直接返回，绝不 reset 覆盖。
+            if snap_path.is_symlink() or not snap_path.is_dir():
+                raise ValueError(f"快照路径不是安全目录: {snap_path}")
+            return snap_path
+        # 新建 worktree
+        branch_name = f"snapshot/{run_id}"
+        subprocess.run(
+            ["git", "worktree", "add", "-b", branch_name, str(snap_path)],
+            cwd=self.repo_root,
+            check=True,
+            capture_output=True,
+        )
         return snap_path
 
     def delete_snapshot(self, run_id: str, force: bool = False) -> bool:
         """删除 worktree 与分支"""
-        snap_path = self.snapshots_dir / run_id
-        if not snap_path.exists():
+        snap_path = self._snapshot_path(run_id)
+        if not snap_path.exists() or snap_path.is_symlink() or not snap_path.is_dir():
             return False
         branch_name = f"snapshot/{run_id}"
-        subprocess.run(
-            ["git", "worktree", "remove", "--force" if force else "", str(snap_path)],
+        remove_args = ["git", "worktree", "remove"]
+        if force:
+            remove_args.append("--force")
+        removed = subprocess.run(
+            [*remove_args, str(snap_path)],
             cwd=self.repo_root,
             check=False,
             capture_output=True,
         )
+        if removed.returncode != 0:
+            return False
         subprocess.run(
             ["git", "branch", "-D", branch_name],
             cwd=self.repo_root,
@@ -86,5 +82,7 @@ class SnapshotManager:
         return result
 
     def get_snapshot_path(self, run_id: str) -> Path | None:
-        snap_path = self.snapshots_dir / run_id
-        return snap_path if snap_path.exists() else None
+        snap_path = self._snapshot_path(run_id)
+        if not snap_path.exists() or snap_path.is_symlink() or not snap_path.is_dir():
+            return None
+        return snap_path

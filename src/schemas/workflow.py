@@ -38,11 +38,12 @@ class AnalysisType(str, Enum):
 
 
 class StepType(str, Enum):
-    """工作流步骤类型。对应三个工具。"""
+    """工作流步骤类型。"""
 
     ANALYSIS = "analysis"
     FETCH_DATA = "fetch_data"
     KNOWLEDGE_QUERY = "knowledge_query"
+    GENERAL = "general"
 
 
 class IntentType(str, Enum):
@@ -52,6 +53,7 @@ class IntentType(str, Enum):
     FETCH_DATA = "fetch_data"
     KNOWLEDGE_QUERY = "knowledge_query"
     GENERAL = "general"
+    AMBIGUOUS = "ambiguous"
 
 
 # ── 记录模型 ──────────────────────────────────────────────────────
@@ -89,7 +91,8 @@ class WorkflowStep(BaseModel):
 
     step_id: str
     step_type: StepType
-    tool: Literal["run_analysis", "search_datasets", "query_knowledge"]
+    # 技能步骤使用任意 tool 名；没有工具时用 None，而不是 "none" 哨兵
+    tool: str | None = None
     params: dict[str, Any] = Field(default_factory=dict)
     output: StepOutput | None = None
     timestamp: datetime = Field(default_factory=datetime.utcnow)
@@ -103,11 +106,16 @@ class WorkflowExecution(BaseModel):
     intent: IntentRecord
     parameters: ParameterRecord
     steps: list[WorkflowStep] = Field(default_factory=list)
+    outputs: list[WorkflowOutput] = Field(default_factory=list)
     meta: dict[str, Any] = Field(default_factory=dict)
 
     def add_step(self, step: WorkflowStep) -> None:
         """追加步骤记录。"""
         self.steps.append(step)
+
+    def add_output(self, output: WorkflowOutput) -> None:
+        """追加产物记录。"""
+        self.outputs.append(output)
 
     def to_json(self, indent: int = 2) -> str:
         """序列化为 JSON 字符串。"""

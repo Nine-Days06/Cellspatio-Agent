@@ -1,16 +1,29 @@
-import json
 import logging
 import os
 import re
 from collections.abc import Callable
-from pathlib import Path
 from typing import Any
+
+from src.knowledge.knowledge_index import KnowledgeIndex
+
+
+def _env_int(name: str, default: int) -> int:
+    """读取整数环境变量；非法值回退默认并告警，避免导入期崩溃。"""
+    raw = os.environ.get(name)
+    if raw is None:
+        return default
+    try:
+        return int(raw)
+    except ValueError:
+        logging.getLogger(__name__).warning("%s 不是整数，回退 %s", name, default)
+        return default
+
 
 # 按需补库：显式 ID 不在库中时触发；context 过短作为 mock/空库回退
 # （LightRAG 在非空图上几乎总是返回 30k+ 松散匹配，长度阈值不可靠）
-LAZY_INGEST_MIN_CONTEXT = int(os.environ.get("LAZY_INGEST_MIN_CONTEXT", "300"))
+LAZY_INGEST_MIN_CONTEXT = _env_int("LAZY_INGEST_MIN_CONTEXT", 300)
 # 单次提问最多自动入库条数（控延迟与体积）
-LAZY_INGEST_MAX_ASSETS = int(os.environ.get("LAZY_INGEST_MAX_ASSETS", "3"))
+LAZY_INGEST_MAX_ASSETS = _env_int("LAZY_INGEST_MAX_ASSETS", 3)
 # 试点范围：暂不含 GEO（搜索噪声大）
 LAZY_INGEST_SOURCES = ("kegg", "uniprot")
 
@@ -34,6 +47,7 @@ class KnowledgeCoverage:
         registry: Any,
         ingest_asset: Callable[[str, str], dict[str, Any]],
         logger: logging.Logger = logger,
+        index: KnowledgeIndex | None = None,
     ) -> None:
         """保存知识库、构建器、注册表与入库回调。"""
         self.knowledge_client = knowledge_client
@@ -41,6 +55,7 @@ class KnowledgeCoverage:
         self.registry = registry
         self.ingest_asset = ingest_asset
         self.logger = logger
+        self.index = index if index is not None else KnowledgeIndex.from_client(knowledge_client)
 
     def should_ingest(self, query: str, params: dict[str, Any]) -> bool:
         """是否触发按需补库。
@@ -55,16 +70,22 @@ class KnowledgeCoverage:
         explicit = self.extract_ids(query)
         genes = [str(g) for g in (params.get("genes") or [])]
 
-        asset_ids = self.kb_asset_ids()
-        entities = self.kb_entity_names()
-        if asset_ids is not None and entities is not None:
-            if any(aid.lower() not in asset_ids for _src, aid in explicit):
+        unknown = False
+        if explicit:
+            asset_ids = self.index.asset_ids() if self.index is not None else None
+            if asset_ids is None:
+                unknown = True
+            elif any(aid.lower() not in asset_ids for _src, aid in explicit):
                 return True
-            if any(g.lower() not in entities for g in genes):
+        if genes:
+            entities = self.index.entity_names() if self.index is not None else None
+            if entities is None:
+                unknown = True
+            elif any(g.lower() not in entities for g in genes):
                 return True
-            # 显式 ID / genes 均已命中，不因 context 短而重复入库
-            if explicit or genes:
-                return False
+        # 显式 ID / genes 均已命中，不因 context 短而重复入库
+        if (explicit or genes) and not unknown:
+            return False
 
         ctx = self.context_for_miss_check(query)
         if ctx is None:
@@ -81,75 +102,6 @@ class KnowledgeCoverage:
             for acc in _UNIPROT_ACC_RE.findall(query):
                 found.append(("uniprot", acc))
         return found
-
-    def kb_working_dir(self) -> Path | None:
-        """知识库工作目录；无 working_dir 或类型非法时返回 None。"""
-        wd = getattr(self.knowledge_client, "working_dir", None)
-        if not wd:
-            return None
-        try:
-            return Path(wd)
-        except TypeError:
-            return None
-
-    def kb_asset_ids(self) -> set[str] | None:
-        """专属文档头里的资产 ID（小写）；无法定位 working_dir 时返回 None。
-
-        仅认 `# KEGG 通路: map…` / `# UniProt 蛋白: P…` 这类入库头，
-        不把实体交叉引用当作「已有该通路/蛋白文档」。
-        """
-        base = self.kb_working_dir()
-        if base is None:
-            return None
-        docs_path = base / "kv_store_full_docs.json"
-        if not docs_path.exists():
-            return set()
-        try:
-            docs = json.loads(docs_path.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError) as e:
-            self.logger.warning("read full_docs for miss-check failed: %s", e)
-            return set()
-
-        asset_ids: set[str] = set()
-        header_re = re.compile(
-            r"^#\s*(?:KEGG\s+通路|UniProt\s+蛋白):\s*(\S+)",
-            re.IGNORECASE | re.MULTILINE,
-        )
-        for item in docs.values():
-            content = item.get("content", "") if isinstance(item, dict) else str(item)
-            for mid in header_re.findall(content):
-                asset_ids.add(mid.lower())
-        return asset_ids
-
-    def kb_entity_names(self) -> set[str] | None:
-        """实体表实体名（小写）；用于 genes 是否已在图中"""
-        base = self.kb_working_dir()
-        if base is None:
-            return None
-        entities_path = base / "kv_store_full_entities.json"
-        if not entities_path.exists():
-            return set()
-        try:
-            data = json.loads(entities_path.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError) as e:
-            self.logger.warning("read full_entities for miss-check failed: %s", e)
-            return set()
-
-        known: set[str] = set()
-        for item in data.values():
-            if not isinstance(item, dict):
-                continue
-            for name in item.get("entity_names") or []:
-                known.add(str(name).lower())
-        return known
-
-    def kb_known_ids(self) -> set[str] | None:
-        """兼容旧调用：文档头资产 ID ∪ 实体名（小写）"""
-        assets = self.kb_asset_ids()
-        entities = self.kb_entity_names()
-        if assets is None or entities is None:
-            return None
-        return assets | entities
 
     def context_for_miss_check(self, query: str) -> str | None:
         """取 only_need_context 文本；无法检查时返回 None（跳过补库）"""
@@ -194,10 +146,6 @@ class KnowledgeCoverage:
                     "lazy ingest %s/%s: %s", source, asset_id, result.get("message")
                 )
         return ingested
-
-    def lazy_ingest(self, query: str, params: dict[str, Any] | None = None) -> list[dict[str, Any]]:
-        """兼容旧命名：按需补库。"""
-        return self.ingest_missing(query, params)
 
     def collect_candidates(self, query: str, params: dict[str, Any]) -> list[tuple[str, str]]:
         """显式 ID 优先，不足再 search 兜底；仅 kegg/uniprot，上限 MAX"""

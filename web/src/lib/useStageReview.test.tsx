@@ -191,6 +191,25 @@ describe('useStageReview', () => {
     expect(recorded).not.toHaveBeenCalled()
   })
 
+  it('轮询连续失败后指数退避并停止，不再无限重试', async () => {
+    vi.useFakeTimers()
+    const load = vi.fn().mockResolvedValue(view(0, true))
+    const pollLoad = vi.fn().mockRejectedValue(new Error('后端失联'))
+    const { result } = renderHook(() =>
+      useStageReview<View>({ load, pollLoad, deps: [], isRunning }))
+
+    await act(async () => { await vi.advanceTimersByTimeAsync(0) })
+    expect(result.current.state).toEqual(view(0, true))
+
+    await act(async () => { await vi.advanceTimersByTimeAsync(60000) })
+
+    expect(pollLoad).toHaveBeenCalledTimes(5)
+    expect(result.current.error).toBe('后端失联')
+
+    await act(async () => { await vi.advanceTimersByTimeAsync(60000) })
+    expect(pollLoad).toHaveBeenCalledTimes(5)
+  })
+
   it('recover 不递增 generation，旧身份恢复不覆盖新动作', async () => {
     const load = vi.fn().mockResolvedValue(view(0))
     const slow = deferred<View>()

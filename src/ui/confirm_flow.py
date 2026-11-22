@@ -31,21 +31,13 @@ class ConfirmFlowError(ValueError):
         self.code = code
 
 
-def latest_pending_raw(store: SessionStore, session_id: str) -> PendingScript | None:
-    """从库里反查最新一条带 pending_script 的消息（不做过期改写）。"""
-    for msg in reversed(store.get_messages(session_id)):
-        if msg.get("pending_script"):
-            return msg["pending_script"]
-    return None
-
-
 def restore_pending(
     store: SessionStore, session_id: str, messages: list[dict[str, Any]]
 ) -> PendingScript | None:
     """会话加载时的待确认脚本过期语义。
 
-    只看最新一条带 pending_script 的消息：pending → 落库置 expired 后按
-    expired 返回；expired → 原样返回；其他状态 → None。
+    只看最新一条带 pending_script 的消息：pending → 把**这一条**（按 id）落库
+    置 expired 后按 expired 返回；expired → 原样返回；其他状态 → None。
     """
     for msg in reversed(messages):
         pending = msg.get("pending_script")
@@ -54,7 +46,8 @@ def restore_pending(
         status = pending.get("status")
         if status in (STATUS_PENDING, STATUS_EXPIRED):
             if status == STATUS_PENDING:
-                store.set_script_status(session_id, STATUS_EXPIRED)
+                # 必须按 id 定位：并发新建的卡可能已是最新一条，不能被这里误废。
+                store.set_script_status(session_id, STATUS_EXPIRED, message_id=msg["id"])
             return {
                 "script": pending.get("script", ""),
                 "analysis_type": pending.get("analysis_type"),
@@ -68,36 +61,54 @@ def restore_pending(
     return None
 
 
-def confirm_script(agent: Any, store: SessionStore, session_id: str, action: str) -> dict[str, Any]:
-    """确认或取消最新 pending 脚本，并落一条助手消息。"""
-    pending = latest_pending_raw(store, session_id)
-    if pending is None or pending.get("status") != STATUS_PENDING:
-        raise ConfirmFlowError(ERR_NO_PENDING_SCRIPT, "没有待确认的脚本")
+def confirm_script(
+    agent: Any,
+    store: SessionStore,
+    session_id: str,
+    action: str,
+    *,
+    message_id: int | None = None,
+) -> dict[str, Any]:
+    """确认或取消指定（缺省最新）pending 脚本，并落一条助手消息。
 
-    if action == ACTION_SCRIPT_CANCEL:
-        store.set_script_status(session_id, SCRIPT_STATUS_BY_ACTION[action])
-        content = "已取消本次脚本执行。"
-        results = None
-    elif action == ACTION_SCRIPT_CONFIRM:
-        result = agent.execute_confirmed_script(
-            pending.get("analysis_type"),
-            pending.get("params") or {},
-            pending.get("script", ""),
-            method_context=pending.get("method_context"),
-        )
-        store.set_script_status(session_id, SCRIPT_STATUS_BY_ACTION[action])
-        content = build_assistant_message(result)["content"]
-        results = result.get("results")
-    else:
+    先用 CAS 把卡片改到终态再执行：同一张卡被两个标签页同时确认时，只有一个能拿到执行权。
+    """
+    if action not in SCRIPT_STATUS_BY_ACTION or action not in (
+        ACTION_SCRIPT_CONFIRM,
+        ACTION_SCRIPT_CANCEL,
+    ):
         raise ConfirmFlowError(ERR_NOT_SCRIPT_ACTION, f"不是脚本动作: {action}")
 
-    store.append_message(session_id, "assistant", content, results=results)
-    return store.get_messages(session_id)[-1]
+    status = SCRIPT_STATUS_BY_ACTION[action]
+    claimed = store.claim_script(session_id, status, message_id=message_id)
+    if claimed is None:
+        raise ConfirmFlowError(ERR_NO_PENDING_SCRIPT, "没有待确认的脚本")
+    claimed_id, pending = claimed
+    token = pending.get("claim_token") or ""
 
+    if action == ACTION_SCRIPT_CANCEL:
+        content = "已取消本次脚本执行。"
+        results = None
+    else:
+        try:
+            result = agent.execute_confirmed_script(
+                pending.get("analysis_type"),
+                pending.get("params") or {},
+                pending.get("script", ""),
+                method_context=pending.get("method_context"),
+                session_id=session_id,
+            )
+        except Exception:
+            # 执行失败不能把卡片留在终态，否则用户既看不到结果也无法重试。
+            store.release_script(session_id, claimed_id, token)
+            raise
+        if result.get("status") == "error":
+            # 修复次数用尽/产物缺失以正常返回值报告失败，同样要把卡片退回 pending。
+            store.release_script(session_id, claimed_id, token)
+        content = build_assistant_message(result)["content"]
+        results = result.get("results")
 
-def _asset_key(asset: dict[str, Any], source: str) -> tuple[str, Any]:
-    """已下载资产的去重键 (source, asset_id)；历史记录缺 source 字段时用请求 source。"""
-    return (asset.get("source") or source, asset.get("asset_id"))
+    return store.append_message(session_id, "assistant", content, results=results)
 
 
 def confirm_data(
@@ -118,16 +129,11 @@ def confirm_data(
         raise ConfirmFlowError(ERR_UNKNOWN_SOURCE, f"未知数据源: {source}") from exc
     asset = result.get("asset")
     if asset:
-        session = store.get_session(session_id) or {}
-        assets = list(session.get("downloaded_assets") or [])
-        key = _asset_key(asset, source)
-        # 重复确认：下载可重复，但同一资产只落库一次（避免污染 run_turn 上下文）
-        if key not in {_asset_key(a, source) for a in assets}:
-            assets.append(asset)
-            store.update_session_meta(session_id, downloaded_assets=assets)
+        # 重复确认：下载可重复，但同一资产只落库一次（避免污染 run_turn 上下文）。
+        # 去重与追加在写事务内完成，避免并发 data_confirm 整列覆盖。
+        store.append_downloaded_asset(session_id, asset, source=source)
         content = f"已下载 {asset_id} → `{asset.get('access_path')}`"
     else:
         content = result.get("message", "数据下载未完成。")
 
-    store.append_message(session_id, "assistant", content)
-    return store.get_messages(session_id)[-1]
+    return store.append_message(session_id, "assistant", content)

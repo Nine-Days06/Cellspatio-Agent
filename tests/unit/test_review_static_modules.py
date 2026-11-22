@@ -59,6 +59,42 @@ def test_review_reads_selection_snapshot() -> None:
     assert re.search(r"selection\.current\(\)\?\.id", text), (
         "review.js 的提交目标必须取 selection.current()?.id"
     )
+    assert not re.search(r"\bPromise\.all\b", text), "证据详情与事件必须来自同一次读取"
+
+
+def test_review_revision_preview_is_bound_to_target() -> None:
+    """修订预览必须捕获发起时的 revisesId，并在上传前比对预览目标。"""
+    text = (STATIC / "review.js").read_text(encoding="utf-8")
+    assert "const revisesId = state.revisesId;" in text
+    assert "revisesId !== state.revisesId" in text
+    assert "revises_submission_id" in text
+
+
+def test_load_card_clears_previous_preview_before_reading() -> None:
+    """选择新卡时先清空旧 preview，避免预览失败后仍可上传上一张卡。"""
+    text = (STATIC / "review.js").read_text(encoding="utf-8")
+    start = text.index("async function loadCardFile")
+    body = text[start : text.index("\nfunction previewBlock", start)]
+    assert body.index("state.preview = null") < body.index("api.preview")
+
+
+def test_card_file_load_drops_stale_preview() -> None:
+    """连续选卡时只认最新一次预览响应，迟到的旧响应不得写回 preview。"""
+    text = (STATIC / "review.js").read_text(encoding="utf-8")
+    start = text.index("async function loadCardFile")
+    body = text[start : text.index("\nfunction previewBlock", start)]
+    assert body.count("cardLoadToken") >= 3
+    assert re.search(r"if \(token !== cardLoadToken\) return;", body)
+    assert body.index("cardLoadToken") < body.index("api.preview")
+
+
+def test_upload_preview_is_single_flight() -> None:
+    """上传在途时重复点击不得再次提交同一预览。"""
+    text = (STATIC / "review.js").read_text(encoding="utf-8")
+    start = text.index("async function uploadPreview")
+    body = text[start : text.index("\nlet cardLoadToken", start)]
+    assert "state.uploading" in body
+    assert body.index("state.uploading = true") < body.index("api.uploadSubmission")
 
 
 def test_review_api_has_no_dom() -> None:

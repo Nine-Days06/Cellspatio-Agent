@@ -46,6 +46,7 @@ New-Item -ItemType Directory -Force -Path $app | Out-Null
 
 Copy-Tree (Join-Path $root "src") (Join-Path $app "src") @("__pycache__")
 Copy-Tree (Join-Path $root "skills") (Join-Path $app "skills") @("__pycache__")
+Copy-Tree (Join-Path $root "knowledge_base_methods_cards") (Join-Path $app "knowledge_base_methods_cards")
 Copy-Tree (Join-Path $root "web\dist") (Join-Path $app "web\dist")
 Copy-Item (Join-Path $root "pyproject.toml"), (Join-Path $root "requirements.txt") $app
 Copy-Item (Join-Path $PSScriptRoot "launch.ps1"), (Join-Path $PSScriptRoot "launch.cmd"), (Join-Path $PSScriptRoot "bootstrap.ps1"), (Join-Path $PSScriptRoot "README.txt") $stage

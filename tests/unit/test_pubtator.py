@@ -84,6 +84,15 @@ def test_fetch_recovers_valid_pmids_from_mixed_batch():
     assert list(result) == ["9704485"]
 
 
+def test_save_is_atomic_and_roundtrips(tmp_path):
+    """写入后不残留 .part，内容可原样读回。"""
+    path = tmp_path / "gene_ids.json"
+    pubtator.save_pmid_genes({"1": {"CD4": "NCBIGene:920"}}, path)
+
+    assert pubtator.load_pmid_genes(path) == {"1": {"CD4": "NCBIGene:920"}}
+    assert not (tmp_path / "gene_ids.json.part").exists()
+
+
 def test_cache_roundtrip(tmp_path):
     """写缓存 → 读回一致（JSON）。"""
     path = tmp_path / "gene_ids.json"
@@ -97,6 +106,9 @@ def test_load_cache_missing_or_corrupt_returns_empty(tmp_path):
     bad = tmp_path / "bad.json"
     bad.write_text("{not json", encoding="utf-8")
     assert pubtator.load_pmid_genes(bad) == {}
+    wrong_type = tmp_path / "list.json"
+    wrong_type.write_text("[]", encoding="utf-8")
+    assert pubtator.load_pmid_genes(wrong_type) == {}
 
 
 def test_load_cache_drops_non_string_entries(tmp_path):

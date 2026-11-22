@@ -1,5 +1,9 @@
 """WorkflowRecorder 行为测试。"""
 
+import json
+
+import pytest
+
 from src.control.workflow_recorder import WorkflowRecorder
 from src.schemas.workflow import (
     IntentRecord,
@@ -49,6 +53,41 @@ def test_recorder_start_execution_creates_record():
     assert record.intent.analysis_type.value == "differential_expression"
     assert record.parameters.input_files == ["data.csv"]
     assert record.steps == []
+
+
+def test_recorder_rejects_unsafe_run_id():
+    """显式 run_id 不能把记录带出 .wrroc 或 snapshots 目录。"""
+    recorder = WorkflowRecorder()
+    for run_id in ("../outside", "a/b", "a\\b", "/abs"):
+        with pytest.raises(ValueError):
+            recorder.start_execution(
+                intent={"type": "general", "original_input": "hi"},
+                parameters={},
+                user_input="hi",
+                context={},
+                run_id=run_id,
+            )
+
+
+@pytest.mark.parametrize(
+    ("intent", "expected_type", "expected_analysis"),
+    [
+        ({"type": "ambiguous", "original_input": "TP53"}, "ambiguous", None),
+    ],
+)
+def test_recorder_accepts_parser_intents(intent, expected_type, expected_analysis):
+    """解析器可返回 ambiguous/visualization，记录阶段不能因此崩溃。"""
+    recorder = WorkflowRecorder()
+    run_id = recorder.start_execution(
+        intent=intent,
+        parameters={},
+        user_input=intent["original_input"],
+        context={},
+    )
+    record = recorder.get_record(run_id)
+    assert record is not None
+    assert record.intent.type.value == expected_type
+    assert record.intent.analysis_type == expected_analysis
 
 
 def test_recorder_records_intent():
@@ -123,6 +162,25 @@ def test_recorder_records_step():
     assert step.output.status.value == "success"
 
 
+def test_recorder_accepts_open_skill_tool_name():
+    """技能步骤的 tool 名不限于内置 agent 工具。"""
+    recorder = WorkflowRecorder()
+    run_id = recorder.start_execution(
+        intent={"type": "general", "original_input": "skill"},
+        parameters={},
+        user_input="skill",
+        context={},
+    )
+    recorder.record_step(
+        run_id,
+        step_id="skill-1",
+        step_type="general",
+        tool="test_skill",
+        params={},
+    )
+    assert recorder.get_record(run_id).steps[0].tool == "test_skill"
+
+
 def test_recorder_records_multiple_steps():
     """多步骤正确追加并保持顺序。"""
     recorder = WorkflowRecorder()
@@ -176,9 +234,13 @@ def test_recorder_finish_run_returns_path():
     recorder.record_step(
         run_id, "step-1", "analysis", "run_analysis", {}, output={"status": "success"}
     )
+    recorder.record_output(run_id, name="de.csv", path="data/de.csv", type="csv")
+    recorder.record_output(run_id, name="de.csv", path="data/de.csv", type="csv")
     path = recorder.finish_run(run_id)
     assert path.name == "workflow.json"
     assert path.parent.name == run_id
+    outputs = json.loads(path.read_text(encoding="utf-8"))["outputs"]
+    assert outputs == [{"name": "de.csv", "path": "data/de.csv", "type": "csv", "meta": {}}]
 
 
 def test_finish_run_skips_snapshot_in_local_mode(tmp_path, monkeypatch):

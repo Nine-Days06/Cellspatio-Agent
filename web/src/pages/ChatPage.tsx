@@ -71,6 +71,7 @@ export function ChatPage() {
   const setSession = useChatStore((s) => s.setSession)
   const setScriptCard = useChatStore((s) => s.setScriptCard)
   const setDataCard = useChatStore((s) => s.setDataCard)
+  const appendMessage = useChatStore((s) => s.appendMessage)
 
   const sessionsQuery = useSessions()
   const projectsQuery = useProjects()
@@ -100,18 +101,23 @@ export function ChatPage() {
   // ② 历史拉取成功 → hydrate：history + soft_warn + 恢复的 pending 脚本卡。
   //    顶层 pending_script 是 restore 的权威结果（后端先取 messages 后置 expired，
   //    messages[].pending_script 状态是旧值），message_id 从携带卡片的消息取。
+  const hydratedQueryRef = useRef<unknown>(null)
   useEffect(() => {
     const data = messagesQuery.data
     if (!data) return
+    if (hydratedQueryRef.current === data) return
     const state = useChatStore.getState()
     if (state.busy || state.sessionId !== data.session.id) return
-    setSession(data.session.id, data.messages)
+    hydratedQueryRef.current = data
+    // 只刷历史：同会话刷新不能走“切会话”语义，确认卡与输入草稿必须保留。
+    useChatStore.setState({ history: data.messages })
     if (data.soft_warn) useChatStore.setState({ softWarn: true })
     if (data.pending_script) {
       const holder = [...data.messages].reverse().find((m) => m.pending_script !== null)
       setScriptCard({ ...data.pending_script, message_id: holder?.id ?? -1 })
     }
-  }, [messagesQuery.data, setSession, setScriptCard])
+    // busy 期间跳过后，本轮结束时必须重新尝试，否则历史永远不会 hydrate。
+  }, [messagesQuery.data, setSession, setScriptCard, busy])
 
   // ②-b 当前展示卡的 message_id 变化（恢复出新卡/换卡）→ 丢弃上一张卡的失败/成功态；
   //      同一 message_id 的 status 回写不算换卡。scriptCard 优先，与 ConfirmCard 一致。
@@ -167,6 +173,10 @@ export function ChatPage() {
   function handleSend(): void {
     const prompt = input.trim()
     if (!prompt || busy) return
+    if (!sessionId) {
+      useChatStore.getState().setNotice({ kind: 'error', text: '请先新建或选择会话' })
+      return
+    }
     setInput('')
     dispatchConfirm({ type: 'reset' })
     void send(prompt, mode)
@@ -210,11 +220,12 @@ export function ChatPage() {
       )
     }
     try {
-      await confirmAction(body)
+      const { message } = await confirmAction(body)
       if (isStale()) {
         dispatchConfirm({ type: 'reset' })
         return
       }
+      appendMessage(message)
       if (scriptStatus === null) {
         setDataCard(null)
       } else {

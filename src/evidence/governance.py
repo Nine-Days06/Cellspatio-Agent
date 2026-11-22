@@ -200,8 +200,8 @@ class GovernanceStore:
         self.max_open_submissions = max_open_submissions
 
     @contextmanager
-    def _conn(self) -> Iterator[sqlite3.Connection]:
-        """打开短连接并确保 schema 存在。"""
+    def _conn(self, *, write: bool = False) -> Iterator[sqlite3.Connection]:
+        """打开短连接并确保 schema 存在；写事务用 BEGIN IMMEDIATE 串行化。"""
         self.root.mkdir(parents=True, exist_ok=True)
         conn = sqlite3.connect(self.db_path)
         try:
@@ -209,6 +209,8 @@ class GovernanceStore:
             conn.execute("PRAGMA journal_mode=WAL")
             conn.execute("PRAGMA foreign_keys=ON")
             conn.executescript(SCHEMA)
+            if write:
+                conn.execute("BEGIN IMMEDIATE")
             yield conn
             conn.commit()
         finally:
@@ -252,28 +254,40 @@ class GovernanceStore:
             ),
         )
 
-    def _write_card(self, card: EvidenceCard, card_json: str, card_sha256: str) -> None:
-        """卡副本只写一次；内容不一致说明 card_id 被复用。"""
-        if not _ID_RE.match(card.card_id):
+    def _card_path(self, card_id: str) -> Path:
+        """卡副本路径，仅接受内部已校验的 card_id。"""
+        if not _ID_RE.match(card_id):
             raise EvidenceError("invalid_input", "card_id 只能包含字母、数字、点、下划线和短横线")
-        path = self.cards_dir / f"{card.card_id}.json"
+        return self.cards_dir / f"{card_id}.json"
+
+    def _write_card(self, card: EvidenceCard, card_json: str, card_sha256: str) -> Path | None:
+        """卡副本只写一次；内容不一致说明 card_id 被复用。"""
+        path = self._card_path(card.card_id)
         if path.exists():
             existing = hashlib.sha256(path.read_text(encoding="utf-8").encode("utf-8")).hexdigest()
             if existing != card_sha256:
                 raise EvidenceError("duplicate", "同一 card_id 的卡内容不一致")
-            return
+            return None
         self.cards_dir.mkdir(parents=True, exist_ok=True)
-        path.write_text(card_json, encoding="utf-8")
+        tmp = path.with_suffix(f".json.{uuid.uuid4().hex}.tmp")
+        tmp.write_text(card_json, encoding="utf-8")
+        tmp.replace(path)
+        return path
 
     def _check_supersedes(
-        self, conn: sqlite3.Connection, submission_id: str, supersedes: list[str]
+        self,
+        conn: sqlite3.Connection,
+        submission_id: str,
+        supersedes: list[str],
+        contributor_id: str,
     ) -> None:
-        """supersedes 只能指向已接受的既有提交，且整张引用图必须无环。"""
+        """supersedes 只能指向本人的已接受提交，且整张引用图必须无环。"""
         for target in supersedes:
             if target == submission_id:
                 raise EvidenceError("invalid_input", "supersedes 不能指向自己")
             row = conn.execute(
-                "SELECT status FROM submissions WHERE submission_id=?", (target,)
+                "SELECT status, contributor_id FROM submissions WHERE submission_id=?",
+                (target,),
             ).fetchone()
             if row is None:
                 raise EvidenceError(
@@ -281,6 +295,8 @@ class GovernanceStore:
                 )
             if row["status"] != STATE_ACCEPTED:
                 raise EvidenceError("invalid_state", f"只能取代 accepted 证据：{target}")
+            if row["contributor_id"] != contributor_id:
+                raise EvidenceError("permission_denied", "只能取代自己的证据")
         edges = {
             row["submission_id"]: json.loads(row["supersedes_json"])
             for row in conn.execute("SELECT submission_id, supersedes_json FROM submissions")
@@ -362,57 +378,67 @@ class GovernanceStore:
                 raise EvidenceError("invalid_input", "submitted_at 必须是 ISO 8601 时间") from exc
         submitted_at = env.submitted_at or now
 
-        with self._conn() as conn:
-            if conn.execute(
-                "SELECT 1 FROM submissions WHERE card_id=?", (env.card.card_id,)
-            ).fetchone():
-                raise EvidenceError("duplicate", "同一 card_id 只能提交一次")
-            if conn.execute(
-                "SELECT 1 FROM submissions WHERE submission_id=?", (submission_id,)
-            ).fetchone():
-                raise EvidenceError("duplicate", "submission_id 已存在")
-            self._check_supersedes(conn, submission_id, env.supersedes)
-            if env.revises_submission_id:
-                original = self._row(conn, env.revises_submission_id)
-                if original["contributor_id"] != env.contributor_id:
-                    raise EvidenceError("permission_denied", "只能修订自己的提交")
-                if original["status"] != STATE_NEEDS_CHANGES:
-                    raise EvidenceError("invalid_state", "只能修订 needs_changes 的提交")
-            self._check_limits(conn, env.contributor_id, now)
-            self._write_card(env.card, card_json, card_sha256)
-            conn.execute(
-                "INSERT INTO submissions "
-                "(submission_id, contributor_id, submitted_at, card_id, card_sha256, card_json, "
-                "claim_text, gate, supersedes_json, revises_submission_id, donor_count, "
-                "independent_replications, status) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                (
+        created: Path | None = None
+        try:
+            with self._conn(write=True) as conn:
+                if conn.execute(
+                    "SELECT 1 FROM submissions WHERE card_id=?", (env.card.card_id,)
+                ).fetchone():
+                    raise EvidenceError("duplicate", "同一 card_id 只能提交一次")
+                if conn.execute(
+                    "SELECT 1 FROM submissions WHERE submission_id=?", (submission_id,)
+                ).fetchone():
+                    raise EvidenceError("duplicate", "submission_id 已存在")
+                self._check_supersedes(conn, submission_id, env.supersedes, env.contributor_id)
+                if env.revises_submission_id:
+                    original = self._row(conn, env.revises_submission_id)
+                    if original["contributor_id"] != env.contributor_id:
+                        raise EvidenceError("permission_denied", "只能修订自己的提交")
+                    if original["status"] != STATE_NEEDS_CHANGES:
+                        raise EvidenceError("invalid_state", "只能修订 needs_changes 的提交")
+                self._check_limits(conn, env.contributor_id, now)
+                created = self._write_card(env.card, card_json, card_sha256)
+                conn.execute(
+                    "INSERT INTO submissions "
+                    "(submission_id, contributor_id, submitted_at, card_id, card_sha256, card_json, "
+                    "claim_text, gate, supersedes_json, revises_submission_id, donor_count, "
+                    "independent_replications, status) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    (
+                        submission_id,
+                        env.contributor_id,
+                        submitted_at,
+                        env.card.card_id,
+                        card_sha256,
+                        card_json,
+                        env.card.claim.text,
+                        env.card.gate,
+                        json.dumps(env.supersedes, ensure_ascii=False),
+                        env.revises_submission_id,
+                        env.donor_count,
+                        env.independent_replications,
+                        STATE_PENDING,
+                    ),
+                )
+                self._event(
+                    conn,
                     submission_id,
                     env.contributor_id,
-                    submitted_at,
-                    env.card.card_id,
+                    ROLE_CONTRIBUTOR,
+                    ACTION_SUBMIT,
+                    None,
+                    None,
                     card_sha256,
-                    card_json,
-                    env.card.claim.text,
-                    env.card.gate,
-                    json.dumps(env.supersedes, ensure_ascii=False),
-                    env.revises_submission_id,
-                    env.donor_count,
-                    env.independent_replications,
-                    STATE_PENDING,
-                ),
-            )
-            self._event(
-                conn,
-                submission_id,
-                env.contributor_id,
-                ROLE_CONTRIBUTOR,
-                ACTION_SUBMIT,
-                None,
-                None,
-                card_sha256,
-                now,
-            )
+                    now,
+                )
+        except sqlite3.IntegrityError as exc:
+            if created is not None:
+                created.unlink(missing_ok=True)
+            raise EvidenceError("duplicate", "同一 card_id 只能提交一次") from exc
+        except BaseException:
+            if created is not None:
+                created.unlink(missing_ok=True)
+            raise
         return self.summary(submission_id)
 
     def review(
@@ -428,7 +454,7 @@ class GovernanceStore:
         """记录一次复核；两个 pass 到齐时自动转 accepted。"""
         reason = _clean(reason)
         now = _now()
-        with self._conn() as conn:
+        with self._conn(write=True) as conn:
             row = self._row(conn, submission_id)
             events = [
                 (event["actor_id"], event["action"])
@@ -475,7 +501,7 @@ class GovernanceStore:
         """贡献者撤回自己的 accepted 提交，或合规复核者强制撤销。"""
         reason = _clean(reason)
         now = _now()
-        with self._conn() as conn:
+        with self._conn(write=True) as conn:
             row = self._row(conn, submission_id)
             state = withdraw_decision(
                 status=row["status"],
@@ -536,6 +562,18 @@ class GovernanceStore:
         """读取单个提交摘要。"""
         with self._conn() as conn:
             return self._summary(self._row(conn, submission_id), self._superseded_map(conn))
+
+    def view(self, submission_id: str) -> dict[str, Any]:
+        """同一连接读取摘要与审计事件，供复核页一次取齐。"""
+        with self._conn() as conn:
+            row = self._row(conn, submission_id)
+            summary = self._summary(row, self._superseded_map(conn))
+            events = conn.execute(
+                "SELECT actor_id, role, action, checklist_json, reason, card_sha256, created_at "
+                "FROM events WHERE submission_id=? ORDER BY id",
+                (submission_id,),
+            ).fetchall()
+        return {"summary": summary, "events": [self._event_record(event) for event in events]}
 
     def submissions_by_contributor(self, contributor_id: str) -> list[dict[str, Any]]:
         """本人的全部提交摘要，附带最近一次带原因的动作。"""
@@ -612,16 +650,19 @@ class GovernanceStore:
                 "WHERE submission_id=? ORDER BY id DESC LIMIT 1",
                 (submission_id,),
             ).fetchone()
-        return {
+        tombstone = {
             "evidence_id": row["submission_id"],
             "card_id": row["card_id"],
             "gate": row["gate"],
             "status": row["status"],
             "action": last["action"],
-            "actor_id": last["actor_id"],
-            "reason": last["reason"],
             "at": last["created_at"],
         }
+        # 复核者视角保留操作者与理由；匿名墓碑不得泄漏账号与内部拒审/撤回理由。
+        if include_unaccepted:
+            tombstone["actor_id"] = last["actor_id"]
+            tombstone["reason"] = last["reason"]
+        return tombstone
 
     def events(self, submission_id: str) -> list[dict[str, Any]]:
         """按时间顺序返回审计事件。"""

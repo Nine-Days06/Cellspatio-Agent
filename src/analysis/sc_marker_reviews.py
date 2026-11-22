@@ -7,7 +7,8 @@ from collections.abc import Mapping
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from src.analysis.qc_preview import _digest
+from src.analysis.evidence import digest
+from src.analysis.review_standing import review_is_current
 from src.analysis.sc_cluster import checked_completed_cluster
 from src.analysis.sc_pca import DIMENSION_RECORD_VERSION
 
@@ -35,7 +36,7 @@ def review_binding(run: Mapping[str, Any], cluster: dict[str, Any]) -> str:
         },
         "record_version": CLUSTER_RECORD_VERSION,
     }
-    return _digest(json.dumps(payload, sort_keys=True, ensure_ascii=False).encode())
+    return digest(json.dumps(payload, sort_keys=True, ensure_ascii=False).encode())
 
 
 def review_view(run: RunSnapshot, cluster: dict[str, Any], root: Path) -> dict[str, Any]:
@@ -69,13 +70,13 @@ def review_view(run: RunSnapshot, cluster: dict[str, Any], root: Path) -> dict[s
             and latest["accepted"] is True
             and latest["binding_sha256"] == binding
             and latest["record_version"] == CLUSTER_RECORD_VERSION
-            and latest["source_revision"] + 1 == run["revision"]
+            and review_is_current(latest, run["revision"])
         )
         else None
     )
 
     def decision_fact(record: dict[str, Any], decision: str) -> dict[str, Any]:
-        valid = not blocked and record["source_revision"] + 1 == run["revision"]
+        valid = review_is_current(record, run["revision"], blocked=bool(blocked))
         return {
             "decision": decision,
             "reason": record["reason"],
