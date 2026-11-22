@@ -172,15 +172,32 @@ def checked_parent(run: dict[str, Any], parent: dict[str, Any], root: Path) -> d
     }
 
 
+def _r_literal(value: Any) -> str:
+    """把 Python 标量渲染成 R 字面量，避免协议值与 R 脚本双写。"""
+    if value is None:
+        return "NULL"
+    if isinstance(value, bool):
+        return "TRUE" if value else "FALSE"
+    if isinstance(value, (int, float)):
+        return json.dumps(value)
+    return json.dumps(str(value), ensure_ascii=False)
+
+
 def pca_script(parent_directory: Path, directory: Path) -> str:
     """固定 Seurat 协议、保序 counts 与 RDS 往返校验；无下游步骤。"""
+    assay = _r_literal(PROTOCOL["object"]["assay"])
+    required = ", ".join(
+        f"{name}={_r_literal(version)}" for name, version in PROTOCOL["packages"].items()
+    )
+    minimum_cells = _r_literal(PROTOCOL["pca"]["minimum_cells"])
+    minimum_features = _r_literal(PROTOCOL["pca"]["minimum_usable_features"])
     return f"""
 suppressPackageStartupMessages(library(Seurat))
 suppressPackageStartupMessages(library(Matrix))
 suppressPackageStartupMessages(library(jsonlite))
 parent_dir <- {json.dumps(parent_directory.as_posix())}
 output_dir <- {json.dumps(directory.as_posix())}
-required <- c(R="4.6.1", Seurat="5.6.0", SeuratObject="5.4.0", Matrix="1.7.5", irlba="2.4.1")
+required <- c({required})
 versions <- c(R=as.character(getRversion()), sapply(names(required)[-1], function(p) as.character(packageVersion(p))))
 stopifnot(identical(unname(versions), unname(required)))
 writeLines(paste(names(versions), versions), file.path(output_dir, "versions.txt"))
@@ -192,7 +209,7 @@ mapping <- read_table("features.csv")
 barcodes <- read_table("barcodes.csv")$barcode
 selection <- read_table("selection.csv")
 qc <- read_table("cell_qc.csv")
-stopifnot(inherits(counts, "dgCMatrix"), ncol(counts) >= 3L,
+stopifnot(inherits(counts, "dgCMatrix"), ncol(counts) >= {minimum_cells}L,
           all(is.finite(counts@x)), all(counts@x >= 0), all(counts@x == floor(counts@x)),
           identical(mapping$unique_name, rownames(counts)), identical(barcodes, colnames(counts)),
           identical(selection$barcode, qc$barcode), identical(selection$barcode[selection$keep == "1"], barcodes),
@@ -203,26 +220,26 @@ mapping$parent_rowname <- rownames(counts)
 mapping$seurat_feature_key <- sprintf("F%08d", seq_len(nrow(counts)))
 internal <- counts
 rownames(internal) <- mapping$seurat_feature_key
-obj <- CreateSeuratObject(counts=internal, assay="RNA", min.cells=0, min.features=0)
+obj <- CreateSeuratObject(counts=internal, assay={assay}, min.cells={_r_literal(PROTOCOL["object"]["min.cells"])}, min.features={_r_literal(PROTOCOL["object"]["min.features"])})
 obj@misc$feature_mapping <- mapping
-obj <- NormalizeData(obj, assay="RNA", normalization.method="LogNormalize", scale.factor=10000,
-                     margin=1, verbose=FALSE)
-obj <- FindVariableFeatures(obj, assay="RNA", selection.method="vst", nfeatures=2000,
-                            loess.span=0.3, clip.max="auto", verbose=FALSE)
-selected <- VariableFeatures(obj, assay="RNA")
-stopifnot(length(selected) >= 3L, !anyDuplicated(selected), all(selected %in% rownames(internal)))
-obj <- ScaleData(obj, assay="RNA", features=selected, vars.to.regress=NULL,
-                 do.center=TRUE, do.scale=TRUE, scale.max=10, model.use="linear",
-                 block.size=1000, min.cells.to.block=3000, verbose=FALSE)
-scaled <- LayerData(obj, assay="RNA", layer="scale.data")
+obj <- NormalizeData(obj, assay={assay}, normalization.method={_r_literal(PROTOCOL["normalize"]["normalization.method"])}, scale.factor={_r_literal(PROTOCOL["normalize"]["scale.factor"])},
+                     margin={_r_literal(PROTOCOL["normalize"]["margin"])}, verbose=FALSE)
+obj <- FindVariableFeatures(obj, assay={assay}, selection.method={_r_literal(PROTOCOL["variable"]["selection.method"])}, nfeatures={_r_literal(PROTOCOL["variable"]["nfeatures"])},
+                            loess.span={_r_literal(PROTOCOL["variable"]["loess.span"])}, clip.max={_r_literal(PROTOCOL["variable"]["clip.max"])}, verbose=FALSE)
+selected <- VariableFeatures(obj, assay={assay})
+stopifnot(length(selected) >= {minimum_features}L, !anyDuplicated(selected), all(selected %in% rownames(internal)))
+obj <- ScaleData(obj, assay={assay}, features=selected, vars.to.regress={_r_literal(PROTOCOL["scale"]["vars.to.regress"])},
+                 do.center={_r_literal(PROTOCOL["scale"]["do.center"])}, do.scale={_r_literal(PROTOCOL["scale"]["do.scale"])}, scale.max={_r_literal(PROTOCOL["scale"]["scale.max"])}, model.use={_r_literal(PROTOCOL["scale"]["model.use"])},
+                 block.size={_r_literal(PROTOCOL["scale"]["block.size"])}, min.cells.to.block={_r_literal(PROTOCOL["scale"]["min.cells.to.block"])}, verbose=FALSE)
+scaled <- LayerData(obj, assay={assay}, layer="scale.data")
 finite <- apply(scaled, 1L, function(x) all(is.finite(x)))
 stopifnot(all(finite))
 positive <- apply(scaled, 1L, var) > 0
 usable <- selected[selected %in% rownames(scaled)[finite & positive]]
-stopifnot(length(usable) >= 3L)
-npcs <- as.integer(min(30L, ncol(counts)-1L, length(usable)-1L))
-obj <- RunPCA(obj, assay="RNA", features=usable, npcs=npcs, rev.pca=FALSE,
-              weight.by.var=TRUE, approx=TRUE, seed.use=42, verbose=FALSE)
+stopifnot(length(usable) >= {minimum_features}L)
+npcs <- as.integer(min({_r_literal(PROTOCOL["pca"]["npcs_max"])}L, ncol(counts)-1L, length(usable)-1L))
+obj <- RunPCA(obj, assay={assay}, features=usable, npcs=npcs, rev.pca={_r_literal(PROTOCOL["pca"]["rev.pca"])},
+              weight.by.var={_r_literal(PROTOCOL["pca"]["weight.by.var"])}, approx={_r_literal(PROTOCOL["pca"]["approx"])}, seed.use={_r_literal(PROTOCOL["pca"]["seed.use"])}, verbose=FALSE)
 embedding <- Embeddings(obj, "pca")
 loadings <- Loadings(obj, "pca")
 stdev <- Stdev(obj, "pca")
@@ -230,18 +247,18 @@ stopifnot(identical(rownames(embedding), barcodes), identical(rownames(loadings)
           ncol(embedding) == npcs, ncol(loadings) == npcs, length(stdev) == npcs,
           all(is.finite(embedding)), all(is.finite(loadings)), all(is.finite(stdev)), all(stdev > 0))
 verify <- function(object) {{
-    restored <- LayerData(object, assay="RNA", layer="counts")
+    restored <- LayerData(object, assay={assay}, layer="counts")
     stopifnot(identical(rownames(restored), mapping$seurat_feature_key),
               identical(colnames(restored), colnames(counts)))
     rownames(restored) <- mapping$parent_rowname
     stopifnot(identical(restored, counts), identical(object@misc$feature_mapping, mapping),
               identical(VariableFeatures(object), selected),
-              identical(LayerData(object, assay="RNA", layer="scale.data"), scaled),
+              identical(LayerData(object, assay={assay}, layer="scale.data"), scaled),
               identical(Embeddings(object, "pca"), embedding), identical(Loadings(object, "pca"), loadings),
               identical(Stdev(object, "pca"), stdev))
-    normalized <- LayerData(object, assay="RNA", layer="data")
+    normalized <- LayerData(object, assay={assay}, layer="data")
     expected <- internal
-    expected@x <- log1p(expected@x * rep(10000 / Matrix::colSums(internal), diff(internal@p)))
+    expected@x <- log1p(expected@x * rep({_r_literal(PROTOCOL["normalize"]["scale.factor"])} / Matrix::colSums(internal), diff(internal@p)))
     stopifnot(identical(dimnames(normalized), dimnames(internal)),
               all(is.finite(normalized@x)), all(normalized@x >= 0),
               max(abs(normalized - expected)) < 1e-10)
@@ -266,8 +283,8 @@ plot(seq_len(npcs), stdev, type="b", xlab="PC", ylab="Standard deviation", main=
 plot(embedding[,1], embedding[,2], pch=16, cex=0.4, xlab="PC1", ylab="PC2", main="No clusters or annotation")
 dev.off()
 write_json(list(cells=ncol(counts), features=nrow(counts), selected_features=length(selected),
-                usable_features=length(usable), actual_pcs=npcs, requested_pcs_max=30L,
-                pc_reduction_reason=if(npcs < 30L) "cell_or_usable_feature_limit" else "none",
+                usable_features=length(usable), actual_pcs=npcs, requested_pcs_max={_r_literal(PROTOCOL["pca"]["npcs_max"])}L,
+                pc_reduction_reason=if(npcs < {_r_literal(PROTOCOL["pca"]["npcs_max"])}L) "cell_or_usable_feature_limit" else "none",
                 counts_unchanged=TRUE), file.path(output_dir, "summary.json"), auto_unbox=TRUE)
 """
 
@@ -299,8 +316,8 @@ def _check_outputs(directory: Path, parent_directory: Path) -> dict[str, Any]:
     if (
         len(set(selected)) != len(selected)
         or not set(selected) <= set(keys)
-        or len(selected) > 2000
-        or len(usable) < 3
+        or len(selected) > PROTOCOL["variable"]["nfeatures"]
+        or len(usable) < PROTOCOL["pca"]["minimum_usable_features"]
         or any(r["usable"] not in ("TRUE", "FALSE") for r in variables)
     ):
         raise ValueError("PCA 变异特征非法")
@@ -317,18 +334,19 @@ def _check_outputs(directory: Path, parent_directory: Path) -> dict[str, Any]:
         for row in variables
     ):
         raise ValueError("PCA 变异特征映射不一致")
-    expected_pcs = min(30, summary["cells"] - 1, len(usable) - 1)
+    npcs_max = PROTOCOL["pca"]["npcs_max"]
+    expected_pcs = min(npcs_max, summary["cells"] - 1, len(usable) - 1)
     dims = [int(x) for x in (parent_directory / "dimensions.txt").read_text().splitlines()]
     if (
-        summary["cells"] < 3
+        summary["cells"] < PROTOCOL["pca"]["minimum_cells"]
         or [summary["features"], summary["cells"]] != dims[:2]
         or summary["selected_features"] != len(selected)
         or summary["usable_features"] != len(usable)
         or summary["actual_pcs"] != expected_pcs
-        or summary["requested_pcs_max"] != 30
+        or summary["requested_pcs_max"] != npcs_max
         or summary["counts_unchanged"] is not True
         or summary["pc_reduction_reason"]
-        != ("cell_or_usable_feature_limit" if expected_pcs < 30 else "none")
+        != ("cell_or_usable_feature_limit" if expected_pcs < npcs_max else "none")
     ):
         raise ValueError("PCA 汇总与批准规则不一致")
     for filename, key, expected in (
