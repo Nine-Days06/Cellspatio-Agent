@@ -112,7 +112,25 @@ def confirm_script(
     token = pending.get("claim_token") or ""
 
     if action == ACTION_SCRIPT_CANCEL:
-        content = "已取消本次脚本执行。"
+        try:
+            result = (
+                agent.cancel_pending_script(
+                    pending.get("analysis_type"),
+                    pending.get("params") or {},
+                    pending.get("script", ""),
+                    method_context=pending.get("method_context"),
+                    session_id=session_id,
+                    run_id=pending["run_id"],
+                )
+                if pending.get("run_id")
+                else {"message": "已取消本次脚本执行。"}
+            )
+        except (OSError, ValueError, TypeError) as exc:
+            logger.error("cancel run persist failed: %s", exc)
+            # 取消未执行 R；记录未保存时仅释放本次领取，供用户明确再取消。
+            store.release_script(session_id, claimed_id, token, claimed_status=status)
+            raise
+        content = result["message"]
         results = None
     else:
         try:

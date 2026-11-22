@@ -33,9 +33,13 @@ from src.ui.record_files import (
 from src.ui.run_snapshot import RunSnapshot
 from src.ui.session_store import SessionStore
 
-SCHEMA_VERSION = "cellspatio-record/1.1.0"
+SCHEMA_VERSION = "cellspatio-record/1.2.0"
 # 路径可能含空格；宁可多吞同行文本，也不能只脱敏空格前的目录而泄露用户名/文件名。
-_PATH_RE = re.compile(r'(?:[A-Za-z]:[\\/][^\n\r"\'<>]*|/(?:Users|home|data|mnt|tmp)/[^\n\r"\'<>]*)')
+# URL 边界只限制 ASCII 词字符；中文紧邻的绝对路径仍须脱敏。
+_PATH_RE = re.compile(
+    r'(?:(?<![A-Za-z0-9_])[A-Za-z]:[\\/][^\n\r"\'<>]*'
+    r'|\\{2,}[^\n\r"\'<>]*|(?<![A-Za-z0-9_:/])/[^\n\r"\'<>]*)'
+)
 _PATH_KEYS = {
     "access_path",
     "directory",
@@ -43,6 +47,10 @@ _PATH_KEYS = {
     "kb_path",
     "path",
     "root_path",
+    "input_file",
+    "output_file",
+    "plot_file",
+    "capsule_dir",
 }
 
 
@@ -114,6 +122,8 @@ def _file_row(
     root: Path,
     redact: bool,
     hash_files: bool,
+    run_id: str = "",
+    source: str = "stage_directory",
 ) -> dict[str, Any]:
     """构造一行产物清单；redact 时路径脱敏。"""
     record_path = (
@@ -123,11 +133,73 @@ def _file_row(
     )
     return {
         "session_id": session_id,
+        "run_id": run_id,
+        "source": source,
         "stage": stage,
         "path": record_path,
         "bytes": file_path.stat().st_size,
         "sha256": _sha256(file_path) if hash_files else "",
     }
+
+
+def _artifact_files(value: str, root: Path) -> list[Path]:
+    """展开 root 内的普通文件/目录；拒绝路径及祖先中的符号链接。"""
+    raw = Path(value)
+    raw = raw if raw.is_absolute() else root / raw
+    if raw.is_symlink() or any(parent.is_symlink() for parent in raw.parents):
+        return []
+    path = safe_target(raw, root)
+    if path is None:
+        return []
+    if path.is_file():
+        return [path]
+    if not path.is_dir():
+        return []
+    return sorted(
+        item
+        for item in path.rglob("*")
+        if item.is_file()
+        and not item.is_symlink()
+        and not any(parent.is_symlink() for parent in item.parents)
+        and item.resolve().is_relative_to(root)
+    )
+
+
+def _workflow_output_rows(
+    workflows: list[tuple[str, dict[str, Any]]],
+    session_id: str,
+    root: Path,
+    redact: bool,
+    hash_files: bool,
+) -> list[dict[str, Any]]:
+    """只按已登记的 WRROC outputs 关联运行；目录邻近不能证明身份。"""
+    rows = []
+    seen: set[tuple[str, Path]] = set()
+    for run_id, run in workflows:
+        if run.get("run_id") != run_id:
+            continue
+        stage = (run.get("intent") or {}).get("analysis_type") or "workflow"
+        for output in run.get("outputs") or []:
+            if not isinstance(output, Mapping) or not isinstance(output.get("path"), str):
+                continue
+            for file_path in _artifact_files(output["path"], root):
+                identity = (run_id, file_path)
+                if identity in seen:
+                    continue
+                seen.add(identity)
+                rows.append(
+                    _file_row(
+                        file_path,
+                        session_id,
+                        stage,
+                        root,
+                        redact,
+                        hash_files,
+                        run_id,
+                        "wrroc_output",
+                    )
+                )
+    return rows
 
 
 def _artifact_rows(
@@ -140,17 +212,15 @@ def _artifact_rows(
     """枚举已登记 run 目录下的全部文件。"""
     rows = []
     seen: set[Path] = set()
-    for stage, directory in ((stage, dir) for run in runs for stage, dir in run_dirs(run)):
-        path = resolve_dir(directory, root)
-        if path in seen or not path.is_dir():
-            continue
-        seen.add(path)
-        for file_path in sorted(
-            item
-            for item in path.rglob("*")
-            if item.is_file() and not item.is_symlink() and item.resolve().is_relative_to(root)
-        ):
-            rows.append(_file_row(file_path, session_id, stage, root, redact, hash_files))
+    for run in runs:
+        for stage, directory in run_dirs(run):
+            for file_path in _artifact_files(directory, root):
+                if file_path in seen:
+                    continue
+                seen.add(file_path)
+                rows.append(
+                    _file_row(file_path, session_id, stage, root, redact, hash_files, run["run_id"])
+                )
     return rows
 
 
@@ -172,20 +242,25 @@ def _project_extra_rows(
         for run in session_runs(store, session["id"])
         for _, directory in run_dirs(run)
     ]
+    registered_files = {
+        root / row["path"]
+        for session in sessions
+        for row in _workflow_output_rows(
+            wrroc_runs(root, session["id"]), session["id"], root, False, False
+        )
+    }
     rows = []
-    for file_path in sorted(
-        item
-        for item in project_dir.rglob("*")
-        if item.is_file() and not item.is_symlink() and item.resolve().is_relative_to(root)
-    ):
-        if any(file_path.is_relative_to(path) for path in covered):
+    for file_path in _artifact_files(str(project_dir), root):
+        if file_path in registered_files or any(file_path.is_relative_to(path) for path in covered):
             continue
         parts = file_path.relative_to(project_dir).parts
         if len(parts) > 2 and parts[0] == "analysis":
             stage = parts[1]
         else:
             stage = parts[0] if len(parts) > 1 else "project"
-        rows.append(_file_row(file_path, "", stage, root, redact, hash_files))
+        rows.append(
+            _file_row(file_path, "", stage, root, redact, hash_files, source="directory_discovery")
+        )
     return rows
 
 
@@ -212,14 +287,25 @@ def _session_record(
                 "pending_script": message["pending_script"],
             }
         )
-    artifacts = _artifact_rows(runs, session["id"], root, redact, hash_files)
+    workflows = wrroc_runs(root, session["id"])
+    workflow_artifacts = _workflow_output_rows(workflows, session["id"], root, False, hash_files)
+    # WRROC 的显式关联优先；同一固定阶段文件不能在清单里再次登记。
+    workflow_paths = {row["path"] for row in workflow_artifacts}
+    artifacts = [
+        row
+        for row in _artifact_rows(runs, session["id"], root, False, hash_files)
+        if row["path"] not in workflow_paths
+    ] + workflow_artifacts
+    if redact:
+        for row in artifacts:
+            row["path"] = "<redacted-path>"
     record = {
         "schema_version": SCHEMA_VERSION,
         "exported_at": _now(),
         "session": session,
         "messages": messages,
         "qc_runs": runs,
-        "workflow_runs": [data for _, data in wrroc_runs(root, session["id"])],
+        "workflow_runs": [data for _, data in workflows],
         "artifacts": artifacts,
     }
     record = _json_safe(record, redact)
@@ -271,14 +357,19 @@ def _session_markdown(record: dict[str, Any]) -> str:
         )
     lines.extend(["", "## 产物", ""])
     for artifact in record["artifacts"]:
-        lines.append(f"- `{artifact['path']}` · {artifact['bytes']} bytes")
+        lines.append(
+            f"- `{artifact['path']}` · {artifact['bytes']} bytes · "
+            f"run={artifact['run_id'] or '未关联'} · {artifact['source']}"
+        )
     return "\n".join(lines) + "\n"
 
 
 def _artifacts_csv(rows: list[dict[str, Any]]) -> str:
     """产物清单 CSV。"""
     buffer = io.StringIO()
-    writer = csv.DictWriter(buffer, fieldnames=["session_id", "stage", "path", "bytes", "sha256"])
+    writer = csv.DictWriter(
+        buffer, fieldnames=["session_id", "run_id", "source", "stage", "path", "bytes", "sha256"]
+    )
     writer.writeheader()
     writer.writerows(rows)
     return buffer.getvalue()

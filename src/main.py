@@ -224,6 +224,20 @@ class CellSpatioAgent:
             run_id=run_id,
         )
 
+    def cancel_pending_script(
+        self,
+        analysis_type: str,
+        params: dict[str, Any],
+        script: str,
+        method_context: str | None = None,
+        session_id: str | None = None,
+        run_id: str | None = None,
+    ) -> dict[str, Any]:
+        """取消并记录待确认运行；身份校验与持久化由控制层完成。"""
+        return self.workflow_manager.cancel_pending_script(
+            analysis_type, params, script, method_context, session_id, run_id
+        )
+
     def replay(self, run_id: str) -> dict[str, Any]:
         """恢复历史运行快照（不重跑）"""
         from src.control.replay import replay_run

@@ -120,7 +120,7 @@ def test_confirm_after_reconstruction_records_repaired_outputs_on_prepared_run(
 def test_confirmation_rejects_mismatched_preparation_without_executing_r(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, mismatch: str
 ) -> None:
-    """真正确认请求核验绑定，拒绝时准备事实不改变。"""
+    """确认请求拒绝错配且不改原准备事实；无效卡不开放再次执行。"""
     monkeypatch.setenv("CELLSPATIO_LOCAL", "1")
     store, sid, prepared, original = prepare_card(tmp_path, "differential_expression")
     recorder = original.workflow_manager.workflow_recorder
@@ -146,7 +146,7 @@ def test_confirmation_rejects_mismatched_preparation_without_executing_r(
     assert "分析完成" not in response.json()["message"]["content"]
     assert rebuilt.workflow_manager.r_executor.codes == []
     assert recorder.store.load(prepared["run_id"]) == before
-    assert store.get_messages(sid)[-2]["pending_script"]["status"] == "pending"
+    assert store.get_messages(sid)[-2]["pending_script"]["status"] == "confirmed"
 
 
 def test_copied_card_cannot_execute_an_already_successful_run(
@@ -172,6 +172,7 @@ def test_copied_card_cannot_execute_an_already_successful_run(
     assert response.status_code == 200
     assert second.workflow_manager.r_executor.codes == []
     assert second.workflow_manager.workflow_recorder.restore_run(prepared["run_id"]) == record
+    assert store.get_messages(sid)[-2]["pending_script"]["status"] == "confirmed"
 
 
 @pytest.mark.parametrize("failure", ["record_replace", "kg", "message"])

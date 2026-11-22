@@ -209,9 +209,13 @@ class WorkflowRecorder:
         return self.store.persist(self._to_workflow_run(self._require_execution(run_id)))
 
     def restore_pending_script(self, run_id: str, preparation: dict[str, Any]) -> WorkflowExecution:
-        """恢复并核验完整待确认绑定；执行中或成功的身份不能再次使用。"""
+        """核验可明确确认的准备绑定；已知失败可重试，未知中断不可重跑。"""
         execution = self.restore_run(run_id)
-        if execution.meta.get("dynamic_script") != {"status": "pending", **preparation}:
+        facts = execution.meta.get("dynamic_script") or {}
+        if facts.get("status") not in ("pending", "failed") or facts != {
+            "status": facts.get("status"),
+            **preparation,
+        }:
             raise ValueError("待确认运行与会话、分析类型、脚本、参数或方法上下文不匹配")
         return execution
 

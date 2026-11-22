@@ -32,6 +32,23 @@ __all__ = [
 ]
 
 
+def _script_binding(
+    analysis_type: str,
+    params: dict[str, Any],
+    script: str,
+    method_context: str | None,
+    session_id: str | None,
+) -> dict[str, Any]:
+    """确认与取消核验同一组准备事实，避免两条授权路径的绑定字段漂移。"""
+    return {
+        "session_id": session_id,
+        "analysis_type": analysis_type,
+        "script": script,
+        "params": params,
+        "method_context": method_context,
+    }
+
+
 class WorkflowManager:
     """流程管理器，协调各个组件"""
 
@@ -524,6 +541,7 @@ class WorkflowManager:
         input_file = params["input_file"]
         output_file = params["output_file"]
         run_id = context.get("dynamic_run_id")
+        execution_step = len(self.workflow_recorder.get_record(run_id).steps) if run_id else 0
 
         attempt = 0
         current_code = code
@@ -535,7 +553,7 @@ class WorkflowManager:
                 result = self.r_executor.execute_code(current_code)
                 self._record_step(
                     run_id,
-                    step_id=f"script_execution_{attempt}",
+                    step_id=f"script_execution_{execution_step + attempt}",
                     step_type="analysis",
                     tool="Rscript",
                     params={"script": current_code},
@@ -549,7 +567,7 @@ class WorkflowManager:
             except RExecutorError as e:
                 self._record_step(
                     run_id,
-                    step_id=f"script_execution_{attempt}",
+                    step_id=f"script_execution_{execution_step + attempt}",
                     step_type="analysis",
                     tool="Rscript",
                     params={"script": current_code},
@@ -693,29 +711,46 @@ class WorkflowManager:
                 "message": f"暂不支持确认执行的分析类型: {analysis_type}；单细胞请重新运行固定 QC。",
             }
         context = {"script_approved": True, "session_id": session_id}
-        if not run_id:
-            return self._finish_analysis(analysis_type, params, script, method_context, context)
         recorder = self.workflow_recorder
+        if not run_id and recorder is None:
+            return self._finish_analysis(analysis_type, params, script, method_context, context)
         if recorder is None:
             return {"status": "error", "message": "无法核验待确认运行：记录器不可用"}
-        try:
-            execution = recorder.restore_pending_script(
+        if not run_id:
+            # 旧卡没有可证实的原身份，只记录本次兼容执行，不能猜测旧准备运行。
+            run_id = recorder.start_execution(
+                {"type": "analysis", "analysis_type": analysis_type, "original_input": ""},
+                {},
+                "",
+                context,
+            )
+            recorder.get_record(run_id).meta["confirmation_origin"] = "legacy_without_run_id"
+            recorder.save_pending_script(
                 run_id,
                 {
-                    "session_id": session_id,
                     "analysis_type": analysis_type,
                     "script": script,
                     "params": params,
                     "method_context": method_context,
                 },
             )
+        try:
+            execution = recorder.restore_pending_script(
+                run_id,
+                _script_binding(analysis_type, params, script, method_context, session_id),
+            )
         except (OSError, ValueError, KeyError, TypeError) as exc:
             logger.warning("confirmed run restore rejected: run_id=%s: %s", run_id, exc)
-            return {"status": "error", "message": str(exc), "run_id": run_id}
+            return {
+                "status": "error",
+                "message": str(exc),
+                "run_id": run_id,
+                "retry_allowed": False,
+            }
         context = {**execution.meta.get("context", {}), **context, "dynamic_run_id": run_id}
         self._record_step(
             run_id,
-            step_id="script_confirmed",
+            step_id=f"script_confirmed_{len(execution.steps)}",
             step_type="analysis",
             tool=None,
             params={"session_id": session_id},
@@ -727,7 +762,15 @@ class WorkflowManager:
             result = self._finish_analysis(analysis_type, params, script, method_context, context)
             result["run_id"] = run_id
             if result.get("status") == "error":
-                execution.meta["dynamic_script"]["status"] = "pending"
+                execution.meta["dynamic_script"]["status"] = "failed"
+                self._record_step(
+                    run_id,
+                    step_id=f"script_failed_{len(execution.steps)}",
+                    step_type="analysis",
+                    tool=None,
+                    params={},
+                    output={"status": "error", "result": result, "error": result.get("message")},
+                )
                 recorder.save_run(run_id)
             else:
                 execution.meta["execution_result"] = result
@@ -738,12 +781,64 @@ class WorkflowManager:
             logger.error("confirmed run execution/finalize failed: %s", exc)
             if execution.meta.get("execution_result"):
                 return execution.meta["execution_result"]
-            return {
+            interrupted = {
                 "status": "error",
                 "message": str(exc),
                 "run_id": run_id,
                 "retry_allowed": False,
             }
+            execution.meta["dynamic_script"]["status"] = "interrupted"
+            self._record_step(
+                run_id,
+                step_id=f"script_interrupted_{len(execution.steps)}",
+                step_type="analysis",
+                tool=None,
+                params={},
+                output={"status": "error", "result": interrupted, "error": str(exc)},
+            )
+            try:
+                recorder.save_run(run_id)
+            except (OSError, ValueError, TypeError) as save_exc:
+                logger.error("interrupted run persist failed: %s", save_exc)
+            return interrupted
+
+    def cancel_pending_script(
+        self,
+        analysis_type: str,
+        params: dict[str, Any],
+        script: str,
+        method_context: str | None = None,
+        session_id: str | None = None,
+        run_id: str | None = None,
+    ) -> dict[str, Any]:
+        """核验待确认身份并记录取消；不执行 R 或完成副作用。"""
+        if not run_id:
+            return {"status": "cancelled", "message": "已取消本次脚本执行。"}
+        if self.workflow_recorder is None:
+            return {"status": "error", "message": "无法核验待确认运行：记录器不可用"}
+        try:
+            execution = self.workflow_recorder.restore_pending_script(
+                run_id,
+                _script_binding(analysis_type, params, script, method_context, session_id),
+            )
+        except OSError as exc:
+            # 临时读取故障未取得取消事实；由上层释放本次取消领取以明确重试。
+            logger.warning("cancel run restore IO failed: run_id=%s: %s", run_id, exc)
+            raise
+        except (ValueError, KeyError, TypeError) as exc:
+            logger.warning("cancel run restore rejected: run_id=%s: %s", run_id, exc)
+            return {"status": "error", "message": str(exc), "run_id": run_id}
+        execution.meta["dynamic_script"]["status"] = "cancelled"
+        self._record_step(
+            run_id,
+            step_id="script_cancelled",
+            step_type="analysis",
+            tool=None,
+            params={"session_id": session_id},
+            output={"status": "success", "result": {"status": "cancelled"}},
+        )
+        self.workflow_recorder.save_run(run_id)
+        return {"status": "cancelled", "message": "已取消本次脚本执行。", "run_id": run_id}
 
     def _record_analysis_to_kb(
         self, analysis_type: str, input_file: str, output_file: str, user_question: str = ""

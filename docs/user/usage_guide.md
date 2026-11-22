@@ -335,7 +335,11 @@ counts 必须是有限的非负整数，不能缺失或四舍五入；不支持 
 确认请求会恢复并核验原运行，保留准备时间与步骤。成功后的结果文件、已生成空间图
 和胶囊文件登记在同一运行中，胶囊保存实际执行成功的脚本，包括自动修复后的版本。
 重复确认不会重复执行。执行成功后如果记录或消息写入失败，卡片仍保持已确认，
-需要检查本地记录和产物后处理故障。
+需要检查本地记录和产物后处理故障。已知执行失败会保留尝试步骤，卡片释放后可由用户
+明确重试；取消会核验原准备身份并保存取消事实，取消记录发生临时读写故障时释放本次领取，
+用户可明确再次取消。执行结果未知时记录中断，不开放自动
+恢复或复制卡重跑。无身份旧卡的当前确认请求会记录本次兼容执行，不推断原准备运行；
+刷新恢复仍会使无身份旧卡过期。
 
 ```bash
 python -m src.cli.replay <run_id>
@@ -408,9 +412,19 @@ python -m src.knowledge.build_methods_kb      # 重建方法学知识库
 ```powershell
 python -m src.cli.records export session <session_id> --out record.zip
 python -m src.cli.records export project <project_id> --redact --out project.zip
+python -m src.cli.records export session <session_id> --hash --out hashed-record.zip
 python -m src.cli.records delete session <session_id> --dry-run
 python -m src.cli.records delete project <project_id> --cascade --dry-run
 ```
+
+导出 zip 包含 `record.json`、可读 Markdown 与 `artifacts.csv`，不复制原产物。
+清单的 `run_id` 与 `source` 区分已登记的 `wrroc_output`、固定阶段 `stage_directory`
+及旧项目目录补录 `directory_discovery`；补录文件的运行身份留空，不根据目录猜测归属。
+新动态运行登记的 CSV、实际空间图和脚本胶囊会关联同一运行，目录和单文件登记重叠时
+在同一运行中只列一次；不同运行显式登记同一文件时保留各自关联。仅列数据根内现存的
+普通文件，排除逃逸路径和符号链接；`--hash` 逐文件计算
+当前 SHA256。默认保留路径；`--redact` 会覆盖消息、旧记录以及动态脚本和参数中的路径。
+记录格式版本为 `cellspatio-record/1.2.0`。
 
 删除会移动记录到 `.trash` 并清理数据库；确认无误后再去掉 `--dry-run` 并加 `--yes`。
 
