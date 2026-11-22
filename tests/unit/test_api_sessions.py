@@ -137,6 +137,26 @@ def test_delete_session_removes_it(client):
     assert client.get("/api/sessions").json()["sessions"] == []
 
 
+def test_delete_session_removes_disk_artifacts(client, tmp_path):
+    """UI 删除与 CLI 同一实现：阶段目录、WRROC 与快照一并移走。"""
+    root = tmp_path.resolve()
+    client.app.state.repo_root = root
+    sid = client.post("/api/sessions", json={}).json()["session"]["id"]
+    run_dir = root / "data" / "analysis" / "qc" / "run-x"
+    run_dir.mkdir(parents=True)
+    SessionStore().register_qc_run(sid, "run-x", str(run_dir), {"cells": 1})
+    for rel in (".wrroc/run-x/workflow.json", "snapshots/run-x/snapshot.txt"):
+        path = root / rel
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("{}", encoding="utf-8")
+
+    assert client.delete(f"/api/sessions/{sid}").status_code == 200
+
+    assert not run_dir.exists()
+    assert not (root / ".wrroc" / "run-x").exists()
+    assert not (root / "snapshots" / "run-x").exists()
+
+
 def test_delete_unknown_session_returns_404(client):
     assert client.delete("/api/sessions/nope").status_code == 404
 

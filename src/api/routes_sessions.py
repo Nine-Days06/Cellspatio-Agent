@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import sqlite3
 from contextlib import nullcontext
 from typing import Any
 
@@ -25,6 +26,7 @@ from src.ui.confirm_flow import (
     restore_pending,
 )
 from src.ui.confirm_protocol import ACTION_DATA_CONFIRM, SCRIPT_ACTIONS
+from src.ui.record_delete import delete_records
 from src.ui.session_store import SessionStore
 from src.ui.store_errors import StoreError
 from src.ui.usage import session_usage
@@ -108,15 +110,23 @@ def update_session(session_id: str, body: UpdateSessionRequest, store: StoreDep)
 
 
 @router.delete("/sessions/{session_id}")
-def delete_session(session_id: str, store: StoreDep) -> dict[str, Any]:
-    """删除会话；先取非阻塞会话锁，避免删掉生成中的会话。"""
+def delete_session(session_id: str, request: Request, store: StoreDep) -> dict[str, Any]:
+    """删除会话与磁盘产物；复用 CLI 的“先暂存再删库”实现。"""
     _require_session(store, session_id)
     # 生成中删除会让 worker 落库失败 → 与 chat/confirm 同一把非阻塞会话锁
     with session_guard(session_id):
         try:
-            store.delete_session(session_id)
+            result = delete_records(
+                "session", session_id, store=store, root=request.app.state.repo_root
+            )
         except StoreError as exc:
             raise HTTPException(status_code=store_status(exc), detail=str(exc)) from exc
+        except (OSError, ValueError, sqlite3.Error) as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+    if result.get("status") != "ok":
+        # 产物暂存或 DB 删除失败时 delete_records 已回滚；对客户端是服务端故障而非冲突
+        logger.error("删除会话 %s 未完成: %s", session_id, result)
+        raise HTTPException(status_code=500, detail="删除未完成")
     return {"deleted": session_id}
 
 
