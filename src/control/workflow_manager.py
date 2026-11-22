@@ -635,11 +635,7 @@ class WorkflowManager:
         """
         if self.knowledge_builder is None:
             return
-        zh = {
-            "differential_expression": "差异表达",
-            "single_cell": "单细胞聚类",
-            "spatial": "空间转录组",
-        }.get(analysis_type, analysis_type)
+        zh = self._analysis_type_zh(analysis_type)
         text = (
             "# 分析实验记录\n"
             f"类型：{zh}（{analysis_type}）\n"
