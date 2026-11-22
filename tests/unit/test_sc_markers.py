@@ -805,3 +805,139 @@ def test_marker_review_records_accept_reject_and_rejects_stale_revision(marker_r
         },
     )
     assert blocked.status_code == 409, blocked.text
+
+
+@pytest.mark.parametrize("mutation", ["missing", "drift", "source", "tool", "snapshot"])
+def test_marker_card_rejects_changed_artifacts_like_page_and_review(marker_ready, mutation):
+    """真实产物或授权来源变化后保留人工事实，所有入口都拒绝当前结果。"""
+    d = marker_ready
+    d.executor.execute_script.side_effect = marker_outputs
+    completed = d.client.post(d.marker_path + "/execute", json=d.marker_body).json()
+    aid = completed["attempts"][0]["attempt_id"]
+    review_path = f"{d.marker_path}/{aid}/review"
+    body = {"decision": "accepted", "revision": completed["revision"], "reason": "人工复核"}
+    reviewed = d.client.post(review_path, json=body)
+    assert reviewed.status_code == 200, reviewed.text
+    assert build_marker_card(d.store, d.sid, d.rid).outcome == "accepted"
+    attempt = d.store.get_qc_run(d.sid, d.rid).attempt("marker", aid)
+    marker_file = Path(attempt["directory"]) / "markers.csv"
+    if mutation == "missing":
+        marker_file.unlink()
+    elif mutation == "drift":
+        marker_file.write_text("changed")
+    elif mutation == "source":
+        d.source.write_bytes(b"changed")
+    else:
+        with d.store._conn() as conn:
+            if mutation == "tool":
+                conn.execute("UPDATE sc_marker_attempts SET tool_version = 'old'")
+            else:
+                snapshot = {**attempt["snapshot"], "source": {}}
+                conn.execute("UPDATE sc_marker_attempts SET snapshot = ?", (json.dumps(snapshot),))
+
+    history = d.client.get(d.marker_path).json()["attempts"][0]
+    assert history["review"]["decision"] == "accepted"
+    assert history["invalidated_reason"] and history["review"]["invalidated_reason"]
+    assert (
+        d.client.post(
+            review_path, json={**body, "revision": reviewed.json()["revision"]}
+        ).status_code
+        == 409
+    )
+    with pytest.raises(ValueError, match="marker"):
+        build_marker_card(d.store, d.sid, d.rid)
+
+
+@pytest.mark.parametrize("field", ["binding_sha256", "record_version"])
+def test_marker_page_invalidates_review_identity_like_card(marker_ready, field):
+    """人工记录身份或版本变化时，已校验产物仍可看，旧复核只作历史。"""
+    d = marker_ready
+    d.executor.execute_script.side_effect = marker_outputs
+    completed = d.client.post(d.marker_path + "/execute", json=d.marker_body).json()
+    aid = completed["attempts"][0]["attempt_id"]
+    response = d.client.post(
+        f"{d.marker_path}/{aid}/review",
+        json={"decision": "rejected", "revision": completed["revision"], "reason": "候选不足"},
+    )
+    assert response.status_code == 200, response.text
+    with d.store._conn() as conn:
+        conn.execute(f"UPDATE sc_marker_reviews SET {field} = ?", ("changed",))
+
+    history = d.client.get(d.marker_path).json()["attempts"][0]
+    assert history["result"] is not None and history["invalidated_reason"] is None
+    assert history["review"]["decision"] == "rejected"
+    assert history["review"]["invalidated_reason"]
+    with pytest.raises(ValueError, match="marker 复核已失效"):
+        build_marker_card(d.store, d.sid, d.rid)
+
+
+@pytest.mark.parametrize("decision", ["accepted", "rejected"])
+def test_current_marker_card_uses_authorized_parents_and_safe_aggregates(marker_ready, decision):
+    """执行推进父复核的 revision 后，自己的授权快照仍支持真实结果构卡。"""
+    d = marker_ready
+    d.executor.execute_script.side_effect = marker_outputs
+    completed = d.client.post(d.marker_path + "/execute", json=d.marker_body).json()
+    aid = completed["attempts"][0]["attempt_id"]
+    response = d.client.post(
+        f"{d.marker_path}/{aid}/review",
+        json={"decision": decision, "revision": completed["revision"], "reason": "人工复核依据"},
+    )
+    assert response.status_code == 200, response.text
+    state = response.json()
+    assert state["cluster_review"]["current"] is None
+    assert state["attempts"][0]["review"]["invalidated_reason"] is None
+    card = build_marker_card(d.store, d.sid, d.rid, attempt_id=aid)
+    assert card.outcome == card.review.status == decision
+    assert card.review.reason == "人工复核依据"
+    assert card.observation == {
+        "cells": 31,
+        "features": 3,
+        "clusters": 2,
+        "marker_rows": 1,
+        "positive_rows": 1,
+        "negative_rows": 0,
+    }
+    assert card.subject.source_revision == completed["revision"]
+    assert {artifact.name for artifact in card.provenance.artifacts} == {
+        "markers.csv",
+        "cluster_marker_summary.csv",
+        "marker_dotplot_data.csv",
+        "marker_dotplot.png",
+        "summary.json",
+        "versions.txt",
+        "session_info.txt",
+        "script.R",
+        "stdout.txt",
+        "stderr.txt",
+    }
+    exported = card.to_json()
+    assert all(key not in exported for key in ("barcode", "sample_id", "UMAP", "directory"))
+    assert str(d.root) not in exported
+
+
+def test_marker_revision_expiry_preserves_result_and_allows_explicit_rereview(marker_ready):
+    """revision 过期只撤销当前人工事实，重新明确复核可恢复当前卡。"""
+    d = marker_ready
+    d.executor.execute_script.side_effect = marker_outputs
+    completed = d.client.post(d.marker_path + "/execute", json=d.marker_body).json()
+    aid = completed["attempts"][0]["attempt_id"]
+    review_path = f"{d.marker_path}/{aid}/review"
+    response = d.client.post(
+        review_path,
+        json={"decision": "accepted", "revision": completed["revision"], "reason": "人工复核"},
+    )
+    assert response.status_code == 200, response.text
+    with d.store._conn() as conn:
+        conn.execute("UPDATE qc_runs SET revision = revision + 1 WHERE run_id = ?", (d.rid,))
+    state = d.client.get(d.marker_path).json()
+    assert state["attempts"][0]["result"] is not None
+    assert state["attempts"][0]["review"]["invalidated_reason"]
+    with pytest.raises(ValueError, match="marker 复核已失效"):
+        build_marker_card(d.store, d.sid, d.rid)
+    fresh = d.client.post(
+        review_path,
+        json={"decision": "accepted", "revision": state["revision"], "reason": "重新明确复核"},
+    )
+    assert fresh.status_code == 200, fresh.text
+    assert fresh.json()["attempts"][0]["review"]["invalidated_reason"] is None
+    assert build_marker_card(d.store, d.sid, d.rid).outcome == "accepted"

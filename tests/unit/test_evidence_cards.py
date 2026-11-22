@@ -528,17 +528,11 @@ def _marker_run(decision="accepted"):
     }
 
 
-def test_build_marker_card_accepted_and_rejected():
-    accepted = build_marker_card(_Store(_marker_run()), "s", "r")
-    rejected = build_marker_card(_Store(_marker_run("rejected")), "s", "r")
-
-    _assert_envelope(accepted)
-    _assert_envelope(rejected)
-    assert accepted.gate == "marker_review"
-    assert accepted.outcome == "accepted"
-    assert accepted.observation["marker_rows"] == 100
-    assert rejected.outcome == "rejected"
-    assert rejected.review.reason == "候选不足"
+@pytest.mark.parametrize("decision", ["accepted", "rejected"])
+def test_marker_card_requires_real_artifacts(decision):
+    """保存的汇总与人工记录不足以代表当前有效产物。"""
+    with pytest.raises(ValueError, match="marker 复核已失效"):
+        build_marker_card(_Store(_marker_run(decision)), "s", "r")
 
 
 def test_builders_report_missing_attempts(tmp_path):

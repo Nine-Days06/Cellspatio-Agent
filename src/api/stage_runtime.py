@@ -13,12 +13,7 @@ ALL_STAGES = ("filter", "pca", "cluster", "marker")
 
 def running_stages(run: Mapping[str, Any]) -> set[str]:
     """返回 run 快照中当前存在运行中 attempt 的阶段。"""
-    snapshot = RunSnapshot.coerce(run)
-    return {
-        stage
-        for stage in ALL_STAGES
-        if any(attempt["status"] == RUNNING for attempt in snapshot.stage_attempts(stage))
-    }
+    return RunSnapshot.coerce(run).running_stages()
 
 
 def has_running(run: Mapping[str, Any], stages: Iterable[str] = ALL_STAGES) -> bool:
