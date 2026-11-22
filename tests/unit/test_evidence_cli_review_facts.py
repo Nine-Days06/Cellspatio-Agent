@@ -99,6 +99,73 @@ def test_cli_cluster_rejection_preserves_only_identical_history(reviewed_source,
         build_cluster_card(d.store, d.sid, d.rid)
 
 
+def test_cli_cluster_replay_after_revision_expiry_is_read_only(reviewed_source, monkeypatch):
+    """产物仍有效时，原样 CLI 历史重发也不能隐式重新授权。"""
+    d = reviewed_source
+    base = cli_base(d.store, monkeypatch)
+    assert review("cluster", d, d.cid, base) == 0
+    assert build_cluster_card(d.store, d.sid, d.rid).outcome == "rejected"
+    with d.store._conn() as conn:
+        conn.execute("UPDATE qc_runs SET revision = revision + 1 WHERE run_id = ?", (d.rid,))
+    before = d.store.get_qc_run(d.sid, d.rid)
+    messages = d.store.get_messages(d.sid)
+    state = d.client.get(d.review_path).json()
+    assert state["evidence"] is not None and not state["blocked"]
+    assert state["latest_decision"]["invalidated_reason"]
+    with pytest.raises(ValueError, match="复核已失效"):
+        build_cluster_card(d.store, d.sid, d.rid)
+    assert review("cluster", d, d.cid, base) == 0
+    after = d.store.get_qc_run(d.sid, d.rid)
+    assert after.cluster_rejections() == before.cluster_rejections()
+    assert after["revision"] == before["revision"]
+    assert d.store.get_messages(d.sid) == messages
+    with pytest.raises(ValueError, match="复核已失效"):
+        build_cluster_card(d.store, d.sid, d.rid)
+    assert review("cluster", d, d.cid, base, reason="重新检查后的新依据") == 0
+    renewed = d.store.get_qc_run(d.sid, d.rid)
+    assert len(renewed.cluster_rejections()) == len(before.cluster_rejections()) + 1
+    assert renewed["revision"] == before["revision"] + 1
+    assert len(d.store.get_messages(d.sid)) == len(messages) + 1
+    assert build_cluster_card(d.store, d.sid, d.rid).outcome == "rejected"
+    d.executor.execute_script.assert_not_called()
+
+
+@pytest.mark.parametrize("decision", ["accepted", "rejected"])
+def test_cli_marker_replay_after_revision_expiry_is_read_only(marker_ready, decision, monkeypatch):
+    """marker 接受和拒绝的原样重发不能把过期事实恢复为当前。"""
+    d = marker_ready
+    d.executor.execute_script.side_effect = marker_outputs
+    completed = d.client.post(d.marker_path + "/execute", json=d.marker_body).json()
+    target = completed["attempts"][0]["attempt_id"]
+    d.executor.reset_mock()
+    base = cli_base(d.store, monkeypatch)
+    assert review("marker", d, target, base, decision=decision) == 0
+    assert build_marker_card(d.store, d.sid, d.rid).outcome == decision
+    with d.store._conn() as conn:
+        conn.execute("UPDATE qc_runs SET revision = revision + 1 WHERE run_id = ?", (d.rid,))
+    before = d.store.get_qc_run(d.sid, d.rid)
+    messages = d.store.get_messages(d.sid)
+    state = d.client.get(d.marker_path).json()
+    assert state["attempts"][0]["result"] is not None and not state["blocked"]
+    assert state["attempts"][0]["review"]["invalidated_reason"]
+    with pytest.raises(ValueError, match="复核已失效"):
+        build_marker_card(d.store, d.sid, d.rid)
+    assert review("marker", d, target, base, decision=decision) == 0
+    after = d.store.get_qc_run(d.sid, d.rid)
+    assert after.marker_reviews() == before.marker_reviews()
+    assert after["revision"] == before["revision"]
+    assert d.store.get_messages(d.sid) == messages
+    with pytest.raises(ValueError, match="复核已失效"):
+        build_marker_card(d.store, d.sid, d.rid)
+    assert review("marker", d, target, base, decision=decision, reason="重新检查后的新依据") == 0
+    renewed = d.store.get_qc_run(d.sid, d.rid)
+    assert len(renewed.marker_reviews()) == len(before.marker_reviews()) + 1
+    assert renewed["revision"] == before["revision"] + 1
+    assert len(d.store.get_messages(d.sid)) == len(messages) + 1
+    assert build_marker_card(d.store, d.sid, d.rid).outcome == decision
+    d.executor.execute_script.assert_not_called()
+
+
 @pytest.mark.parametrize("decision", ["accepted", "rejected"])
 def test_cli_marker_review_requires_real_result_and_keeps_history(
     marker_ready, decision, monkeypatch

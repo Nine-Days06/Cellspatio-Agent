@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import sqlite3
 from typing import Any
 
@@ -20,6 +21,7 @@ from src.stage_defs import FILTER, stage_directory, stage_failure
 from src.ui.run_snapshot import RunSnapshot
 
 router = APIRouter(prefix="/api/sessions/{session_id}/qc", tags=["qc"])
+logger = logging.getLogger(__name__)
 
 
 def view(run: RunSnapshot, blocked: str | None = None) -> dict[str, Any]:
@@ -116,6 +118,7 @@ def reject_qc(
             )
         store.record_qc_rejection(session_id, run_id, body.preview_id, body.reason)
     except (OSError, sqlite3.OperationalError, ValueError, KeyError, TypeError) as exc:
+        logger.warning("QC review validation failed: %s", type(exc).__name__)
         raise HTTPException(409, str(exc)) from exc
     return get_qc(session_id, run_id, request, store)
 
