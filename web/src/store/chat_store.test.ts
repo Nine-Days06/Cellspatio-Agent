@@ -416,6 +416,23 @@ describe('send：SSE 接线', () => {
     await pending
   })
 
+  it('提前 EOF 且无部分内容时提示连接结束，而不是静默清空', async () => {
+    const { ctl, release } = holdStream()
+    useChatStore.getState().setSession('s1', [])
+    const pending = useChatStore.getState().send('hi')
+
+    ctl.onEnd?.('closed')
+    expect(useChatStore.getState().busy).toBe(false)
+    expect(useChatStore.getState().history).toMatchObject([{ role: 'user', content: 'hi' }])
+    expect(useChatStore.getState().notice).toEqual({
+      kind: 'error',
+      text: '连接提前结束，未收到回答，请重试。',
+    })
+
+    release()
+    await pending
+  })
+
   it('happy path：delta→draft、done→history、onEnd(done) 收尾', async () => {
     const { ctl, release } = holdStream()
     useChatStore.getState().setSession('s1', [])

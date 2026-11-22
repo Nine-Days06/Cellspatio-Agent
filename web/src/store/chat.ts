@@ -225,7 +225,15 @@ export function createChatStore() {
         if (!get().busy) return // 幂等：重复收尾不改状态
         const state = get()
         if (reason === 'done' || !state.draft.trim()) {
-          set({ busy: false, tools: [], draft: '' })
+          // 提前 EOF 且无部分内容时，不能静默收尾：用户会以为模型没有回应。
+          set({
+            busy: false,
+            tools: [],
+            draft: '',
+            ...(reason === 'closed'
+              ? { notice: { kind: 'error' as const, text: '连接提前结束，未收到回答，请重试。' } }
+              : {}),
+          })
           return
         }
         // 停止/断线时保留已生成内容，避免部分回答静默消失。
