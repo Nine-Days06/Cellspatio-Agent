@@ -296,15 +296,19 @@ class SessionStore:
             conn.close()
 
     def create_session(self, title: str = "新会话", project_id: str | None = None) -> str:
-        if project_id is not None:
-            project = self.get_project(project_id)
-            if project is None:
-                raise StoreError("not_found", "项目不存在")
-            if project["archived_at"]:
-                raise StoreError("conflict", "项目已归档")
         sid = uuid.uuid4().hex
         now = _now()
         with self._conn() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            if project_id is not None:
+                # 校验必须在写事务内：归档可与建会话并发。
+                project = conn.execute(
+                    "SELECT archived_at FROM projects WHERE id=?", (project_id,)
+                ).fetchone()
+                if project is None:
+                    raise StoreError("not_found", "项目不存在")
+                if project["archived_at"]:
+                    raise StoreError("conflict", "项目已归档")
             conn.execute(
                 "INSERT INTO sessions (id, title, created_at, updated_at, project_id) "
                 "VALUES (?, ?, ?, ?, ?)",
@@ -432,13 +436,16 @@ class SessionStore:
 
     def move_session(self, session_id: str, project_id: str | None) -> None:
         """移动到项目；None = 移回未归类。"""
-        if project_id is not None:
-            project = self.get_project(project_id)
-            if project is None:
-                raise StoreError("not_found", "项目不存在")
-            if project["archived_at"]:
-                raise StoreError("conflict", "项目已归档")
         with self._conn() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            if project_id is not None:
+                project = conn.execute(
+                    "SELECT archived_at FROM projects WHERE id=?", (project_id,)
+                ).fetchone()
+                if project is None:
+                    raise StoreError("not_found", "项目不存在")
+                if project["archived_at"]:
+                    raise StoreError("conflict", "项目已归档")
             previous = conn.execute(
                 "SELECT project_id FROM sessions WHERE id=?", (session_id,)
             ).fetchone()

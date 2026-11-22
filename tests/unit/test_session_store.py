@@ -140,6 +140,25 @@ def test_archived_project_hides_its_sessions_and_rejects_new_ones():
         store.create_session("新会话", project_id=pid)
 
 
+def test_project_archive_check_reads_inside_write_transaction(monkeypatch):
+    """归档校验必须在写事务内读库，不能信任事务外的 get_project 快照。"""
+    store = SessionStore()
+    pid = store.create_project("归档项目")
+    sid = store.create_session("会话")
+    store.update_project(pid, archived=True)
+    # 事务外快照若被当作权威，会放行归档后的写入。
+    monkeypatch.setattr(
+        SessionStore,
+        "get_project",
+        lambda self, project_id: {"id": project_id, "archived_at": None},
+    )
+
+    with pytest.raises(ValueError, match="项目已归档"):
+        store.create_session("新会话", project_id=pid)
+    with pytest.raises(ValueError, match="项目已归档"):
+        store.move_session(sid, pid)
+
+
 def test_archive_project_checks_running_inside_write_transaction():
     """归档项目不再走 running_stage 预检，而是在写事务内用同一连接查询。"""
     store = SessionStore()
