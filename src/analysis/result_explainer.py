@@ -37,19 +37,6 @@ class ResultExplainer:
 - 结合文献进一步解读生物学意义。
 """
 
-    def explain_pathway_analysis(self, pathways: list[dict[str, Any]]) -> str:
-        """解释通路分析结果"""
-        if not pathways:
-            return "未发现显著富集的通路。"
-
-        explanation = "通路富集分析结果：\n\n"
-        for i, pathway in enumerate(pathways[:5], 1):
-            explanation += f"{i}. {pathway.get('name', 'Unknown')}\n"
-            explanation += f"   - 富集分数：{pathway.get('score', 'N/A')}\n"
-            explanation += f"   - p值：{pathway.get('pvalue', 'N/A')}\n\n"
-
-        return explanation
-
     def _knowledge_background(self, data: dict[str, Any]) -> str:
         """查询主知识库，取通路/问题背景；无库或失败返回空串"""
         if self.knowledge_client is None:

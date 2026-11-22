@@ -3,6 +3,14 @@ import logging
 import re
 from typing import Any, ClassVar
 
+from src.control.intent_vocabulary import (
+    ANALYSIS_KEYWORDS,
+    ANALYSIS_TYPES,
+    DATASET_KEYWORDS,
+    KNOWLEDGE_KEYWORDS,
+    SOURCE_KEYWORDS,
+)
+
 logger = logging.getLogger(__name__)
 
 
@@ -12,14 +20,8 @@ class IntentParser:
     # 意图定义
     INTENT_TYPES: ClassVar[dict[str, Any]] = {
         "analysis": {
-            "description": "数据分析请求：差异表达分析、通路富集、可视化等",
-            "sub_types": {
-                "differential_expression": "差异表达分析、差异基因、DEG、fold change",
-                "pathway_analysis": "通路分析、通路富集、GO、KEGG、Pathway",
-                "visualization": "可视化、画图、图表、火山图、热图、PCA、箱线图",
-                "single_cell": "单细胞分析、scRNA、Seurat、降维、聚类、UMAP、细胞类型注释、细胞亚群",
-                "spatial": "空间转录组、空间组学、Visium、spatial、时空、空间位置、组织原位",
-            },
+            "description": "数据分析请求：差异表达分析、单细胞、空间转录组",
+            "sub_types": ANALYSIS_TYPES,
         },
         "fetch_data": {
             "description": "数据获取请求：下载公共数据库数据",
@@ -42,58 +44,11 @@ class IntentParser:
         self.llm_client = llm_client
         self.model = model
 
-        # 关键词匹配回退用
-        self.analysis_keywords = {
-            "differential_expression": ["差异表达", "差异基因", "DEG", "fold change"],
-            "pathway_analysis": ["通路", "pathway", "富集", "GO", "KEGG"],
-            "visualization": ["可视化", "画图", "图表", "火山图", "热图"],
-            "single_cell": [
-                "单细胞",
-                "scRNA",
-                "scrna",
-                "Seurat",
-                "seurat",
-                "UMAP",
-                "细胞聚类",
-                "细胞注释",
-            ],
-            "spatial": ["空间转录", "空间组", "Visium", "visium", "spatial", "时空组"],
-        }
-        self.knowledge_keywords = [
-            "是什么",
-            "有什么",
-            "有哪些",
-            "哪些",
-            "怎么",
-            "如何",
-            "作用",
-            "功能",
-            "关系",
-            "解释",
-            "机制",
-            "途径",
-            "通路",
-            "含义",
-            "意义",
-            "定义",
-            "介绍",
-            "简介",
-            "概述",
-            "特点",
-            "特征",
-            "特性",
-            "分类",
-            "类型",
-            "种类",
-        ]
-        self.dataset_keywords = ["下载", "获取数据", "数据集", "找数据", "数据下载"]
-        self.source_keywords = {
-            "geo": ["geo", "gse", "数据集", "表达谱"],
-            "kegg": ["kegg", "pathway", "通路"],
-            "uniprot": ["uniprot", "蛋白", "protein"],
-            "reactome": ["reactome", "通路详情", "pathway"],
-            "hpa": ["hpa", "human protein atlas", "蛋白图谱", "亚细胞定位"],
-        }
+        # 关键词匹配回退用；与 TaskClassifier 共用 src.control.intent_vocabulary
+        self.analysis_keywords = ANALYSIS_KEYWORDS
+        self.knowledge_keywords = KNOWLEDGE_KEYWORDS
+        self.dataset_keywords = DATASET_KEYWORDS
+        self.source_keywords = SOURCE_KEYWORDS
 
         self._build_system_prompt()
 
@@ -125,7 +80,7 @@ class IntentParser:
 ## 输出格式（严格 JSON）：
 {{
   "type": "analysis|fetch_data|knowledge_query|general|ambiguous",
-  "analysis_type": "differential_expression|pathway_analysis|visualization|single_cell|spatial",  // 仅 type=analysis
+  "analysis_type": "differential_expression|single_cell|spatial",  // 仅 type=analysis
   "secondary_intent": "fetch_data|analysis|knowledge_query|null",  // 次要意图
   "confidence": 0.0-1.0,
   "original_input": "用户原始输入",
@@ -139,8 +94,8 @@ class IntentParser:
 输入："TP53"
 输出：{{"type":"ambiguous","confidence":0.6,"original_input":"TP53","clarification":"请问您想查询 TP53 的基因信息、下载 TP53 蛋白数据、还是进行 TP53 相关分析？"}}
 
-输入："画个火山图"
-输出：{{"type":"analysis","analysis_type":"visualization","confidence":0.95,"original_input":"画个火山图","clarification":null}}
+输入："分析这批单细胞数据"
+输出：{{"type":"analysis","analysis_type":"single_cell","confidence":0.95,"original_input":"分析这批单细胞数据","clarification":null}}
 """
 
     def parse(self, user_input: str, context: dict[str, Any] | None = None) -> dict[str, Any]:

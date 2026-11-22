@@ -9,12 +9,10 @@ from __future__ import annotations
 
 from typing import Any
 
+from src.control.intent_vocabulary import ANALYSIS_TYPES
+
 # Only types WorkflowManager._execute_analysis_workflow truly routes & executes
-SUPPORTED_ANALYSIS_TYPES: tuple[str, ...] = (
-    "differential_expression",
-    "single_cell",
-    "spatial",
-)
+SUPPORTED_ANALYSIS_TYPES: tuple[str, ...] = tuple(ANALYSIS_TYPES)
 
 # When tool returns these statuses, AgentRuntime immediately bubbles to UI (HITL gate / terminal), no further LLM round
 TERMINAL_STATUSES: frozenset[str] = frozenset(
