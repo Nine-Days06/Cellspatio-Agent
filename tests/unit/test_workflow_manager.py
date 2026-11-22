@@ -1310,9 +1310,13 @@ def test_run_analysis_for_agent_records_outputs(tmp_path):
 
     spy = manager.workflow_recorder
     assert result["status"] == "success"
-    assert [o["name"] for o in spy.outputs] == ["run-spy-1.de_results.csv"]
-    assert Path(spy.outputs[0]["path"]).parent == tmp_path / "data" / "analysis" / "de"
-    assert spy.outputs[0]["run_id"] == spy.starts[0]["run_id"]
+    by_name = {o["name"]: o for o in spy.outputs}
+    assert set(by_name) == {"run-spy-1.de_results.csv", "capsule"}
+    assert Path(by_name["run-spy-1.de_results.csv"]["path"]).parent == (
+        tmp_path / "data" / "analysis" / "de"
+    )
+    assert Path(by_name["capsule"]["path"]).parent == tmp_path / "data" / "analysis" / "capsules"
+    assert all(o["run_id"] == spy.starts[0]["run_id"] for o in spy.outputs)
 
 
 def test_execute_workflow_records_single_run():

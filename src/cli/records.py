@@ -443,6 +443,14 @@ def _delete_plan(
                     skipped.append(str(root / name / run_id))
                 else:
                     paths.append(candidate)
+        # 分析输出（DE/空间 CSV、capsule 目录）登记在 workflow.json 的 outputs 里。
+        for _, data in wrroc_runs(root, session["id"]):
+            for output in data.get("outputs") or []:
+                raw = output.get("path") if isinstance(output, Mapping) else None
+                path = safe_target(raw, root) if raw else None
+                # 数据根之外的产物属于用户文件，不纳入删除，也不阻断删除。
+                if path is not None:
+                    paths.append(path)
     if project is not None:
         for candidate in (
             root / "data" / "projects" / target_id,

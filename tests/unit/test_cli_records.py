@@ -217,6 +217,44 @@ def test_export_and_delete_include_non_qc_wrroc(store, root):
     assert not wf_dir.exists()
 
 
+def test_delete_includes_workflow_outputs_and_capsules(store, root):
+    """WRROC outputs（DE CSV / capsule 目录）也在删除范围内。"""
+    sid = store.create_session()
+    de_file = root / "data" / "analysis" / "de" / "run-de.de_results.csv"
+    de_file.parent.mkdir(parents=True)
+    de_file.write_text("gene,padj\nG1,0.01\n", encoding="utf-8")
+    capsule = root / "data" / "analysis" / "capsules" / "20261122_010203_000001"
+    capsule.mkdir(parents=True)
+    outside = root.parent / f"outside-{sid}.csv"
+    outside.write_text("x", encoding="utf-8")
+
+    wf_dir = root / ".wrroc" / "run-de"
+    wf_dir.mkdir(parents=True)
+    (wf_dir / "workflow.json").write_text(
+        json.dumps(
+            {
+                "run_id": "run-de",
+                "intent": {"type": "analysis", "analysis_type": "differential_expression"},
+                "input": {"context": {"session_id": sid}},
+                "outputs": [
+                    {"name": de_file.name, "path": str(de_file), "type": "csv"},
+                    {"name": "capsule", "path": str(capsule), "type": "other"},
+                    {"name": "external", "path": str(outside), "type": "csv"},
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    result = records.delete_records("session", sid, store=store, root=root)
+
+    assert result["verified"] is True
+    assert not de_file.exists()
+    assert not capsule.exists()
+    assert outside.exists()  # 数据根外产物不删，也不阻断
+    outside.unlink()
+
+
 def test_delete_dry_run_keeps_everything(store, root):
     sid, run_dir = _seed_session(store, root)
     result = records.delete_records("session", sid, dry_run=True, store=store, root=root)

@@ -128,6 +128,11 @@ class WorkflowManager:
         """把分析结果中的输出文件写入本次运行记录。"""
         if self.workflow_recorder is None:
             return
+        capsule_dir = result.get("capsule_dir")
+        if capsule_dir:
+            self.workflow_recorder.record_output(
+                run_id, name="capsule", path=str(capsule_dir), type="other"
+            )
         path = (result.get("results") or {}).get("output_file")
         if not path:
             return
