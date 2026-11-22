@@ -8,7 +8,8 @@ from typing import Any
 from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, ConfigDict, Field
 
-from src.analysis.qc_preview import Thresholds, build_preview, check_preview, checked_evidence
+from src.analysis.qc_preview import Thresholds, build_preview, check_preview
+from src.analysis.review_facts import qc_review_facts
 from src.analysis.sc_filter import FILTER_TOOL_VERSION, run_sc_filter, verified_selection
 from src.api.authorized_run import StageClaim, run_authorized
 from src.api.deps import StoreDep
@@ -46,13 +47,11 @@ def get_qc(session_id: str, run_id: str, request: Request, store: StoreDep) -> d
     """刷新后仍显示精确批准历史；变化证据显示阻断。"""
     run = require_run(store, session_id, run_id)
     try:
-        checked_evidence(run, run_qc_root(request.app.state.analysis_roots, run))
-        active = run.active_preview
-        if active and active["status"] == "pending":
-            check_preview(run, run_qc_root(request.app.state.analysis_roots, run), active)
-    except (OSError, ValueError) as exc:
+        root = run_qc_root(request.app.state.analysis_roots, run)
+    except ValueError as exc:
         return view(run, str(exc))
-    return view(run)
+    facts = qc_review_facts(run, root)
+    return view(run, facts.invalidated_reason or ("该 run 有阶段运行中" if facts.blocked else None))
 
 
 @router.post("/{run_id}/preview")
@@ -89,12 +88,10 @@ def approve_qc(
     try:
         if preview["status"] != "approved":
             check_preview(run, run_qc_root(request.app.state.analysis_roots, run), preview)
-        approved = store.approve_qc_preview(
-            session_id, run_id, run["revision"], body.preview_id, body.reason
-        )
+        store.approve_qc_preview(session_id, run_id, run["revision"], body.preview_id, body.reason)
     except (OSError, ValueError, sqlite3.OperationalError) as exc:
         raise HTTPException(409, str(exc)) from exc
-    return view(approved)
+    return get_qc(session_id, run_id, request, store)
 
 
 class RejectionRequest(BaseModel):
@@ -107,15 +104,20 @@ class RejectionRequest(BaseModel):
 
 @router.post("/{run_id}/reject")
 def reject_qc(
-    session_id: str, run_id: str, body: RejectionRequest, store: StoreDep
+    session_id: str, run_id: str, body: RejectionRequest, request: Request, store: StoreDep
 ) -> dict[str, Any]:
     """记录当前待批准预览的拒绝；已批准预览与已执行 run 不可拒绝。"""
-    require_run(store, session_id, run_id)
+    run = require_run(store, session_id, run_id)
     try:
-        run = store.record_qc_rejection(session_id, run_id, body.preview_id, body.reason)
-    except (sqlite3.OperationalError, ValueError) as exc:
+        preview = next((p for p in run.previews if p["preview_id"] == body.preview_id), None)
+        if preview and preview["status"] != "rejected":
+            check_preview(
+                run, run_qc_root(request.app.state.analysis_roots, run), preview, allow_blocked=True
+            )
+        store.record_qc_rejection(session_id, run_id, body.preview_id, body.reason)
+    except (OSError, sqlite3.OperationalError, ValueError, KeyError, TypeError) as exc:
         raise HTTPException(409, str(exc)) from exc
-    return view(run)
+    return get_qc(session_id, run_id, request, store)
 
 
 class FilterRequest(BaseModel):

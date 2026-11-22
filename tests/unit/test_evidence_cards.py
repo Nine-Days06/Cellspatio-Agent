@@ -141,61 +141,18 @@ class _Store:
         return self.messages
 
 
-def test_build_qc_card_drops_input_paths(tmp_path):
-    directory = tmp_path / "qc"
-    directory.mkdir()
-    (directory / "metadata.json").write_text(
-        json.dumps(
-            {"inputs_before": [{"path": r"C:\secret\matrix.mtx", "bytes": 10, "sha256": "b" * 64}]}
-        ),
-        encoding="utf-8",
-    )
-    (directory / "summary.json").write_text("{}", encoding="utf-8")
-    (directory / "versions.txt").write_text("R 4.6\nSeurat 5\nMatrix 1\n", encoding="utf-8")
-    (directory / "qc.png").write_bytes(b"png")
+@pytest.mark.parametrize("status", ["approved", "rejected"])
+def test_qc_card_requires_registered_artifacts(tmp_path, status):
+    """单独保存的复核状态不能代表真实 QC 与预览产物。"""
     run = {
-        "session_id": "s",
-        "run_id": "r",
-        "directory": str(directory),
+        "directory": str(tmp_path),
         "revision": 2,
-        "evidence": {
-            "tool_version": "sc-qc/1",
-            "summary": {
-                "cells": 10,
-                "features": 5,
-                "zero_count_cells": 0,
-                "mt_symbol_resolved": True,
-                "warnings": [],
-                "versions": ["R 4.6", "Seurat 5", "Matrix 1"],
-                "metrics": {},
-            },
-        },
-        "previews": [
-            {
-                "status": "approved",
-                "binding_sha256": "a" * 64,
-                "params": {"min_features": 200},
-                "schema": "qc-thresholds/1",
-                "tool_version": "qc-preview/1",
-                "summary": {
-                    "kept": 9,
-                    "excluded": 1,
-                    "total": 10,
-                    "excluded_percent": 10.0,
-                    "reason_counts": {"min_features": 1},
-                },
-                "reason": "ok",
-                "approved_at": "2026-11-12T00:00:00+00:00",
-            }
-        ],
+        "evidence": {"tool_version": "sc-qc/1"},
+        "active_preview_id": "p1",
+        "previews": [{"preview_id": "p1", "status": status}],
     }
-
-    card = build_qc_card(_Store(run), "s", "r")
-
-    _assert_envelope(card)
-    assert card.gate == "qc_review"
-    assert [item.name for item in card.provenance.inputs] == ["matrix.mtx"]
-    assert "secret" not in card.to_json()
+    with pytest.raises(ValueError, match="QC 复核已失效"):
+        build_qc_card(_Store(run), "s", "r")
 
 
 def test_builders_reject_stale_reviews(tmp_path):
@@ -262,55 +219,6 @@ def test_build_qc_card_rejects_superseded_preview(tmp_path):
         build_qc_card(_Store(run), "s", "r")
 
 
-def test_build_qc_rejected_card(tmp_path):
-    (tmp_path / "metadata.json").write_text(json.dumps({"inputs_before": []}), encoding="utf-8")
-    run = {
-        "session_id": "s",
-        "run_id": "r",
-        "directory": str(tmp_path),
-        "revision": 3,
-        "evidence": {
-            "tool_version": "sc-qc/1",
-            "summary": {
-                "cells": 10,
-                "features": 5,
-                "zero_count_cells": 0,
-                "mt_symbol_resolved": True,
-                "warnings": [],
-                "versions": ["R 4.6"],
-                "metrics": {},
-            },
-        },
-        "previews": [
-            {
-                "status": "rejected",
-                "binding_sha256": "a" * 64,
-                "params": {"min_features": 200},
-                "schema": "qc-thresholds/1",
-                "tool_version": "qc-preview/1",
-                "summary": {
-                    "kept": 10,
-                    "excluded": 0,
-                    "total": 10,
-                    "excluded_percent": 0.0,
-                    "reason_counts": {},
-                    "blocked": [],
-                },
-                "reason": "阈值过宽",
-                "rejected_at": "2026-11-12T00:00:00+00:00",
-                "reviewer": "reviewer-a",
-            }
-        ],
-    }
-
-    card = build_qc_card(_Store(run), "s", "r")
-
-    assert card.outcome == "rejected"
-    assert card.review.status == "rejected"
-    assert card.review.reason == "阈值过宽"
-    assert card.review.reviewer == "reviewer-a"
-
-
 def _cluster_run(result):
     return {
         "session_id": "s",
@@ -373,7 +281,7 @@ def _pca_run(tmp_path):
         "run_id": "r",
         "directory": str(tmp_path),
         "revision": 5,
-        "attempts": [{"attempt_id": "f1", "preview_id": "p1"}],
+        "attempts": [{"attempt_id": "f1", "preview_id": "p1", "status": "completed"}],
         "pca_attempts": [
             {
                 "attempt_id": "p1",
@@ -409,14 +317,10 @@ def _pca_run(tmp_path):
     return run
 
 
-def test_build_pca_dimensions_card(tmp_path):
-    card = build_pca_dimensions_card(_Store(_pca_run(tmp_path)), "s", "r")
-
-    _assert_envelope(card)
-    assert card.gate == "pca_dimensions"
-    assert card.outcome == "accepted"
-    assert card.observation["dims"] == [1, 2, 3]
-    assert card.observation["actual_pcs"] == 5
+def test_pca_card_requires_real_artifacts(tmp_path):
+    """保存的 PCA 汇总与人工维度不能替代真实完成态校验。"""
+    with pytest.raises(ValueError, match="身份不符"):
+        build_pca_dimensions_card(_Store(_pca_run(tmp_path)), "s", "r")
 
 
 def test_build_pca_card_rejects_stale_binding(tmp_path):

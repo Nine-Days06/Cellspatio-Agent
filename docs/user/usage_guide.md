@@ -3,7 +3,7 @@
 > **文档定位**：[README](../../README.md) 是项目概览，本指南是详细操作手册，面向实验生物学家
 > 与数据分析用户，覆盖安装、配置、Web 界面、数据获取、分析、知识问答、记录与限制。
 >
-> 最后核对日期：2026-11-13（Windows / Python 3.12 / R 4.6.1 / FastAPI + React）。
+> 最后核对日期：2026-11-22（本次核对复核与证据卡；Windows / Python 3.12 / R 4.6.1 / FastAPI + React）。
 
 ## 目录
 
@@ -414,6 +414,8 @@ python -m src.cli.evidence export cluster <session_id> <run_id>
 python -m src.cli.evidence export pca <session_id> <run_id>
 python -m src.cli.evidence export marker <session_id> <run_id>
 ```
+
+页面、CLI 复核和导出会重验本地来源与产物；文件缺失、漂移或复核身份失效时，旧选择保留为历史，不能生成当前证据卡。相同历史事实重发不会恢复其有效性；应检查证据并重新明确复核。科学质量不合格的 QC 预览仍可人工拒绝，并在证据身份有效时生成拒绝卡。
 
 公共证据服务的账号、上传、双签、检索、备份和 Caddy/TLS 部署见
 [部署说明](../deploy.md)。浏览器入口是 `http://127.0.0.1:8700/review/`。

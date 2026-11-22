@@ -5,11 +5,17 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from src.analysis.qc_preview import check_preview, checked_evidence
 from src.analysis.review_standing import review_is_current
 from src.analysis.sc_cluster import checked_completed_cluster
 from src.analysis.sc_marker_reviews import CLUSTER_RECORD_VERSION, review_binding
 from src.analysis.sc_markers import MARKER_REVIEW_VERSION, checked_completed_marker
-from src.analysis.sc_pca import DIMENSION_RECORD_VERSION
+from src.analysis.sc_pca import (
+    DIMENSION_RECORD_VERSION,
+    checked_completed_pca,
+    current_dimensions,
+    dimension_binding,
+)
 from src.ui.run_snapshot import RunSnapshot
 
 logger = logging.getLogger(__name__)
@@ -25,6 +31,83 @@ class ReviewFacts:
     invalidated_reason: str | None
     review_invalidated_reason: str | None
     blocked: bool
+    binding: str | None = None
+
+
+def qc_review_facts(run: RunSnapshot, root: Path) -> ReviewFacts:
+    """QC 用当前预览身份；拒绝科学质量时仍必须校验真实证据。"""
+    reviewed = [p for p in run.previews if p["status"] in ("approved", "rejected")]
+    latest = reviewed[-1] if reviewed else None
+    active = run.active_preview
+    result, invalid = None, None
+    try:
+        if active:
+            check_preview(run, root, active, allow_blocked=active["status"] == "rejected")
+        else:
+            checked_evidence(run, root)
+        result = run["evidence"]
+    except (OSError, ValueError, KeyError, TypeError, OverflowError) as exc:
+        logger.warning("QC evidence validation failed: %s", type(exc).__name__)
+        invalid = "QC 来源、预览身份或本地产物不符；仅保留历史，请检查证据"
+    blocked = bool(run.running_stages())
+    current = latest if latest == active and result is not None and not blocked else None
+    return ReviewFacts(
+        result=result,
+        latest=latest,
+        current=current,
+        invalidated_reason=invalid,
+        review_invalidated_reason="QC 复核已失效；该选择仅作历史"
+        if latest and current is None
+        else None,
+        blocked=blocked,
+    )
+
+
+def pca_dimension_facts(
+    run: RunSnapshot, parent: dict[str, Any], attempt: dict[str, Any], root: Path
+) -> ReviewFacts:
+    """重验 PCA 和父过滤；当前维度严格绑定最新人工 revision。"""
+    result, binding, invalid = None, None, None
+    try:
+        checked = checked_completed_pca(run, parent, attempt, root)
+        binding = dimension_binding(run, parent, attempt, checked, DIMENSION_RECORD_VERSION)
+        result = {**attempt["result"], "stdev": checked["stdev"]}
+    except OSError as exc:
+        logger.warning("PCA evidence validation failed: %s", type(exc).__name__)
+        invalid = "PCA 或父证据文件不可读取，请检查本地产物"
+    except (ValueError, KeyError, TypeError, OverflowError, StopIteration, IndexError) as exc:
+        logger.warning("PCA evidence validation failed: %s", type(exc).__name__)
+        invalid = "PCA 身份、父选择或本地产物不符，请检查证据"
+    history = run.dimension_reviews(attempt["attempt_id"])
+    latest = history[-1] if history else None
+    blocked = bool(run.running_stages())
+    current = (
+        current_dimensions(run, attempt, binding, DIMENSION_RECORD_VERSION)
+        if result is not None and not blocked
+        else None
+    )
+    if current:
+        dims = current.get("dims")
+        if (
+            not isinstance(dims, list)
+            or any(type(d) is not int for d in dims)
+            or dims != list(range(1, len(dims) + 1))
+            or not 1 <= len(dims) <= result["actual_pcs"]
+        ):
+            current = None
+    return ReviewFacts(
+        result=result,
+        latest=latest,
+        current=current,
+        invalidated_reason=invalid,
+        review_invalidated_reason=(
+            "PCA 身份、父选择、记录版本或 run revision 已变化；需重新明确记录"
+            if latest and current is None
+            else None
+        ),
+        blocked=blocked,
+        binding=binding,
+    )
 
 
 def cluster_review_facts(run: RunSnapshot, attempt: dict[str, Any], root: Path) -> ReviewFacts:

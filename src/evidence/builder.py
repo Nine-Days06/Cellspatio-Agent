@@ -2,16 +2,18 @@
 
 from __future__ import annotations
 
-import hashlib
 import json
 import uuid
-from collections.abc import Mapping
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from src.analysis.review_facts import cluster_review_facts, marker_review_facts
-from src.analysis.sc_pca import DIMENSION_RECORD_VERSION, current_dimensions, dimension_binding
+from src.analysis.review_facts import (
+    cluster_review_facts,
+    marker_review_facts,
+    pca_dimension_facts,
+    qc_review_facts,
+)
 from src.evidence.schema import (
     Artifact,
     Claim,
@@ -35,20 +37,6 @@ def _now() -> str:
 def _new_card_id() -> str:
     """生成稳定的卡标识。"""
     return f"evc-{uuid.uuid4().hex}"
-
-
-def _sha256(path: Path) -> str:
-    """流式计算文件 SHA256。"""
-    digest = hashlib.sha256()
-    with path.open("rb") as handle:
-        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
-            digest.update(chunk)
-    return digest.hexdigest()
-
-
-def _file_artifact(path: Path) -> Artifact:
-    """只保留名称、大小与哈希，丢弃绝对路径。"""
-    return Artifact(name=path.name, sha256=_sha256(path), bytes=path.stat().st_size)
 
 
 def _card(gate: str, *, license: License | None, **fields: Any) -> EvidenceCard:
@@ -96,12 +84,6 @@ def _run(store: SessionStore, session_id: str, run_id: str) -> RunSnapshot:
     return run
 
 
-def _qc_metadata(run: Mapping[str, Any]) -> dict[str, Any]:
-    """读取 QC 本地 metadata；缺失时返回空表。"""
-    path = Path(run["directory"]) / "metadata.json"
-    return json.loads(path.read_text(encoding="utf-8")) if path.is_file() else {}
-
-
 def build_qc_card(
     store: SessionStore,
     session_id: str,
@@ -111,24 +93,23 @@ def build_qc_card(
 ) -> EvidenceCard:
     """QC 阈值复核卡：只含聚合统计、阈值与产物哈希，支持拒绝。"""
     run = _run(store, session_id, run_id)
-    reviewed = [
-        preview for preview in run.previews if preview["status"] in ("approved", "rejected")
-    ]
-    if not reviewed:
+    facts = qc_review_facts(run, Path(run["directory"]).parent)
+    if not facts.latest:
         raise ValueError("QC 尚未人工复核，不能生成证据卡")
-    preview = reviewed[-1]
+    preview = facts.latest
     active_id = run.get("active_preview_id")
     if active_id and preview["preview_id"] != active_id:
         raise ValueError("QC 复核已被更新的预览替代，不能生成证据卡")
+    if facts.current is None or facts.result is None:
+        raise ValueError("QC 复核已失效，不能生成证据卡")
     outcome = "accepted" if preview["status"] == "approved" else "rejected"
     reviewed_at = (
         preview.get("approved_at") if outcome == "accepted" else preview.get("rejected_at")
     )
-    evidence = run["evidence"]
+    evidence = facts.result
     # run["evidence"] 由 metadata + summary 组成；逐细胞汇总在 summary 下。
     qc_evidence = evidence["summary"]
     preview_summary = preview["summary"]
-    directory = Path(run["directory"])
     card = _card(
         "qc_review",
         license=license,
@@ -172,11 +153,10 @@ def build_qc_card(
         limitations=list(qc_evidence["warnings"])
         + ([] if outcome == "accepted" else ["该选择被拒绝，不用于下游分析。"]),
         provenance=Provenance(
-            inputs=_fingerprint_artifacts(_qc_metadata(run).get("inputs_before") or []),
+            inputs=_fingerprint_artifacts(evidence["inputs"]),
             artifacts=[
-                _file_artifact(directory / name)
+                Artifact(name=name, **evidence["artifacts"][name])
                 for name in ("summary.json", "versions.txt", "qc.png")
-                if (directory / name).is_file()
             ],
         ),
         review=Review(
@@ -288,16 +268,10 @@ def build_pca_dimensions_card(
     parent = run.attempt("filter", attempt["filter_attempt_id"])
     if parent is None:
         raise ValueError("PCA 父过滤缺失")
-    result = attempt["result"]
-    binding = dimension_binding(
-        run,
-        parent,
-        attempt,
-        {"artifacts": result.get("artifacts") or {}},
-        DIMENSION_RECORD_VERSION,
-    )
-    if current_dimensions(run, attempt, binding, DIMENSION_RECORD_VERSION) != review:
+    facts = pca_dimension_facts(run, parent, attempt, Path(run["directory"]).parent)
+    if facts.current != review or facts.result is None:
         raise ValueError("维度记录与 PCA 身份不符")
+    result = facts.result
     dims = review["dims"]
     card = _card(
         "pca_dimensions",
