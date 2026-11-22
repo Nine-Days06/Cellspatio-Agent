@@ -36,16 +36,16 @@ def register_local_input(
     shortcut: 接受任意本机路径，仅适用于 loopback 客户端；多用户服务端需先加认证与路径白名单。
     """
     agent = request.app.state.agent
-    session = store.get_session(session_id)
-    if session is None:
-        raise HTTPException(404, "会话不存在")
-
     source = Path(body.path.strip().strip('"')).expanduser()
     if not source.exists():
         raise HTTPException(400, f"路径不存在：{source}")
     source = source.resolve()
 
     with session_guard(session_id):
+        # 锁内重读：并发 confirm_data 可能刚追加下载资产，锁外快照会整体覆盖。
+        session = store.get_session(session_id)
+        if session is None:
+            raise HTTPException(404, "会话不存在")
         try:
             result = agent.workflow_manager.run_analysis_for_agent(
                 "single_cell",
