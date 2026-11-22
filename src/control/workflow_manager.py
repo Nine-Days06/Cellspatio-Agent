@@ -1,4 +1,5 @@
 import csv
+import hashlib
 import logging
 import math
 import uuid
@@ -138,14 +139,39 @@ class WorkflowManager:
             self.workflow_recorder.record_output(
                 run_id, name="capsule", path=str(capsule_dir), type="other"
             )
-        path = (result.get("results") or {}).get("output_file")
-        if not path:
-            return
-        suffix = Path(path).suffix.lower().lstrip(".")
-        file_type = suffix if suffix in {"csv", "json", "txt", "png", "rds"} else "other"
-        self.workflow_recorder.record_output(
-            run_id, name=Path(path).name, path=str(path), type=file_type
-        )
+        paths = [
+            (result.get("results") or {}).get("output_file"),
+            (result.get("results") or {}).get("plot_file"),
+        ]
+        if capsule_dir and result.get("run_id"):
+            paths.extend(
+                str(Path(capsule_dir) / name)
+                for name in ("question.txt", "script.R", "intent.json", "meta.json")
+            )
+        for raw_path in paths:
+            if not raw_path:
+                continue
+            path = Path(raw_path)
+            if not path.is_file():
+                continue
+            suffix = path.suffix.lower().lstrip(".")
+            file_type = suffix if suffix in {"csv", "json", "txt", "png", "rds"} else "other"
+            identity = {}
+            if result.get("run_id"):
+                digest = hashlib.sha256()
+                with path.open("rb") as stream:
+                    for chunk in iter(lambda: stream.read(65536), b""):
+                        digest.update(chunk)
+                identity = {
+                    "meta": {"sha256": digest.hexdigest(), "size_bytes": path.stat().st_size}
+                }
+            self.workflow_recorder.record_output(
+                run_id,
+                name=path.name,
+                path=str(path),
+                type=file_type,
+                **identity,
+            )
 
     def _resolve_input_file(self, params: dict[str, Any], context: dict[str, Any]) -> str | None:
         """解析输入文件：显式路径优先，不可用时回退下载资产。"""
@@ -497,6 +523,7 @@ class WorkflowManager:
             }
         input_file = params["input_file"]
         output_file = params["output_file"]
+        run_id = context.get("dynamic_run_id")
 
         attempt = 0
         current_code = code
@@ -506,9 +533,28 @@ class WorkflowManager:
         while attempt <= self.max_repair_attempts:
             try:
                 result = self.r_executor.execute_code(current_code)
+                self._record_step(
+                    run_id,
+                    step_id=f"script_execution_{attempt}",
+                    step_type="analysis",
+                    tool="Rscript",
+                    params={"script": current_code},
+                    output={
+                        "status": "success" if result.returncode == 0 else "error",
+                        "result": {"returncode": result.returncode},
+                    },
+                )
                 last_err = None
                 break
             except RExecutorError as e:
+                self._record_step(
+                    run_id,
+                    step_id=f"script_execution_{attempt}",
+                    step_type="analysis",
+                    tool="Rscript",
+                    params={"script": current_code},
+                    output={"status": "error", "error": str(e)},
+                )
                 last_err = e
                 if self.code_repairer is None or attempt >= self.max_repair_attempts:
                     break
@@ -519,7 +565,7 @@ class WorkflowManager:
                 repair_count += 1
             attempt += 1
 
-        if result is None or last_err is not None:
+        if result is None or last_err is not None or result.returncode != 0:
             return {
                 "status": "error",
                 "analysis_type": analysis_type,
@@ -547,10 +593,32 @@ class WorkflowManager:
                         "repair_count": repair_count,
                     },
                 }
-        if result.returncode == 0:
-            self._record_analysis_to_kb(
-                analysis_type, input_file, output_file, params.get("question", "")
-            )
+        finished = {
+            "status": "success",
+            "analysis_type": analysis_type,
+            "message": f"{self._analysis_type_zh(analysis_type)}分析完成",
+            "method_context": method_context,
+            "results": {
+                "returncode": result.returncode,
+                "output_file": output_file,
+                "repair_count": repair_count,
+            },
+            "repair_count": repair_count,
+        }
+        plot_file = params.get("plot_file")
+        if plot_file and Path(plot_file).is_file() and Path(plot_file).stat().st_size:
+            finished["results"]["plot_file"] = plot_file
+        if run_id:
+            finished["run_id"] = run_id
+            execution = self.workflow_recorder.get_record(run_id)
+            execution.meta["dynamic_script"]["status"] = "success"
+            execution.meta["execution_result"] = finished
+            self._record_outputs(run_id, finished)
+            # 执行事实先于解读/胶囊/快照落盘；后处理失败不能开放隐式重跑。
+            self.workflow_recorder.save_run(run_id)
+        self._record_analysis_to_kb(
+            analysis_type, input_file, output_file, params.get("question", "")
+        )
         stats = (
             self._de_output_stats(output_file)
             if analysis_type == "differential_expression"
@@ -582,30 +650,23 @@ class WorkflowManager:
                     intent={"type": "analysis", "analysis_type": analysis_type},
                     params={"input_file": input_file, "output_file": output_file},
                     script_code=current_code,
-                    results={"returncode": result.returncode, "output_file": output_file},
+                    results={
+                        "returncode": result.returncode,
+                        "output_file": output_file,
+                        **({"run_id": run_id} if run_id else {}),
+                    },
                     out_root=self.analysis_roots.for_session(context.get("session_id"))
                     / "capsules",
                 )
             )
         except Exception as e:  # noqa: BLE001
             logger.warning("capsule export failed: %s", e)
-        message = f"{self._analysis_type_zh(analysis_type)}分析完成"
         if stats is not None:
-            message += f"：共 {stats['total_genes']} 个基因，{stats['significant_genes']} 个显著（padj<0.05）"
-        return {
-            "status": "success",
-            "analysis_type": analysis_type,
-            "message": message,
-            "method_context": method_context,
-            "results": {
-                "returncode": result.returncode,
-                "output_file": output_file,
-                "repair_count": repair_count,
-            },
-            "repair_count": repair_count,
-            "explanation": explanation,
-            "capsule_dir": capsule_dir,
-        }
+            finished["message"] += (
+                f"：共 {stats['total_genes']} 个基因，{stats['significant_genes']} 个显著（padj<0.05）"
+            )
+        finished.update({"explanation": explanation, "capsule_dir": capsule_dir})
+        return finished
 
     def _analysis_type_zh(self, analysis_type: str) -> str:
         """分析类型中文映射"""
@@ -622,6 +683,7 @@ class WorkflowManager:
         script: str,
         method_context: str | None = None,
         session_id: str | None = None,
+        run_id: str | None = None,
     ) -> dict[str, Any]:
         """用户确认脚本后执行（含 repair 循环）；session_id 决定产物与胶囊根目录"""
         if analysis_type not in ("differential_expression", "spatial"):
@@ -630,13 +692,58 @@ class WorkflowManager:
                 "analysis_type": analysis_type,
                 "message": f"暂不支持确认执行的分析类型: {analysis_type}；单细胞请重新运行固定 QC。",
             }
-        return self._finish_analysis(
-            analysis_type,
-            params,
-            script,
-            method_context,
-            {"script_approved": True, "session_id": session_id},
+        context = {"script_approved": True, "session_id": session_id}
+        if not run_id:
+            return self._finish_analysis(analysis_type, params, script, method_context, context)
+        recorder = self.workflow_recorder
+        if recorder is None:
+            return {"status": "error", "message": "无法核验待确认运行：记录器不可用"}
+        try:
+            execution = recorder.restore_pending_script(
+                run_id,
+                {
+                    "session_id": session_id,
+                    "analysis_type": analysis_type,
+                    "script": script,
+                    "params": params,
+                    "method_context": method_context,
+                },
+            )
+        except (OSError, ValueError, KeyError, TypeError) as exc:
+            logger.warning("confirmed run restore rejected: run_id=%s: %s", run_id, exc)
+            return {"status": "error", "message": str(exc), "run_id": run_id}
+        context = {**execution.meta.get("context", {}), **context, "dynamic_run_id": run_id}
+        self._record_step(
+            run_id,
+            step_id="script_confirmed",
+            step_type="analysis",
+            tool=None,
+            params={"session_id": session_id},
+            output={"status": "success"},
         )
+        execution.meta["dynamic_script"]["status"] = "running"
+        recorder.save_run(run_id)
+        try:
+            result = self._finish_analysis(analysis_type, params, script, method_context, context)
+            result["run_id"] = run_id
+            if result.get("status") == "error":
+                execution.meta["dynamic_script"]["status"] = "pending"
+                recorder.save_run(run_id)
+            else:
+                execution.meta["execution_result"] = result
+                self._record_outputs(run_id, result)
+                recorder.finish_run(run_id)
+            return result
+        except Exception as exc:  # noqa: BLE001 - 已进入 R 执行的未知失败不能自动重跑
+            logger.error("confirmed run execution/finalize failed: %s", exc)
+            if execution.meta.get("execution_result"):
+                return execution.meta["execution_result"]
+            return {
+                "status": "error",
+                "message": str(exc),
+                "run_id": run_id,
+                "retry_allowed": False,
+            }
 
     def _record_analysis_to_kb(
         self, analysis_type: str, input_file: str, output_file: str, user_question: str = ""

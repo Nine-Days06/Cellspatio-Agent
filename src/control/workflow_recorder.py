@@ -202,7 +202,18 @@ class WorkflowRecorder:
                 "method_context": result.get("method_context"),
             }
         )
-        return self.store.persist(self._to_workflow_run(exec_))
+        return self.save_run(run_id)
+
+    def save_run(self, run_id: str) -> Path:
+        """原子保存当前运行事实；不触发完成快照或 KG。"""
+        return self.store.persist(self._to_workflow_run(self._require_execution(run_id)))
+
+    def restore_pending_script(self, run_id: str, preparation: dict[str, Any]) -> WorkflowExecution:
+        """恢复并核验完整待确认绑定；执行中或成功的身份不能再次使用。"""
+        execution = self.restore_run(run_id)
+        if execution.meta.get("dynamic_script") != {"status": "pending", **preparation}:
+            raise ValueError("待确认运行与会话、分析类型、脚本、参数或方法上下文不匹配")
+        return execution
 
     def restore_run(self, run_id: str) -> WorkflowExecution:
         """从 WRROC 恢复原运行到当前 recorder；未知或记录身份错配时拒绝。"""
@@ -275,6 +286,7 @@ class WorkflowRecorder:
                     tool=step.tool,
                     params=step.params,
                     output=step_output,
+                    timestamp=step.timestamp,
                 )
             )
 

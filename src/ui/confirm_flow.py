@@ -54,17 +54,17 @@ def restore_pending(
         if status in (STATUS_PENDING, STATUS_EXPIRED):
             if status == STATUS_PENDING and pending.get("run_id") and recorder is not None:
                 try:
-                    record = recorder.restore_run(pending["run_id"])
-                    expected = {
-                        "status": STATUS_PENDING,
-                        "session_id": session_id,
-                        "analysis_type": pending.get("analysis_type"),
-                        "script": pending.get("script", ""),
-                        "params": pending.get("params") or {},
-                        "method_context": pending.get("method_context"),
-                    }
-                    if record.meta.get("dynamic_script") == expected:
-                        return dict(pending)
+                    recorder.restore_pending_script(
+                        pending["run_id"],
+                        {
+                            "session_id": session_id,
+                            "analysis_type": pending.get("analysis_type"),
+                            "script": pending.get("script", ""),
+                            "params": pending.get("params") or {},
+                            "method_context": pending.get("method_context"),
+                        },
+                    )
+                    return dict(pending)
                 except (OSError, ValueError, KeyError, TypeError) as exc:
                     logger.warning("pending run restore failed: %s", exc)
             if status == STATUS_PENDING:
@@ -116,18 +116,20 @@ def confirm_script(
         results = None
     else:
         try:
+            run_identity = {"run_id": pending["run_id"]} if pending.get("run_id") else {}
             result = agent.execute_confirmed_script(
                 pending.get("analysis_type"),
                 pending.get("params") or {},
                 pending.get("script", ""),
                 method_context=pending.get("method_context"),
                 session_id=session_id,
+                **run_identity,
             )
         except Exception:
             # 执行失败不能把卡片留在终态，否则用户既看不到结果也无法重试。
             store.release_script(session_id, claimed_id, token)
             raise
-        if result.get("status") == "error":
+        if result.get("status") == "error" and result.get("retry_allowed", True):
             # 修复次数用尽/产物缺失以正常返回值报告失败，同样要把卡片退回 pending。
             store.release_script(session_id, claimed_id, token)
         content = build_assistant_message(result)["content"]
