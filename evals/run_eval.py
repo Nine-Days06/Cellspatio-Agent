@@ -404,9 +404,14 @@ def _run_best_practice(cases: list[dict]) -> dict[str, Any]:
 # ─────────────────────────────────────────────────────────────
 
 def run_scripted(cases_path: str | Path) -> dict[str, Any]:
+    """按用例期望的工具调用做离线回放。"""
+    return _run_scripted_cases(load_cases(cases_path))
+
+
+def _run_scripted_cases(cases: list[dict[str, Any]]) -> dict[str, Any]:
+    """run_scripted 的列表入口；p3d 复用同一匹配逻辑。"""
     from src.control.agent_runtime import AgentRuntime
 
-    cases = load_cases(cases_path)
     failures = []
     passed = 0
     for case in cases:
@@ -445,6 +450,15 @@ def run_p3d(cases_path: str | Path) -> dict[str, Any]:
     kg_ingest_cases = [c for c in cases if c.get("expect_kg_write")]
     kg_query_cases = [c for c in cases if c.get("expect_kg_read") or c.get("expect_kg_query")]
     bp_cases = [c for c in cases if c.get("expect_best_practice")]
+    # 工具路由用例同样属于 p3d 覆盖面：漏跑会让 accuracy 分母偏小、报告假绿。
+    covered = {c["id"] for c in skill_cases + kg_ingest_cases + kg_query_cases + bp_cases}
+    tool_cases = [
+        c for c in cases if c["id"] not in covered and "expect_tool" in c
+    ]
+    # 没有任何已知期望字段的用例无法判定，必须显式暴露而不是静默丢弃。
+    uncovered = sorted(
+        c["id"] for c in cases if c["id"] not in covered and "expect_tool" not in c
+    )
     
     reports = {}
     
@@ -456,6 +470,8 @@ def run_p3d(cases_path: str | Path) -> dict[str, Any]:
         reports["kg_query"] = _run_kg_query(kg_query_cases)
     if bp_cases:
         reports["best_practice"] = _run_best_practice(bp_cases)
+    if tool_cases:
+        reports["tool_routing"] = _run_scripted_cases(tool_cases)
     
     # 汇总
     total = sum(r["total"] for r in reports.values())
@@ -470,6 +486,7 @@ def run_p3d(cases_path: str | Path) -> dict[str, Any]:
         "passed": passed,
         "failures": failures,
         "accuracy": passed / total if total else 0.0,
+        "uncovered": uncovered,
         "sub_reports": reports,
     }
 
