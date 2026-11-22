@@ -197,7 +197,8 @@ export function useStageReview<T>(options: StageReviewOptions<T>): StageReview<T
         setError(messageOf(err))
         failures += 1
         if (failures >= MAX_FAILURES) return
-        const delay = Math.min(pollMs * 2 ** failures, pollMs * 8)
+        // 首次失败仍按常规间隔重试，连续失败后再指数退避。
+        const delay = Math.min(pollMs * 2 ** (failures - 1), pollMs * 8)
         timer = window.setTimeout(() => void tick(), delay)
       }
     }
