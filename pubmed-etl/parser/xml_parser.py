@@ -223,13 +223,12 @@ def _parse_xml_content(xml_path: Path, source_name: str) -> tuple[list[tuple], i
     try:
         tree = etree.parse(str(xml_path), parser=etree.XMLParser(recover=True))
     except etree.XMLSyntaxError as e:
-        logger.error(f"XML 语法错误，跳过 {source_name}: {e}")
-        return [], 0
+        raise ValueError(f"XML 语法错误 {source_name}: {e}") from e
 
     articles = tree.findall(".//PubmedArticle")
     if not articles:
-        logger.warning(f"{source_name} 中未找到 PubmedArticle 元素")
-        return [], 0
+        # 空批次会让整轮导入静默少数据，必须让调用方失败。
+        raise ValueError(f"{source_name} 中未找到 PubmedArticle 元素")
 
     rows = []
     skipped = 0

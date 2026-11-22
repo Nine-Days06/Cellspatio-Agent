@@ -380,6 +380,7 @@ def download_xml_batches(
     max_workers = 3 if not NCBI_API_KEY else 8
 
     xml_files = []
+    failed_batches: list[int] = []
     futures = {}
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
         for batch_idx, chunk in enumerate(chunks):
@@ -392,8 +393,16 @@ def download_xml_batches(
             result = future.result()
             if result is not None:
                 xml_files.append(result)
+            else:
+                failed_batches.append(futures[future])
 
     xml_files.sort()
+    if failed_batches:
+        # 缺批次会让下游解析静默少数据；已完成批次留在磁盘，重跑可续传。
+        raise RuntimeError(
+            f"{len(failed_batches)}/{total_batches} 个 XML 批次下载失败，"
+            f"请重试（批次 {sorted(failed_batches)}）"
+        )
     logger.info(f"下载完成，共 {len(xml_files)} 个批次文件")
     return xml_files
 

@@ -232,6 +232,18 @@ class TestBatchCacheInvalidation(unittest.TestCase):
             self.assertEqual(files, [stale])
             self.assertEqual(stale.read_text(encoding="utf-8"), "new")
 
+    def test_failed_batch_aborts_instead_of_reporting_complete(self):
+        """任一批次下载失败必须抛错，不能只返回成功文件。"""
+        with tempfile.TemporaryDirectory() as td:
+            out = Path(td)
+
+            with patch(
+                "downloader.pubmed_downloader._download_single_batch",
+                side_effect=lambda index, chunk, out_dir, batch_size, total: None,
+            ):
+                with self.assertRaisesRegex(RuntimeError, "批次下载失败"):
+                    download_xml_batches(["1", "2"], out_dir=out, batch_size=1, query="q")
+
 
 if __name__ == "__main__":
     unittest.main()
