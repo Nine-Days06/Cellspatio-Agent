@@ -650,16 +650,19 @@ class GovernanceStore:
                 "WHERE submission_id=? ORDER BY id DESC LIMIT 1",
                 (submission_id,),
             ).fetchone()
-        return {
+        tombstone = {
             "evidence_id": row["submission_id"],
             "card_id": row["card_id"],
             "gate": row["gate"],
             "status": row["status"],
             "action": last["action"],
-            "actor_id": last["actor_id"],
-            "reason": last["reason"],
             "at": last["created_at"],
         }
+        # 复核者视角保留操作者与理由；匿名墓碑不得泄漏账号与内部拒审/撤回理由。
+        if include_unaccepted:
+            tombstone["actor_id"] = last["actor_id"]
+            tombstone["reason"] = last["reason"]
+        return tombstone
 
     def events(self, submission_id: str) -> list[dict[str, Any]]:
         """按时间顺序返回审计事件。"""
