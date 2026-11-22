@@ -27,6 +27,13 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
+from evals.review_common import (  # noqa: E402
+    QUALITY_ACCEPTED_THRESHOLD,
+    QUALITY_CASE_COUNT,
+    latest_reviews,
+    quality_claim_allowed,
+    review_counts,
+)
 from evals.run_eval import load_cases  # noqa: E402
 from src.knowledge.async_runtime import runtime as async_runtime  # noqa: E402
 from src.knowledge.lightrag_client import LightRAGClient  # noqa: E402
@@ -38,8 +45,6 @@ from src.knowledge.qa import (  # noqa: E402
 from src.ui.session_store import SessionStore  # noqa: E402
 
 REPORT_SCHEMA_VERSION = "knowledge-qa-eval/1.1.0"
-QUALITY_CASE_COUNT = 12
-QUALITY_ACCEPTED_THRESHOLD = 10
 logger = logging.getLogger(__name__)
 
 
@@ -79,74 +84,6 @@ def _eval_error(case: dict[str, Any], exc: Exception) -> dict[str, Any]:
         "config": {},
         "error": {"stage": "eval", "message": f"{type(exc).__name__}: {exc}"},
     }
-
-
-def latest_reviews(reviews: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
-    """同一答案按追加顺序取最新复核；SessionStore 已按 created_at,rowid 排序。"""
-    latest: dict[str, dict[str, Any]] = {}
-    for review in reviews:
-        latest[review["answer_id"]] = review
-    return latest
-
-
-def _current_review(
-    record: dict[str, Any], latest: dict[str, dict[str, Any]]
-) -> dict[str, Any] | None:
-    """取与当前答案绑定一致的复核；旧绑定的复核视为不存在。"""
-    review = latest.get((record.get("answer") or {}).get("answer_id"))
-    if review and review.get("binding_sha256") == record.get("binding_sha256"):
-        return review
-    return None
-
-
-def _accepted_review(record: dict[str, Any], latest: dict[str, dict[str, Any]]) -> bool:
-    """判断当前答案是否有绑定一致且结论为 accepted 的复核。"""
-    review = _current_review(record, latest)
-    return bool(review and review.get("decision") == "accepted")
-
-
-def review_counts(
-    records: list[dict[str, Any]], latest: dict[str, dict[str, Any]]
-) -> dict[str, int]:
-    """统计当前绑定有效的 accepted 与否决项数量。"""
-    return {
-        "accepted": sum(_accepted_review(record, latest) for record in records),
-        "vetoes": sum(
-            1
-            for record in records
-            if (review := _current_review(record, latest)) and review.get("veto")
-        ),
-    }
-
-
-def quality_claim_allowed(
-    cases: list[dict[str, Any]],
-    records: list[dict[str, Any]],
-    reviews: list[dict[str, Any]] | None = None,
-    *,
-    threshold_confirmed: bool = False,
-) -> bool:
-    """判断是否满足完整样本、人工阈值且无否决项的质量声明条件。"""
-    if not threshold_confirmed or len(cases) != QUALITY_CASE_COUNT:
-        return False
-    if len(records) != len(cases):
-        return False
-    case_ids = {case.get("id") for case in cases}
-    if {record.get("case_id") for record in records} != case_ids:
-        return False
-    approved = all(
-        case.get("status") == "approved"
-        and case.get("source") not in {"model-drafted", "model_drafted"}
-        for case in cases
-    )
-    answered = all(record["answer"].get("status") == "success" for record in records)
-    latest = latest_reviews(reviews or [])
-    current = [_current_review(record, latest) for record in records]
-    if any(review is None for review in current):
-        return False
-    accepted = sum(_accepted_review(record, latest) for record in records)
-    vetoed = any(review.get("veto") for review in current if review)
-    return approved and answered and accepted >= QUALITY_ACCEPTED_THRESHOLD and not vetoed
 
 
 def run_cases(
