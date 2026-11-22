@@ -18,7 +18,7 @@ sys.path.insert(0, str(ROOT))
 
 # 噪声判定模式（纯正则，无第三方依赖）
 # 实体名经 KnowledgeIndex 统一为小写，判定需大小写不敏感
-FAKE_ID_RE = re.compile(r"^NCBIGene:[^0-9]", re.IGNORECASE)
+FAKE_ID_RE = re.compile(r"^NCBIGene:(?!\d+$)", re.IGNORECASE)
 # CJK 统一表意 + 扩展A + 兼容表意 + 假名 + 谚文
 CJK_RE = re.compile(r"[\u3040-\u30ff\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff\uac00-\ud7af]")
 BIBLIO_PATTERNS = (re.compile(r"^\d{7,9}$"), re.compile(r"^10\.\d{3,9}/"))

@@ -28,6 +28,16 @@ def test_judge_flags_fake_ids_and_cjk_and_bibliographic():
     assert report["ok"] is False
 
 
+@pytest.mark.parametrize("name", ["NCBIGene:", "NCBIGene:12x", "ncbigene:12x"])
+def test_judge_flags_malformed_ncbi_gene_ids(name):
+    """空 ID 与尾随非数字都算假 ID，合法纯数字不误报。"""
+    assert judge_entities([name])["fake_id"] == [name]
+
+
+def test_judge_accepts_pure_numeric_ncbi_gene_id():
+    assert judge_entities(["NCBIGene:947"])["fake_id"] == []
+
+
 def test_judge_flags_title_like():
     long_title = (
         "Single cell transcriptomic analysis reveals the heterogeneity and "
