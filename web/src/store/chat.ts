@@ -262,7 +262,31 @@ export function createChatStore() {
 
       failTurn(message) {
         if (!get().busy) return // 幂等：busy 已关时不覆盖已有提示
-        set({ busy: false, tools: [], draft: '', notice: { kind: 'error', text: message } })
+        const state = get()
+        const notice: ChatNotice = { kind: 'error', text: message }
+        if (!state.draft.trim()) {
+          set({ busy: false, tools: [], draft: '', notice })
+          return
+        }
+        // 出错前已生成的文本不能丢：落成本地 partial 消息，刷新前至少可见。
+        localSeq += 1
+        const partial: WireMessage = {
+          id: -localSeq,
+          session_id: state.sessionId ?? '',
+          seq: -localSeq,
+          role: 'assistant',
+          content: state.draft,
+          timestamp: new Date().toISOString(),
+          results: state.charts.length > 0 ? { charts: state.charts } : null,
+          pending_script: null,
+        }
+        set({
+          busy: false,
+          tools: [],
+          draft: '',
+          history: [...state.history, partial],
+          notice,
+        })
       },
 
       async send(prompt, mode = 'chat') {

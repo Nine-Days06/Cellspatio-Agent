@@ -13,7 +13,7 @@ from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
-from src.api.chat_service import run_turn
+from src.api.chat_service import persist_message, run_turn
 from src.api.deps import StoreDep
 from src.api.events import make_event, sse_frame
 from src.api.session_locks import session_guard
@@ -63,12 +63,33 @@ async def chat(body: ChatRequest, request: Request, store: StoreDep) -> Streamin
                 return False
             return True
 
+        partial: list[str] = []
+
+        def emit_recording(event: dict[str, Any]) -> bool:
+            """记录已生成的增量文本，失败时才能把部分回答落库。"""
+            if event.get("type") == "delta" and isinstance(event.get("text"), str):
+                partial.append(event["text"])
+            return emit(event)
+
         def worker() -> None:
             try:
                 try:
-                    run_turn(agent, store, body.session_id, body.prompt, emit, mode=body.mode)
+                    run_turn(
+                        agent,
+                        store,
+                        body.session_id,
+                        body.prompt,
+                        emit_recording,
+                        mode=body.mode,
+                    )
                 except Exception as exc:  # 任何失败都要变成 error 事件
                     logger.exception("chat run_turn failed")  # except 块内自动带 traceback
+                    # 已生成的文本不能只留在前端草稿里：断线后用户刷新就永久丢失。
+                    if partial:
+                        try:
+                            persist_message(store, body.session_id, "".join(partial))
+                        except Exception:  # pragma: no cover - 落库失败不掩盖原始错误
+                            logger.exception("failed to persist partial chat answer")
                     emit(
                         make_event("error", message=str(exc) or type(exc).__name__, retryable=True)
                     )

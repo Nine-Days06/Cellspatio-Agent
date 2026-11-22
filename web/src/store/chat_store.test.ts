@@ -110,6 +110,20 @@ describe('turn 生命周期', () => {
     expect(s.notice).toEqual({ kind: 'error', text: 'LLM 调用失败' })
   })
 
+  it('failTurn 保留出错前已生成的文本', () => {
+    const store = useChatStore.getState()
+    store.setSession('s1', [])
+    store.beginTurn('hi')
+    store.appendDelta('已生成一半')
+
+    useChatStore.getState().failTurn('上游超时')
+
+    const s = useChatStore.getState()
+    expect(s.draft).toBe('')
+    expect(s.history.at(-1)).toMatchObject({ role: 'assistant', content: '已生成一半' })
+    expect(s.notice).toEqual({ kind: 'error', text: '上游超时' })
+  })
+
   it('收尾幂等：endTurn 之后再 endTurn 不改变状态', () => {
     const store = useChatStore.getState()
     store.setSession('s1', [])
