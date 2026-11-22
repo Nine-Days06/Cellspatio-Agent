@@ -10,8 +10,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from src.analysis.review_facts import marker_review_facts
-from src.analysis.review_standing import review_is_current
+from src.analysis.review_facts import cluster_review_facts, marker_review_facts
 from src.analysis.sc_pca import DIMENSION_RECORD_VERSION, current_dimensions, dimension_binding
 from src.evidence.schema import (
     Artifact,
@@ -200,23 +199,23 @@ def build_cluster_card(
 ) -> EvidenceCard:
     """聚类复核卡：只含簇大小与版本，不含 barcode/UMAP 坐标，支持拒绝。"""
     run = _run(store, session_id, run_id)
-    facts = [{**review, "outcome": "accepted"} for review in run.cluster_reviews()] + [
-        {**review, "outcome": "rejected"} for review in run.cluster_rejections()
+    reviews = [*run.cluster_reviews(), *run.cluster_rejections()]
+    reviews = [
+        review
+        for review in reviews
+        if attempt_id is None or review["cluster_attempt_id"] == attempt_id
     ]
-    facts = [
-        fact for fact in facts if attempt_id is None or fact["cluster_attempt_id"] == attempt_id
-    ]
-    if not facts:
+    if not reviews:
         raise ValueError("聚类尚未人工复核，不能生成证据卡")
-    facts.sort(key=lambda fact: (fact["created_at"], fact.get("review_id", "")))
-    review = facts[-1]
-    if not review_is_current(review, run["revision"]):
+    latest = max(reviews, key=lambda review: review["source_revision"])
+    attempt = run.attempt("cluster", latest["cluster_attempt_id"])
+    if attempt is None:
+        raise ValueError("聚类结果缺失")
+    facts = cluster_review_facts(run, attempt, Path(run["directory"]).resolve().parent)
+    review, result = facts.current, facts.result
+    if review is None or result is None:
         raise ValueError("聚类复核已失效，不能生成证据卡")
     outcome = review["outcome"]
-    attempt = run.attempt("cluster", review["cluster_attempt_id"])
-    if attempt is None or not attempt.get("result"):
-        raise ValueError("聚类结果缺失")
-    result = attempt["result"]
     card = _card(
         "cluster_review",
         license=license,

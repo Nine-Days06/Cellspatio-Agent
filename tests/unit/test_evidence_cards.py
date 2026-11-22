@@ -198,56 +198,6 @@ def test_build_qc_card_drops_input_paths(tmp_path):
     assert "secret" not in card.to_json()
 
 
-def test_build_cluster_card_keeps_only_aggregates():
-    result = {
-        "cells": 11,
-        "dims": 5,
-        "n_epochs": 10,
-        "clusters": 2,
-        "cluster_sizes": [
-            {"cluster_id": "0", "cells": 6, "proportion": 0.5455},
-            {"cluster_id": "1", "cells": 5, "proportion": 0.4545},
-        ],
-        "seurat_threads": 1,
-        "versions": ["R 4.6", "Seurat 5"],
-        "artifacts": {
-            "summary.json": {"path": r"C:\secret\summary.json", "sha256": "b" * 64, "bytes": 10}
-        },
-    }
-    run = {
-        "session_id": "s",
-        "run_id": "r",
-        "directory": "",
-        "revision": 3,
-        "evidence": {},
-        "cluster_attempts": [
-            {
-                "attempt_id": "c1",
-                "pca_attempt_id": "p1",
-                "tool_version": "sc-cluster/1",
-                "protocol": json.dumps({"algorithm": "louvain"}),
-                "result": result,
-            }
-        ],
-        "cluster_reviews": [
-            {
-                "cluster_attempt_id": "c1",
-                "binding_sha256": "c" * 64,
-                "source_revision": 2,
-                "reason": "ok",
-                "created_at": "2026-11-12T00:00:00+00:00",
-            }
-        ],
-    }
-
-    card = build_cluster_card(_Store(run), "s", "r")
-
-    _assert_envelope(card)
-    assert card.observation["cluster_sizes"][0]["cells"] == 6
-    assert card.provenance.artifacts[0].name == "summary.json"
-    assert "secret" not in card.to_json()
-
-
 def test_builders_reject_stale_reviews(tmp_path):
     """复核事实的 revision 不是当前 revision 时不得出卡。"""
     qc = _Store(
@@ -371,6 +321,7 @@ def _cluster_run(result):
         "cluster_attempts": [
             {
                 "attempt_id": "c1",
+                "status": "completed",
                 "pca_attempt_id": "p1",
                 "tool_version": "sc-cluster/1",
                 "protocol": json.dumps({"algorithm": "louvain"}),
@@ -391,26 +342,16 @@ def _cluster_run(result):
     }
 
 
-def test_build_cluster_rejected_card():
-    result = {
-        "cells": 11,
-        "dims": 5,
-        "n_epochs": 10,
-        "clusters": 2,
-        "cluster_sizes": [
-            {"cluster_id": "0", "cells": 6, "proportion": 0.5455},
-            {"cluster_id": "1", "cells": 5, "proportion": 0.4545},
-        ],
-        "seurat_threads": 1,
-        "versions": ["R 4.6"],
-        "artifacts": {},
-    }
-
-    card = build_cluster_card(_Store(_cluster_run(result)), "s", "r")
-
-    assert card.outcome == "rejected"
-    assert card.review.status == "rejected"
-    assert card.review.reason == "簇结构不稳定"
+@pytest.mark.parametrize("decision", ["accepted", "rejected"])
+def test_cluster_card_requires_real_artifacts(decision):
+    """保存的汇总与人工记录不足以代表当前有效聚类产物。"""
+    run = _cluster_run({"cells": 11})
+    if decision == "accepted":
+        review = {**run["cluster_rejections"][0], "accepted": True}
+        run["cluster_reviews"] = [review]
+        run["cluster_rejections"] = []
+    with pytest.raises(ValueError, match="聚类复核已失效"):
+        build_cluster_card(_Store(run), "s", "r")
 
 
 def _pca_run(tmp_path):
