@@ -111,11 +111,6 @@ def confirm_script(
     return store.append_message(session_id, "assistant", content, results=results)
 
 
-def _asset_key(asset: dict[str, Any], source: str) -> tuple[str, Any]:
-    """已下载资产的去重键 (source, asset_id)；历史记录缺 source 字段时用请求 source。"""
-    return (asset.get("source") or source, asset.get("asset_id"))
-
-
 def confirm_data(
     agent: Any,
     store: SessionStore,
@@ -134,13 +129,9 @@ def confirm_data(
         raise ConfirmFlowError(ERR_UNKNOWN_SOURCE, f"未知数据源: {source}") from exc
     asset = result.get("asset")
     if asset:
-        session = store.get_session(session_id) or {}
-        assets = list(session.get("downloaded_assets") or [])
-        key = _asset_key(asset, source)
-        # 重复确认：下载可重复，但同一资产只落库一次（避免污染 run_turn 上下文）
-        if key not in {_asset_key(a, source) for a in assets}:
-            assets.append(asset)
-            store.update_session_meta(session_id, downloaded_assets=assets)
+        # 重复确认：下载可重复，但同一资产只落库一次（避免污染 run_turn 上下文）。
+        # 去重与追加在写事务内完成，避免并发 data_confirm 整列覆盖。
+        store.append_downloaded_asset(session_id, asset, source=source)
         content = f"已下载 {asset_id} → `{asset.get('access_path')}`"
     else:
         content = result.get("message", "数据下载未完成。")

@@ -45,9 +45,8 @@ def register_local_input(
     source = source.resolve()
 
     with session_guard(session_id):
-        # 锁内重读：并发 confirm_data 可能刚追加下载资产，锁外快照会整体覆盖。
-        session = store.get_session(session_id)
-        if session is None:
+        # 锁内重查：会话可能刚被并发删除。
+        if store.get_session(session_id) is None:
             raise HTTPException(404, "会话不存在")
         try:
             result = agent.workflow_manager.run_analysis_for_agent(
@@ -59,22 +58,18 @@ def register_local_input(
                 # 非法输入在 QC 之前返回，不落聊天消息，直接作为对话框错误。
                 raise HTTPException(400, result.get("message") or "输入不是有效的单细胞数据")
 
-            # 同一会话只保留最新本地输入；后续对话与重跑沿用该路径。
-            assets = [
-                asset
-                for asset in session.get("downloaded_assets") or []
-                if asset.get("source") != "local"
-            ]
-            assets.append(
-                {
-                    "source": "local",
-                    "asset_id": source.name or str(source),
-                    "access_path": str(source),
-                }
-            )
-            store.update_session_meta(session_id, downloaded_assets=assets)
-
             result = register_qc_result(agent, store, session_id, result)
+            if result.get("status") != "error":
+                # 先登记 QC 再写资产：登记失败时不留"有资产、无 run"的半成品。
+                # 同一会话只保留最新本地输入；替换在写事务内完成。
+                store.replace_local_asset(
+                    session_id,
+                    {
+                        "source": "local",
+                        "asset_id": source.name or str(source),
+                        "access_path": str(source),
+                    },
+                )
             result, last = persist_outcome(store, session_id, result)
             return {
                 "message": wire_message(last),

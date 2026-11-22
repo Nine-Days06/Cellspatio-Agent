@@ -799,6 +799,47 @@ class SessionStore:
         with self._conn() as conn:
             conn.execute(f"UPDATE sessions SET {', '.join(sets)} WHERE id=?", vals)
 
+    def append_downloaded_asset(
+        self, session_id: str, asset: dict[str, Any], *, source: str
+    ) -> None:
+        """在写事务内按 (source, asset_id) 去重追加，避免读-改-写丢资产。"""
+        with self._conn() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            row = conn.execute(
+                "SELECT downloaded_assets FROM sessions WHERE id=?", (session_id,)
+            ).fetchone()
+            if row is None:
+                return
+            assets = _decode_downloaded(row["downloaded_assets"])
+            key = (asset.get("source") or source, asset.get("asset_id"))
+            if key in {(a.get("source") or source, a.get("asset_id")) for a in assets}:
+                return
+            assets.append(asset)
+            conn.execute(
+                "UPDATE sessions SET downloaded_assets=?, updated_at=? WHERE id=?",
+                (json.dumps(assets, ensure_ascii=False), _now(), session_id),
+            )
+
+    def replace_local_asset(self, session_id: str, asset: dict[str, Any]) -> None:
+        """写事务内把 source=local 的资产替换为给定项（同一会话只留最新本地输入）。"""
+        with self._conn() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            row = conn.execute(
+                "SELECT downloaded_assets FROM sessions WHERE id=?", (session_id,)
+            ).fetchone()
+            if row is None:
+                return
+            assets = [
+                a
+                for a in _decode_downloaded(row["downloaded_assets"])
+                if a.get("source") != "local"
+            ]
+            assets.append(asset)
+            conn.execute(
+                "UPDATE sessions SET downloaded_assets=?, updated_at=? WHERE id=?",
+                (json.dumps(assets, ensure_ascii=False), _now(), session_id),
+            )
+
     def set_script_status(
         self, session_id: str, status: str, *, message_id: int | None = None
     ) -> None:
