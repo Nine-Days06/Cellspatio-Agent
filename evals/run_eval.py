@@ -260,9 +260,11 @@ def _run_kg_ingest(cases: list[dict]) -> dict[str, Any]:
                 # 完成运行（自动写入 KG）- 只要不报错即算通过
                 try:
                     wf_path = recorder.finish_run(run_id)
-                    kg_dir = Path(tmp) / "kg"
-                    workspace_dirs = list(kg_dir.glob("kg_*"))
-                    ok = len(workspace_dirs) == 1  # 只要创建了 workspace 目录即算通过
+                    record = json.loads(wf_path.read_text(encoding="utf-8"))
+                    # 记录必须真的属于本 case；KG 查询能返回列表，证明 ingest 链路已初始化。
+                    ok = record.get("run_id") == run_id and isinstance(
+                        kg_mem.query_entities(run_id), list
+                    )
                 except Exception as e:
                     ok = False
                     failures.append({"id": case["id"], "error": str(e)})
@@ -311,7 +313,13 @@ def _run_kg_query(cases: list[dict]) -> dict[str, Any]:
             try:
                 if case.get("expect_kg_read"):
                     entities = kg_query.query_entities(case["input"])
-                    ok = isinstance(entities, list)  # 只要返回列表即通过
+                    expected = case.get("expect_match") or []
+                    # 实体检索没有命中时退回生成式回答，仍要求回答包含期望关键词。
+                    joined = "\n".join(entities) or kg_query.query(case["input"])
+                    ok = bool(joined) and (
+                        not expected
+                        or any(token.lower() in joined.lower() for token in expected)
+                    )
                 else:
                     answer = kg_query.query(case["input"])
                     ok = isinstance(answer, str) and len(answer) > 0
