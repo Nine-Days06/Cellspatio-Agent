@@ -22,11 +22,25 @@ def test_create_session_reports_missing_and_archived_project() -> None:
     assert (archived.value.kind, store_status(archived.value)) == ("conflict", 409)
 
 
-def test_archive_session_while_running_is_conflict(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_archive_session_while_running_is_conflict() -> None:
     """运行中的阶段是状态冲突，与“会话不存在”区分。"""
     store = SessionStore()
     sid = store.create_session()
-    monkeypatch.setattr(store, "running_stage", lambda _session_id: "过滤")
+    with store._conn() as conn:
+        conn.execute(
+            "INSERT INTO qc_runs (run_id, session_id, directory, evidence) "
+            "VALUES ('run-x', ?, 'sc_qc', '{}')",
+            (sid,),
+        )
+        conn.execute(
+            "INSERT INTO qc_previews (preview_id, run_id, payload) VALUES ('p1', 'run-x', '{}')"
+        )
+        conn.execute(
+            "INSERT INTO sc_filter_attempts "
+            "(attempt_id, run_id, preview_id, binding_sha256, tool_version, directory, status, "
+            "created_at) VALUES ('f1', 'run-x', 'p1', 'a', '1', 'sc_filter/f1', 'running', "
+            "'2026-11-12T00:00:00+00:00')"
+        )
 
     with pytest.raises(StoreError) as running:
         store.archive_session(sid)
