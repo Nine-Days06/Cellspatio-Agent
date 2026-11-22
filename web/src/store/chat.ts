@@ -59,6 +59,8 @@ interface ChatState {
   setNotice: (notice: ChatNotice | null) => void
   /** done 事件：把助手消息落进 history（约束 1：空内容照常记录） */
   finalizeTurn: (message: WireMessage) => void
+  /** 非 SSE 的成功结果（如确认执行返回的助手消息）直接追加到 history */
+  appendMessage: (message: WireMessage) => void
   /** done / aborted / closed 的幂等收尾：关 busy、清过程条；error 不走这里 */
   endTurn: (reason: TurnEndReason) => void
   /** error 收尾：关 busy + 写错误提示；busy 已关时幂等（不覆盖已有提示） */
@@ -213,6 +215,10 @@ export function createChatStore() {
             draft: '',
           }
         })
+      },
+
+      appendMessage(message) {
+        set((state) => ({ history: [...state.history, message] }))
       },
 
       endTurn(reason) {

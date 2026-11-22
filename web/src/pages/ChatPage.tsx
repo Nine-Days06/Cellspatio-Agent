@@ -71,6 +71,7 @@ export function ChatPage() {
   const setSession = useChatStore((s) => s.setSession)
   const setScriptCard = useChatStore((s) => s.setScriptCard)
   const setDataCard = useChatStore((s) => s.setDataCard)
+  const appendMessage = useChatStore((s) => s.appendMessage)
 
   const sessionsQuery = useSessions()
   const projectsQuery = useProjects()
@@ -218,11 +219,12 @@ export function ChatPage() {
       )
     }
     try {
-      await confirmAction(body)
+      const { message } = await confirmAction(body)
       if (isStale()) {
         dispatchConfirm({ type: 'reset' })
         return
       }
+      appendMessage(message)
       if (scriptStatus === null) {
         setDataCard(null)
       } else {

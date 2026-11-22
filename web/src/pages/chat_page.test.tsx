@@ -641,6 +641,26 @@ describe('ChatPage 确认卡片接线', () => {
     expect(screen.getByText('已确认执行')).toBeInTheDocument()
   })
 
+  it('脚本确认成功：后端返回的助手消息立即进入历史', async () => {
+    const sid = nextSid()
+    await renderReady(sid)
+    act(() => {
+      useChatStore.setState({ scriptCard: pendingCard() })
+    })
+    confirmActionMock.mockResolvedValue({
+      message: makeMsg(sid, { content: '脚本执行完成：差异表达结果已保存' }),
+    })
+
+    fireEvent.click(screen.getByRole('button', { name: '执行脚本' }))
+
+    await waitFor(() =>
+      expect(screen.getByTestId('message-list').textContent).toContain(
+        '脚本执行完成：差异表达结果已保存',
+      ),
+    )
+  })
+
+
   it('脚本确认失败展示后端 detail，再次提交先清错误并可成功', async () => {
     const sid = nextSid()
     await renderReady(sid)
