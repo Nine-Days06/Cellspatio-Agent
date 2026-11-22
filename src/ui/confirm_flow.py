@@ -36,8 +36,8 @@ def restore_pending(
 ) -> PendingScript | None:
     """会话加载时的待确认脚本过期语义。
 
-    只看最新一条带 pending_script 的消息：pending → 落库置 expired 后按
-    expired 返回；expired → 原样返回；其他状态 → None。
+    只看最新一条带 pending_script 的消息：pending → 把**这一条**（按 id）落库
+    置 expired 后按 expired 返回；expired → 原样返回；其他状态 → None。
     """
     for msg in reversed(messages):
         pending = msg.get("pending_script")
@@ -46,7 +46,8 @@ def restore_pending(
         status = pending.get("status")
         if status in (STATUS_PENDING, STATUS_EXPIRED):
             if status == STATUS_PENDING:
-                store.set_script_status(session_id, STATUS_EXPIRED)
+                # 必须按 id 定位：并发新建的卡可能已是最新一条，不能被这里误废。
+                store.set_script_status(session_id, STATUS_EXPIRED, message_id=msg["id"])
             return {
                 "script": pending.get("script", ""),
                 "analysis_type": pending.get("analysis_type"),
@@ -83,6 +84,7 @@ def confirm_script(
     if claimed is None:
         raise ConfirmFlowError(ERR_NO_PENDING_SCRIPT, "没有待确认的脚本")
     claimed_id, pending = claimed
+    token = pending.get("claim_token") or ""
 
     if action == ACTION_SCRIPT_CANCEL:
         content = "已取消本次脚本执行。"
@@ -98,11 +100,11 @@ def confirm_script(
             )
         except Exception:
             # 执行失败不能把卡片留在终态，否则用户既看不到结果也无法重试。
-            store.release_script(session_id, claimed_id)
+            store.release_script(session_id, claimed_id, token)
             raise
         if result.get("status") == "error":
             # 修复次数用尽/产物缺失以正常返回值报告失败，同样要把卡片退回 pending。
-            store.release_script(session_id, claimed_id)
+            store.release_script(session_id, claimed_id, token)
         content = build_assistant_message(result)["content"]
         results = result.get("results")
 

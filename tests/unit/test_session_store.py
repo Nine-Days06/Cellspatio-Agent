@@ -278,6 +278,35 @@ def test_set_script_status_ignores_confirmed():
     assert store.get_messages(sid)[0]["pending_script"]["status"] == "confirmed"
 
 
+def test_release_script_only_reverts_own_claim():
+    store = SessionStore()
+    sid = store.create_session()
+    store.append_message(sid, "assistant", "s", pending_script={"script": "a", "status": "pending"})
+    claimed_id, pending = store.claim_script(sid, "confirmed")
+    token = pending["claim_token"]
+
+    store.release_script(sid, claimed_id, "not-my-token")
+    assert store.get_messages(sid)[0]["pending_script"]["status"] == "confirmed"
+
+    store.release_script(sid, claimed_id, token)
+    restored = store.get_messages(sid)[0]["pending_script"]
+    assert restored["status"] == "pending"
+    assert "claim_token" not in restored
+
+
+def test_release_script_does_not_clobber_later_claim():
+    store = SessionStore()
+    sid = store.create_session()
+    store.append_message(sid, "assistant", "s", pending_script={"script": "a", "status": "pending"})
+    claimed_id, first = store.claim_script(sid, "confirmed")
+    store.release_script(sid, claimed_id, first["claim_token"])
+
+    # 另一个 worker 已重新领取并开始执行；旧令牌的回滚不得把它打回 pending。
+    store.claim_script(sid, "confirmed")
+    store.release_script(sid, claimed_id, first["claim_token"])
+    assert store.get_messages(sid)[0]["pending_script"]["status"] == "confirmed"
+
+
 def test_encode_decode_plotly_figure_roundtrip():
     import plotly.express as px
 

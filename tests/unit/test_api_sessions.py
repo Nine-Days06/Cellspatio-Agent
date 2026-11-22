@@ -278,6 +278,22 @@ def test_only_latest_pending_script_is_considered(client):
     assert body["pending_script"]["user_request"] == "做差异表达"
 
 
+def test_restore_does_not_expire_newer_card(client):
+    """restore 读到旧卡时只能过期这一条，不能误废并发新建的最新卡。"""
+    sid = client.post("/api/sessions", json={}).json()["session"]["id"]
+    store = SessionStore()
+    _pending_message(store, sid)
+    older = store.get_messages(sid)[-1]
+
+    # 模拟另一个标签页在 restore 读到消息之后、写库之前插入了新卡。
+    _pending_message(store, sid)
+    store.set_script_status(sid, STATUS_EXPIRED, message_id=older["id"])
+
+    by_id = {m["id"]: m for m in store.get_messages(sid)}
+    assert by_id[older["id"]]["pending_script"]["status"] == STATUS_EXPIRED
+    assert by_id[max(by_id)]["pending_script"]["status"] == STATUS_PENDING
+
+
 def test_soft_warn_flag_reflects_context_size(client, monkeypatch):
     from src.control import compact
 

@@ -11,7 +11,7 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
 
-from src.ui.confirm_protocol import STATUS_EXPIRED, STATUS_PENDING
+from src.ui.confirm_protocol import STATUS_CONFIRMED, STATUS_EXPIRED, STATUS_PENDING
 from src.ui.run_snapshot import RunSnapshot
 from src.ui.sc_stage_defs import STAGE_SPECS
 from src.ui.sc_stages import ScStages
@@ -799,17 +799,26 @@ class SessionStore:
         with self._conn() as conn:
             conn.execute(f"UPDATE sessions SET {', '.join(sets)} WHERE id=?", vals)
 
-    def set_script_status(self, session_id: str, status: str) -> None:
-        """仅更新该会话最新一条状态为 pending/expired 的脚本消息。"""
+    def set_script_status(
+        self, session_id: str, status: str, *, message_id: int | None = None
+    ) -> None:
+        """更新指定（缺省最新）一条 pending/expired 脚本消息的状态。"""
         with self._conn() as conn:
             # 与 claim_script 共用写锁：避免 restore 把刚 confirmed 的卡片改回 expired。
             conn.execute("BEGIN IMMEDIATE")
-            row = conn.execute(
-                "SELECT id, pending_script FROM messages "
-                "WHERE session_id = ? AND pending_script IS NOT NULL "
-                "ORDER BY seq DESC LIMIT 1",
-                (session_id,),
-            ).fetchone()
+            if message_id is None:
+                row = conn.execute(
+                    "SELECT id, pending_script FROM messages "
+                    "WHERE session_id = ? AND pending_script IS NOT NULL "
+                    "ORDER BY seq DESC LIMIT 1",
+                    (session_id,),
+                ).fetchone()
+            else:
+                row = conn.execute(
+                    "SELECT id, pending_script FROM messages "
+                    "WHERE session_id = ? AND id = ? AND pending_script IS NOT NULL",
+                    (session_id, message_id),
+                ).fetchone()
             if row is None:
                 return
             script = json.loads(row["pending_script"])
@@ -824,7 +833,11 @@ class SessionStore:
     def claim_script(
         self, session_id: str, status: str, *, message_id: int | None = None
     ) -> tuple[int, dict[str, Any]] | None:
-        """把指定（缺省最新）pending 脚本原子改成 status，返回 (消息 id, 脚本)。"""
+        """把指定（缺省最新）pending 脚本原子改成 status，返回 (消息 id, 脚本)。
+
+        返回的脚本带 claim_token；执行失败时 release_script 用它做 CAS，
+        避免把别人已推进的终态覆盖回 pending。
+        """
         with self._conn() as conn:
             conn.execute("BEGIN IMMEDIATE")
             if message_id is None:
@@ -846,15 +859,19 @@ class SessionStore:
             if script.get("status") != STATUS_PENDING:
                 return None
             script["status"] = status
+            # 只有「确认执行」需要回滚令牌；取消是终态，不需要。
+            if status == STATUS_CONFIRMED:
+                script["claim_token"] = uuid.uuid4().hex
             conn.execute(
                 "UPDATE messages SET pending_script = ? WHERE id = ?",
                 (json.dumps(script, ensure_ascii=False), row["id"]),
             )
             return int(row["id"]), script
 
-    def release_script(self, session_id: str, message_id: int) -> None:
-        """把指定脚本卡退回 pending，供执行失败后重试。"""
+    def release_script(self, session_id: str, message_id: int, token: str) -> None:
+        """把本次领取的脚本卡退回 pending；已被他人推进则静默放弃。"""
         with self._conn() as conn:
+            conn.execute("BEGIN IMMEDIATE")
             row = conn.execute(
                 "SELECT pending_script FROM messages WHERE session_id = ? AND id = ?",
                 (session_id, message_id),
@@ -862,7 +879,12 @@ class SessionStore:
             if row is None or not row["pending_script"]:
                 return
             script = json.loads(row["pending_script"])
+            if script.get("status") != STATUS_CONFIRMED:
+                return
+            if script.get("claim_token") != token:
+                return
             script["status"] = STATUS_PENDING
+            script.pop("claim_token", None)
             conn.execute(
                 "UPDATE messages SET pending_script = ? WHERE id = ?",
                 (json.dumps(script, ensure_ascii=False), message_id),
