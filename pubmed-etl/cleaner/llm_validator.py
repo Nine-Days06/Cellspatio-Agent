@@ -8,10 +8,14 @@ import csv
 import json
 import os
 import re
+import sqlite3
+import tempfile
+import threading
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
 from pathlib import Path
+from typing import Any
 
 from config.settings import (
     DB_PATH,
@@ -568,10 +572,10 @@ def _run_sync_validation():
     logger.info(f"LLM 验证完成，待复核清单: {csv_path}")
 
 
-def _run_sync_validation_for_pmids(pmid_list: list):
-    """对指定的 PMID 列表执行同步多轮验证（用于 batch 降级）"""
+def _run_sync_validation_for_pmids(pmid_list: list[str]) -> list[str]:
+    """执行同步降级验证，返回仍未成功的 PMID。"""
     if not pmid_list:
-        return
+        return []
     with get_conn(DB_PATH) as conn:
         placeholders = ",".join("?" for _ in pmid_list)
         rows = conn.execute(
@@ -588,7 +592,7 @@ def _run_sync_validation_for_pmids(pmid_list: list):
         ).fetchall()
     if not rows:
         logger.info("降级的 PMID 列表中无限有效摘要的文献，跳过")
-        return
+        return []
     logger.info(f"同步降级: 对 {len(rows)} 篇文献执行同步验证")
 
     rows_list = [dict(r) for r in rows]
@@ -627,6 +631,7 @@ def _run_sync_validation_for_pmids(pmid_list: list):
         logger.info(f"同步降级完成: {len(all_validated)} 篇成功")
     if remaining_rows:
         logger.warning(f"同步降级仍有 {len(remaining_rows)} 篇失败")
+    return [row["pmid"] for row in remaining_rows]
 
 
 def _export_failed_pmids_csv(failed_rows: list) -> Path | None:
@@ -756,6 +761,7 @@ def export_no_abstract_csv(db_path: Path = DB_PATH) -> Path | None:
 # ═══════════════════════════════════════════════════════════════
 
 BATCH_CHECKPOINT_FILE = "llm_batch_progress.json"
+_BATCH_CHECKPOINT_LOCK = threading.RLock()
 # batch 请求 custom_id 前缀，沿用官方 batch 指南示例的 `request-N` 形式。
 # 裸 PMID 作 custom_id 会被智谱的长度校验拒绝（详见 _batch_custom_id）。
 BATCH_CUSTOM_ID_PREFIX = "request-"
@@ -773,32 +779,116 @@ def _batch_checkpoint_path() -> Path:
     return Path(OUTPUT_DIR) / BATCH_CHECKPOINT_FILE
 
 
-def _save_batch_checkpoint(data: dict):
+def _save_batch_checkpoint(data: dict[str, Any]) -> None:
+    """校验并原子写入 Batch 运行检查点。"""
+    if not _valid_batch_checkpoint(data):
+        raise ValueError("拒绝写入结构无效的 Batch 检查点")
     path = _batch_checkpoint_path()
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with open(path, "w", encoding="utf-8") as f:
-        json.dump(data, f, ensure_ascii=False)
-    batches = data.get("batches")
-    if isinstance(batches, list):
-        ids = ",".join(str(b.get("batch_id", "?")) for b in batches)
-        logger.info(f"Batch 检查点已保存: {len(batches)} 个批次 [{ids}]")
-    else:
-        logger.info(f"Batch 检查点已保存: batch_id={data.get('batch_id', 'N/A')}")
+    with _BATCH_CHECKPOINT_LOCK:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        temp_path: str | None = None
+        try:
+            with tempfile.NamedTemporaryFile(
+                mode="w",
+                encoding="utf-8",
+                dir=path.parent,
+                prefix=f".{path.name}.",
+                suffix=".tmp",
+                delete=False,
+            ) as f:
+                temp_path = f.name
+                json.dump(data, f, ensure_ascii=False)
+                f.flush()
+                os.fsync(f.fileno())
+            os.replace(temp_path, path)
+            temp_path = None
+        finally:
+            if temp_path:
+                Path(temp_path).unlink(missing_ok=True)
+        batches = data.get("batches")
+        if isinstance(batches, list):
+            ids = ",".join(str(b.get("batch_id", "?")) for b in batches)
+            logger.info(f"Batch 检查点已保存: {len(batches)} 个批次 [{ids}]")
+        else:
+            logger.info(f"Batch 检查点已保存: batch_id={data.get('batch_id', 'N/A')}")
 
 
-def _load_batch_checkpoint() -> dict | None:
-    path = _batch_checkpoint_path()
-    if not path.exists():
+def _valid_pmid_list(value: object) -> bool:
+    """判断 PMID 列表是否为非空的字符串列表。"""
+    return (
+        isinstance(value, list)
+        and bool(value)
+        and all(isinstance(pmid, str) and bool(pmid) for pmid in value)
+    )
+
+
+def _valid_batch_entry(entry: object) -> bool:
+    """判断单个远端 Batch 状态是否具备安全恢复所需字段。"""
+    if not isinstance(entry, dict):
+        return False
+    batch_id = entry.get("batch_id")
+    return isinstance(batch_id, str) and bool(batch_id) and _valid_pmid_list(entry.get("pmid_list"))
+
+
+def _valid_batch_checkpoint(checkpoint: dict[str, Any]) -> bool:
+    """按 v1/v2 白名单校验检查点，拒绝未知版本和模糊结构。"""
+    if "version" not in checkpoint:
+        return "batches" not in checkpoint and _valid_batch_entry(checkpoint)
+    if checkpoint.get("version") != 2:
+        return False
+
+    status = checkpoint.get("status", "active")
+    if status not in {"active", "submitting", "finalizing"}:
+        return False
+    batches = checkpoint.get("batches")
+    if not isinstance(batches, list):
+        return False
+
+    if status == "finalizing":
+        return not batches
+    if not all(_valid_batch_entry(entry) for entry in batches):
+        return False
+    batch_ids = [entry["batch_id"] for entry in batches]
+    if len(batch_ids) != len(set(batch_ids)):
+        return False
+
+    if status == "submitting":
+        pending = checkpoint.get("pending_submission")
+        if not isinstance(pending, dict):
+            return False
+        seq = pending.get("seq")
+        if not isinstance(seq, int) or seq < 1 or not _valid_pmid_list(pending.get("pmid_list")):
+            return False
+        input_file_id = pending.get("input_file_id")
+        if input_file_id is not None and not isinstance(input_file_id, str):
+            return False
+    elif not batches:
+        return False
+    return True
+
+
+def _load_batch_checkpoint() -> dict[str, Any] | None:
+    """读取并白名单校验 Batch 检查点；不删除损坏或未知文件。"""
+    with _BATCH_CHECKPOINT_LOCK:
+        path = _batch_checkpoint_path()
+        if not path.exists():
+            return None
+        try:
+            with open(path, encoding="utf-8") as f:
+                checkpoint = json.load(f)
+        except (OSError, UnicodeDecodeError, json.JSONDecodeError) as e:
+            logger.warning(f"Batch 检查点读取失败，原文件保留: {e}")
+            return None
+    if not isinstance(checkpoint, dict):
+        logger.warning("Batch 检查点结构未知，原文件保留")
         return None
-    try:
-        with open(path, encoding="utf-8") as f:
-            return json.load(f)
-    except Exception as e:
-        logger.warning(f"Batch 检查点读取失败，将重新提交: {e}")
-        return None
+    if _valid_batch_checkpoint(checkpoint):
+        return checkpoint
+    logger.warning("Batch 检查点结构未知，原文件保留")
+    return None
 
 
-def _checkpoint_batches(chk: dict | None) -> list[dict]:
+def _checkpoint_batches(chk: dict[str, Any] | None) -> list[dict[str, Any]]:
     """从检查点取出批次列表，兼容 v1（单批次）与 v2（多批次）两种结构。
 
     v1：{"batch_id": ..., "pmid_list": [...], ...}
@@ -824,11 +914,54 @@ def _checkpoint_batches(chk: dict | None) -> list[dict]:
     return []
 
 
-def _clear_batch_checkpoint():
-    path = _batch_checkpoint_path()
-    if path.exists():
-        path.unlink()
-        logger.info("Batch 检查点已清除")
+def _harvest_batch_checkpoint(batch_id: str) -> None:
+    """标记一个批次已收割；最后一批完成后将运行标记为收尾中。"""
+    with _BATCH_CHECKPOINT_LOCK:
+        chk = _load_batch_checkpoint()
+        batches = _checkpoint_batches(chk)
+        if not chk or not batches:
+            return
+
+        remaining = [batch for batch in batches if batch.get("batch_id") != batch_id]
+        if len(remaining) == len(batches):
+            return
+        if not remaining:
+            _save_batch_checkpoint(
+                {
+                    "version": 2,
+                    "batches": [],
+                    "status": "finalizing",
+                    "created_at": chk.get("created_at", now_iso()),
+                    "updated_at": now_iso(),
+                }
+            )
+            return
+
+        if isinstance(chk.get("batches"), list):
+            chk["batches"] = remaining
+            chk["status"] = "active"
+        else:
+            _save_batch_checkpoint(
+                {
+                    "version": 2,
+                    "batches": remaining,
+                    "status": "active",
+                    "created_at": chk.get("created_at", now_iso()),
+                    "updated_at": now_iso(),
+                }
+            )
+            return
+        chk["updated_at"] = now_iso()
+        _save_batch_checkpoint(chk)
+
+
+def _clear_batch_checkpoint() -> None:
+    """删除已完成的 Batch 运行检查点。"""
+    with _BATCH_CHECKPOINT_LOCK:
+        path = _batch_checkpoint_path()
+        if path.exists():
+            path.unlink()
+            logger.info("Batch 检查点已清除")
 
 
 def _build_per_article_prompt(pmid: str, title: str, abstract: str) -> str:
@@ -1096,19 +1229,36 @@ def _parse_batch_results(
     return success_count, failed_pmids, parsed_pmids
 
 
-def _run_zhipu_batch():
+def _run_zhipu_batch() -> None:
     """智谱 Batch API 主流程：JSONL 构建 → 上传 → 提交 → 轮询 → 下载 → 解析 → 降级"""
+    # 损坏或结构未知的检查点可能包含仍可人工恢复的远程批次身份，不能当作
+    # “无检查点”继续提交并覆盖。此处停在供应商调用之前，保留原文件待核验。
+    chk = _load_batch_checkpoint()
+    if chk is None and _batch_checkpoint_path().exists():
+        logger.error("Batch 检查点存在但无法安全解析，已停止运行并保留原文件")
+        return
+    if chk and chk.get("status") == "submitting":
+        pending = chk.get("pending_submission") or {}
+        logger.error(
+            "Batch 提交状态未完成，无法确认远端是否已创建任务；已停止并保留检查点，"
+            f"请人工核验 seq={pending.get('seq')}, "
+            f"input_file_id={pending.get('input_file_id')!r}"
+        )
+        return
+    if chk and chk.get("status") == "finalizing":
+        _finalize_batch()
+        return
+
     api_key = os.environ.get("ZHIPU_API_KEY") or ZHIPU_API_KEY
     if not api_key:
         logger.error("未设置 ZHIPU_API_KEY，无法使用 Batch API")
         return
 
-    from zhipuai import ZhipuAI
+    from zhipuai import ZhipuAI, ZhipuAIError
 
     client = ZhipuAI(api_key=api_key)
 
     # ── 步骤 1：检查 checkpoint 恢复（v1 单批次 / v2 多批次）──
-    chk = _load_batch_checkpoint()
     if chk:
         pending_batches = _checkpoint_batches(chk)
         if not pending_batches:
@@ -1124,20 +1274,26 @@ def _run_zhipu_batch():
                 pmids = entry.get("pmid_list", []) or []
                 try:
                     batch_status = client.batches.retrieve(batch_id)
-                    st = batch_status.status
-                    if st == "completed":
-                        logger.info(f"批次 {batch_id} 已完成，直接下载结果")
-                        _download_and_parse_batch(client, batch_status, entry)
-                    elif st in ("in_progress", "finalizing", "validating"):
-                        logger.info(f"恢复轮询 batch_id={batch_id}")
-                        _poll_until_done(client, batch_id, entry)
-                    else:
-                        logger.warning(f"批次 {batch_id} 已结束（status={st}），该批降级为同步模式")
-                        _run_sync_validation_for_pmids(pmids)
-                except Exception as e:
+                except (OSError, ValueError, ZhipuAIError) as e:
                     logger.warning(f"查询 batch {batch_id} 状态失败: {e}，该批降级同步")
-                    _run_sync_validation_for_pmids(pmids)
-            _finalize_batch(chk)
+                    remaining = _run_sync_validation_for_pmids(pmids)
+                    if not remaining:
+                        _harvest_batch_checkpoint(batch_id)
+                    continue
+
+                st = batch_status.status
+                if st == "completed":
+                    logger.info(f"批次 {batch_id} 已完成，直接下载结果")
+                    _download_and_parse_batch(client, batch_status, entry)
+                elif st in ("in_progress", "finalizing", "validating"):
+                    logger.info(f"恢复轮询 batch_id={batch_id}")
+                    _poll_until_done(client, batch_id, entry)
+                else:
+                    logger.warning(f"批次 {batch_id} 已结束（status={st}），该批降级为同步模式")
+                    remaining = _run_sync_validation_for_pmids(pmids)
+                    if not remaining:
+                        _harvest_batch_checkpoint(batch_id)
+            _finalize_batch()
             return
 
     # ── 步骤 2：加载待验证文献 ──
@@ -1157,7 +1313,6 @@ def _run_zhipu_batch():
         return
 
     rows_list = [dict(r) for r in rows]
-    all_pmids = [r["pmid"] for r in rows_list]
     logger.info(f"待验证文献: {len(rows_list)} 篇（Batch 模式）")
 
     # ── 步骤 3：构建 JSONL（按智谱 100MB / 5 万条限制自动拆分）──
@@ -1167,16 +1322,33 @@ def _run_zhipu_batch():
         logger.error(f"构建 Batch 输入失败: {e}")
         return
 
-    # 拆分后可能去重掉个别重复 PMID，以实际入库的为准
-    all_pmids = [pmid for _, pmids in file_groups for pmid in pmids]
-
     # ── 步骤 4+5：逐个上传并创建 Batch（服务端并行执行，墙钟耗时约等于单批）──
     submitted: list[dict] = []
+    run_created_at = now_iso()
     for seq, (jsonl_path, pmids) in enumerate(file_groups, start=1):
+        # 先持久化“正在上传/提交”的意图。远端调用成功而本地响应中断时，
+        # 重启只停机待人工核验，不会把同一批无声地再次提交。
+        pending_checkpoint: dict[str, Any] = {
+            "version": 2,
+            "batches": list(submitted),
+            "status": "submitting",
+            "created_at": run_created_at,
+            "updated_at": now_iso(),
+            "pending_submission": {
+                "seq": seq,
+                "pmid_list": pmids,
+                "input_file_id": None,
+            },
+        }
+        _save_batch_checkpoint(pending_checkpoint)
+
         logger.info(f"上传第 {seq}/{len(file_groups)} 个 Batch 文件（{len(pmids)} 篇）...")
         try:
             with open(jsonl_path, "rb") as fh:
                 file_obj = client.files.create(file=fh, purpose="batch")
+            pending_checkpoint["pending_submission"]["input_file_id"] = file_obj.id
+            pending_checkpoint["updated_at"] = now_iso()
+            _save_batch_checkpoint(pending_checkpoint)
             batch = client.batches.create(
                 input_file_id=file_obj.id,
                 endpoint="/v4/chat/completions",
@@ -1186,69 +1358,58 @@ def _run_zhipu_batch():
                     "project": "cellspatio-literature-selection",
                 },
             )
-        except Exception as e:
-            logger.error(f"第 {seq} 个批次提交失败: {e}，该批降级为同步模式")
-            _run_sync_validation_for_pmids(pmids)
-            continue
+        except (OSError, ValueError, ZhipuAIError) as e:
+            logger.error(
+                f"第 {seq} 个批次提交结果不明确: {e}；保留 submitting 检查点并停止，"
+                "请人工核验远端任务后再继续"
+            )
+            return
 
         logger.info(f"第 {seq} 个 Batch 已提交: {batch.id}")
-        submitted.append(
-            {
-                "batch_id": batch.id,
-                "input_file_id": file_obj.id,
-                "pmid_list": pmids,
-                "seq": seq,
-                "status": "active",
-            }
-        )
-        # 每提交一个即落盘：中途崩溃不会丢失已提交批次的续跑依据
-        _save_batch_checkpoint(
-            {
-                "version": 2,
-                "batches": list(submitted),
-                "status": "active",
-                "created_at": now_iso(),
-                "updated_at": now_iso(),
-            }
-        )
+        entry = {
+            "batch_id": batch.id,
+            "input_file_id": file_obj.id,
+            "pmid_list": pmids,
+            "seq": seq,
+            "status": "active",
+        }
+        next_submitted = [*submitted, entry]
+        try:
+            # 远端任务 ID 已知后立即落盘；写失败必须中止，不能再发起下一批。
+            _save_batch_checkpoint(
+                {
+                    "version": 2,
+                    "batches": next_submitted,
+                    "status": "active",
+                    "created_at": run_created_at,
+                    "updated_at": now_iso(),
+                }
+            )
+        except OSError as e:
+            logger.error(
+                f"远端批次 {batch.id} 已创建，但活动检查点保存失败: {e}；"
+                "保留 submitting 检查点并停止，请人工核验"
+            )
+            raise
+        submitted = next_submitted
 
     if not submitted:
         logger.error("没有任何批次提交成功")
         return
 
-    # ── 步骤 6：逐个收割 ──
-    remaining = list(submitted)
+    # ── 步骤 6：逐个收割；每批仅在处理完成后移除自身 ──
     for entry in submitted:
-        try:
-            _poll_until_done(client, entry["batch_id"], entry)
-        finally:
-            # _poll_until_done 在超时/失败时会清除整个检查点；多批次下这会
-            # 连带丢掉其余批次的续跑依据，故在此把未收割批次重新落盘
-            if entry in remaining:
-                remaining.remove(entry)
-            if remaining:
-                _save_batch_checkpoint(
-                    {
-                        "version": 2,
-                        "batches": list(remaining),
-                        "status": "active",
-                        "created_at": now_iso(),
-                        "updated_at": now_iso(),
-                    }
-                )
+        _poll_until_done(client, entry["batch_id"], entry)
 
     # ── 步骤 7：收尾（只做一次；_finalize_batch 内会清除检查点）──
-    _finalize_batch(
-        {
-            "batch_id": ",".join(e["batch_id"] for e in submitted),
-            "pmid_list": all_pmids,
-        }
-    )
+    _finalize_batch()
 
 
-def _poll_until_done(client, batch_id: str, chk: dict):
+def _poll_until_done(client: Any, batch_id: str, chk: dict[str, Any]) -> None:
     """轮询 Batch 任务直到完成/失败/超时"""
     import sys
+
+    from zhipuai import ZhipuAIError
 
     start_time = time.time()
     while True:
@@ -1257,15 +1418,16 @@ def _poll_until_done(client, batch_id: str, chk: dict):
             logger.error(f"Batch 任务超时（>{LLM_BATCH_TIMEOUT}s），取消任务并降级同步")
             try:
                 client.batches.cancel(batch_id)
-            except Exception:
-                pass
-            _clear_batch_checkpoint()
-            _run_sync_validation_for_pmids(chk.get("pmid_list", []))
+            except (OSError, ZhipuAIError) as e:
+                logger.warning(f"取消超时 Batch 失败: {e}")
+            remaining = _run_sync_validation_for_pmids(chk.get("pmid_list", []))
+            if not remaining:
+                _harvest_batch_checkpoint(batch_id)
             return
 
         try:
             status = client.batches.retrieve(batch_id)
-        except Exception as e:
+        except (OSError, ValueError, ZhipuAIError) as e:
             logger.error(f"查询 Batch 状态失败: {e}")
             time.sleep(LLM_BATCH_POLL_INTERVAL)
             continue
@@ -1287,25 +1449,31 @@ def _poll_until_done(client, batch_id: str, chk: dict):
             sys.stdout.flush()
             logger.info("Batch 任务完成!")
 
-            chk["status"] = "completed"
-            chk["updated_at"] = now_iso()
-            _save_batch_checkpoint(chk)
-
             _download_and_parse_batch(client, status, chk)
             return
         elif st in ("failed", "expired", "cancelled"):
             sys.stdout.write("\n")
             sys.stdout.flush()
             logger.error(f"Batch 任务失败（status={st}），降级为同步模式")
-            _clear_batch_checkpoint()
-            _run_sync_validation_for_pmids(chk.get("pmid_list", []))
+            remaining = _run_sync_validation_for_pmids(chk.get("pmid_list", []))
+            if not remaining:
+                _harvest_batch_checkpoint(batch_id)
             return
 
         time.sleep(LLM_BATCH_POLL_INTERVAL)
 
 
-def _download_and_parse_batch(client, batch_status, chk: dict, db_path: Path = DB_PATH):
+def _download_and_parse_batch(
+    client: Any,
+    batch_status: Any,
+    chk: dict[str, Any],
+    db_path: Path | None = None,
+) -> None:
     """下载 Batch 结果并解析写入 DB，处理 error_file 降级"""
+    from zhipuai import ZhipuAIError
+
+    if db_path is None:
+        db_path = DB_PATH
     all_pmids = chk.get("pmid_list", [])
 
     success_total = 0
@@ -1317,8 +1485,9 @@ def _download_and_parse_batch(client, batch_status, chk: dict, db_path: Path = D
     if not output_id:
         # completed 却无输出文件时，整批 PMID 都没有落库；直接同步补验。
         logger.error("Batch 已完成但没有输出文件，降级为同步模式")
-        _clear_batch_checkpoint()
-        _run_sync_validation_for_pmids(all_pmids)
+        remaining = _run_sync_validation_for_pmids(all_pmids)
+        if not remaining:
+            _harvest_batch_checkpoint(chk["batch_id"])
         return
 
     if output_id:
@@ -1337,10 +1506,11 @@ def _download_and_parse_batch(client, batch_status, chk: dict, db_path: Path = D
                 logger.warning(f"Batch 输出缺少 {len(missing)} 篇 PMID，降级为同步补验")
                 error_pmids.extend(sorted(missing))
             logger.info(f"结果已写入 DB: {success_total} 篇成功, {len(error_pmids)} 篇解析失败")
-        except Exception as e:
+        except (OSError, ValueError, sqlite3.Error, ZhipuAIError) as e:
             logger.error(f"下载/解析输出文件失败: {e}")
-            _clear_batch_checkpoint()
-            _run_sync_validation_for_pmids(all_pmids)
+            remaining = _run_sync_validation_for_pmids(all_pmids)
+            if not remaining:
+                _harvest_batch_checkpoint(chk["batch_id"])
             return
 
     if error_id:
@@ -1363,18 +1533,27 @@ def _download_and_parse_batch(client, batch_status, chk: dict, db_path: Path = D
                             error_pmids.append(pmid)
                     except json.JSONDecodeError:
                         pass
-        except Exception as e:
+        except (OSError, ValueError, ZhipuAIError) as e:
             logger.warning(f"下载错误文件失败: {e}")
+            return
 
     # 降级：对 error 中的 PMID 执行同步验证
+    remaining: list[str] = []
     if error_pmids:
         logger.info(f"Batch 错误 {len(error_pmids)} 篇，降级为同步模式重试")
-        _run_sync_validation_for_pmids(error_pmids)
+        remaining = _run_sync_validation_for_pmids(error_pmids)
+    if not remaining:
+        _harvest_batch_checkpoint(chk["batch_id"])
 
 
-def _finalize_batch(chk: dict):
-    """收尾：清除检查点、输出统计、导出 CSV"""
-    _clear_batch_checkpoint()
+def _finalize_batch() -> None:
+    """确认所有批次已收割后输出统计并导出 CSV，成功后才清除检查点。"""
+    with _BATCH_CHECKPOINT_LOCK:
+        current = _load_batch_checkpoint()
+        remaining = _checkpoint_batches(current)
+        if remaining or (_batch_checkpoint_path().exists() and current is None):
+            logger.warning("Batch 运行仍有未收割批次或状态文件不可解析，保留检查点")
+            return
 
     with get_conn(DB_PATH) as conn:
         verdicts = conn.execute("""
@@ -1395,6 +1574,7 @@ def _finalize_batch(chk: dict):
 
     csv_path_file = _export_review_csv()
     logger.info(f"LLM 验证完成，待复核清单: {csv_path_file}")
+    _clear_batch_checkpoint()
 
 
 def import_human_review(csv_path: str | None = None):

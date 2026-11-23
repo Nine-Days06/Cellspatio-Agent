@@ -939,13 +939,371 @@ class TestBatchWithoutOutput(unittest.TestCase):
     """Batch completed 但没有输出文件时不能静默跳过整批。"""
 
     @patch("cleaner.llm_validator._run_sync_validation_for_pmids")
-    @patch("cleaner.llm_validator._clear_batch_checkpoint")
-    def test_falls_back_to_sync(self, clear, sync):
+    def test_falls_back_to_sync(self, sync):
         status = SimpleNamespace(status="completed", output_file_id=None, error_file_id=None)
-        _download_and_parse_batch(None, status, {"batch_id": "b1", "pmid_list": ["1", "2"]})
+        with tempfile.TemporaryDirectory() as td:
+            with patch("cleaner.llm_validator.OUTPUT_DIR", td):
+                _download_and_parse_batch(None, status, {"batch_id": "b1", "pmid_list": ["1", "2"]})
 
-        clear.assert_called_once()
         sync.assert_called_once_with(["1", "2"])
+
+
+class TestBatchCheckpointLifecycle(unittest.TestCase):
+    """多批 checkpoint 只收割当前批，整个运行结束才清理。"""
+
+    def setUp(self):
+        import cleaner.llm_validator as mod
+
+        self.mod = mod
+        self.temp_dir = tempfile.TemporaryDirectory(ignore_cleanup_errors=True)
+        self.output_dir = Path(self.temp_dir.name) / "output"
+        self.output_dir.mkdir()
+        self.db_path = Path(self.temp_dir.name) / "test.db"
+        init_db(self.db_path)
+        self.original_output_dir = mod.OUTPUT_DIR
+        self.original_db_path = mod.DB_PATH
+        mod.OUTPUT_DIR = self.output_dir
+        mod.DB_PATH = self.db_path
+        self.checkpoint = {
+            "version": 2,
+            "status": "active",
+            "created_at": "2026-11-23T00:00:00",
+            "updated_at": "2026-11-23T00:00:00",
+            "batches": [
+                {"batch_id": "b1", "pmid_list": ["1"]},
+                {"batch_id": "b2", "pmid_list": ["2"]},
+                {"batch_id": "b3", "pmid_list": ["3"]},
+            ],
+        }
+        mod._save_batch_checkpoint(self.checkpoint)
+
+    def tearDown(self):
+        self.mod.OUTPUT_DIR = self.original_output_dir
+        self.mod.DB_PATH = self.original_db_path
+        self.temp_dir.cleanup()
+
+    def _remaining_ids(self):
+        return [
+            item["batch_id"]
+            for item in self.mod._checkpoint_batches(self.mod._load_batch_checkpoint())
+        ]
+
+    def test_harvested_batch_is_removed_but_others_survive(self):
+        self.mod._harvest_batch_checkpoint("b1")
+
+        self.assertEqual(self._remaining_ids(), ["b2", "b3"])
+
+    def test_harvesting_all_batches_marks_run_finalizing(self):
+        for batch_id in ("b1", "b2", "b3"):
+            self.mod._harvest_batch_checkpoint(batch_id)
+
+        checkpoint = self.mod._load_batch_checkpoint()
+        self.assertIsNotNone(checkpoint)
+        self.assertEqual(checkpoint["status"], "finalizing")
+        self.assertEqual(checkpoint["batches"], [])
+
+    @patch("cleaner.llm_validator._run_sync_validation_for_pmids", return_value=[])
+    def test_v1_single_batch_enters_finalizing_after_harvest(self, sync):
+        self.mod._save_batch_checkpoint(
+            {
+                "batch_id": "legacy",
+                "input_file_id": "f1",
+                "pmid_list": ["legacy-1"],
+                "status": "active",
+            }
+        )
+        status = SimpleNamespace(
+            status="completed",
+            output_file_id=None,
+            error_file_id=None,
+        )
+
+        self.mod._download_and_parse_batch(
+            None, status, {"batch_id": "legacy", "pmid_list": ["legacy-1"]}
+        )
+
+        sync.assert_called_once_with(["legacy-1"])
+        checkpoint = self.mod._load_batch_checkpoint()
+        self.assertIsNotNone(checkpoint)
+        self.assertEqual(checkpoint["status"], "finalizing")
+
+    def test_corrupt_checkpoint_is_preserved_for_recovery(self):
+        checkpoint_path = self.mod._batch_checkpoint_path()
+        checkpoint_path.write_text('{"version": 2, "batches": [', encoding="utf-8")
+
+        self.assertIsNone(self.mod._load_batch_checkpoint())
+        self.assertEqual(
+            checkpoint_path.read_text(encoding="utf-8"),
+            '{"version": 2, "batches": [',
+        )
+
+    def test_non_utf8_checkpoint_is_preserved_for_recovery(self):
+        checkpoint_path = self.mod._batch_checkpoint_path()
+        invalid = b"\xff\xfe\x00"
+        checkpoint_path.write_bytes(invalid)
+
+        self.assertIsNone(self.mod._load_batch_checkpoint())
+        self.assertEqual(checkpoint_path.read_bytes(), invalid)
+
+    def test_unknown_checkpoint_shape_is_not_loaded_or_removed(self):
+        checkpoint_path = self.mod._batch_checkpoint_path()
+        checkpoint_path.write_text('["unknown"]', encoding="utf-8")
+
+        self.assertIsNone(self.mod._load_batch_checkpoint())
+        self.assertEqual(checkpoint_path.read_text(encoding="utf-8"), '["unknown"]')
+
+    def test_unknown_checkpoint_version_is_not_loaded_or_removed(self):
+        checkpoint_path = self.mod._batch_checkpoint_path()
+        unknown = json.dumps(
+            {
+                "version": 999,
+                "status": "active",
+                "batches": [{"batch_id": "future-b1", "pmid_list": ["1"]}],
+            }
+        )
+        checkpoint_path.write_text(unknown, encoding="utf-8")
+
+        self.assertIsNone(self.mod._load_batch_checkpoint())
+        self.assertEqual(checkpoint_path.read_text(encoding="utf-8"), unknown)
+
+    def test_invalid_batch_pmid_lists_are_not_loaded(self):
+        invalid_entries = [
+            {"batch_id": "b1"},
+            {"batch_id": "b1", "pmid_list": "1"},
+            {"batch_id": "b1", "pmid_list": [1]},
+            {"batch_id": "b1", "pmid_list": [""]},
+            {"batch_id": "b1", "pmid_list": []},
+        ]
+        checkpoint_path = self.mod._batch_checkpoint_path()
+
+        for entry in invalid_entries:
+            with self.subTest(entry=entry):
+                invalid = json.dumps({"version": 2, "status": "active", "batches": [entry]})
+                checkpoint_path.write_text(invalid, encoding="utf-8")
+
+                self.assertIsNone(self.mod._load_batch_checkpoint())
+                self.assertEqual(checkpoint_path.read_text(encoding="utf-8"), invalid)
+
+    def test_empty_v2_batches_are_not_loaded(self):
+        checkpoint_path = self.mod._batch_checkpoint_path()
+        invalid = json.dumps({"version": 2, "status": "active", "batches": []})
+        checkpoint_path.write_text(invalid, encoding="utf-8")
+
+        self.assertIsNone(self.mod._load_batch_checkpoint())
+        self.assertEqual(checkpoint_path.read_text(encoding="utf-8"), invalid)
+
+    def test_save_does_not_write_invalid_v2_checkpoint(self):
+        checkpoint_path = self.mod._batch_checkpoint_path()
+        checkpoint_path.unlink(missing_ok=True)
+
+        with self.assertRaisesRegex(ValueError, "结构无效"):
+            self.mod._save_batch_checkpoint({"version": 2, "status": "active", "batches": []})
+
+        self.assertFalse(checkpoint_path.exists())
+
+    def test_duplicate_batch_ids_are_not_loaded(self):
+        checkpoint_path = self.mod._batch_checkpoint_path()
+        duplicate = json.dumps(
+            {
+                "version": 2,
+                "status": "active",
+                "batches": [
+                    {"batch_id": "b1", "pmid_list": ["1"]},
+                    {"batch_id": "b1", "pmid_list": ["2"]},
+                ],
+            }
+        )
+        checkpoint_path.write_text(duplicate, encoding="utf-8")
+
+        self.assertIsNone(self.mod._load_batch_checkpoint())
+        self.assertEqual(checkpoint_path.read_text(encoding="utf-8"), duplicate)
+
+    def test_failed_atomic_replace_preserves_previous_checkpoint(self):
+        previous = self.mod._load_batch_checkpoint()
+        updated = {**previous, "updated_at": "2026-11-23T01:00:00"}
+
+        with patch(
+            "cleaner.llm_validator.os.replace",
+            side_effect=OSError("disk full"),
+        ):
+            with self.assertRaises(OSError):
+                self.mod._save_batch_checkpoint(updated)
+
+        self.assertEqual(self.mod._load_batch_checkpoint(), previous)
+        self.assertEqual(list(self.output_dir.glob(".*.tmp")), [])
+
+    @patch("cleaner.llm_validator._run_sync_validation_for_pmids", return_value=[])
+    def test_download_without_output_harvests_current_batch_only(self, sync):
+        status = SimpleNamespace(
+            status="completed",
+            output_file_id=None,
+            error_file_id=None,
+        )
+
+        self.mod._download_and_parse_batch(None, status, self.checkpoint["batches"][0])
+
+        sync.assert_called_once_with(["1"])
+        self.assertEqual(self._remaining_ids(), ["b2", "b3"])
+
+    @patch("cleaner.llm_validator._run_sync_validation_for_pmids", return_value=[])
+    def test_failed_poll_harvests_current_batch_only(self, sync):
+        class FakeBatches:
+            @staticmethod
+            def retrieve(_batch_id: str):
+                return SimpleNamespace(
+                    status="failed",
+                    request_counts=SimpleNamespace(total=1, completed=0, failed=1),
+                )
+
+        client = SimpleNamespace(batches=FakeBatches())
+
+        self.mod._poll_until_done(client, "b1", self.checkpoint["batches"][0])
+
+        sync.assert_called_once_with(["1"])
+        self.assertEqual(self._remaining_ids(), ["b2", "b3"])
+
+    @patch("cleaner.llm_validator._run_sync_validation_for_pmids", return_value=[])
+    def test_timeout_harvests_current_batch_only(self, sync):
+        class FakeBatches:
+            @staticmethod
+            def cancel(_batch_id: str):
+                return None
+
+        client = SimpleNamespace(batches=FakeBatches())
+
+        with patch("cleaner.llm_validator.LLM_BATCH_TIMEOUT", 0):
+            self.mod._poll_until_done(client, "b1", self.checkpoint["batches"][0])
+
+        sync.assert_called_once_with(["1"])
+        self.assertEqual(self._remaining_ids(), ["b2", "b3"])
+
+    @patch("cleaner.llm_validator._run_sync_validation_for_pmids", return_value=["1"])
+    def test_fallback_with_remaining_pmids_keeps_current_batch(self, sync):
+        status = SimpleNamespace(
+            status="completed",
+            output_file_id=None,
+            error_file_id=None,
+        )
+
+        self.mod._download_and_parse_batch(None, status, self.checkpoint["batches"][0])
+
+        sync.assert_called_once_with(["1"])
+        self.assertEqual(self._remaining_ids(), ["b1", "b2", "b3"])
+
+    @patch("cleaner.llm_validator._run_sync_validation_for_pmids", return_value=[])
+    def test_error_file_download_failure_keeps_current_batch(self, sync):
+        class OutputFile:
+            @staticmethod
+            def write_to_file(path: str) -> None:
+                payload = {
+                    "custom_id": "request-1",
+                    "response": {
+                        "status_code": 200,
+                        "body": {
+                            "choices": [
+                                {
+                                    "message": {
+                                        "content": (
+                                            '{"pmid":"1","verdict":"RELEVANT","reason":"ok"}'
+                                        )
+                                    }
+                                }
+                            ]
+                        },
+                    },
+                }
+                Path(path).write_text(json.dumps(payload) + "\n", encoding="utf-8")
+
+        class FakeFiles:
+            @staticmethod
+            def content(file_id: str):
+                if file_id == "e1":
+                    raise OSError("error file unavailable")
+                return OutputFile()
+
+        status = SimpleNamespace(
+            status="completed",
+            output_file_id="f1",
+            error_file_id="e1",
+        )
+
+        self.mod._download_and_parse_batch(
+            SimpleNamespace(files=FakeFiles()),
+            status,
+            self.checkpoint["batches"][0],
+            self.db_path,
+        )
+
+        sync.assert_not_called()
+        self.assertEqual(self._remaining_ids(), ["b1", "b2", "b3"])
+
+    @patch(
+        "cleaner.llm_validator._run_sync_validation_for_pmids",
+        side_effect=RuntimeError("fallback unavailable"),
+    )
+    def test_sync_fallback_failure_keeps_current_batch_recoverable(self, _sync):
+        status = SimpleNamespace(
+            status="completed",
+            output_file_id=None,
+            error_file_id=None,
+        )
+
+        with self.assertRaisesRegex(RuntimeError, "fallback unavailable"):
+            self.mod._download_and_parse_batch(None, status, self.checkpoint["batches"][0])
+
+        self.assertEqual(self._remaining_ids(), ["b1", "b2", "b3"])
+
+    @patch("cleaner.llm_validator._export_review_csv", return_value=None)
+    def test_finalize_preserves_unharvested_batches(self, _export):
+        self.mod._finalize_batch()
+
+        self.assertEqual(self._remaining_ids(), ["b1", "b2", "b3"])
+
+    @patch("cleaner.llm_validator._export_review_csv", side_effect=OSError("disk full"))
+    def test_finalize_export_failure_keeps_finalizing_checkpoint(self, _export):
+        self.mod._save_batch_checkpoint(
+            {
+                "version": 2,
+                "status": "finalizing",
+                "created_at": "2026-11-23T00:00:00",
+                "batches": [],
+            }
+        )
+
+        with self.assertRaisesRegex(OSError, "disk full"):
+            self.mod._finalize_batch()
+
+        checkpoint = self.mod._load_batch_checkpoint()
+        self.assertIsNotNone(checkpoint)
+        self.assertEqual(checkpoint["status"], "finalizing")
+
+    @patch("cleaner.llm_validator._parse_batch_results", side_effect=ValueError("bad output"))
+    @patch(
+        "cleaner.llm_validator._run_sync_validation_for_pmids",
+        return_value=[],
+    )
+    def test_output_parse_failure_harvests_after_successful_sync(self, sync, _parse):
+        class OutputFile:
+            @staticmethod
+            def write_to_file(path: str) -> None:
+                Path(path).write_text("{}\n", encoding="utf-8")
+
+        client = SimpleNamespace(files=SimpleNamespace(content=lambda _file_id: OutputFile()))
+        status = SimpleNamespace(
+            status="completed",
+            output_file_id="f1",
+            error_file_id=None,
+        )
+
+        self.mod._download_and_parse_batch(
+            client,
+            status,
+            self.checkpoint["batches"][0],
+            self.db_path,
+        )
+
+        sync.assert_called_once_with(["1"])
+        self.assertEqual(self._remaining_ids(), ["b2", "b3"])
 
 
 class TestBatchResultDbTarget(unittest.TestCase):
@@ -991,6 +1349,339 @@ class TestBatchResultDbTarget(unittest.TestCase):
             got = conn.execute("SELECT pmid FROM llm_validation").fetchall()
             conn.close()
         self.assertEqual(got, [("94600",)])
+
+
+class TestBatchRunLifecycle(unittest.TestCase):
+    """现有 Batch 运行入口在真实临时状态上的中断与重建。"""
+
+    def setUp(self):
+        import cleaner.llm_validator as mod
+
+        self.mod = mod
+        self.temp_dir = tempfile.TemporaryDirectory(ignore_cleanup_errors=True)
+        self.output_dir = Path(self.temp_dir.name) / "output"
+        self.output_dir.mkdir()
+        self.db_path = Path(self.temp_dir.name) / "run.db"
+        init_db(self.db_path)
+        with get_conn(self.db_path) as conn:
+            conn.executemany(
+                "INSERT INTO articles (pmid, title, abstract) VALUES (?, ?, ?)",
+                [
+                    ("1", "first", "first abstract"),
+                    ("2", "second", "second abstract"),
+                ],
+            )
+        self.original = {
+            "DB_PATH": mod.DB_PATH,
+            "OUTPUT_DIR": mod.OUTPUT_DIR,
+            "ZHIPU_API_KEY": mod.ZHIPU_API_KEY,
+            "LLM_BATCH_MAX_REQUESTS": mod.LLM_BATCH_MAX_REQUESTS,
+            "LLM_BATCH_POLL_INTERVAL": mod.LLM_BATCH_POLL_INTERVAL,
+        }
+        mod.DB_PATH = self.db_path
+        mod.OUTPUT_DIR = self.output_dir
+        mod.ZHIPU_API_KEY = "test-key"
+        mod.LLM_BATCH_MAX_REQUESTS = 1
+        mod.LLM_BATCH_POLL_INTERVAL = 0
+
+    def tearDown(self):
+        for key, value in self.original.items():
+            setattr(self.mod, key, value)
+        self.temp_dir.cleanup()
+
+    def _checkpoint_ids(self):
+        return [
+            item["batch_id"]
+            for item in self.mod._checkpoint_batches(self.mod._load_batch_checkpoint())
+        ]
+
+    def test_interrupted_submission_keeps_all_unharvested_batches(self):
+        class FakeFiles:
+            sequence = 0
+
+            @classmethod
+            def create(cls, **_kwargs):
+                cls.sequence += 1
+                return SimpleNamespace(id=f"f{cls.sequence}")
+
+        class FakeBatches:
+            sequence = 0
+
+            @classmethod
+            def create(cls, **_kwargs):
+                cls.sequence += 1
+                return SimpleNamespace(id=f"b{cls.sequence}")
+
+            @staticmethod
+            def retrieve(_batch_id: str):
+                raise KeyboardInterrupt
+
+        client = SimpleNamespace(files=FakeFiles(), batches=FakeBatches())
+
+        with patch("zhipuai.ZhipuAI", return_value=client):
+            with self.assertRaises(KeyboardInterrupt):
+                self.mod._run_zhipu_batch()
+
+        self.assertEqual(self._checkpoint_ids(), ["b1", "b2"])
+        self.assertEqual(list(self.output_dir.glob(".*.tmp")), [])
+
+    def test_rebuild_resumes_batches_and_cleans_only_after_complete_run(self):
+        class FakeFile:
+            def __init__(self, pmid: str):
+                self.pmid = pmid
+
+            def write_to_file(self, path: str) -> None:
+                content = json.dumps(
+                    {"pmid": self.pmid, "verdict": "RELEVANT", "reason": "ok"},
+                    ensure_ascii=False,
+                )
+                payload = {
+                    "custom_id": f"request-{self.pmid}",
+                    "response": {
+                        "status_code": 200,
+                        "body": {
+                            "choices": [{"message": {"content": content}}],
+                        },
+                    },
+                }
+                Path(path).write_text(json.dumps(payload) + "\n", encoding="utf-8")
+
+        class InterruptedFiles:
+            sequence = 0
+
+            @classmethod
+            def create(cls, **_kwargs):
+                cls.sequence += 1
+                return SimpleNamespace(id=f"f{cls.sequence}")
+
+            @staticmethod
+            def content(_file_id: str) -> FakeFile:
+                return FakeFile("1")
+
+        class InterruptedBatches:
+            sequence = 0
+
+            @classmethod
+            def create(cls, **_kwargs):
+                cls.sequence += 1
+                return SimpleNamespace(id=f"b{cls.sequence}")
+
+            @staticmethod
+            def retrieve(batch_id: str):
+                if batch_id == "b1":
+                    return SimpleNamespace(
+                        status="completed",
+                        request_counts=SimpleNamespace(total=1, completed=1, failed=0),
+                        output_file_id="f1",
+                        error_file_id=None,
+                    )
+                raise KeyboardInterrupt
+
+        class CompletedFiles:
+            @staticmethod
+            def content(output_file_id: str) -> FakeFile:
+                return FakeFile({"f1": "1", "f2": "2"}[output_file_id])
+
+        class CompletedBatches:
+            @staticmethod
+            def retrieve(batch_id: str):
+                return SimpleNamespace(
+                    status="completed",
+                    output_file_id={"b1": "f1", "b2": "f2"}[batch_id],
+                    error_file_id=None,
+                )
+
+        interrupted_client = SimpleNamespace(
+            files=InterruptedFiles(),
+            batches=InterruptedBatches(),
+        )
+        completed_client = SimpleNamespace(
+            files=CompletedFiles(),
+            batches=CompletedBatches(),
+        )
+
+        with patch("zhipuai.ZhipuAI", side_effect=[interrupted_client, completed_client]):
+            with self.assertRaises(KeyboardInterrupt):
+                self.mod._run_zhipu_batch()
+            self.assertEqual(self._checkpoint_ids(), ["b2"])
+            with get_conn(self.db_path) as conn:
+                first_rows = conn.execute(
+                    "SELECT pmid FROM llm_validation ORDER BY pmid"
+                ).fetchall()
+            self.assertEqual([row["pmid"] for row in first_rows], ["1"])
+            self.assertTrue((self.output_dir / "batch_output_b1.jsonl").exists())
+
+            self.mod._run_zhipu_batch()
+
+        with get_conn(self.db_path) as conn:
+            rows = conn.execute("SELECT pmid FROM llm_validation ORDER BY pmid").fetchall()
+        self.assertEqual([row["pmid"] for row in rows], ["1", "2"])
+        self.assertFalse(self.mod._batch_checkpoint_path().exists())
+        self.assertTrue((self.output_dir / "batch_output_b1.jsonl").exists())
+        self.assertTrue((self.output_dir / "batch_output_b2.jsonl").exists())
+
+    def test_invalid_checkpoint_stops_before_provider_or_overwrite(self):
+        checkpoint_path = self.mod._batch_checkpoint_path()
+        invalid = '{"version": 2, "batches": ['
+        checkpoint_path.write_text(invalid, encoding="utf-8")
+        provider_calls = []
+
+        def unexpected_provider(*_args, **_kwargs):
+            provider_calls.append(True)
+            raise AssertionError("损坏检查点不应发起供应商调用")
+
+        with patch("zhipuai.ZhipuAI", side_effect=unexpected_provider):
+            self.mod._run_zhipu_batch()
+
+        self.assertEqual(provider_calls, [])
+        self.assertEqual(checkpoint_path.read_text(encoding="utf-8"), invalid)
+
+    def test_unknown_checkpoint_version_stops_before_provider(self):
+        checkpoint_path = self.mod._batch_checkpoint_path()
+        unknown = json.dumps(
+            {
+                "version": 999,
+                "status": "active",
+                "batches": [{"batch_id": "future-b1", "pmid_list": ["1"]}],
+            }
+        )
+        checkpoint_path.write_text(unknown, encoding="utf-8")
+        provider_calls = []
+
+        def unexpected_provider(*_args, **_kwargs):
+            provider_calls.append(True)
+            raise AssertionError("未知版本不应发起供应商调用")
+
+        with patch("zhipuai.ZhipuAI", side_effect=unexpected_provider):
+            self.mod._run_zhipu_batch()
+
+        self.assertEqual(provider_calls, [])
+        self.assertEqual(checkpoint_path.read_text(encoding="utf-8"), unknown)
+
+    def test_remote_create_has_submitting_intent_and_restart_requires_review(self):
+        class FakeFiles:
+            @staticmethod
+            def create(**_kwargs):
+                return SimpleNamespace(id="f1")
+
+        class FakeBatches:
+            @staticmethod
+            def create(**_kwargs):
+                raise KeyboardInterrupt
+
+        client = SimpleNamespace(files=FakeFiles(), batches=FakeBatches())
+        with patch("zhipuai.ZhipuAI", return_value=client):
+            with self.assertRaises(KeyboardInterrupt):
+                self.mod._run_zhipu_batch()
+
+        checkpoint = self.mod._load_batch_checkpoint()
+        self.assertIsNotNone(checkpoint)
+        self.assertEqual(checkpoint["status"], "submitting")
+        self.assertEqual(checkpoint["pending_submission"]["input_file_id"], "f1")
+        self.assertEqual(checkpoint["pending_submission"]["pmid_list"], ["1"])
+
+        provider_calls = []
+
+        def unexpected_provider(*_args, **_kwargs):
+            provider_calls.append(True)
+            raise AssertionError("模糊提交状态不应再次调用供应商")
+
+        with patch("zhipuai.ZhipuAI", side_effect=unexpected_provider):
+            self.mod._run_zhipu_batch()
+
+        self.assertEqual(provider_calls, [])
+        self.assertEqual(self.mod._load_batch_checkpoint(), checkpoint)
+
+    def test_active_save_failure_after_remote_create_keeps_submitting_intent(self):
+        class FakeFiles:
+            @staticmethod
+            def create(**_kwargs):
+                return SimpleNamespace(id="f1")
+
+        class FakeBatches:
+            @staticmethod
+            def create(**_kwargs):
+                return SimpleNamespace(id="b1")
+
+        client = SimpleNamespace(files=FakeFiles(), batches=FakeBatches())
+        original_save = self.mod._save_batch_checkpoint
+
+        def save_checkpoint(checkpoint):
+            if checkpoint.get("status") == "active":
+                raise OSError("disk full")
+            return original_save(checkpoint)
+
+        with (
+            patch("zhipuai.ZhipuAI", return_value=client),
+            patch.object(
+                self.mod,
+                "_save_batch_checkpoint",
+                side_effect=save_checkpoint,
+            ),
+        ):
+            with self.assertRaisesRegex(OSError, "disk full"):
+                self.mod._run_zhipu_batch()
+
+        checkpoint = self.mod._load_batch_checkpoint()
+        self.assertIsNotNone(checkpoint)
+        self.assertEqual(checkpoint["status"], "submitting")
+        self.assertEqual(checkpoint["pending_submission"]["input_file_id"], "f1")
+
+    @patch("cleaner.llm_validator._export_review_csv", return_value=None)
+    def test_finalizing_checkpoint_retries_export_without_provider_call(self, _export):
+        self.mod._save_batch_checkpoint(
+            {
+                "version": 2,
+                "status": "finalizing",
+                "created_at": "2026-11-23T00:00:00",
+                "batches": [],
+            }
+        )
+        provider_calls = []
+
+        def unexpected_provider(*_args, **_kwargs):
+            provider_calls.append(True)
+            raise AssertionError("finalizing 恢复不应再次调用供应商")
+
+        with patch("zhipuai.ZhipuAI", side_effect=unexpected_provider):
+            self.mod._run_zhipu_batch()
+
+        self.assertEqual(provider_calls, [])
+        self.assertFalse(self.mod._batch_checkpoint_path().exists())
+
+    def test_recovery_fallback_failure_keeps_all_batches_and_runs_once(self):
+        self.mod._save_batch_checkpoint(
+            {
+                "version": 2,
+                "status": "active",
+                "batches": [
+                    {"batch_id": "b1", "pmid_list": ["1"]},
+                    {"batch_id": "b2", "pmid_list": ["2"]},
+                ],
+            }
+        )
+
+        class FailedBatches:
+            @staticmethod
+            def retrieve(_batch_id: str):
+                return SimpleNamespace(
+                    status="failed",
+                    request_counts=SimpleNamespace(total=1, completed=0, failed=1),
+                )
+
+        client = SimpleNamespace(files=SimpleNamespace(), batches=FailedBatches())
+        with (
+            patch("zhipuai.ZhipuAI", return_value=client),
+            patch(
+                "cleaner.llm_validator._run_sync_validation_for_pmids",
+                side_effect=RuntimeError("fallback unavailable"),
+            ) as sync,
+        ):
+            with self.assertRaisesRegex(RuntimeError, "fallback unavailable"):
+                self.mod._run_zhipu_batch()
+
+        sync.assert_called_once_with(["1"])
+        self.assertEqual(self._checkpoint_ids(), ["b1", "b2"])
 
 
 if __name__ == "__main__":
