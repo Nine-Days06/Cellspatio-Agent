@@ -1,8 +1,8 @@
 /** ChatPage 接线测试（T8）。
  *
  * Mock 架构（契约优先，与计划草图的过期写法不同）：
- * - `@/lib/api` 部分 mock：保留真实 `fetchMessages`（?restore=1「首次成功才带」的
- *   逻辑在 api.ts 内部，ChatPage 只需用 useMessages 触发）与真实 `ApiError`；
+ * - `@/lib/api` 部分 mock：保留真实 `fetchMessages` 与 `ApiError`；?restore=1 的
+ *   「每会话首次成功才消费」状态在 SessionWorkspace，ChatPage 只需触发 useMessages；
  * - `@/lib/sse` 部分 mock：只拦截 `streamChat`，其余导出原样保留；
  * - queries 走真实实现 + 每用例独立 QueryClient；全局 fetch 只服务 /messages，
  *   按 sid 路由载荷，从而真实验证 restore=1 与 hydrate 链路。

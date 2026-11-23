@@ -2,8 +2,8 @@
  *
  * 职责边界（组件层全部为受控展示组件，副作用只在这里）：
  * - 输入框文本是本地 state（store.draft 是流式输出，二者不可混用）；
- * - 打开页面自动选中首个会话 → useMessages 首拉走 fetchMessages（其内部
- *   已实现「首次成功才带 ?restore=1」，本层不手工拼查询串）；
+ * - 打开页面自动选中首个会话 → useMessages 首拉走 SessionWorkspace.loadMessages
+ *   （module 负责「每会话首次成功才带 ?restore=1」，本层不手工拼查询串）；
  * - 历史查询成功后 hydrate 进 store；busy（流式进行中）时跳过，
  *   绝不借 hydrate 关闭 busy（约束 2）；
  * - busy 只由 endTurn / failTurn / onEnd 关闭；停止按钮与 Esc 只置 abort，
