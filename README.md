@@ -92,6 +92,8 @@ python -m src.api
 
 ## 文档
 
+- [文档总览](docs/README.md)：开发者、用户与运维文档入口。
+- [开发文档](docs/developer/README.md)：GitHub 直接浏览，无需启动服务；含架构、模块地图、开发环境、测试门禁与常见任务。
 - [使用指南](docs/user/usage_guide.md)：安装、配置、数据、分析、问答和限制。
 - [部署说明](docs/deploy.md)：公共证据服务的 Caddy/TLS、备份与审计。
 - [协作约定](CONTRIBUTING.md)：开发环境、测试门禁、分支与 PR。

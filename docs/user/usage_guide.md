@@ -3,7 +3,7 @@
 > **文档定位**：[README](../../README.md) 是项目概览，本指南是详细操作手册，面向实验生物学家
 > 与数据分析用户，覆盖安装、配置、Web 界面、数据获取、分析、知识问答、记录与限制。
 >
-> 最后核对日期：2026-11-22（本次核对复核与证据卡；Windows / Python 3.12 / R 4.6.1 / FastAPI + React）。
+> 最后核对日期：2026-11-23（本次仅核对文档入口与链接；Windows / Python 3.12 / R 4.6.1 / FastAPI + React）。
 
 ## 目录
 
@@ -489,7 +489,8 @@ python -m src.cli.evidence export marker <session_id> <run_id>
 ## 11. 文档维护
 
 1. **分工**：README = 项目概览与快速开始；本指南 = 详细操作；开发/测试/打包见
-   [CONTRIBUTING.md](../../CONTRIBUTING.md)。
+   [CONTRIBUTING.md](../../CONTRIBUTING.md)，架构与模块说明见
+   [开发文档](../developer/README.md)。
 2. **必须同步的改动**：用户可见命令、`.env` 配置、分析类型、产物路径、UI 布局/按钮、
    已知限制。
 3. **事实优先**：命令应实际运行验证；更新后修改「最后核对日期」，并检查锚点与链接。
