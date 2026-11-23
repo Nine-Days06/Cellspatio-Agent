@@ -6,7 +6,8 @@ import tempfile
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import patch
+from typing import Any
+from unittest.mock import call, patch
 
 from cleaner.llm_validator import (
     _build_log_rows,
@@ -14,7 +15,10 @@ from cleaner.llm_validator import (
     _count_verdicts,
     _download_and_parse_batch,
     _extract_json,
+    _finalize_batch,
     _normalize_verdict,
+    _parse_batch_results,
+    _run_sync_validation_for_pmids,
 )
 from utils.db import get_conn, init_db
 
@@ -531,6 +535,37 @@ class TestParseBatchResults(unittest.TestCase):
         self.assertEqual(len(failed), 1)
         self.assertEqual(failed[0], "ERR1")
 
+    def test_existing_verdict_is_satisfied_without_overwrite(self):
+        """已有科学判定应视作完成，batch 输出不得覆盖或重发。"""
+        with get_conn(self.db_path) as conn:
+            conn.execute(
+                "INSERT INTO llm_validation "
+                "(pmid, llm_verdict, reason, validated_at, human_review) "
+                "VALUES ('EXISTING', 'NOT_RELEVANT', 'old', '2026-01-01', 'N')"
+            )
+        content = '{"pmid":"EXISTING","verdict":"RELEVANT","reason":"new"}'
+        result_line = {
+            "custom_id": "request-EXISTING",
+            "response": {
+                "status_code": 200,
+                "body": {"choices": [{"message": {"content": content}}]},
+            },
+        }
+        path = self._make_result_jsonl([result_line])
+
+        success, failed, parsed = _parse_batch_results(path, db_path=self.db_path)
+
+        self.assertEqual((success, failed, parsed), (0, [], {"EXISTING"}))
+        with get_conn(self.db_path) as conn:
+            row = conn.execute(
+                "SELECT llm_verdict, reason, validated_at, human_review "
+                "FROM llm_validation WHERE pmid = 'EXISTING'"
+            ).fetchone()
+        self.assertEqual(
+            tuple(row),
+            ("NOT_RELEVANT", "old", "2026-01-01", "N"),
+        )
+
     def test_parse_unrecognized_verdict_counts_as_failed(self):
         """verdict 缺失或非标准 → 判失败重试，不入库 UNKNOWN"""
         for content in (
@@ -943,9 +978,83 @@ class TestBatchWithoutOutput(unittest.TestCase):
         status = SimpleNamespace(status="completed", output_file_id=None, error_file_id=None)
         with tempfile.TemporaryDirectory() as td:
             with patch("cleaner.llm_validator.OUTPUT_DIR", td):
-                _download_and_parse_batch(None, status, {"batch_id": "b1", "pmid_list": ["1", "2"]})
+                db_path = Path(td) / "t.db"
+                init_db(db_path)
+                _download_and_parse_batch(
+                    None,
+                    status,
+                    {"batch_id": "b1", "pmid_list": ["1", "2"]},
+                    db_path,
+                )
 
-        sync.assert_called_once_with(["1", "2"])
+        sync.assert_called_once_with(["1", "2"], db_path=db_path)
+
+    @patch("cleaner.llm_validator._call_llm")
+    def test_batch_query_includes_null_placeholder_and_skips_real_verdict(self, call_llm):
+        """新建 Batch 只跳过已有科学判定或人工复核，不跳过 NULL 占位记录。"""
+        call_llm.return_value = (
+            [{"pmid": "PLACEHOLDER", "verdict": "RELEVANT", "reason": "ok"}],
+            [],
+        )
+        with tempfile.TemporaryDirectory() as td:
+            db_path = Path(td) / "t.db"
+            output_dir = Path(td) / "output"
+            output_dir.mkdir()
+            init_db(db_path)
+            with get_conn(db_path) as conn:
+                conn.executemany(
+                    "INSERT INTO articles (pmid, title, abstract) VALUES (?, ?, ?)",
+                    [
+                        ("SCORED", "already scored", "abstract"),
+                        ("PLACEHOLDER", "not scored", "abstract"),
+                        ("MANUAL", "manually rejected", "abstract"),
+                    ],
+                )
+                conn.executemany(
+                    "INSERT INTO llm_validation "
+                    "(pmid, llm_verdict, reason, human_review) VALUES (?, ?, ?, ?)",
+                    [
+                        ("SCORED", "RELEVANT", "old", None),
+                        ("PLACEHOLDER", None, "无摘要，人工审核", None),
+                        ("MANUAL", None, "人工拒绝", "N"),
+                    ],
+                )
+
+            import cleaner.llm_validator as mod
+
+            class FakeFiles:
+                @staticmethod
+                def create(*, file: Any, purpose: str):
+                    return SimpleNamespace(id="f1")
+
+            class FakeBatches:
+                @staticmethod
+                def create(**_kwargs: Any):
+                    return SimpleNamespace(id="b1")
+
+                @staticmethod
+                def retrieve(_batch_id: str):
+                    return SimpleNamespace(
+                        status="failed",
+                        request_counts=SimpleNamespace(total=1, completed=0, failed=1),
+                    )
+
+            client = SimpleNamespace(
+                files=FakeFiles(),
+                batches=FakeBatches(),
+            )
+            with (
+                patch.object(mod, "OUTPUT_DIR", output_dir),
+                patch.object(mod, "DB_PATH", db_path),
+                patch.object(mod, "ZHIPU_API_KEY", "test-key"),
+                patch("zhipuai.ZhipuAI", return_value=client),
+            ):
+                mod._run_zhipu_batch(db_path=db_path)
+
+        sent_pmids = [
+            row["pmid"] for call_args in call_llm.call_args_list for row in call_args.args[0]
+        ]
+        self.assertEqual(sent_pmids, ["PLACEHOLDER"])
 
 
 class TestBatchCheckpointLifecycle(unittest.TestCase):
@@ -1019,10 +1128,13 @@ class TestBatchCheckpointLifecycle(unittest.TestCase):
         )
 
         self.mod._download_and_parse_batch(
-            None, status, {"batch_id": "legacy", "pmid_list": ["legacy-1"]}
+            None,
+            status,
+            {"batch_id": "legacy", "pmid_list": ["legacy-1"]},
+            self.db_path,
         )
 
-        sync.assert_called_once_with(["legacy-1"])
+        sync.assert_called_once_with(["legacy-1"], db_path=self.db_path)
         checkpoint = self.mod._load_batch_checkpoint()
         self.assertIsNotNone(checkpoint)
         self.assertEqual(checkpoint["status"], "finalizing")
@@ -1140,9 +1252,14 @@ class TestBatchCheckpointLifecycle(unittest.TestCase):
             error_file_id=None,
         )
 
-        self.mod._download_and_parse_batch(None, status, self.checkpoint["batches"][0])
+        self.mod._download_and_parse_batch(
+            None,
+            status,
+            self.checkpoint["batches"][0],
+            self.db_path,
+        )
 
-        sync.assert_called_once_with(["1"])
+        sync.assert_called_once_with(["1"], db_path=self.db_path)
         self.assertEqual(self._remaining_ids(), ["b2", "b3"])
 
     @patch("cleaner.llm_validator._run_sync_validation_for_pmids", return_value=[])
@@ -1157,9 +1274,14 @@ class TestBatchCheckpointLifecycle(unittest.TestCase):
 
         client = SimpleNamespace(batches=FakeBatches())
 
-        self.mod._poll_until_done(client, "b1", self.checkpoint["batches"][0])
+        self.mod._poll_until_done(
+            client,
+            "b1",
+            self.checkpoint["batches"][0],
+            self.db_path,
+        )
 
-        sync.assert_called_once_with(["1"])
+        sync.assert_called_once_with(["1"], db_path=self.db_path)
         self.assertEqual(self._remaining_ids(), ["b2", "b3"])
 
     @patch("cleaner.llm_validator._run_sync_validation_for_pmids", return_value=[])
@@ -1172,9 +1294,14 @@ class TestBatchCheckpointLifecycle(unittest.TestCase):
         client = SimpleNamespace(batches=FakeBatches())
 
         with patch("cleaner.llm_validator.LLM_BATCH_TIMEOUT", 0):
-            self.mod._poll_until_done(client, "b1", self.checkpoint["batches"][0])
+            self.mod._poll_until_done(
+                client,
+                "b1",
+                self.checkpoint["batches"][0],
+                self.db_path,
+            )
 
-        sync.assert_called_once_with(["1"])
+        sync.assert_called_once_with(["1"], db_path=self.db_path)
         self.assertEqual(self._remaining_ids(), ["b2", "b3"])
 
     @patch("cleaner.llm_validator._run_sync_validation_for_pmids", return_value=["1"])
@@ -1185,13 +1312,18 @@ class TestBatchCheckpointLifecycle(unittest.TestCase):
             error_file_id=None,
         )
 
-        self.mod._download_and_parse_batch(None, status, self.checkpoint["batches"][0])
+        self.mod._download_and_parse_batch(
+            None,
+            status,
+            self.checkpoint["batches"][0],
+            self.db_path,
+        )
 
-        sync.assert_called_once_with(["1"])
+        sync.assert_called_once_with(["1"], db_path=self.db_path)
         self.assertEqual(self._remaining_ids(), ["b1", "b2", "b3"])
 
     @patch("cleaner.llm_validator._run_sync_validation_for_pmids", return_value=[])
-    def test_error_file_download_failure_keeps_current_batch(self, sync):
+    def test_error_file_download_failure_harvests_fully_written_batch(self, sync):
         class OutputFile:
             @staticmethod
             def write_to_file(path: str) -> None:
@@ -1235,7 +1367,83 @@ class TestBatchCheckpointLifecycle(unittest.TestCase):
         )
 
         sync.assert_not_called()
+        self.assertEqual(self._remaining_ids(), ["b2", "b3"])
+
+    @patch(
+        "cleaner.llm_validator._run_sync_validation_for_pmids",
+        side_effect=[["2"], []],
+    )
+    def test_partial_output_then_error_failure_resumes_only_missing(self, sync):
+        """error 文件持续失败时只重试未落库项，成功后才收割批次。"""
+        entry = {
+            "batch_id": "b1",
+            "pmid_list": ["1", "2"],
+        }
+        self.checkpoint["batches"][0] = entry
+        self.mod._save_batch_checkpoint(self.checkpoint)
+        with get_conn(self.db_path) as conn:
+            conn.execute(
+                "INSERT INTO llm_validation (pmid, llm_verdict, reason) "
+                "VALUES ('1', 'RELEVANT', 'partial output')"
+            )
+
+        class OutputFile:
+            @staticmethod
+            def write_to_file(path: str) -> None:
+                payload = {
+                    "custom_id": "request-1",
+                    "response": {
+                        "status_code": 200,
+                        "body": {
+                            "choices": [
+                                {
+                                    "message": {
+                                        "content": (
+                                            '{"pmid":"1","verdict":"RELEVANT","reason":"ok"}'
+                                        )
+                                    }
+                                }
+                            ]
+                        },
+                    },
+                }
+                Path(path).write_text(json.dumps(payload) + "\n", encoding="utf-8")
+
+        class FakeFiles:
+            @staticmethod
+            def content(file_id: str):
+                if file_id == "e1":
+                    raise OSError("error file unavailable")
+                return OutputFile()
+
+        status = SimpleNamespace(
+            status="completed",
+            output_file_id="f1",
+            error_file_id="e1",
+        )
+        self.mod._download_and_parse_batch(
+            SimpleNamespace(files=FakeFiles()),
+            status,
+            entry,
+            self.db_path,
+        )
+
         self.assertEqual(self._remaining_ids(), ["b1", "b2", "b3"])
+        self.mod._download_and_parse_batch(
+            SimpleNamespace(files=FakeFiles()),
+            status,
+            entry,
+            self.db_path,
+        )
+
+        self.assertEqual(
+            sync.call_args_list,
+            [
+                call(["2"], db_path=self.db_path),
+                call(["2"], db_path=self.db_path),
+            ],
+        )
+        self.assertEqual(self._remaining_ids(), ["b2", "b3"])
 
     @patch(
         "cleaner.llm_validator._run_sync_validation_for_pmids",
@@ -1248,10 +1456,11 @@ class TestBatchCheckpointLifecycle(unittest.TestCase):
             error_file_id=None,
         )
 
-        with self.assertRaisesRegex(RuntimeError, "fallback unavailable"):
+        with self.assertLogs("llm_validator", level="ERROR") as logs:
             self.mod._download_and_parse_batch(None, status, self.checkpoint["batches"][0])
 
         self.assertEqual(self._remaining_ids(), ["b1", "b2", "b3"])
+        self.assertIn("fallback unavailable", "\n".join(logs.output))
 
     @patch("cleaner.llm_validator._export_review_csv", return_value=None)
     def test_finalize_preserves_unharvested_batches(self, _export):
@@ -1302,7 +1511,7 @@ class TestBatchCheckpointLifecycle(unittest.TestCase):
             self.db_path,
         )
 
-        sync.assert_called_once_with(["1"])
+        sync.assert_called_once_with(["1"], db_path=self.db_path)
         self.assertEqual(self._remaining_ids(), ["b2", "b3"])
 
 
@@ -1349,6 +1558,183 @@ class TestBatchResultDbTarget(unittest.TestCase):
             got = conn.execute("SELECT pmid FROM llm_validation").fetchall()
             conn.close()
         self.assertEqual(got, [("94600",)])
+
+    @patch("cleaner.llm_validator._call_llm")
+    def test_sync_downgrade_uses_explicit_db_and_skips_existing(self, call_llm):
+        call_llm.return_value = (
+            [{"pmid": "B", "verdict": "RELEVANT", "reason": "new"}],
+            [],
+        )
+        with tempfile.TemporaryDirectory() as td:
+            db_path = Path(td) / "t.db"
+            init_db(db_path)
+            with get_conn(db_path) as conn:
+                conn.executemany(
+                    "INSERT INTO articles (pmid, title, abstract) VALUES (?, ?, ?)",
+                    [
+                        ("A", "already valid", "abstract"),
+                        ("B", "needs work", "abstract"),
+                    ],
+                )
+                conn.execute(
+                    "INSERT INTO llm_validation (pmid, llm_verdict, reason) "
+                    "VALUES ('A', 'NOT_RELEVANT', 'old verdict')"
+                )
+
+            remaining = _run_sync_validation_for_pmids(["A", "B"], db_path=db_path)
+
+            self.assertEqual(call_llm.call_args.args[0][0]["pmid"], "B")
+            self.assertEqual(remaining, [])
+            with get_conn(db_path) as conn:
+                rows = conn.execute(
+                    "SELECT pmid, llm_verdict, reason FROM llm_validation ORDER BY pmid"
+                ).fetchall()
+            self.assertEqual(
+                [tuple(row) for row in rows],
+                [
+                    ("A", "NOT_RELEVANT", "old verdict"),
+                    ("B", "RELEVANT", "new"),
+                ],
+            )
+
+    @patch("cleaner.llm_validator._call_llm", side_effect=RuntimeError("provider failed"))
+    def test_sync_downgrade_worker_error_is_logged_and_remains_pending(self, _call_llm):
+        """单个降级 worker 异常须可观察，且该批仍返回为未完成。"""
+        with tempfile.TemporaryDirectory() as td:
+            db_path = Path(td) / "t.db"
+            init_db(db_path)
+            with get_conn(db_path) as conn:
+                conn.execute(
+                    "INSERT INTO articles (pmid, title, abstract) VALUES ('A', 'title', 'abstract')"
+                )
+
+            with self.assertLogs("llm_validator", level="ERROR") as logs:
+                remaining = _run_sync_validation_for_pmids(["A"], db_path=db_path)
+
+            self.assertEqual(remaining, ["A"])
+            self.assertIn("RuntimeError", "\n".join(logs.output))
+            self.assertIn("A", "\n".join(logs.output))
+
+    @patch("cleaner.llm_validator._export_review_csv", return_value=None)
+    def test_finalize_uses_explicit_db(self, export):
+        with tempfile.TemporaryDirectory() as td:
+            db_path = Path(td) / "t.db"
+            init_db(db_path)
+            with get_conn(db_path) as conn:
+                conn.execute(
+                    "INSERT INTO llm_validation (pmid, llm_verdict, reason) "
+                    "VALUES ('A', 'RELEVANT', 'ok')"
+                )
+
+            _finalize_batch(db_path=db_path)
+
+        export.assert_called_once_with(db_path=db_path)
+
+    @patch("cleaner.llm_validator._call_llm")
+    def test_partial_parse_failure_revalidates_only_missing_pmids(self, call_llm):
+        call_llm.return_value = (
+            [{"pmid": "B", "verdict": "RELEVANT", "reason": "fallback"}],
+            [],
+        )
+        with tempfile.TemporaryDirectory() as td:
+            db_path = Path(td) / "t.db"
+            output_dir = Path(td) / "output"
+            output_dir.mkdir()
+            import cleaner.llm_validator as mod
+
+            checkpoint_path = output_dir / mod.BATCH_CHECKPOINT_FILE
+            init_db(db_path)
+            with get_conn(db_path) as conn:
+                conn.executemany(
+                    "INSERT INTO articles (pmid, title, abstract) VALUES (?, ?, ?)",
+                    [
+                        ("A", "written before failure", "abstract"),
+                        ("B", "still missing", "abstract"),
+                    ],
+                )
+
+            checkpoint = {
+                "version": 2,
+                "status": "active",
+                "created_at": "2026-11-23T00:00:00",
+                "batches": [{"batch_id": "b1", "pmid_list": ["A", "B"]}],
+            }
+            checkpoint_path.write_text(json.dumps(checkpoint), encoding="utf-8")
+
+            class OutputFile:
+                @staticmethod
+                def write_to_file(path: str) -> None:
+                    Path(path).write_text("{}\n", encoding="utf-8")
+
+            client = SimpleNamespace(files=SimpleNamespace(content=lambda _file_id: OutputFile()))
+            status = SimpleNamespace(
+                status="completed",
+                output_file_id="f1",
+                error_file_id=None,
+            )
+
+            def persist_then_fail(_path: str, *, db_path: Path) -> None:
+                with get_conn(db_path) as conn:
+                    conn.execute(
+                        "INSERT INTO llm_validation (pmid, llm_verdict, reason) "
+                        "VALUES ('A', 'NOT_RELEVANT', 'batch')"
+                    )
+                raise sqlite3.OperationalError("partial DB failure")
+
+            with (
+                patch.object(mod, "OUTPUT_DIR", output_dir),
+                patch.object(mod, "_parse_batch_results", side_effect=persist_then_fail),
+            ):
+                _download_and_parse_batch(
+                    client,
+                    status,
+                    checkpoint["batches"][0],
+                    db_path,
+                )
+
+            self.assertEqual(call_llm.call_args.args[0][0]["pmid"], "B")
+            with get_conn(db_path) as conn:
+                rows = conn.execute(
+                    "SELECT pmid, llm_verdict, reason FROM llm_validation ORDER BY pmid"
+                ).fetchall()
+            self.assertEqual(
+                [tuple(row) for row in rows],
+                [
+                    ("A", "NOT_RELEVANT", "batch"),
+                    ("B", "RELEVANT", "fallback"),
+                ],
+            )
+
+
+class TestRunValidationDbTarget(unittest.TestCase):
+    """公开入口新增可选库目标，并保持原无参调用契约。"""
+
+    @patch("cleaner.llm_validator._run_sync_validation")
+    def test_sync_mode_forwards_explicit_db(self, sync):
+        import cleaner.llm_validator as mod
+
+        db_path = Path("C:/tmp/explicit.db")
+        mod.run_validation(db_path=db_path)
+
+        sync.assert_called_once_with(db_path=db_path)
+
+    @patch("cleaner.llm_validator._run_zhipu_batch")
+    def test_batch_mode_forwards_explicit_db(self, batch):
+        import cleaner.llm_validator as mod
+
+        db_path = Path("C:/tmp/explicit.db")
+        with patch.object(mod, "LLM_PROVIDER", "zhipu"):
+            mod.run_validation(batch_mode=True, db_path=db_path)
+
+        batch.assert_called_once_with(db_path=db_path)
+
+    @patch("cleaner.llm_validator._run_sync_validation")
+    def test_default_call_still_uses_module_default_target(self, sync):
+        import cleaner.llm_validator as mod
+
+        mod.run_validation()
+
+        sync.assert_called_once_with(db_path=None)
 
 
 class TestBatchRunLifecycle(unittest.TestCase):
@@ -1520,6 +1906,77 @@ class TestBatchRunLifecycle(unittest.TestCase):
         self.assertTrue((self.output_dir / "batch_output_b1.jsonl").exists())
         self.assertTrue((self.output_dir / "batch_output_b2.jsonl").exists())
 
+    @patch("cleaner.llm_validator._call_llm")
+    def test_explicit_db_recovery_skips_existing_and_keeps_two_batch_results(
+        self,
+        call_llm,
+    ):
+        """公开运行入口显式目标库覆盖两批，且不读取或写入模块默认库。"""
+        call_llm.side_effect = lambda batch: (
+            [
+                {
+                    "pmid": row["pmid"],
+                    "verdict": "RELEVANT",
+                    "reason": "fallback",
+                }
+                for row in batch
+            ],
+            [],
+        )
+        with get_conn(self.db_path) as conn:
+            conn.execute("INSERT INTO articles (pmid, title, abstract) VALUES ('3', 'third', 'a')")
+            conn.execute("INSERT INTO articles (pmid, title, abstract) VALUES ('4', 'fourth', 'a')")
+            conn.execute(
+                "INSERT INTO llm_validation (pmid, llm_verdict, reason) "
+                "VALUES ('1', 'NOT_RELEVANT', 'old')"
+            )
+        default_db = Path(self.temp_dir.name) / "default.db"
+        init_db(default_db)
+        self.mod.DB_PATH = default_db
+        self.mod._save_batch_checkpoint(
+            {
+                "version": 2,
+                "status": "active",
+                "created_at": "2026-11-23T00:00:00",
+                "batches": [
+                    {"batch_id": "b1", "pmid_list": ["1", "2"]},
+                    {"batch_id": "b2", "pmid_list": ["3", "4"]},
+                ],
+            }
+        )
+
+        class FailedBatches:
+            @staticmethod
+            def retrieve(_batch_id: str):
+                return SimpleNamespace(
+                    status="failed",
+                    request_counts=SimpleNamespace(total=2, completed=0, failed=2),
+                )
+
+        client = SimpleNamespace(files=SimpleNamespace(), batches=FailedBatches())
+        with patch("zhipuai.ZhipuAI", return_value=client):
+            self.mod._run_zhipu_batch(db_path=self.db_path)
+
+        sent_pmids = [row["pmid"] for call in call_llm.call_args_list for row in call.args[0]]
+        self.assertEqual(sorted(sent_pmids), ["2", "3", "4"])
+        with get_conn(self.db_path) as conn:
+            rows = conn.execute(
+                "SELECT pmid, llm_verdict, reason FROM llm_validation ORDER BY pmid"
+            ).fetchall()
+        self.assertEqual(
+            [(row["pmid"], row["llm_verdict"], row["reason"]) for row in rows],
+            [
+                ("1", "NOT_RELEVANT", "old"),
+                ("2", "RELEVANT", "fallback"),
+                ("3", "RELEVANT", "fallback"),
+                ("4", "RELEVANT", "fallback"),
+            ],
+        )
+        with get_conn(default_db) as conn:
+            default_rows = conn.execute("SELECT pmid FROM llm_validation").fetchall()
+        self.assertEqual(default_rows, [])
+        self.assertFalse(self.mod._batch_checkpoint_path().exists())
+
     def test_invalid_checkpoint_stops_before_provider_or_overwrite(self):
         checkpoint_path = self.mod._batch_checkpoint_path()
         invalid = '{"version": 2, "batches": ['
@@ -1649,7 +2106,7 @@ class TestBatchRunLifecycle(unittest.TestCase):
         self.assertEqual(provider_calls, [])
         self.assertFalse(self.mod._batch_checkpoint_path().exists())
 
-    def test_recovery_fallback_failure_keeps_all_batches_and_runs_once(self):
+    def test_recovery_fallback_failure_keeps_all_batches(self):
         self.mod._save_batch_checkpoint(
             {
                 "version": 2,
@@ -1676,12 +2133,19 @@ class TestBatchRunLifecycle(unittest.TestCase):
                 "cleaner.llm_validator._run_sync_validation_for_pmids",
                 side_effect=RuntimeError("fallback unavailable"),
             ) as sync,
+            self.assertLogs("llm_validator", level="ERROR") as logs,
         ):
-            with self.assertRaisesRegex(RuntimeError, "fallback unavailable"):
-                self.mod._run_zhipu_batch()
+            self.mod._run_zhipu_batch()
 
-        sync.assert_called_once_with(["1"])
+        self.assertEqual(
+            sync.call_args_list,
+            [
+                call(["1"], db_path=self.db_path),
+                call(["2"], db_path=self.db_path),
+            ],
+        )
         self.assertEqual(self._checkpoint_ids(), ["b1", "b2"])
+        self.assertIn("fallback unavailable", "\n".join(logs.output))
 
 
 if __name__ == "__main__":

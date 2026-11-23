@@ -259,6 +259,8 @@ ON CONFLICT(pmid) DO UPDATE SET
     llm_verdict = excluded.llm_verdict,
     reason = excluded.reason,
     validated_at = excluded.validated_at
+WHERE llm_validation.llm_verdict IS NULL
+  AND llm_validation.human_review IS NULL
 """
 
 UPDATE_HUMAN_REVIEW_SQL = """
@@ -370,7 +372,7 @@ def _call_llm(rows: list) -> tuple[list[dict], list[str]]:
     return [], failed_pmids
 
 
-def run_validation(batch_mode: bool = False):
+def run_validation(batch_mode: bool = False, db_path: Path | None = None) -> None:
     """
     LLM 验证路由入口。
 
@@ -387,12 +389,12 @@ def run_validation(batch_mode: bool = False):
             logger.warning(
                 "Batch API 仅支持智谱提供者（当前 provider=%s），已自动降级为同步模式", LLM_PROVIDER
             )
-            _run_sync_validation()
+            _run_sync_validation(db_path=db_path)
             return
-        _run_zhipu_batch()
+        _run_zhipu_batch(db_path=db_path)
         return
 
-    _run_sync_validation()
+    _run_sync_validation(db_path=db_path)
 
 
 def _normalize_verdict(value) -> str | None:
@@ -447,35 +449,44 @@ def _count_verdicts(validated_rows: list) -> dict:
     return verdicts
 
 
-def _run_sync_validation():
+def _run_sync_validation(db_path: Path | None = None) -> None:
     """
     同步多轮 LLM 验证（原 run_validation 逻辑）。
     支持多轮重试 + 检查点恢复。
     跳过已有验证结果的 PMID，输出待人工复核的 CSV。
     """
+    target_db = Path(DB_PATH if db_path is None else db_path)
+
     # ── 检查点恢复 ──
     start_round, remaining_rows = _load_checkpoint()
     if remaining_rows:
-        with get_conn(DB_PATH) as conn:
+        with get_conn(target_db) as conn:
             done = set(
-                row["pmid"] for row in conn.execute("SELECT pmid FROM llm_validation").fetchall()
+                row["pmid"]
+                for row in conn.execute(
+                    "SELECT pmid FROM llm_validation "
+                    "WHERE llm_verdict IS NOT NULL OR human_review IS NOT NULL"
+                ).fetchall()
             )
         remaining_rows = [r for r in remaining_rows if r["pmid"] not in done]
         logger.info(f"从检查点恢复: 第 {start_round} 轮, 待验证 {len(remaining_rows)} 篇")
         if not remaining_rows:
             _clear_checkpoint()
             logger.info("检查点中的文献均已验证，无需继续")
-            csv_path = _export_review_csv()
+            csv_path = _export_review_csv(db_path=target_db)
             if csv_path:
                 logger.info(f"待复核清单: {csv_path}")
             return
     else:
-        with get_conn(DB_PATH) as conn:
+        with get_conn(target_db) as conn:
             rows = conn.execute("""
                 SELECT a.pmid, a.title, a.abstract
                 FROM articles a
                 WHERE a.abstract IS NOT NULL AND a.abstract != ''
-                  AND a.pmid NOT IN (SELECT pmid FROM llm_validation)
+                  AND a.pmid NOT IN (
+                      SELECT pmid FROM llm_validation
+                      WHERE llm_verdict IS NOT NULL OR human_review IS NOT NULL
+                  )
                   AND a.pmid NOT IN (
                       SELECT pmid FROM filter_log WHERE stage = 'hard_filter'
                   )
@@ -527,7 +538,7 @@ def _run_sync_validation():
                     round_failed.extend(batch_failed)
 
                     if log_rows:
-                        with get_conn(DB_PATH) as conn:
+                        with get_conn(target_db) as conn:
                             conn.executemany(INSERT_SQL, log_rows)
                         all_validated.extend(log_rows)
                 else:
@@ -568,15 +579,19 @@ def _run_sync_validation():
         pct = c / len(all_validated) * 100
         logger.info(f"  {v}: {c} 篇 ({pct:.1f}%)")
 
-    csv_path = _export_review_csv()
+    csv_path = _export_review_csv(db_path=target_db)
     logger.info(f"LLM 验证完成，待复核清单: {csv_path}")
 
 
-def _run_sync_validation_for_pmids(pmid_list: list[str]) -> list[str]:
+def _run_sync_validation_for_pmids(
+    pmid_list: list[str],
+    db_path: Path | None = None,
+) -> list[str]:
     """执行同步降级验证，返回仍未成功的 PMID。"""
     if not pmid_list:
         return []
-    with get_conn(DB_PATH) as conn:
+    target_db = Path(DB_PATH if db_path is None else db_path)
+    with get_conn(target_db) as conn:
         placeholders = ",".join("?" for _ in pmid_list)
         rows = conn.execute(
             f"""
@@ -587,11 +602,17 @@ def _run_sync_validation_for_pmids(pmid_list: list[str]) -> list[str]:
               AND pmid NOT IN (
                   SELECT pmid FROM filter_log WHERE stage = 'hard_filter'
               )
+              AND pmid NOT IN (
+                  SELECT pmid FROM llm_validation
+                  WHERE llm_verdict IS NOT NULL OR human_review IS NOT NULL
+              )
         """,
             pmid_list,
         ).fetchall()
     if not rows:
-        logger.info("降级的 PMID 列表中无限有效摘要的文献，跳过")
+        logger.info(
+            "降级 PMID 列表中没有需要验证的文献（无有效摘要、已被硬过滤或已有科学判定），跳过"
+        )
         return []
     logger.info(f"同步降级: 对 {len(rows)} 篇文献执行同步验证")
 
@@ -611,7 +632,13 @@ def _run_sync_validation_for_pmids(pmid_list: list[str]) -> list[str]:
                 batch = future_to_batch[future]
                 try:
                     results, failed_pmids = future.result()
-                except Exception:
+                except Exception as exc:  # noqa: BLE001 - future boundary isolates a failed batch
+                    logger.error(
+                        "同步降级批次异常: %s: %s, pmids=%s",
+                        type(exc).__name__,
+                        exc,
+                        [row["pmid"] for row in batch],
+                    )
                     round_failed.extend(batch)
                     continue
                 failed_set = set(failed_pmids)
@@ -621,7 +648,7 @@ def _run_sync_validation_for_pmids(pmid_list: list[str]) -> list[str]:
                     log_rows, batch_failed = _build_log_rows(batch, pmid_to_result, failed_set, now)
                     round_failed.extend(batch_failed)
                     if log_rows:
-                        with get_conn(DB_PATH) as conn:
+                        with get_conn(target_db) as conn:
                             conn.executemany(INSERT_SQL, log_rows)
                         all_validated.extend(log_rows)
                 else:
@@ -632,6 +659,26 @@ def _run_sync_validation_for_pmids(pmid_list: list[str]) -> list[str]:
     if remaining_rows:
         logger.warning(f"同步降级仍有 {len(remaining_rows)} 篇失败")
     return [row["pmid"] for row in remaining_rows]
+
+
+def _sync_fallback_or_keep_pending(
+    pmid_list: list[str],
+    *,
+    db_path: Path,
+    context: str,
+) -> list[str] | None:
+    """执行同步降级；异常时记录边界并返回 None，由调用方保留检查点。"""
+    try:
+        return _run_sync_validation_for_pmids(pmid_list, db_path=db_path)
+    except Exception as exc:  # noqa: BLE001 - isolated fallback boundary
+        logger.error(
+            "%s同步降级异常: %s: %s, pmids=%s",
+            context,
+            type(exc).__name__,
+            exc,
+            pmid_list,
+        )
+        return None
 
 
 def _export_failed_pmids_csv(failed_rows: list) -> Path | None:
@@ -651,9 +698,10 @@ def _export_failed_pmids_csv(failed_rows: list) -> Path | None:
     return csv_path
 
 
-def _export_review_csv() -> Path | None:
+def _export_review_csv(db_path: Path | None = None) -> Path | None:
     """导出所有待人工复核的记录为 CSV"""
-    with get_conn(DB_PATH) as conn:
+    target_db = Path(DB_PATH if db_path is None else db_path)
+    with get_conn(target_db) as conn:
         rows = conn.execute("""
             SELECT v.pmid, a.title, a.abstract,
                    v.llm_verdict, v.reason
@@ -1222,15 +1270,20 @@ def _parse_batch_results(
             now = now_iso()
 
             with get_conn(db_path) as conn:
-                conn.execute(INSERT_SQL, (pmid, verdict, reason, now))
-            success_count += 1
+                cursor = conn.execute(INSERT_SQL, (pmid, verdict, reason, now))
+            if cursor.rowcount:
+                success_count += 1
+            else:
+                logger.info(f"Batch 结果已有科学判定，跳过覆盖: pmid={pmid}")
             parsed_pmids.add(pmid)
 
     return success_count, failed_pmids, parsed_pmids
 
 
-def _run_zhipu_batch() -> None:
+def _run_zhipu_batch(db_path: Path | None = None) -> None:
     """智谱 Batch API 主流程：JSONL 构建 → 上传 → 提交 → 轮询 → 下载 → 解析 → 降级"""
+    target_db = Path(DB_PATH if db_path is None else db_path)
+
     # 损坏或结构未知的检查点可能包含仍可人工恢复的远程批次身份，不能当作
     # “无检查点”继续提交并覆盖。此处停在供应商调用之前，保留原文件待核验。
     chk = _load_batch_checkpoint()
@@ -1246,7 +1299,7 @@ def _run_zhipu_batch() -> None:
         )
         return
     if chk and chk.get("status") == "finalizing":
-        _finalize_batch()
+        _finalize_batch(db_path=target_db)
         return
 
     api_key = os.environ.get("ZHIPU_API_KEY") or ZHIPU_API_KEY
@@ -1276,33 +1329,49 @@ def _run_zhipu_batch() -> None:
                     batch_status = client.batches.retrieve(batch_id)
                 except (OSError, ValueError, ZhipuAIError) as e:
                     logger.warning(f"查询 batch {batch_id} 状态失败: {e}，该批降级同步")
-                    remaining = _run_sync_validation_for_pmids(pmids)
-                    if not remaining:
+                    remaining = _sync_fallback_or_keep_pending(
+                        pmids,
+                        db_path=target_db,
+                        context=f"查询 batch {batch_id} 失败后的",
+                    )
+                    if remaining == []:
                         _harvest_batch_checkpoint(batch_id)
                     continue
 
                 st = batch_status.status
                 if st == "completed":
                     logger.info(f"批次 {batch_id} 已完成，直接下载结果")
-                    _download_and_parse_batch(client, batch_status, entry)
+                    _download_and_parse_batch(
+                        client,
+                        batch_status,
+                        entry,
+                        db_path=target_db,
+                    )
                 elif st in ("in_progress", "finalizing", "validating"):
                     logger.info(f"恢复轮询 batch_id={batch_id}")
-                    _poll_until_done(client, batch_id, entry)
+                    _poll_until_done(client, batch_id, entry, db_path=target_db)
                 else:
                     logger.warning(f"批次 {batch_id} 已结束（status={st}），该批降级为同步模式")
-                    remaining = _run_sync_validation_for_pmids(pmids)
-                    if not remaining:
+                    remaining = _sync_fallback_or_keep_pending(
+                        pmids,
+                        db_path=target_db,
+                        context=f"batch {batch_id} 已结束后的",
+                    )
+                    if remaining == []:
                         _harvest_batch_checkpoint(batch_id)
-            _finalize_batch()
+            _finalize_batch(db_path=target_db)
             return
 
     # ── 步骤 2：加载待验证文献 ──
-    with get_conn(DB_PATH) as conn:
+    with get_conn(target_db) as conn:
         rows = conn.execute("""
             SELECT pmid, title, abstract
             FROM articles
             WHERE abstract IS NOT NULL AND abstract != ''
-              AND pmid NOT IN (SELECT pmid FROM llm_validation)
+                  AND pmid NOT IN (
+                      SELECT pmid FROM llm_validation
+                      WHERE llm_verdict IS NOT NULL OR human_review IS NOT NULL
+                  )
               AND pmid NOT IN (
                   SELECT pmid FROM filter_log WHERE stage = 'hard_filter'
               )
@@ -1399,18 +1468,29 @@ def _run_zhipu_batch() -> None:
 
     # ── 步骤 6：逐个收割；每批仅在处理完成后移除自身 ──
     for entry in submitted:
-        _poll_until_done(client, entry["batch_id"], entry)
+        _poll_until_done(
+            client,
+            entry["batch_id"],
+            entry,
+            db_path=target_db,
+        )
 
     # ── 步骤 7：收尾（只做一次；_finalize_batch 内会清除检查点）──
-    _finalize_batch()
+    _finalize_batch(db_path=target_db)
 
 
-def _poll_until_done(client: Any, batch_id: str, chk: dict[str, Any]) -> None:
+def _poll_until_done(
+    client: Any,
+    batch_id: str,
+    chk: dict[str, Any],
+    db_path: Path | None = None,
+) -> None:
     """轮询 Batch 任务直到完成/失败/超时"""
     import sys
 
     from zhipuai import ZhipuAIError
 
+    target_db = Path(DB_PATH if db_path is None else db_path)
     start_time = time.time()
     while True:
         elapsed = int(time.time() - start_time)
@@ -1420,8 +1500,12 @@ def _poll_until_done(client: Any, batch_id: str, chk: dict[str, Any]) -> None:
                 client.batches.cancel(batch_id)
             except (OSError, ZhipuAIError) as e:
                 logger.warning(f"取消超时 Batch 失败: {e}")
-            remaining = _run_sync_validation_for_pmids(chk.get("pmid_list", []))
-            if not remaining:
+            remaining = _sync_fallback_or_keep_pending(
+                chk.get("pmid_list", []),
+                db_path=target_db,
+                context="Batch 超时后的",
+            )
+            if remaining == []:
                 _harvest_batch_checkpoint(batch_id)
             return
 
@@ -1449,14 +1533,18 @@ def _poll_until_done(client: Any, batch_id: str, chk: dict[str, Any]) -> None:
             sys.stdout.flush()
             logger.info("Batch 任务完成!")
 
-            _download_and_parse_batch(client, status, chk)
+            _download_and_parse_batch(client, status, chk, db_path=target_db)
             return
         elif st in ("failed", "expired", "cancelled"):
             sys.stdout.write("\n")
             sys.stdout.flush()
             logger.error(f"Batch 任务失败（status={st}），降级为同步模式")
-            remaining = _run_sync_validation_for_pmids(chk.get("pmid_list", []))
-            if not remaining:
+            remaining = _sync_fallback_or_keep_pending(
+                chk.get("pmid_list", []),
+                db_path=target_db,
+                context=f"Batch {st} 后的",
+            )
+            if remaining == []:
                 _harvest_batch_checkpoint(batch_id)
             return
 
@@ -1473,7 +1561,9 @@ def _download_and_parse_batch(
     from zhipuai import ZhipuAIError
 
     if db_path is None:
-        db_path = DB_PATH
+        db_path = Path(DB_PATH)
+    else:
+        db_path = Path(db_path)
     all_pmids = chk.get("pmid_list", [])
 
     success_total = 0
@@ -1485,8 +1575,12 @@ def _download_and_parse_batch(
     if not output_id:
         # completed 却无输出文件时，整批 PMID 都没有落库；直接同步补验。
         logger.error("Batch 已完成但没有输出文件，降级为同步模式")
-        remaining = _run_sync_validation_for_pmids(all_pmids)
-        if not remaining:
+        remaining = _sync_fallback_or_keep_pending(
+            all_pmids,
+            db_path=db_path,
+            context="Batch 无输出后的",
+        )
+        if remaining == []:
             _harvest_batch_checkpoint(chk["batch_id"])
         return
 
@@ -1508,8 +1602,12 @@ def _download_and_parse_batch(
             logger.info(f"结果已写入 DB: {success_total} 篇成功, {len(error_pmids)} 篇解析失败")
         except (OSError, ValueError, sqlite3.Error, ZhipuAIError) as e:
             logger.error(f"下载/解析输出文件失败: {e}")
-            remaining = _run_sync_validation_for_pmids(all_pmids)
-            if not remaining:
+            remaining = _sync_fallback_or_keep_pending(
+                all_pmids,
+                db_path=db_path,
+                context="Batch 输出失败后的",
+            )
+            if remaining == []:
                 _harvest_batch_checkpoint(chk["batch_id"])
             return
 
@@ -1535,19 +1633,56 @@ def _download_and_parse_batch(
                         pass
         except (OSError, ValueError, ZhipuAIError) as e:
             logger.warning(f"下载错误文件失败: {e}")
+            completed: set[str] = set()
+            try:
+                with get_conn(db_path) as conn:
+                    placeholders = ",".join("?" for _ in all_pmids)
+                    if placeholders:
+                        completed = {
+                            row["pmid"]
+                            for row in conn.execute(
+                                f"""
+                                SELECT pmid
+                                FROM llm_validation
+                                WHERE pmid IN ({placeholders})
+                                  AND (llm_verdict IS NOT NULL OR human_review IS NOT NULL)
+                                """,
+                                all_pmids,
+                            ).fetchall()
+                        }
+            except sqlite3.Error:
+                logger.exception("读取 Batch 已完成 PMID 失败，保留整批检查点")
+                return
+            incomplete = [pmid for pmid in all_pmids if pmid not in completed]
+            if incomplete:
+                logger.warning(f"错误文件不可用，仅补验当前批尚未落库的 {len(incomplete)} 篇")
+                remaining = _sync_fallback_or_keep_pending(
+                    incomplete,
+                    db_path=db_path,
+                    context="Batch 错误文件",
+                )
+            else:
+                remaining = []
+            if remaining == []:
+                _harvest_batch_checkpoint(chk["batch_id"])
             return
 
     # 降级：对 error 中的 PMID 执行同步验证
-    remaining: list[str] = []
+    remaining: list[str] | None = []
     if error_pmids:
         logger.info(f"Batch 错误 {len(error_pmids)} 篇，降级为同步模式重试")
-        remaining = _run_sync_validation_for_pmids(error_pmids)
-    if not remaining:
+        remaining = _sync_fallback_or_keep_pending(
+            error_pmids,
+            db_path=db_path,
+            context="Batch 错误结果",
+        )
+    if remaining == []:
         _harvest_batch_checkpoint(chk["batch_id"])
 
 
-def _finalize_batch() -> None:
+def _finalize_batch(db_path: Path | None = None) -> None:
     """确认所有批次已收割后输出统计并导出 CSV，成功后才清除检查点。"""
+    target_db = Path(DB_PATH if db_path is None else db_path)
     with _BATCH_CHECKPOINT_LOCK:
         current = _load_batch_checkpoint()
         remaining = _checkpoint_batches(current)
@@ -1555,7 +1690,7 @@ def _finalize_batch() -> None:
             logger.warning("Batch 运行仍有未收割批次或状态文件不可解析，保留检查点")
             return
 
-    with get_conn(DB_PATH) as conn:
+    with get_conn(target_db) as conn:
         verdicts = conn.execute("""
             SELECT llm_verdict, COUNT(*) as cnt
             FROM llm_validation
@@ -1572,7 +1707,7 @@ def _finalize_batch() -> None:
     for v, cnt in log_info:
         logger.info(f"  {v}: {cnt} 篇 ({cnt / total * 100:.1f}%)")
 
-    csv_path_file = _export_review_csv()
+    csv_path_file = _export_review_csv(db_path=target_db)
     logger.info(f"LLM 验证完成，待复核清单: {csv_path_file}")
     _clear_batch_checkpoint()
 
