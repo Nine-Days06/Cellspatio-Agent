@@ -14,6 +14,7 @@ from src.control.router import ModalRouter
 from src.skills.base import SkillBase, SkillContext
 from src.skills.loader import SkillLoader
 from src.skills.registry import SkillRegistry
+from tests.unit.fakes import RecordingKGMemory
 
 SKILLS_DIR = Path(__file__).resolve().parents[2] / "skills"
 _BENCHMARK_SKILLS = (
@@ -29,20 +30,6 @@ def _make_router(kg_memory=None) -> ModalRouter:
     registry = SkillRegistry(skills_dir=SKILLS_DIR)
     loader = SkillLoader(registry)
     return ModalRouter(registry, loader, kg_memory=kg_memory)
-
-
-class _RecordingKGMemory:
-    """记录 ingest 收到的鸭子记录；其余属性委托真实 KGMemory。"""
-
-    def __init__(self, real: KGMemory):
-        self._real = real
-        self.records = []
-
-    def ingest(self, execution) -> None:
-        self.records.append(execution)
-
-    def __getattr__(self, name):
-        return getattr(self._real, name)
 
 
 def test_registry_discovers_benchmark_skills():
@@ -80,21 +67,17 @@ def test_route_analysis_skills(user_input, skill_name, analysis_type):
     assert out["plan"]
 
 
-def test_route_writes_skill_memory(tmp_path):
+def test_route_writes_skill_memory():
     """③ 链路在真实技能上闭环：teardown → _record_execution → kg_memory.ingest。"""
-    real = KGMemory(working_dir=tmp_path / "kg")
-    try:
-        kg = _RecordingKGMemory(real)
-        router = _make_router(kg_memory=kg)
-        result = router.route("对这份数据做差异表达分析", context={"script_approved": True})
-        assert result["status"] == "success"
-        assert len(kg.records) == 1
-        rec = kg.records[0]
-        assert rec.run_id.startswith("skill-")
-        assert rec.intent.original_input.startswith("skill:differential_expression")
-        assert rec.steps[0].tool == "differential_expression"
-    finally:
-        real.close()
+    kg = RecordingKGMemory()
+    router = _make_router(kg_memory=kg)
+    result = router.route("对这份数据做差异表达分析", context={"script_approved": True})
+    assert result["status"] == "success"
+    assert len(kg.records) == 1
+    rec = kg.records[0]
+    assert rec.run_id.startswith("skill-")
+    assert rec.intent.original_input.startswith("skill:differential_expression")
+    assert rec.steps[0].tool == "differential_expression"
 
 
 def test_analysis_skill_rejects_empty_input():
@@ -151,17 +134,19 @@ def test_route_query_knowledge_without_kg_memory():
     assert out["reason"] == "知识库未配置"
 
 
-def test_production_route_records_skill_memory(tmp_path):
-    """生产接线闭环：AgentRuntime → route() → 真实技能 teardown → KGMemory.ingest。
-
-    与既有 test_route_writes_skill_memory 的差别：那个直接调 route()，
-    这个走生产真实调用方（AgentRuntime.execute → _dispatch），证明通道在生产可达。
-    """
+@pytest.mark.parametrize(
+    ("user_input", "analysis_type"),
+    [
+        ("对这份数据做差异表达分析", "differential_expression"),
+        ("分析这个 Visium 空间转录组数据", "spatial"),
+    ],
+)
+def test_production_plan_read_has_no_execution_side_effect(user_input: str, analysis_type: str):
+    """生产接线：读取方案不得执行技能生命周期或发布 KG 事实。"""
     import json
     from types import SimpleNamespace
 
     from src.control.agent_runtime import AgentRuntime
-    from src.control.kg_memory import KGMemory
 
     class _ScriptedLLM:
         """回放一次 run_analysis tool-call，避免依赖真实 LLM。"""
@@ -175,9 +160,7 @@ def test_production_route_records_skill_memory(tmp_path):
                 type="function",
                 function=SimpleNamespace(
                     name="run_analysis",
-                    arguments=json.dumps(
-                        {"analysis_type": "differential_expression"}, ensure_ascii=False
-                    ),
+                    arguments=json.dumps({"analysis_type": analysis_type}, ensure_ascii=False),
                 ),
             )
             message = SimpleNamespace(content=None, tool_calls=[tc])
@@ -193,31 +176,23 @@ def test_production_route_records_skill_memory(tmp_path):
             self.params = params
             return {"status": "needs_input", "type": "analysis", "message": "缺输入"}
 
-    real = KGMemory(working_dir=tmp_path / "kg")
-    try:
-        kg = _RecordingKGMemory(real)
-        router = _make_router(kg_memory=kg)
-        wm = _StubWM()
-        runtime = AgentRuntime(
-            llm_client=_ScriptedLLM(),
-            model="fake",
-            workflow_manager=wm,
-            router=router,
-        )
+    kg = RecordingKGMemory()
+    router = _make_router(kg_memory=kg)
+    wm = _StubWM()
+    runtime = AgentRuntime(
+        llm_client=_ScriptedLLM(),
+        model="fake",
+        workflow_manager=wm,
+        router=router,
+    )
 
-        result = runtime.execute("对这份数据做差异表达分析", context={"downloaded_assets": []})
+    result = runtime.execute(user_input, context={"downloaded_assets": []})
 
-        # 真实分析仍由 WorkflowManager 面负责（needs_input 是 TERMINAL_STATUSES 之一）
-        assert result["status"] == "needs_input"
-        # 技能静态方案进了生产 analysis params
-        plan = wm.params["skill_plan"]
-        assert plan["analysis_type"] == "differential_expression"
-        assert plan["plan"] and plan["required_inputs"]
-        # teardown 记忆通道：生产可达
-        assert len(kg.records) == 1
-        record = kg.records[0]
-        assert record.run_id.startswith("skill-")
-        assert record.steps[0].tool == "differential_expression"
-        assert record.intent.original_input.startswith("skill:differential_expression")
-    finally:
-        real.close()
+    # 真实分析仍由 WorkflowManager 面负责（needs_input 是 TERMINAL_STATUSES 之一）
+    assert result["status"] == "needs_input"
+    # 技能静态方案进了生产 analysis params
+    plan = wm.params["skill_plan"]
+    assert plan["analysis_type"] == analysis_type
+    assert plan["plan"] and plan["required_inputs"]
+    # 方案读取不是分析执行，不能把方案字段登记成执行产物。
+    assert kg.records == []

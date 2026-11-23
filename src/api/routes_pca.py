@@ -11,14 +11,12 @@ from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import Response
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
+from src.analysis.review_facts import pca_dimension_facts
 from src.analysis.sc_pca import (
     DIMENSION_RECORD_VERSION,
     PCA_TOOL_VERSION,
     PROTOCOL,
-    checked_completed_pca,
     checked_parent,
-    current_dimensions,
-    dimension_binding,
     run_sc_pca,
 )
 from src.api.authorized_run import StageClaim, run_authorized
@@ -181,24 +179,13 @@ def dimension_view(
     run: RunSnapshot, parent: dict[str, Any], attempt: dict[str, Any], root: Path
 ) -> dict[str, Any]:
     """恢复当前选择及失效历史；不返回原始细胞表或私有产物路径。"""
-    evidence = None
-    binding = None
-    blocked = []
-    try:
-        checked = checked_completed_pca(run, parent, attempt, root)
-        binding = dimension_binding(run, parent, attempt, checked, DIMENSION_RECORD_VERSION)
-        evidence = {k: checked[k] for k in ("actual_pcs", "stdev")}
-    except OSError:
-        blocked.append("PCA 或父证据文件不可读取，请检查本地产物")
-    except (ValueError, KeyError, TypeError, OverflowError) as exc:
-        blocked.append(str(exc))
-    if has_running(run):
+    facts = pca_dimension_facts(run, parent, attempt, root)
+    evidence = {k: facts.result[k] for k in ("actual_pcs", "stdev")} if facts.result else None
+    blocked = [facts.invalidated_reason] if facts.invalidated_reason else []
+    if facts.blocked:
         blocked.append("该 run 有阶段运行中，不能记录维度")
     history = run.dimension_reviews(attempt["attempt_id"])
-    latest = history[-1] if history else None
-    current = (
-        None if blocked else current_dimensions(run, attempt, binding, DIMENSION_RECORD_VERSION)
-    )
+    latest, current = facts.latest, facts.current
     return {
         "run_id": run["run_id"],
         "filter_attempt_id": parent["attempt_id"],
@@ -207,7 +194,7 @@ def dimension_view(
         "stage": "pca_review",
         "scientific_status": "unreviewed",
         "revision": run["revision"],
-        "binding_sha256": binding if not blocked else None,
+        "binding_sha256": facts.binding if not blocked else None,
         "evidence": evidence,
         "blocked": blocked,
         "current": current,
@@ -216,11 +203,7 @@ def dimension_view(
                 **d,
                 "invalidated_reason": None
                 if d == current
-                else (
-                    "已有更新的人工记录"
-                    if d != latest
-                    else "PCA 身份、父选择、记录版本或 run revision 已变化；需重新明确记录"
-                ),
+                else ("已有更新的人工记录" if d != latest else facts.review_invalidated_reason),
             }
             for d in history
         ],

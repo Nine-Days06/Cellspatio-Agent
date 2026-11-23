@@ -50,6 +50,8 @@ interface ChatState {
   softWarn: boolean
 
   setSession: (sessionId: string, history: WireMessage[]) => void
+  /** 删除最后一个会话：中止活动流并完整清空，保留 null 表示无活动会话。 */
+  clearSession: () => void
   beginTurn: (prompt: string) => void
   appendDelta: (text: string) => void
   pushTool: (entry: ToolStatusEntry) => void
@@ -78,6 +80,23 @@ export function createChatStore() {
   let activeStream: AbortController | null = null
 
   return create<ChatState>((set, get) => {
+    const resetSession = (sessionId: string | null, history: WireMessage[]): void => {
+      activeStream?.abort()
+      activeStream = null
+      set({
+        sessionId,
+        history,
+        draft: '',
+        busy: false,
+        tools: [],
+        notice: null,
+        charts: [],
+        scriptCard: null,
+        dataCard: null,
+        softWarn: false,
+      })
+    }
+
     /** SSE 事件分发：只推进状态；唯一允许关 busy 的分支是 error → failTurn（约束 2）。 */
     const dispatch = (event: SseEvent): void => {
       switch (event.type) {
@@ -140,20 +159,11 @@ export function createChatStore() {
       softWarn: false,
 
       setSession(sessionId, history) {
-        activeStream?.abort()
-        activeStream = null
-        set({
-          sessionId,
-          history,
-          draft: '',
-          busy: false,
-          tools: [],
-          notice: null,
-          charts: [],
-          scriptCard: null,
-          dataCard: null,
-          softWarn: false,
-        })
+        resetSession(sessionId, history)
+      },
+
+      clearSession() {
+        resetSession(null, [])
       },
 
       beginTurn(prompt) {

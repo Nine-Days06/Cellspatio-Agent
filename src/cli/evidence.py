@@ -13,10 +13,13 @@ from __future__ import annotations
 
 import argparse
 import json
+import logging
 import sqlite3
 from pathlib import Path
 from typing import Any
 
+from src.analysis.qc_preview import check_preview
+from src.analysis.review_facts import ReviewFacts, cluster_review_facts, marker_review_facts
 from src.analysis.sc_marker_reviews import CLUSTER_RECORD_VERSION, review_binding
 from src.analysis.sc_markers import MARKER_REVIEW_VERSION
 from src.evidence.builder import (
@@ -28,6 +31,8 @@ from src.evidence.builder import (
 from src.evidence.schema import SCHEMA_VERSION, EvidenceCard, License, json_schema, validate_card
 from src.ui.session_store import SessionStore
 
+logger = logging.getLogger(__name__)
+
 
 def _store(base: Path) -> SessionStore:
     return SessionStore(base / ".cellspatio" / "sessions.db")
@@ -38,6 +43,21 @@ def _write(card: EvidenceCard, base: Path, out: str | None) -> Path:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(card.to_json(), encoding="utf-8")
     return path
+
+
+def _history_replay(
+    facts: ReviewFacts, binding: str, version: str, reason: str, reviewer: str, outcome: str
+) -> bool:
+    """同一历史事实重发不新增记录，也不恢复失效的当前复核。"""
+    latest = facts.latest
+    return bool(
+        latest
+        and latest.get("binding_sha256") == binding
+        and latest.get("record_version") == version
+        and latest.get("reason") == reason.strip()
+        and latest.get("reviewer") == (reviewer.strip() or "local-user")
+        and latest.get("outcome", latest.get("decision")) == outcome
+    )
 
 
 def export_card(
@@ -94,6 +114,15 @@ def record_review(
     if kind != "marker" and decision is not None:
         raise ValueError("--decision 只用于 marker 复核")
     if kind == "qc":
+        preview = run.active_preview
+        if preview and preview["preview_id"] == target_id and preview["status"] != "rejected":
+            try:
+                check_preview(
+                    run, Path(run["directory"]).resolve().parent, preview, allow_blocked=True
+                )
+            except (KeyError, TypeError) as exc:
+                logger.warning("QC review validation failed: %s", type(exc).__name__)
+                raise ValueError("QC 预览证据不符，请重新预览") from exc
         store.record_qc_rejection(session_id, run_id, target_id, reason, reviewer)
     elif kind == "cluster":
         cluster = next(
@@ -102,29 +131,45 @@ def record_review(
         )
         if cluster is None:
             raise ValueError("聚类关联不存在")
-        store.stages.record_cluster_rejection(
-            session_id,
-            run,
-            cluster,
-            cluster["binding_sha256"],
-            CLUSTER_RECORD_VERSION,
-            run["revision"],
-            reason,
-            reviewer,
-            review_binding=review_binding(run, cluster),
-        )
+        facts = cluster_review_facts(run, cluster, Path(run["directory"]).resolve().parent)
+        binding = review_binding(run, cluster)
+        if not _history_replay(
+            facts, binding, CLUSTER_RECORD_VERSION, reason, reviewer, "rejected"
+        ):
+            if facts.result is None or facts.blocked:
+                raise ValueError("聚类证据已失效或阶段运行中，不能新增复核")
+            store.stages.record_cluster_rejection(
+                session_id,
+                run,
+                cluster,
+                cluster["binding_sha256"],
+                CLUSTER_RECORD_VERSION,
+                run["revision"],
+                reason,
+                reviewer,
+                review_binding=binding,
+            )
     elif kind == "marker":
         if decision not in {"accepted", "rejected"}:
             raise ValueError("marker 复核必须指定 --decision accepted|rejected")
-        store.stages.record_marker_review(
-            session_id,
-            target_id,
-            decision,
-            reason,
-            reviewer,
-            MARKER_REVIEW_VERSION,
-            revision=run["revision"],
-        )
+        marker = run.attempt("marker", target_id)
+        if marker is None:
+            raise ValueError("marker 关联不存在")
+        facts = marker_review_facts(run, marker, Path(run["directory"]).resolve().parent)
+        if not _history_replay(
+            facts, marker["binding_sha256"], MARKER_REVIEW_VERSION, reason, reviewer, decision
+        ):
+            if facts.result is None or facts.blocked:
+                raise ValueError("marker 证据已失效或阶段运行中，不能新增复核")
+            store.stages.record_marker_review(
+                session_id,
+                target_id,
+                decision,
+                reason,
+                reviewer,
+                MARKER_REVIEW_VERSION,
+                revision=run["revision"],
+            )
     else:
         raise ValueError("kind 必须是 qc、cluster 或 marker")
     return {"status": "ok", "kind": kind, "target_id": target_id}

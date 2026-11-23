@@ -11,7 +11,12 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
 
-from src.ui.confirm_protocol import STATUS_CONFIRMED, STATUS_EXPIRED, STATUS_PENDING
+from src.ui.confirm_protocol import (
+    STATUS_CANCELLED,
+    STATUS_CONFIRMED,
+    STATUS_EXPIRED,
+    STATUS_PENDING,
+)
 from src.ui.run_snapshot import RunSnapshot
 from src.ui.sc_stage_defs import STAGE_SPECS
 from src.ui.sc_stages import ScStages
@@ -938,8 +943,8 @@ class SessionStore:
             if script.get("status") != STATUS_PENDING:
                 return None
             script["status"] = status
-            # 只有「确认执行」需要回滚令牌；取消是终态，不需要。
-            if status == STATUS_CONFIRMED:
+            # 确认执行及取消记录都可能落盘失败；回滚只能匹配本次领取。
+            if status in (STATUS_CONFIRMED, STATUS_CANCELLED):
                 script["claim_token"] = uuid.uuid4().hex
             conn.execute(
                 "UPDATE messages SET pending_script = ? WHERE id = ?",
@@ -947,8 +952,15 @@ class SessionStore:
             )
             return int(row["id"]), script
 
-    def release_script(self, session_id: str, message_id: int, token: str) -> None:
-        """把本次领取的脚本卡退回 pending；已被他人推进则静默放弃。"""
+    def release_script(
+        self,
+        session_id: str,
+        message_id: int,
+        token: str,
+        *,
+        claimed_status: str = STATUS_CONFIRMED,
+    ) -> None:
+        """按领取状态及令牌释放失败请求；默认不回滚取消，后续领取不受旧令牌影响。"""
         with self._conn() as conn:
             conn.execute("BEGIN IMMEDIATE")
             row = conn.execute(
@@ -958,7 +970,7 @@ class SessionStore:
             if row is None or not row["pending_script"]:
                 return
             script = json.loads(row["pending_script"])
-            if script.get("status") != STATUS_CONFIRMED:
+            if script.get("status") != claimed_status:
                 return
             if script.get("claim_token") != token:
                 return

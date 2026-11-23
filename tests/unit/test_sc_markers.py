@@ -15,7 +15,7 @@ import pytest
 from src.analysis import sc_markers
 from src.analysis.r_executor import RExecutorError
 from src.api import authorized_run
-from src.evidence.builder import build_marker_card
+from src.evidence.builder import build_cluster_card, build_marker_card
 from src.ui import sc_stages
 from tests.unit.test_qc_preview import PARAMS
 from tests.unit.test_sc_cluster import dimensions_ready as _dimensions_ready
@@ -752,6 +752,163 @@ def test_cluster_rejection_is_local_and_survives_refresh(reviewed_source):
     d.executor.execute_script.assert_not_called()
 
 
+def cluster_decision_request(d, state, decision):
+    """组装现有聚类接受/拒绝接口所需的同一人工绑定。"""
+    body = {
+        "binding_sha256": state["binding_sha256"],
+        "revision": state["revision"],
+        "reason": "人工复核",
+    }
+    target = d.review_path if decision == "accepted" else f"{d.path}/{d.cid}/reject"
+    if decision == "accepted":
+        body["accepted"] = True
+    return target, body
+
+
+@pytest.mark.parametrize("decision", ["accepted", "rejected"])
+@pytest.mark.parametrize("mutation", ["missing", "drift", "source", "tool", "snapshot"])
+def test_cluster_card_rejects_changed_artifacts_like_review(reviewed_source, decision, mutation):
+    """真实聚类产物或父来源变化后，各入口拒绝当前证据，保留人工历史。"""
+    d = reviewed_source
+    state = d.client.get(d.review_path).json()
+    target, body = cluster_decision_request(d, state, decision)
+    reviewed = d.client.post(target, json=body)
+    assert reviewed.status_code == 200, reviewed.text
+    assert build_cluster_card(d.store, d.sid, d.rid).outcome == decision
+    attempt = d.store.get_qc_run(d.sid, d.rid).attempt("cluster", d.cid)
+    cluster_file = Path(attempt["directory"]) / "clusters.csv"
+    if mutation == "missing":
+        cluster_file.unlink()
+    elif mutation == "drift":
+        cluster_file.write_text("changed")
+    elif mutation == "source":
+        d.source.write_bytes(b"changed")
+    else:
+        with d.store._conn() as conn:
+            if mutation == "tool":
+                conn.execute("UPDATE sc_cluster_attempts SET tool_version = 'old'")
+            else:
+                snapshot = {**attempt["snapshot"], "source": {}}
+                conn.execute("UPDATE sc_cluster_attempts SET snapshot = ?", (json.dumps(snapshot),))
+
+    state = d.client.get(d.review_path).json()
+    assert state["current"] is None
+    assert state["latest_decision"]["decision"] == decision
+    assert state["latest_decision"]["invalidated_reason"]
+    assert d.client.post(target, json={**body, "revision": state["revision"]}).status_code == 409
+    with pytest.raises(ValueError, match="聚类复核已失效"):
+        build_cluster_card(d.store, d.sid, d.rid)
+
+
+@pytest.mark.parametrize("decision", ["accepted", "rejected"])
+@pytest.mark.parametrize("field", ["binding_sha256", "record_version"])
+def test_cluster_review_identity_invalidates_page_card_and_marker(reviewed_source, decision, field):
+    """人工 binding 或记录版本漂移不能绕过展示、构卡与 marker 准入。"""
+    d = reviewed_source
+    state = d.client.get(d.review_path).json()
+    target, body = cluster_decision_request(d, state, decision)
+    response = d.client.post(target, json=body)
+    assert response.status_code == 200, response.text
+    marker_path = f"{d.url}/markers/{d.fid}/{d.aid}/{d.cid}"
+    before = d.client.get(marker_path).json()
+    table_name = "sc_cluster_reviews" if decision == "accepted" else "sc_cluster_rejections"
+    with d.store._conn() as conn:
+        conn.execute(f"UPDATE {table_name} SET {field} = ?", ("changed",))
+    state = d.client.get(d.review_path).json()
+    assert state["evidence"] is not None and state["current"] is None
+    assert state["latest_decision"]["decision"] == decision
+    assert state["latest_decision"]["invalidated_reason"]
+    marker = d.client.get(marker_path).json()
+    assert marker["binding_sha256"] is None and marker["blocked"]
+    if decision == "accepted":
+        assert (
+            d.client.post(
+                marker_path + "/execute",
+                json={
+                    "binding_sha256": before["binding_sha256"],
+                    "cluster_review_id": before["review"]["review_id"],
+                    "revision": before["revision"],
+                    "reason": "独立授权",
+                },
+            ).status_code
+            == 409
+        )
+    with pytest.raises(ValueError, match="聚类复核已失效"):
+        build_cluster_card(d.store, d.sid, d.rid)
+    d.executor.execute_script.assert_not_called()
+
+
+@pytest.mark.parametrize("decision", ["accepted", "rejected"])
+def test_current_cluster_card_uses_authorized_parents_and_safe_aggregates(
+    reviewed_source, decision
+):
+    """聚类推进父维度 revision 后，自身授权快照与真实产物仍可生成聚合卡。"""
+    d = reviewed_source
+    state = d.client.get(d.review_path).json()
+    target, body = cluster_decision_request(d, state, decision)
+    response = d.client.post(target, json=body)
+    assert response.status_code == 200, response.text
+    assert d.client.get(d.target).json()["current"] is None
+    assert response.json()["latest_decision"]["invalidated_reason"] is None
+    card = build_cluster_card(d.store, d.sid, d.rid, attempt_id=d.cid)
+    assert card.outcome == card.review.status == decision
+    assert card.subject.binding_sha256 == state["binding_sha256"]
+    assert card.subject.source_revision == state["revision"]
+    assert card.observation == {
+        "cells": 31,
+        "dims": [1, 2],
+        "n_epochs": 500,
+        "clusters": 2,
+        "cluster_sizes": [
+            {"cluster_id": "0", "cells": 16, "proportion": 16 / 31},
+            {"cluster_id": "1", "cells": 15, "proportion": 15 / 31},
+        ],
+        "seurat_threads": 1,
+    }
+    assert {artifact.name for artifact in card.provenance.artifacts} == {
+        "seurat_clustered.rds",
+        "neighbors.rds",
+        "clusters.csv",
+        "umap_embeddings.csv",
+        "cluster_sizes.csv",
+        "umap_clusters.png",
+        "summary.json",
+        "versions.txt",
+        "session_info.txt",
+        "script.R",
+        "stdout.txt",
+        "stderr.txt",
+    }
+    exported = card.to_json()
+    assert all(key not in exported for key in ("barcode", "sample_id", "UMAP_1", "directory"))
+    assert str(d.root) not in exported
+    assert not d.store.get_qc_run(d.sid, d.rid).marker_attempts()
+    d.executor.execute_script.assert_not_called()
+
+
+@pytest.mark.parametrize("decision", ["accepted", "rejected"])
+def test_cluster_revision_expiry_requires_explicit_rereview(reviewed_source, decision):
+    """revision 过期保留真实结果与历史；只能由新的明确人工复核恢复当前卡。"""
+    d = reviewed_source
+    state = d.client.get(d.review_path).json()
+    target, body = cluster_decision_request(d, state, decision)
+    response = d.client.post(target, json=body)
+    assert response.status_code == 200, response.text
+    with d.store._conn() as conn:
+        conn.execute("UPDATE qc_runs SET revision = revision + 1 WHERE run_id = ?", (d.rid,))
+    state = d.client.get(d.review_path).json()
+    assert state["evidence"] is not None and state["current"] is None
+    assert state["latest_decision"]["decision"] == decision
+    assert state["latest_decision"]["invalidated_reason"]
+    with pytest.raises(ValueError, match="聚类复核已失效"):
+        build_cluster_card(d.store, d.sid, d.rid)
+    renewed = d.client.post(target, json={**body, "revision": state["revision"]})
+    assert renewed.status_code == 200, renewed.text
+    assert renewed.json()["latest_decision"]["invalidated_reason"] is None
+    assert build_cluster_card(d.store, d.sid, d.rid).outcome == decision
+    d.executor.execute_script.assert_not_called()
+
+
 def test_marker_review_records_accept_reject_and_rejects_stale_revision(marker_ready):
     """marker 复核可接受/拒绝并保留最新事实，旧 revision 不能改写。"""
     d = marker_ready
@@ -805,3 +962,139 @@ def test_marker_review_records_accept_reject_and_rejects_stale_revision(marker_r
         },
     )
     assert blocked.status_code == 409, blocked.text
+
+
+@pytest.mark.parametrize("mutation", ["missing", "drift", "source", "tool", "snapshot"])
+def test_marker_card_rejects_changed_artifacts_like_page_and_review(marker_ready, mutation):
+    """真实产物或授权来源变化后保留人工事实，所有入口都拒绝当前结果。"""
+    d = marker_ready
+    d.executor.execute_script.side_effect = marker_outputs
+    completed = d.client.post(d.marker_path + "/execute", json=d.marker_body).json()
+    aid = completed["attempts"][0]["attempt_id"]
+    review_path = f"{d.marker_path}/{aid}/review"
+    body = {"decision": "accepted", "revision": completed["revision"], "reason": "人工复核"}
+    reviewed = d.client.post(review_path, json=body)
+    assert reviewed.status_code == 200, reviewed.text
+    assert build_marker_card(d.store, d.sid, d.rid).outcome == "accepted"
+    attempt = d.store.get_qc_run(d.sid, d.rid).attempt("marker", aid)
+    marker_file = Path(attempt["directory"]) / "markers.csv"
+    if mutation == "missing":
+        marker_file.unlink()
+    elif mutation == "drift":
+        marker_file.write_text("changed")
+    elif mutation == "source":
+        d.source.write_bytes(b"changed")
+    else:
+        with d.store._conn() as conn:
+            if mutation == "tool":
+                conn.execute("UPDATE sc_marker_attempts SET tool_version = 'old'")
+            else:
+                snapshot = {**attempt["snapshot"], "source": {}}
+                conn.execute("UPDATE sc_marker_attempts SET snapshot = ?", (json.dumps(snapshot),))
+
+    history = d.client.get(d.marker_path).json()["attempts"][0]
+    assert history["review"]["decision"] == "accepted"
+    assert history["invalidated_reason"] and history["review"]["invalidated_reason"]
+    assert (
+        d.client.post(
+            review_path, json={**body, "revision": reviewed.json()["revision"]}
+        ).status_code
+        == 409
+    )
+    with pytest.raises(ValueError, match="marker"):
+        build_marker_card(d.store, d.sid, d.rid)
+
+
+@pytest.mark.parametrize("field", ["binding_sha256", "record_version"])
+def test_marker_page_invalidates_review_identity_like_card(marker_ready, field):
+    """人工记录身份或版本变化时，已校验产物仍可看，旧复核只作历史。"""
+    d = marker_ready
+    d.executor.execute_script.side_effect = marker_outputs
+    completed = d.client.post(d.marker_path + "/execute", json=d.marker_body).json()
+    aid = completed["attempts"][0]["attempt_id"]
+    response = d.client.post(
+        f"{d.marker_path}/{aid}/review",
+        json={"decision": "rejected", "revision": completed["revision"], "reason": "候选不足"},
+    )
+    assert response.status_code == 200, response.text
+    with d.store._conn() as conn:
+        conn.execute(f"UPDATE sc_marker_reviews SET {field} = ?", ("changed",))
+
+    history = d.client.get(d.marker_path).json()["attempts"][0]
+    assert history["result"] is not None and history["invalidated_reason"] is None
+    assert history["review"]["decision"] == "rejected"
+    assert history["review"]["invalidated_reason"]
+    with pytest.raises(ValueError, match="marker 复核已失效"):
+        build_marker_card(d.store, d.sid, d.rid)
+
+
+@pytest.mark.parametrize("decision", ["accepted", "rejected"])
+def test_current_marker_card_uses_authorized_parents_and_safe_aggregates(marker_ready, decision):
+    """执行推进父复核的 revision 后，自己的授权快照仍支持真实结果构卡。"""
+    d = marker_ready
+    d.executor.execute_script.side_effect = marker_outputs
+    completed = d.client.post(d.marker_path + "/execute", json=d.marker_body).json()
+    aid = completed["attempts"][0]["attempt_id"]
+    response = d.client.post(
+        f"{d.marker_path}/{aid}/review",
+        json={"decision": decision, "revision": completed["revision"], "reason": "人工复核依据"},
+    )
+    assert response.status_code == 200, response.text
+    state = response.json()
+    assert state["cluster_review"]["current"] is None
+    assert state["attempts"][0]["review"]["invalidated_reason"] is None
+    card = build_marker_card(d.store, d.sid, d.rid, attempt_id=aid)
+    assert card.outcome == card.review.status == decision
+    assert card.review.reason == "人工复核依据"
+    assert card.observation == {
+        "cells": 31,
+        "features": 3,
+        "clusters": 2,
+        "marker_rows": 1,
+        "positive_rows": 1,
+        "negative_rows": 0,
+    }
+    assert card.subject.source_revision == completed["revision"]
+    assert {artifact.name for artifact in card.provenance.artifacts} == {
+        "markers.csv",
+        "cluster_marker_summary.csv",
+        "marker_dotplot_data.csv",
+        "marker_dotplot.png",
+        "summary.json",
+        "versions.txt",
+        "session_info.txt",
+        "script.R",
+        "stdout.txt",
+        "stderr.txt",
+    }
+    exported = card.to_json()
+    assert all(key not in exported for key in ("barcode", "sample_id", "UMAP", "directory"))
+    assert str(d.root) not in exported
+
+
+def test_marker_revision_expiry_preserves_result_and_allows_explicit_rereview(marker_ready):
+    """revision 过期只撤销当前人工事实，重新明确复核可恢复当前卡。"""
+    d = marker_ready
+    d.executor.execute_script.side_effect = marker_outputs
+    completed = d.client.post(d.marker_path + "/execute", json=d.marker_body).json()
+    aid = completed["attempts"][0]["attempt_id"]
+    review_path = f"{d.marker_path}/{aid}/review"
+    response = d.client.post(
+        review_path,
+        json={"decision": "accepted", "revision": completed["revision"], "reason": "人工复核"},
+    )
+    assert response.status_code == 200, response.text
+    with d.store._conn() as conn:
+        conn.execute("UPDATE qc_runs SET revision = revision + 1 WHERE run_id = ?", (d.rid,))
+    state = d.client.get(d.marker_path).json()
+    assert state["attempts"][0]["result"] is not None
+    assert state["attempts"][0]["review"]["invalidated_reason"]
+    with pytest.raises(ValueError, match="marker 复核已失效"):
+        build_marker_card(d.store, d.sid, d.rid)
+    fresh = d.client.post(
+        review_path,
+        json={"decision": "accepted", "revision": state["revision"], "reason": "重新明确复核"},
+    )
+    assert fresh.status_code == 200, fresh.text
+    assert fresh.json()["attempts"][0]["review"]["invalidated_reason"] is None
+    assert build_marker_card(d.store, d.sid, d.rid).outcome == "accepted"

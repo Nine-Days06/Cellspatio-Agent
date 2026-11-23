@@ -10,7 +10,7 @@ from typing import Any, Literal
 from fastapi import APIRouter, HTTPException, Query, Request, Response
 from pydantic import BaseModel, ConfigDict, Field
 
-from src.analysis.review_standing import review_is_current
+from src.analysis.review_facts import marker_review_facts
 from src.analysis.sc_marker_reviews import review_view
 from src.analysis.sc_markers import (
     MARKER_FIELDS,
@@ -67,33 +67,23 @@ def view(run: RunSnapshot, cluster: dict[str, Any], root: Path) -> dict[str, Any
     displayed = snapshot or (latest["snapshot"] if latest else None)
     history = []
     for a in attempts:
-        checked, invalid = None, None
-        if a["status"] == "completed":
-            try:
-                checked = checked_completed_marker(run, a, root)
-            except EVIDENCE_ERRORS:
-                invalid = "来源、最新聚类接受、协议或产物变化；本次 marker 仅为历史"
+        facts = marker_review_facts(run, a, root)
+        latest_review = facts.latest
         history.append(
             history_entry(
                 "marker",
                 a,
-                result=checked,
-                invalidated_reason=invalid,
-                review=next(
-                    (
-                        {
-                            "decision": d["decision"],
-                            "reason": d["reason"],
-                            "created_at": d["created_at"],
-                            "source_revision": d["source_revision"],
-                            "invalidated_reason": None
-                            if review_is_current(d, run["revision"], attempt_valid=invalid is None)
-                            else "记录已失效；请刷新后重新复核",
-                        }
-                        for d in reversed(run.marker_reviews(a["attempt_id"]))
-                    ),
-                    None,
-                ),
+                result=facts.result,
+                invalidated_reason=facts.invalidated_reason,
+                review={
+                    **{
+                        k: latest_review[k]
+                        for k in ("decision", "reason", "created_at", "source_revision")
+                    },
+                    "invalidated_reason": facts.review_invalidated_reason,
+                }
+                if latest_review
+                else None,
             )
         )
     return {
@@ -375,10 +365,13 @@ def review_markers(
         if attempt is None:
             raise HTTPException(404, "marker 关联不存在")
         if attempt["status"] == "completed":
-            # 写入复核前重验产物：markers.csv 被替换后不能继续接受旧结果。
-            checked_completed_marker(
+            facts = marker_review_facts(
                 run, attempt, run_qc_root(request.app.state.analysis_roots, run)
             )
+            if facts.result is None:
+                raise ValueError(facts.invalidated_reason)
+            if facts.blocked:
+                raise ValueError("该 run 有阶段运行中，不能记录 marker 复核")
         store.stages.record_marker_review(
             session_id,
             attempt_id,

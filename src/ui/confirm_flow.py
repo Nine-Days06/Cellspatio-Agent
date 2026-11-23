@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from typing import TYPE_CHECKING, Any
 
 from src.chat_messages import build_assistant_message
@@ -12,10 +13,14 @@ from src.ui.confirm_protocol import (
     STATUS_EXPIRED,
     STATUS_PENDING,
     PendingScript,
+    script_binding,
 )
 
 if TYPE_CHECKING:
+    from src.control.workflow_recorder import WorkflowRecorder
     from src.ui.session_store import SessionStore
+
+logger = logging.getLogger(__name__)
 
 ERR_NO_PENDING_SCRIPT = "no_pending_script"
 ERR_MISSING_SOURCE = "missing_source"
@@ -32,12 +37,15 @@ class ConfirmFlowError(ValueError):
 
 
 def restore_pending(
-    store: SessionStore, session_id: str, messages: list[dict[str, Any]]
+    store: SessionStore,
+    session_id: str,
+    messages: list[dict[str, Any]],
+    recorder: WorkflowRecorder | None = None,
 ) -> PendingScript | None:
     """会话加载时的待确认脚本过期语义。
 
-    只看最新一条带 pending_script 的消息：pending → 把**这一条**（按 id）落库
-    置 expired 后按 expired 返回；expired → 原样返回；其他状态 → None。
+    新卡与持久化准备事实完全匹配时保持 pending；旧卡或无法核验的新卡按原契约过期。
+    只看最新一条带 pending_script 的消息；其他终态返回 None。
     """
     for msg in reversed(messages):
         pending = msg.get("pending_script")
@@ -45,10 +53,25 @@ def restore_pending(
             continue
         status = pending.get("status")
         if status in (STATUS_PENDING, STATUS_EXPIRED):
+            if status == STATUS_PENDING and pending.get("run_id") and recorder is not None:
+                try:
+                    recorder.restore_pending_script(
+                        pending["run_id"],
+                        script_binding(
+                            pending.get("analysis_type"),
+                            pending.get("params") or {},
+                            pending.get("script", ""),
+                            pending.get("method_context"),
+                            session_id,
+                        ),
+                    )
+                    return dict(pending)
+                except (OSError, ValueError, KeyError, TypeError) as exc:
+                    logger.warning("pending run restore failed: %s", exc)
             if status == STATUS_PENDING:
                 # 必须按 id 定位：并发新建的卡可能已是最新一条，不能被这里误废。
                 store.set_script_status(session_id, STATUS_EXPIRED, message_id=msg["id"])
-            return {
+            restored = {
                 "script": pending.get("script", ""),
                 "analysis_type": pending.get("analysis_type"),
                 "params": pending.get("params") or {},
@@ -56,6 +79,9 @@ def restore_pending(
                 "user_request": pending.get("user_request", ""),
                 "status": STATUS_EXPIRED,
             }
+            if pending.get("run_id"):
+                restored["run_id"] = pending["run_id"]
+            return restored
         # 只看最新一条 pending_script，更早的不再考虑
         return None
     return None
@@ -87,22 +113,42 @@ def confirm_script(
     token = pending.get("claim_token") or ""
 
     if action == ACTION_SCRIPT_CANCEL:
-        content = "已取消本次脚本执行。"
+        try:
+            result = (
+                agent.cancel_pending_script(
+                    pending.get("analysis_type"),
+                    pending.get("params") or {},
+                    pending.get("script", ""),
+                    method_context=pending.get("method_context"),
+                    session_id=session_id,
+                    run_id=pending["run_id"],
+                )
+                if pending.get("run_id")
+                else {"message": "已取消本次脚本执行。"}
+            )
+        except (OSError, ValueError, TypeError) as exc:
+            logger.error("cancel run persist failed: %s", exc)
+            # 取消未执行 R；记录未保存时仅释放本次领取，供用户明确再取消。
+            store.release_script(session_id, claimed_id, token, claimed_status=status)
+            raise
+        content = result["message"]
         results = None
     else:
         try:
+            run_identity = {"run_id": pending["run_id"]} if pending.get("run_id") else {}
             result = agent.execute_confirmed_script(
                 pending.get("analysis_type"),
                 pending.get("params") or {},
                 pending.get("script", ""),
                 method_context=pending.get("method_context"),
                 session_id=session_id,
+                **run_identity,
             )
         except Exception:
             # 执行失败不能把卡片留在终态，否则用户既看不到结果也无法重试。
             store.release_script(session_id, claimed_id, token)
             raise
-        if result.get("status") == "error":
+        if result.get("status") == "error" and result.get("retry_allowed", True):
             # 修复次数用尽/产物缺失以正常返回值报告失败，同样要把卡片退回 pending。
             store.release_script(session_id, claimed_id, token)
         content = build_assistant_message(result)["content"]

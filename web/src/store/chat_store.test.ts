@@ -206,6 +206,37 @@ describe('createChatStore：实例隔离', () => {
     await pending
   })
 
+  it('clearSession 中止旧流并完整清空活动会话', async () => {
+    const store = createChatStore()
+    store.getState().setSession('s1', [assistant()])
+    store.getState().setScriptCard({
+      message_id: 7,
+      script: 'x <- 1',
+      analysis_type: null,
+      params: {},
+      method_context: null,
+      user_request: '跑分析',
+      status: 'pending',
+    })
+    const { ctl, release } = holdStream()
+    const pending = store.getState().send('hi')
+
+    store.getState().clearSession()
+
+    expect(ctl.signal?.aborted).toBe(true)
+    expect(store.getState()).toMatchObject({
+      sessionId: null,
+      history: [],
+      busy: false,
+      scriptCard: null,
+      dataCard: null,
+    })
+
+    ctl.onEnd?.('aborted')
+    release()
+    await pending
+  })
+
   it('切会话后旧流迟到事件与收尾不污染新会话', async () => {
     const store = createChatStore()
     store.getState().setSession('s1', [])

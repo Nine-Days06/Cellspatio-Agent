@@ -227,6 +227,8 @@ def run_turn(
             "user_request": prompt,
             "status": STATUS_PENDING,
         }
+        if result.get("run_id"):
+            pending["run_id"] = result["run_id"]
         last = _persist(
             store, session_id, format_script_confirmation(result), pending_script=pending
         )

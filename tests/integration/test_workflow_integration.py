@@ -15,7 +15,9 @@ from src.control.agent_runtime import AgentRuntime
 from src.control.intent_parser import IntentParser
 from src.control.r_script_generator import RScriptGenerator
 from src.control.workflow_manager import WorkflowManager
-from tests.unit.fakes import FakeExec
+from src.ui.analysis_roots import AnalysisRoots
+from src.ui.session_store import SessionStore
+from tests.unit.fakes import fake_qc_executor
 
 
 class MockKnowledgeClient:
@@ -74,15 +76,31 @@ def test_analysis_workflow_full_chain():
     [
         (None, "needs_input"),
         ("0.5", "error"),
-        ("2", "needs_script_confirmation"),
-        ("10x", "needs_script_confirmation"),
+        ("2", "needs_confirmation"),
+        ("10x", "needs_confirmation"),
         ("10x-invalid", "error"),
     ],
 )
-def test_single_cell_input_gate_through_agent_runtime(tmp_path, counts, expected_status):
+def test_single_cell_input_gate_through_agent_runtime(
+    tmp_path: Path, counts: str | None, expected_status: str
+) -> None:
     """真实工具分发与工作流共用门禁，非法输入不生成或执行脚本。"""
     generator = Mock(wraps=RScriptGenerator())
-    executor = FakeExec(track_codes=True)
+    tenx = counts is not None and counts.startswith("10x")
+    feature_id = "id1" if tenx else "G1"
+    second_cell = (
+        "c2,0,0,NA,zero_counts;mt_symbol_unresolved\n"
+        if tenx
+        else "c2,2,1,NA,mt_symbol_unresolved\n"
+    )
+    executor = fake_qc_executor(
+        f"feature_id,symbol,unique_name\n{feature_id},G1,G1\n",
+        (
+            "barcode,nCount_RNA,nFeature_RNA,percent_mt,missing_reason\n"
+            "c1,1,1,NA,mt_symbol_unresolved\n" + second_cell
+        ).encode(),
+    )
+    store = SessionStore(tmp_path / "sessions.db")
     manager = WorkflowManager(
         intent_parser=IntentParser(),
         knowledge_client=None,
@@ -90,6 +108,7 @@ def test_single_cell_input_gate_through_agent_runtime(tmp_path, counts, expected
         visualizer=None,
         r_script_generator=generator,
         require_script_confirmation=True,
+        analysis_roots=AnalysisRoots(store, tmp_path),
     )
     llm = Mock()
     tool_call = SimpleNamespace(
@@ -124,18 +143,16 @@ def test_single_cell_input_gate_through_agent_runtime(tmp_path, counts, expected
     assert result["status"] == expected_status
     assert result["analysis_type"] == "single_cell"
     llm.chat.completions.create.assert_called_once()
-    assert executor.codes == []
+    executor.execute_code.assert_not_called()
     assert "script_approved" not in context
-    if expected_status == "needs_script_confirmation":
-        generator.generate_code.assert_called_once()
-        assert "CreateSeuratObject" in result["script"]
-        assert "round(mat)" not in result["script"]
-        if counts == "10x":
-            assert "Read10X" in result["script"] and "ReadMtx" in result["script"]
-            assert result["params"]["output_file"].endswith("sample.v1.sc_clusters.csv")
+    generator.generate_code.assert_not_called()
+    assert "script" not in result
+    if expected_status == "needs_confirmation":
+        assert result["stage"] == "qc_review"
+        assert result["results"]["qc"]["scientific_status"] == "unreviewed"
+        executor.execute_script.assert_called_once()
     else:
-        generator.generate_code.assert_not_called()
-        assert "script" not in result
+        executor.execute_script.assert_not_called()
 
 
 def test_unimplemented_visualization_intent_is_not_advertised():

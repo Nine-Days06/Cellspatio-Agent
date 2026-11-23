@@ -8,9 +8,6 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from src.analysis.evidence import digest
-from src.analysis.review_standing import review_is_current
-from src.analysis.sc_cluster import checked_completed_cluster
-from src.analysis.sc_pca import DIMENSION_RECORD_VERSION
 
 if TYPE_CHECKING:
     from src.ui.run_snapshot import RunSnapshot
@@ -41,58 +38,32 @@ def review_binding(run: Mapping[str, Any], cluster: dict[str, Any]) -> str:
 
 def review_view(run: RunSnapshot, cluster: dict[str, Any], root: Path) -> dict[str, Any]:
     """当前复核需最新 revision；下游执行展示另使用自身授权快照。"""
-    checked, binding, blocked = None, None, []
-    try:
-        checked = checked_completed_cluster(run, cluster, root, DIMENSION_RECORD_VERSION)
-        binding = review_binding(run, cluster)
-    except (OSError, ValueError, KeyError, TypeError, OverflowError, StopIteration, IndexError):
-        blocked.append("聚类来源、协议或本地产物不符；仅保留历史，不能记录接受")
-    if any(
-        a["status"] == "running"
-        for attempts in (
-            run.filter_attempts,
-            run.pca_attempts(),
-            run.cluster_attempts(),
-            run.marker_attempts(),
-        )
-        for a in attempts
-    ):
+    # sc_markers 的来源校验依赖本模块，延迟导入避免形成循环。
+    from src.analysis.review_facts import cluster_review_facts
+
+    facts = cluster_review_facts(run, cluster, root)
+    checked = facts.result
+    blocked = []
+    if facts.invalidated_reason:
+        blocked.append(facts.invalidated_reason)
+    if facts.blocked:
         blocked.append("该 run 有阶段运行中，不能记录聚类复核")
     history = run.cluster_reviews(cluster["attempt_id"])
     latest = history[-1] if history else None
-    rejections = run.cluster_rejections(cluster["attempt_id"])
-    latest_rejection = rejections[-1] if rejections else None
     current = (
-        latest
-        if (
-            not blocked
-            and latest
-            and latest["accepted"] is True
-            and latest["binding_sha256"] == binding
-            and latest["record_version"] == CLUSTER_RECORD_VERSION
-            and review_is_current(latest, run["revision"])
-        )
+        {k: v for k, v in facts.current.items() if k != "outcome"}
+        if facts.current and facts.current["outcome"] == "accepted"
         else None
     )
-
-    def decision_fact(record: dict[str, Any], decision: str) -> dict[str, Any]:
-        valid = review_is_current(record, run["revision"], blocked=bool(blocked))
-        return {
-            "decision": decision,
-            "reason": record["reason"],
-            "created_at": record["created_at"],
-            "source_revision": record["source_revision"],
-            "invalidated_reason": None if valid else "来源或 revision 已变化；该事实仅作历史",
+    latest_decision = (
+        {
+            "decision": facts.latest["outcome"],
+            **{k: facts.latest[k] for k in ("reason", "created_at", "source_revision")},
+            "invalidated_reason": facts.review_invalidated_reason,
         }
-
-    facts = []
-    if latest:
-        facts.append((latest["source_revision"], decision_fact(latest, "accepted")))
-    if latest_rejection:
-        facts.append(
-            (latest_rejection["source_revision"], decision_fact(latest_rejection, "rejected"))
-        )
-    latest_decision = max(facts, key=lambda item: item[0])[1] if facts else None
+        if facts.latest
+        else None
+    )
     return {
         "run_id": run["run_id"],
         "cluster_attempt_id": cluster["attempt_id"],
@@ -100,7 +71,7 @@ def review_view(run: RunSnapshot, cluster: dict[str, Any], root: Path) -> dict[s
         "revision": run["revision"],
         "stage": "cluster_review",
         "scientific_status": "unreviewed",
-        "binding_sha256": binding if not blocked else None,
+        "binding_sha256": review_binding(run, cluster) if checked and not blocked else None,
         "evidence": {k: checked[k] for k in ("cells", "clusters", "cluster_sizes", "versions")}
         if checked
         else None,

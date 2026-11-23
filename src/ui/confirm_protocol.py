@@ -21,3 +21,20 @@ SCRIPT_STATUS_BY_ACTION = {
 }
 
 PendingScript = dict[str, Any]
+
+
+def script_binding(
+    analysis_type: str | None,
+    params: dict[str, Any],
+    script: str,
+    method_context: str | None,
+    session_id: str | None,
+) -> dict[str, Any]:
+    """准备保存、刷新恢复与确认/取消核验使用同一组脚本绑定事实。"""
+    return {
+        "session_id": session_id,
+        "analysis_type": analysis_type,
+        "script": script,
+        "params": params,
+        "method_context": method_context,
+    }

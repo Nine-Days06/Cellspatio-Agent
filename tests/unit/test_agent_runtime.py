@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 from types import SimpleNamespace
 
 
@@ -312,27 +313,29 @@ def test_build_messages_general_hint_not_injected():
 
 
 class _ScriptedRouter:
-    """同时实现 hint() 与 route() 的路由器替身；route 记录调用参数。"""
+    """同时实现 hint() 与 read_analysis_plan() 的路由器替身。"""
 
-    def __init__(self, modality="analysis", output=None, raise_on_route=False):
+    def __init__(self, modality="analysis", output=None, raise_on_plan=False, best_practices=None):
         self.modality = modality
         self.output = output
-        self.raise_on_route = raise_on_route
-        self.route_calls: list[tuple[str, dict]] = []
+        self.raise_on_plan = raise_on_plan
+        self.best_practices = best_practices
+        self.plan_calls: list[str] = []
+        self.plan_best_practices: list[str | None] = []
 
     def hint(self, user_input):
-        return {"modality": self.modality, "skill": None, "best_practices": None}
-
-    def route(self, user_input, context=None):
-        self.route_calls.append((user_input, dict(context or {})))
-        if self.raise_on_route:
-            raise RuntimeError("classifier down")
         return {
-            "status": "success",
             "modality": self.modality,
-            "skill": "stub",
-            "output": self.output,
+            "skill": None,
+            "best_practices": self.best_practices,
         }
+
+    def read_analysis_plan(self, user_input, *, best_practices=None):
+        self.plan_calls.append(user_input)
+        self.plan_best_practices.append(best_practices)
+        if self.raise_on_plan:
+            raise RuntimeError("classifier down")
+        return self.output
 
 
 def test_skill_plan_none_without_router():
@@ -344,49 +347,45 @@ def test_skill_plan_none_without_router():
 
 
 def test_skill_plan_returns_output_for_analysis_input():
-    """分析类输入：route() 被调且返回静态方案；HITL 门以新建 dict 显式放行。"""
+    """分析类输入只调用方案读取，不触发生命周期路由。"""
     from src.control.agent_runtime import AgentRuntime
 
     plan = {"analysis_type": "differential_expression", "plan": ["质控", "DESeq2"]}
-    router = _ScriptedRouter(output=plan)
+    router = _ScriptedRouter(output=plan, best_practices="优先 DESeq2")
     rt = AgentRuntime(llm_client=None, model="m", workflow_manager=object(), router=router)
 
     assert rt._skill_plan("对这份数据做差异表达分析", "differential_expression") == plan
-    assert router.route_calls == [("对这份数据做差异表达分析", {"script_approved": True})]
+    assert router.plan_calls == ["对这份数据做差异表达分析"]
+    assert router.plan_best_practices == ["优先 DESeq2"]
 
 
 def test_skill_plan_skips_non_analysis_modality():
-    """非分析类输入不调 route()：fetch/knowledge 技能真实打网络，不得重复执行。"""
+    """非分析类输入不读取分析方案。"""
     from src.control.agent_runtime import AgentRuntime
 
     router = _ScriptedRouter(modality="fetch", output={"query": "x", "count": 0})
     rt = AgentRuntime(llm_client=None, model="m", workflow_manager=object(), router=router)
 
     assert rt._skill_plan("帮我下载 GSE123456 数据集", "differential_expression") is None
-    assert router.route_calls == []
+    assert router.plan_calls == []
 
 
 def test_skill_plan_degrades_on_failure_and_mismatch():
-    """route 抛异常 / status 非 success / analysis_type 不一致 → 一律降级为 None。"""
+    """方案读取异常或 analysis_type 不一致时一律降级为 None。"""
     from src.control.agent_runtime import AgentRuntime
 
     class ErrorRouter(_ScriptedRouter):
-        def route(self, user_input, context=None):
-            self.route_calls.append((user_input, dict(context or {})))
-            return {"status": "error", "modality": "analysis", "message": "boom"}
+        def read_analysis_plan(self, user_input, *, best_practices=None):
+            self.plan_calls.append(user_input)
+            raise RuntimeError("boom")
 
     class MismatchRouter(_ScriptedRouter):
-        def route(self, user_input, context=None):
-            self.route_calls.append((user_input, dict(context or {})))
-            return {
-                "status": "success",
-                "modality": "analysis",
-                "skill": "single_cell",
-                "output": {"analysis_type": "single_cell", "plan": ["聚类"]},
-            }
+        def read_analysis_plan(self, user_input, *, best_practices=None):
+            self.plan_calls.append(user_input)
+            return {"analysis_type": "single_cell", "plan": ["聚类"]}
 
     routers = [
-        _ScriptedRouter(raise_on_route=True),
+        _ScriptedRouter(raise_on_plan=True),
         ErrorRouter(),
         MismatchRouter(),
         _ScriptedRouter(output={"analysis_type": "differential_expression"}),
@@ -394,6 +393,19 @@ def test_skill_plan_degrades_on_failure_and_mismatch():
     for router in routers:
         rt = AgentRuntime(llm_client=None, model="m", workflow_manager=object(), router=router)
         assert rt._skill_plan("对这份数据做差异表达分析", "differential_expression") is None
+
+
+def test_skill_plan_failure_log_describes_plan_read(caplog):
+    """方案读取异常应使用准确诊断名称，避免误报为技能路由失败。"""
+    from src.control.agent_runtime import AgentRuntime
+
+    caplog.set_level(logging.WARNING, logger="src.control.agent_runtime")
+    router = _ScriptedRouter(raise_on_plan=True)
+    rt = AgentRuntime(llm_client=None, model="m", workflow_manager=object(), router=router)
+
+    assert rt._skill_plan("对这份数据做差异表达分析", "differential_expression") is None
+    assert "analysis plan read failed, continue without plan: classifier down" in caplog.text
+    assert "skill route failed" not in caplog.text
 
 
 def _analysis_runtime(router, wm_results=None):
@@ -426,8 +438,8 @@ def test_run_analysis_injects_skill_plan_without_polluting_context():
 
 
 def test_run_analysis_route_failure_keeps_params_and_dispatch():
-    """route() 炸了也不影响分析下发：params 无 skill_plan，终态照常返回。"""
-    router = _ScriptedRouter(raise_on_route=True)
+    """方案读取炸了也不影响分析下发：params 无 skill_plan，终态照常返回。"""
+    router = _ScriptedRouter(raise_on_plan=True)
     runtime, wm = _analysis_runtime(router)
 
     result = runtime.execute("对这份数据做差异表达分析", context={})
