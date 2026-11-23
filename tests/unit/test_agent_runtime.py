@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 from types import SimpleNamespace
 
 
@@ -392,6 +393,19 @@ def test_skill_plan_degrades_on_failure_and_mismatch():
     for router in routers:
         rt = AgentRuntime(llm_client=None, model="m", workflow_manager=object(), router=router)
         assert rt._skill_plan("对这份数据做差异表达分析", "differential_expression") is None
+
+
+def test_skill_plan_failure_log_describes_plan_read(caplog):
+    """方案读取异常应使用准确诊断名称，避免误报为技能路由失败。"""
+    from src.control.agent_runtime import AgentRuntime
+
+    caplog.set_level(logging.WARNING, logger="src.control.agent_runtime")
+    router = _ScriptedRouter(raise_on_plan=True)
+    rt = AgentRuntime(llm_client=None, model="m", workflow_manager=object(), router=router)
+
+    assert rt._skill_plan("对这份数据做差异表达分析", "differential_expression") is None
+    assert "analysis plan read failed, continue without plan: classifier down" in caplog.text
+    assert "skill route failed" not in caplog.text
 
 
 def _analysis_runtime(router, wm_results=None):

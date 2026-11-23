@@ -17,7 +17,7 @@ logger = logging.getLogger(__name__)
 
 
 class ModalRouter:
-    """模态感知路由器：分类 → 分发 → 回退链 + 自动记忆。"""
+    """模态路由器：完整技能执行与只读分析方案读取。"""
 
     def __init__(
         self, registry: SkillRegistry, loader: SkillLoader, kg_memory: KGMemory | None = None
@@ -28,7 +28,7 @@ class ModalRouter:
         self.kg_memory = kg_memory
 
     def route(self, user_input: str, context: dict | None = None) -> dict[str, Any]:
-        """路由入口：分类 → 查询最佳实践 → 调用 Skill → 自动记忆 → 处理 HITL/回退。"""
+        """完整技能入口：分类 → HITL → 加载 Skill → setup/execute/teardown。"""
         context = context or {}
         dispatched_skill = self._classify_skill(user_input, require_analysis=False)
         if dispatched_skill is None:

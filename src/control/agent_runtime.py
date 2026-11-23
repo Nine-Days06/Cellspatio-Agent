@@ -246,8 +246,8 @@ class AgentRuntime:
             output = self.router.read_analysis_plan(
                 user_input, best_practices=hint.get("best_practices")
             )
-        except Exception as e:  # noqa: BLE001 - 技能路由失败必须可降级
-            logger.warning("skill route failed, continue without plan: %s", e)
+        except Exception as e:  # noqa: BLE001 - 方案读取失败必须可降级
+            logger.warning("analysis plan read failed, continue without plan: %s", e)
             return None
         if not output or output.get("analysis_type") != analysis_type or "plan" not in output:
             return None
