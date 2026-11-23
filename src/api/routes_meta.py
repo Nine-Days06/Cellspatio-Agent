@@ -10,8 +10,14 @@ import shutil
 from pathlib import Path
 from typing import Any
 
-from fastapi import APIRouter, Request
+from fastapi import APIRouter, Request, Response
 
+from src.api.auth import (
+    create_visitor_workspace,
+    set_visitor_cookie,
+    workspace_context,
+    workspace_expiry_view,
+)
 from src.api.chat_service import soft_warn_for
 from src.api.deps import StoreDep
 from src.ui.session_store import SessionStore
@@ -112,4 +118,19 @@ def sidebar(
         "kb_stats": _kb_stats(agent),
         "env": _env_status(agent),
         "soft_warn": _soft_warn(store, session_id),
+        "workspace": workspace_expiry_view(workspace_context(request)),
     }
+
+
+@router.get("/workspace")
+def workspace_info(request: Request) -> dict[str, Any]:
+    """当前请求所属工作区：访客/账户、到期时间与剩余秒数。"""
+    return {"workspace": workspace_expiry_view(workspace_context(request))}
+
+
+@router.post("/workspace/new")
+def new_workspace(request: Request, response: Response, store: StoreDep) -> dict[str, Any]:
+    """试用入口：始终新建临时工作区并轮换 visitor cookie。"""
+    workspace, token = create_visitor_workspace(store, request.app.state.repo_root)
+    set_visitor_cookie(response, request, token)
+    return {"workspace": workspace_expiry_view(workspace)}

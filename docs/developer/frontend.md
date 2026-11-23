@@ -8,7 +8,11 @@
 
 | 路径 | 职责 |
 |---|---|
+| `web/src/pages/HomePage.tsx` | 首页：登录 / 试用 / 进入工作区；试用会先确认放弃现有临时数据 |
+| `web/src/pages/LoginPage.tsx` | 管理账户登录；成功进入永久工作区 |
 | `web/src/pages/ChatPage.tsx` | 对话主页面 |
+| `web/src/lib/navigation.ts` | 无路由库的 `/`、`/login`、`/workspace` 三页切换与 popstate |
+| `web/src/components/UploadDialog.tsx` | 临时访客上传 CSV / 10x zip，前端只挡单文件 100 MB |
 | `web/src/components/` | 会话、确认卡、阶段复核、图表、Markdown 等交互组件 |
 | `web/src/lib/http.ts` | JSON 与 SSE 共用的请求/错误解析层 |
 | `web/src/lib/sse.ts` | `/api/chat` 流式事件解析 |
@@ -32,6 +36,7 @@
 - 确认动作/状态必须与 `src/ui/confirm_protocol.py` 保持同步，跑
   `tests/unit/test_confirm_contract.py`。
 - 切换会话/清空状态必须经过 store 的私有 reset，避免遗漏 abort 和复位。
+- 临时工作区 410 时 `ChatPage` 必须显示“新建临时空间”；不能依赖 `/api/sidebar` 成功返回。
 
 ## 构建与测试
 

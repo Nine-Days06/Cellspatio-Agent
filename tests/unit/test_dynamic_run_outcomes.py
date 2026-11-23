@@ -4,12 +4,12 @@ from pathlib import Path
 from typing import Any
 
 import pytest
-from fastapi.testclient import TestClient
 
 from src.analysis.r_executor import RExecutorError
 from src.main import CellSpatioAgent
 from tests.unit.fakes import FakeExec
 from tests.unit.test_dynamic_confirmed_run import confirmed_app, prepare_card
+from tests.unit.workspace_support import legacy_client
 
 
 def test_cancel_records_original_run_without_executing_r(
@@ -23,7 +23,7 @@ def test_cancel_records_original_run_without_executing_r(
     rebuilt.cancel_pending_script = lambda *args, **kwargs: CellSpatioAgent.cancel_pending_script(
         rebuilt, *args, **kwargs
     )
-    with TestClient(app) as client:
+    with legacy_client(app) as client:
         response = client.post("/api/confirm", json={"session_id": sid, "action": "script_cancel"})
     assert response.status_code == 200
     assert "已取消" in response.json()["message"]["content"]
@@ -50,7 +50,7 @@ def test_cancel_rejects_mismatched_original_identity_without_claiming_cancelled(
     rebuilt.cancel_pending_script = lambda *args, **kwargs: CellSpatioAgent.cancel_pending_script(
         rebuilt, *args, **kwargs
     )
-    with TestClient(app) as client:
+    with legacy_client(app) as client:
         response = client.post("/api/confirm", json={"session_id": sid, "action": "script_cancel"})
     assert response.status_code == 200
     assert "不匹配" in response.json()["message"]["content"]
@@ -72,7 +72,7 @@ def test_known_failure_survives_reconstruction_and_explicit_retry(
         raise RExecutorError("真实执行失败")
 
     first.workflow_manager.r_executor = FakeExec(track_codes=True, side_effect=fail)
-    with TestClient(app) as client:
+    with legacy_client(app) as client:
         response = client.post("/api/confirm", json={"session_id": sid, "action": "script_confirm"})
     assert response.status_code == 200
     message = response.json()["message"]
@@ -87,7 +87,7 @@ def test_known_failure_survives_reconstruction_and_explicit_retry(
     assert failed.steps[-1].output.result["status"] == "error"
     assert store.get_messages(sid)[-2]["pending_script"]["status"] == "pending"
     second_app, second = confirmed_app(tmp_path, store, "differential_expression")
-    with TestClient(second_app) as client:
+    with legacy_client(second_app) as client:
         restored = client.get(f"/api/sessions/{sid}/messages?restore=1")
         assert restored.json()["pending_script"]["run_id"] == prepared["run_id"]
         assert second.workflow_manager.r_executor.codes == []
@@ -127,7 +127,7 @@ def test_cancel_disk_failure_releases_only_own_claim_for_explicit_retry(
             fail_replace(str(path), str(path))
         return read_text(path, *args, **kwargs)
 
-    with TestClient(app, raise_server_exceptions=False) as client:
+    with legacy_client(app, raise_server_exceptions=False) as client:
         with monkeypatch.context() as fault:
             if fault_kind == "write":
                 fault.setattr("src.control.wrroc_store.os.replace", fail_replace)
@@ -175,7 +175,7 @@ def test_legacy_card_creates_explicit_compatibility_run_without_guessing_origina
     old.pop("run_id")
     store.append_message(sid, "assistant", "旧卡", pending_script=old)
     app, rebuilt = confirmed_app(tmp_path, store, "differential_expression")
-    with TestClient(app) as client:
+    with legacy_client(app) as client:
         assert (
             client.post(
                 "/api/confirm", json={"session_id": sid, "action": "script_confirm"}
@@ -215,7 +215,7 @@ def test_unknown_execution_interruption_remains_nonretryable_even_with_copied_ca
         raise RuntimeError("执行结果未知")
 
     first.workflow_manager.r_executor = FakeExec(side_effect=interrupt)
-    with TestClient(app) as client:
+    with legacy_client(app) as client:
         assert (
             client.post(
                 "/api/confirm", json={"session_id": sid, "action": "script_confirm"}
@@ -228,7 +228,7 @@ def test_unknown_execution_interruption_remains_nonretryable_even_with_copied_ca
     assert store.get_messages(sid)[-2]["pending_script"]["status"] == "confirmed"
     store.append_message(sid, "assistant", "复制卡", pending_script=pending)
     second_app, second = confirmed_app(tmp_path, store, "differential_expression")
-    with TestClient(second_app) as client:
+    with legacy_client(second_app) as client:
         assert (
             client.post(
                 "/api/confirm", json={"session_id": sid, "action": "script_confirm"}

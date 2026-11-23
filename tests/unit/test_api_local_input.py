@@ -16,6 +16,7 @@ from src.control.workflow_manager import WorkflowManager
 from src.ui.analysis_roots import AnalysisRoots
 from src.ui.session_store import SessionStore
 from tests.unit.fakes import QC_HEADER, FakeAgent, fake_qc_executor
+from tests.unit.workspace_support import authenticate_legacy
 
 
 @pytest.fixture
@@ -42,7 +43,9 @@ def _client(tmp_path, result: dict) -> TestClient:
         workflow_recorder=SimpleNamespace(repo_root=tmp_path),
         run_analysis_for_agent=lambda *args: result,
     )
-    return TestClient(create_app(agent))
+    client = TestClient(create_app(agent))
+    authenticate_legacy(client)
+    return client
 
 
 def test_registers_qc_run_and_local_asset(tmp_path, source):
@@ -116,9 +119,9 @@ def test_register_qc_prefers_agent_analysis_roots(tmp_path, source):
     )
     agent.analysis_roots = AnalysisRoots(SessionStore(), tmp_path)
 
-    response = TestClient(create_app(agent)).post(
-        f"/api/sessions/{sid}/local-input", json={"path": str(source)}
-    )
+    client = TestClient(create_app(agent))
+    authenticate_legacy(client)
+    response = client.post(f"/api/sessions/{sid}/local-input", json={"path": str(source)})
 
     assert response.status_code == 200, response.text
     assert response.json()["status"] == "needs_confirmation"
@@ -215,6 +218,7 @@ def test_local_input_runs_tenx_directory_without_llm(tmp_path, monkeypatch):
     )
     sid = store.create_session()
     client = TestClient(create_app(agent))
+    authenticate_legacy(client)
 
     response = client.post(f"/api/sessions/{sid}/local-input", json={"path": str(tenx)})
 
@@ -246,6 +250,7 @@ def test_project_session_writes_to_project_analysis_root(tmp_path, monkeypatch):
     pid = store.create_project("肝癌项目")
     sid = store.create_session("项目会话", project_id=pid)
     client = TestClient(create_app(agent))
+    authenticate_legacy(client)
 
     response = client.post(f"/api/sessions/{sid}/local-input", json={"path": str(source)})
 
@@ -275,6 +280,7 @@ def test_legacy_run_stays_readable_after_session_moves_to_project(tmp_path, monk
     store.register_qc_run(sid, directory.name, str(directory), evidence)
 
     client = TestClient(create_app(FakeAgent()))
+    authenticate_legacy(client)
     assert client.get(f"/api/sessions/{sid}/qc/{directory.name}").status_code == 200
     preview = client.post(
         f"/api/sessions/{sid}/qc/{directory.name}/preview",
@@ -291,6 +297,7 @@ def test_qc_run_outside_allowed_roots_is_blocked(tmp_path, monkeypatch):
     sid = store.create_session()
     store.register_qc_run(sid, "run-x", str(outside), {"summary": {"cells": 1, "features": 1}})
     client = TestClient(create_app(FakeAgent()))
+    authenticate_legacy(client)
 
     body = client.get(f"/api/sessions/{sid}/qc/run-x").json()
 

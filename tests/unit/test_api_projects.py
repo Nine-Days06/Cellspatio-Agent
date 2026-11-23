@@ -8,11 +8,14 @@ from fastapi.testclient import TestClient
 from src.api import routes_projects
 from src.api.app import create_app
 from tests.unit.fakes import FakeAgent
+from tests.unit.workspace_support import authenticate_legacy
 
 
 @pytest.fixture
 def client():
-    return TestClient(create_app(FakeAgent()))
+    client = TestClient(create_app(FakeAgent()))
+    authenticate_legacy(client)
+    return client
 
 
 def test_project_crud(client, tmp_path):

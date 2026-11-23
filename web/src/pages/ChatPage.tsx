@@ -11,13 +11,23 @@
  */
 import { useCallback, useEffect, useReducer, useRef, useState } from 'react'
 import { useQueryClient } from '@tanstack/react-query'
-import { ArrowUp, Square } from 'lucide-react'
+import { ArrowUp, Home, LogOut, Square } from 'lucide-react'
 import { ConfirmCard } from '@/components/ConfirmCard'
 import { LocalInputDialog } from '@/components/LocalInputDialog'
 import { MessageList } from '@/components/MessageList'
 import { Sidebar } from '@/components/Sidebar'
 import { ThemeToggle } from '@/components/ThemeToggle'
-import { ApiError, confirmAction, createSession, registerLocalInput } from '@/lib/api'
+import { UploadDialog } from '@/components/UploadDialog'
+import {
+  ApiError,
+  confirmAction,
+  createSession,
+  logout,
+  registerLocalInput,
+  startNewWorkspace,
+  uploadInput,
+} from '@/lib/api'
+import { navigate } from '@/lib/navigation'
 import { confirmReducer, initialConfirmState, scriptStatusForAction } from '@/lib/confirmState'
 import { queryKeys, useMessages, useProjects, useSessions, useSidebar } from '@/lib/queries'
 import { sessionWorkspace } from '@/lib/sessionWorkspace'
@@ -32,6 +42,7 @@ import type {
   EnvStatus,
   KbStats,
   SessionSummary,
+  WorkspaceInfo,
 } from '@/lib/types'
 import { useChatStore } from '@/store/chat'
 
@@ -42,6 +53,16 @@ const DEFAULT_ENV: EnvStatus = {
   kb_ok: false,
   ollama: { state: 'unavailable', managed: false, detail: '' },
   ollama_start_mode: 'lazy',
+}
+
+function workspaceSummary(workspace?: WorkspaceInfo): string {
+  if (!workspace) return ''
+  if (workspace.kind !== 'ephemeral') {
+    return `永久工作区${workspace.label ? ` · ${workspace.label}` : ''}`
+  }
+  if (workspace.expired || workspace.remaining_seconds === 0) return '临时体验空间 · 已到期'
+  const hours = Math.max(1, Math.ceil((workspace.remaining_seconds ?? 0) / 3600))
+  return `临时体验空间 · 24 小时（剩余 ${hours} 小时）`
 }
 
 export function ChatPage() {
@@ -352,8 +373,43 @@ export function ChatPage() {
     [handleCreated, queryClient],
   )
 
+  const handleUpload = useCallback(
+    async (file: File) => {
+      let id = useChatStore.getState().sessionId
+      if (!id) {
+        const { session } = await createSession('上传 10x 数据', null)
+        id = session.id
+        handleCreated({
+          id: session.id,
+          title: session.title,
+          updated_at: session.updated_at,
+          message_count: 0,
+          project_id: session.project_id,
+          pinned: session.pinned,
+          archived_at: session.archived_at,
+        })
+      }
+      await uploadInput(id, file)
+      void queryClient.invalidateQueries({ queryKey: queryKeys.messages(id) })
+      void queryClient.invalidateQueries({ queryKey: queryKeys.sessions() })
+    },
+    [handleCreated, queryClient],
+  )
+
   const kbStats = sidebarQuery.data?.kb_stats ?? DEFAULT_KB
   const env = sidebarQuery.data?.env ?? DEFAULT_ENV
+  const workspace = sidebarQuery.data?.workspace
+  const workspaceExpired = Boolean(
+    workspace?.expired ||
+      workspace?.remaining_seconds === 0 ||
+      (sidebarQuery.error instanceof ApiError && sidebarQuery.error.status === 410),
+  )
+
+  async function handleNewTrial(): Promise<void> {
+    await startNewWorkspace()
+    queryClient.clear()
+    window.location.assign('/workspace')
+  }
 
   return (
     <div className="workspace flex h-dvh flex-col overflow-hidden bg-background text-foreground md:flex-row">
@@ -371,18 +427,60 @@ export function ChatPage() {
         onChanged={refreshNavigation}
       />
       <main className="flex min-h-0 min-w-0 flex-1 flex-col">
+        {workspaceExpired && (
+          <div
+            role="alert"
+            className="flex shrink-0 items-center justify-between gap-3 border-b border-border bg-muted px-5 py-3 text-sm md:px-9"
+          >
+            <span>临时体验空间已到期，数据将在清理后删除。</span>
+            <button
+              type="button"
+              className="rounded-md border px-3 py-1.5"
+              onClick={() => void handleNewTrial()}
+            >
+              新建临时空间
+            </button>
+          </div>
+        )}
         <header className="workspace-header flex shrink-0 items-center justify-between gap-4 border-b border-border px-5 py-4 md:px-9">
           <div className="min-w-0">
             <h1 className="truncate text-lg font-semibold tracking-tight md:text-xl" title={currentSession?.title}>{currentSession?.title ?? '新会话'}</h1>
-            <p className="mt-1 text-xs text-muted-foreground">{currentProject ? `${currentProject.label} · ` : ''}单细胞与时空组学分析记录{history.length > 0 && ` · ${history.length} 条记录`}</p>
+            <p className="mt-1 text-xs text-muted-foreground">
+              {workspace ? `${workspaceSummary(workspace)} · ` : ''}
+              {currentProject ? `${currentProject.label} · ` : ''}
+              单细胞与时空组学分析记录{history.length > 0 && ` · ${history.length} 条记录`}
+            </p>
           </div>
           <div className="flex shrink-0 items-center gap-2">
             <span className="flex items-center gap-2 text-xs text-muted-foreground"><span aria-hidden="true" className={`size-1.5 rounded-full ${busy ? 'bg-primary' : 'bg-muted-foreground/50'}`} />{busy ? '正在执行' : '等待输入'}</span>
-            <LocalInputDialog
-              onSubmit={handleLocalInput}
-              defaultPath={currentProject?.root_path ?? ''}
-            />
+            {workspace?.principal_kind === 'account' && (
+              <button
+                type="button"
+                className="inline-flex items-center gap-1 rounded-lg px-2 py-1 text-xs text-muted-foreground hover:bg-muted hover:text-foreground"
+                onClick={() => {
+                  void logout().then(() => navigate('/'))
+                }}
+              >
+                <LogOut className="size-3.5" />
+                退出
+              </button>
+            )}
+            {workspace?.kind !== 'ephemeral' && (
+              <LocalInputDialog
+                onSubmit={handleLocalInput}
+                defaultPath={currentProject?.root_path ?? ''}
+              />
+            )}
+            {workspace?.kind === 'ephemeral' && <UploadDialog onSubmit={handleUpload} />}
             <ThemeToggle />
+            <button
+              type="button"
+              aria-label="返回主页"
+              className="inline-flex size-8 items-center justify-center rounded-lg text-muted-foreground hover:bg-muted hover:text-foreground"
+              onClick={() => navigate('/')}
+            >
+              <Home className="size-4" />
+            </button>
           </div>
         </header>
         <MessageList

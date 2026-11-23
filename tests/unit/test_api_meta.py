@@ -63,7 +63,7 @@ def test_sidebar_returns_kb_env_and_soft_warn(tmp_path):
 
     body = _client(agent).get("/api/sidebar").json()
 
-    assert set(body) == {"kb_stats", "env", "soft_warn"}
+    assert set(body) == {"env", "kb_stats", "soft_warn", "workspace"}
     assert body["kb_stats"]["initialized"] is True
     assert body["env"]["rscript"] == str(tmp_path / "Rscript")
     assert body["env"]["kb_path"] == str(tmp_path)

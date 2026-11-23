@@ -15,6 +15,8 @@
 - **数据获取**：GEO 数据集检索与下载；KEGG/UniProt 条目进入知识流。
 - **本地优先**：原始数据、项目记录和知识库留在本机；公共证据只上传聚合字段。
 - **项目与会话**：侧栏管理项目、会话、归档、置顶和本地数据。
+- **工作区与访问**：访客自动获得 24 小时临时工作区，可上传 counts CSV/10x zip；三个管理账户
+  各自使用永久工作区，登录后可跨浏览器恢复会话。
 
 ## 快速开始（Windows 便携客户端）
 
@@ -86,8 +88,8 @@ python -m src.api
 - 复核证据卡会重验本地来源、产物和人工记录；失效记录保留为历史，需检查证据并重新明确复核。
 - 受控单细胞不支持 H5/H5AD、Seurat 对象或 FASTQ；输入必须是 10x MTX 目录或 counts CSV。
 - 单次 R 执行上限 300 秒；超时或失败不会自动重跑。
-- 本地服务是单进程、单机原型，不是多用户生产服务；公共证据服务部署见
-  [部署说明](docs/deploy.md)。
+- 默认仍是单进程本地原型；启用公网访客模式后，工作区隔离、临时回收与登录限速会生效，
+  但不提供注册、找回密码或高可用调度。公网部署见 [InstaBox 部署](docs/deploy/instabox.md)。
 - Windows 便携客户端是当前主要分发方式；源码方式支持 Windows/macOS/Linux。
 
 ## 文档
@@ -96,6 +98,7 @@ python -m src.api
 - [开发文档](docs/developer/README.md)：GitHub 直接浏览，无需启动服务；含架构、模块地图、开发环境、测试门禁与常见任务。
 - [使用指南](docs/user/usage_guide.md)：安装、配置、数据、分析、问答和限制。
 - [部署说明](docs/deploy.md)：公共证据服务的 Caddy/TLS、备份与审计。
+- [InstaBox 部署](docs/deploy/instabox.md)：主站原生全栈、nginx、账户初始化与回滚。
 - [协作约定](CONTRIBUTING.md)：开发环境、测试门禁、分支与 PR。
 - [文献 ETL](pubmed-etl/README.md)：PubMed 批量下载与清洗。
 

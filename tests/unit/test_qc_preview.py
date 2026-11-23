@@ -21,6 +21,7 @@ from src.api.app import create_app
 from src.api.chat_service import run_turn
 from src.ui.session_store import SessionStore
 from tests.unit.fakes import FakeAgent, FakeRuntime, fake_qc_executor
+from tests.unit.workspace_support import authenticate_legacy
 
 PARAMS = {"n_feature_min": 1, "n_feature_max": 2, "percent_mt_max": 25}
 HEADER = b"barcode,nCount_RNA,nFeature_RNA,percent_mt,missing_reason\n"
@@ -47,6 +48,7 @@ def registered(tmp_path, monkeypatch):
     run_id = result["results"]["qc_run_id"]
     monkeypatch.setenv("OLLAMA_EAGER_START", "0")
     client = TestClient(create_app(agent))
+    authenticate_legacy(client)
     return store, sid, run_id, root, source, client
 
 

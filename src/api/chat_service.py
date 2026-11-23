@@ -211,6 +211,10 @@ def run_turn(
         "last_user_input": prompt,
         "session_id": session_id,
     }
+    workspace = store.get_workspace(store.workspace_id) if store.workspace_id else None
+    if workspace and workspace.get("kind") == "ephemeral":
+        # 临时访客只能分析自己上传进工作区的数据，聊天里提到的服务器路径同样拒绝。
+        context["allowed_input_root"] = workspace.get("root_path")
     result = agent.agent_runtime.execute(prompt, context, on_event=emit)
 
     if result.get("status") == "aborted":
