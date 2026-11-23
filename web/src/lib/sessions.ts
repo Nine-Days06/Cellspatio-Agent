@@ -16,3 +16,18 @@ export function isActiveSession(
     !(session.project_id && archivedProjectIds.has(session.project_id))
   )
 }
+
+/** 删除当前会话后返回首个剩余活动会话；没有则返回 null。 */
+export function nextSessionAfterDelete(
+  sessions: SessionSummary[],
+  projects: Project[],
+  deletedSessionId: string,
+): string | null {
+  const archivedProjectIds = collectArchivedProjectIds(projects)
+  return (
+    sessions.find(
+      (session) =>
+        session.id !== deletedSessionId && isActiveSession(session, archivedProjectIds),
+    )?.id ?? null
+  )
+}

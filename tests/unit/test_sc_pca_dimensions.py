@@ -11,6 +11,7 @@ import pytest
 
 import src.ui.sc_stages as sc_stages
 from src.api.routes_pca import DIMENSION_RECORD_VERSION
+from src.evidence.builder import build_pca_dimensions_card, build_qc_card
 from tests.unit.test_sc_pca import PARAMS
 from tests.unit.test_sc_pca import parent_ready as _parent_ready
 
@@ -83,6 +84,107 @@ def test_read_record_restore_change_back_and_old_replay(dimensions_ready):
     assert "私有维度依据" not in safe and "新依据" not in safe
     assert "pca_dimensions" in safe and "pca_embeddings" not in safe
     d.executor.execute_script.assert_not_called()
+
+
+@pytest.mark.parametrize("parent_ready", [10], indirect=True)
+def test_dimension_card_rejects_missing_real_pca(dimensions_ready):
+    """页面保留失效历史时，构卡也必须拒绝保存的有效汇总。"""
+    d = dimensions_ready
+    recorded = d.client.post(d.target, json=d.body)
+    assert recorded.status_code == 200 and recorded.json()["current"]
+    run = d.store.get_qc_run(d.sid, d.rid)
+    directory = Path(run.pca_attempts()[0]["directory"])
+    (directory / "pca_embeddings.csv").unlink()
+    state = d.client.get(d.target).json()
+    assert state["current"] is None and state["history"][0]["invalidated_reason"]
+    with pytest.raises(ValueError, match="身份不符"):
+        build_pca_dimensions_card(d.store, d.sid, d.rid)
+
+
+@pytest.mark.parametrize("parent_ready", [10], indirect=True)
+def test_qc_approved_preview_drift_is_history_at_every_entry(parent_ready):
+    """已批准选择的文件漂移不能在 GET 或构卡冒充当前事实。"""
+    store, sid, rid, root, _, client, url, pid, *_ = parent_ready
+    selection = root / rid / "previews" / pid / "selection.csv"
+    selection.write_bytes(selection.read_bytes() + b"changed")
+    state = client.get(url).json()
+    assert state["approvals"][0]["preview_id"] == pid
+    assert state["blocked"]
+    with pytest.raises(ValueError, match="QC 复核已失效"):
+        build_qc_card(store, sid, rid)
+
+
+@pytest.mark.parametrize("parent_ready", [10], indirect=True)
+def test_malformed_saved_dimension_is_not_current(dimensions_ready):
+    """人工记录变成非前缀维度后，页面与构卡不能认作可用选择。"""
+    d = dimensions_ready
+    assert d.client.post(d.target, json=d.body).status_code == 200
+    with d.store._conn() as conn:
+        conn.execute(
+            "UPDATE sc_pca_dimension_reviews SET dims = ? WHERE pca_attempt_id = ?",
+            (json.dumps([2]), d.aid),
+        )
+    state = d.client.get(d.target).json()
+    assert state["current"] is None and state["history"][0]["invalidated_reason"]
+    with pytest.raises(ValueError, match="身份不符"):
+        build_pca_dimensions_card(d.store, d.sid, d.rid)
+
+
+@pytest.mark.parametrize("parent_ready", [10], indirect=True)
+def test_verified_dimension_and_qc_cards_keep_artifact_identity(dimensions_ready):
+    """真实校验后保留完整身份，后续人工阶段不废弃当前 QC 选择。"""
+    d = dimensions_ready
+    assert d.client.post(d.target, json=d.body).status_code == 200
+    card = build_pca_dimensions_card(d.store, d.sid, d.rid)
+    assert card.observation["dims"] == [1]
+    assert {a.name for a in card.provenance.artifacts} == {
+        "seurat_pca.rds",
+        "feature_mapping.csv",
+        "variable_features.csv",
+        "pca_embeddings.csv",
+        "pca_loadings.csv",
+        "pca_stdev.csv",
+        "pca_diagnostics.png",
+        "summary.json",
+        "versions.txt",
+        "session_info.txt",
+        "script.R",
+        "stdout.txt",
+        "stderr.txt",
+    }
+    qc = build_qc_card(d.store, d.sid, d.rid)
+    assert qc.outcome == "accepted" and qc.observation["kept"] == 10
+    assert {a.name for a in qc.provenance.artifacts} == {"summary.json", "versions.txt", "qc.png"}
+    assert [a.name for a in qc.provenance.inputs] == ["counts.csv"]
+    for evidence in (card, qc):
+        exported = evidence.to_json()
+        assert str(d.root.parent) not in exported and "barcode" not in exported
+        assert "pca_embeddings" not in exported.replace('"pca_embeddings.csv"', "")
+    assert d.client.get(d.target).json()["scientific_status"] == "unreviewed"
+
+
+@pytest.mark.parametrize("parent_ready", [10], indirect=True)
+def test_qc_scientifically_blocked_rejection_still_binds_real_evidence(parent_ready):
+    """零保留可明确拒绝并构卡；之后证据漂移仅保留拒绝历史。"""
+    store, sid, rid, root, _, client, url, *_ = parent_ready
+    params = {"n_feature_min": 4, "n_feature_max": 4, "percent_mt_max": 100}
+    preview = client.post(url + "/preview", json=params).json()["active_preview"]
+    assert preview["summary"]["blocked"] and preview["summary"]["kept"] == 0
+    body = {"preview_id": preview["preview_id"], "reason": "零保留，不适用"}
+    assert client.post(url + "/approve", json=body).status_code == 409
+    response = client.post(url + "/reject", json=body)
+    assert response.status_code == 200 and not response.json()["blocked"]
+    card = build_qc_card(store, sid, rid)
+    assert card.outcome == "rejected" and card.review.reason == body["reason"]
+    assert card.observation["kept"] == 0
+    count = len(store.get_messages(sid))
+    (root / rid / "qc.png").unlink()
+    replay = client.post(url + "/reject", json=body)
+    assert replay.status_code == 200 and replay.json()["blocked"]
+    assert replay.json()["active_preview"]["status"] == "rejected"
+    assert len(store.get_messages(sid)) == count
+    with pytest.raises(ValueError, match="QC 复核已失效"):
+        build_qc_card(store, sid, rid)
 
 
 @pytest.mark.parametrize(
@@ -221,6 +323,7 @@ def test_database_write_failure_logged_without_exposing_details(
     assert len(d.store.get_messages(d.sid)) == before
 
 
+@pytest.mark.parametrize("parent_ready", [10], indirect=True)
 @pytest.mark.parametrize(
     "change",
     [
@@ -240,7 +343,7 @@ def test_database_write_failure_logged_without_exposing_details(
         "running",
     ],
 )
-def test_invalid_evidence_preserves_history_and_blocks(dimensions_ready, change, monkeypatch):
+def test_invalid_evidence_preserves_history_and_blocks(dimensions_ready, change):
     """文件、协议及状态变化后历史保留，不能继续记录。"""
     d = dimensions_ready
     saved = d.client.post(d.target, json=d.body).json()
@@ -259,7 +362,11 @@ def test_invalid_evidence_preserves_history_and_blocks(dimensions_ready, change,
     if change in files:
         files[change].write_bytes(files[change].read_bytes() + b"changed")
     elif change == "record_version":
-        monkeypatch.setattr("src.api.routes_pca.DIMENSION_RECORD_VERSION", "future")
+        with d.store._conn() as conn:
+            conn.execute(
+                "UPDATE sc_pca_dimension_reviews SET record_version = ? WHERE pca_attempt_id = ?",
+                ("future", d.aid),
+            )
     else:
         column = "status" if change == "running" else change
         value = "running" if change == "running" else '"bad"' if change == "protocol" else "bad"
@@ -270,9 +377,13 @@ def test_invalid_evidence_preserves_history_and_blocks(dimensions_ready, change,
     state = d.client.get(d.target).json()
     assert state["current"] is None and len(state["history"]) == 1
     assert state["history"][0]["invalidated_reason"]
-    assert (
-        d.client.post(d.target, json={**d.body, "revision": saved["revision"]}).status_code == 409
-    )
+    with pytest.raises(ValueError, match="PCA 结果缺失|身份不符"):
+        build_pca_dimensions_card(d.store, d.sid, d.rid)
+    renewed = d.client.post(d.target, json={**d.body, "revision": saved["revision"]})
+    if change == "record_version":
+        assert renewed.status_code == 200 and renewed.json()["current"]["dims"] == [1]
+    else:
+        assert renewed.status_code == 409
     d.executor.execute_script.assert_not_called()
 
 

@@ -35,6 +35,8 @@ def summarize_result(result: dict[str, Any]) -> tuple[str, list[dict[str, Any]]]
         response = f"已下载 {asset.get('asset_id')} → `{asset.get('access_path')}`"
     elif result.get("stage") == "qc_review":
         response = result.get("message", "QC 等待科学审阅，未执行下游分析。")
+    elif result.get("status") == "error":
+        response = result.get("message", "分析失败")
     elif result.get("results"):
         response = f"分析完成: {result.get('message', '')}"
         if result.get("capsule_dir"):

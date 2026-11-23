@@ -11,6 +11,7 @@ from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import Response
 from pydantic import Field, field_validator
 
+from src.analysis.review_facts import cluster_review_facts
 from src.analysis.sc_cluster import (
     CLUSTER_TOOL_VERSION,
     PROTOCOL,
@@ -81,21 +82,17 @@ def view(
         blocked.append("该 run 有阶段运行中，不能新授权")
     attempts_view = []
     for a in attempts:
-        checked = None
-        invalid = None
-        if a["status"] == "completed":
-            try:
-                checked = checked_completed_cluster(
-                    run, a, root, routes_pca.DIMENSION_RECORD_VERSION
-                )
-            except EVIDENCE_ERRORS:
-                invalid = "来源、最新维度记录、协议或产物已变化；本次结果仅为历史"
+        facts = cluster_review_facts(run, a, root)
         attempts_view.append(
             history_entry(
                 "cluster",
                 a,
-                result=checked,
-                invalidated_reason=invalid,
+                result=facts.result,
+                invalidated_reason=(
+                    "来源、最新维度记录、协议或产物已变化；本次结果仅为历史"
+                    if facts.invalidated_reason
+                    else None
+                ),
             )
         )
     return {

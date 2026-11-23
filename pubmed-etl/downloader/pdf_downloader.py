@@ -9,12 +9,13 @@ PMC Open Access PDF 下载器
 """
 
 import csv
-import json
 import re
 import subprocess
 import threading
 import time
+from collections.abc import Sequence
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from dataclasses import replace
 from datetime import datetime
 from pathlib import Path
 
@@ -32,6 +33,13 @@ from lxml import etree
 from utils.db import get_conn
 from utils.logger import get_logger
 
+from downloader.pdf_work_items import (
+    PdfWorkItem,
+    execute_pdf_work_items,
+    load_pdf_work_checkpoint,
+    save_pdf_work_checkpoint,
+)
+
 logger = get_logger("pdf_downloader", log_dir=LOG_DIR)
 
 # PMC OA S3 桶中 ListObjectsV2 响应的 XML 命名空间
@@ -42,13 +50,11 @@ S3_URI_PREFIX = "s3://pmc-oa-opendata/"
 MIN_VALID_FILE_BYTES = 1024
 
 OA_FETCH_MAX_WORKERS = 8
-DOWNLOAD_MAX_WORKERS = 8
 OA_LINKS_CACHE_GLOB = "oa_download_links_*.csv"
 ARIA2C_CONNECT_PER_SERVER = "8"
 ARIA2C_SPLIT = "8"
 ARIA2C_MIN_SPLIT_SIZE = "1M"
 PDF_CHECKPOINT_FILENAME = "pdf_download_progress.json"
-RETRY_CHECKPOINT_INTERVAL = 10
 
 
 class OATransportError(Exception):
@@ -442,7 +448,7 @@ def export_oa_links_csv(
 
 
 def export_failed_links_csv(
-    failed_items: list[dict],
+    failed_items: Sequence[PdfWorkItem],
     out_dir: Path = OUTPUT_DIR,
 ) -> Path:
     """
@@ -457,14 +463,7 @@ def export_failed_links_csv(
         writer = csv.writer(f)
         writer.writerow(["pmid", "pmc_id", "pdf_url"])
         for item in failed_items:
-            links = item["links"]
-            writer.writerow(
-                [
-                    item.get("pmid", ""),
-                    item.get("pmc_id", ""),
-                    links.get("pdf", "") if links else "",
-                ]
-            )
+            writer.writerow([item.pmid, item.pmc_id, item.links.get("pdf", "")])
 
     return csv_path
 
@@ -476,28 +475,15 @@ def _pdf_checkpoint_path() -> Path:
     return Path(OUTPUT_DIR) / PDF_CHECKPOINT_FILENAME
 
 
-def _save_pdf_checkpoint(pending: list[dict]) -> None:
+def _save_pdf_checkpoint(pending: Sequence[PdfWorkItem]) -> None:
     """保存待重试清单快照，崩溃后可恢复。"""
-    data = {"pending": pending, "updated_at": datetime.now().isoformat()}
-    path = _pdf_checkpoint_path()
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with open(path, "w", encoding="utf-8") as f:
-        json.dump(data, f, ensure_ascii=False)
-    logger.info(f"检查点已保存: 待重试 {len(pending)} 篇")
+    save_pdf_work_checkpoint(_pdf_checkpoint_path(), pending)
 
 
-def _load_pdf_checkpoint() -> list[dict]:
+def _load_pdf_checkpoint() -> list[PdfWorkItem]:
     """加载待重试清单；文件缺失或损坏返回空列表。"""
-    path = _pdf_checkpoint_path()
-    if not path.exists():
-        return []
-    try:
-        with open(path, encoding="utf-8") as f:
-            data = json.load(f)
-        return data.get("pending", [])
-    except Exception as e:
-        logger.warning(f"PDF 检查点读取失败，将从头开始: {e}")
-        return []
+    loaded = load_pdf_work_checkpoint(_pdf_checkpoint_path())
+    return [] if loaded is None else list(loaded)
 
 
 def _clear_pdf_checkpoint():
@@ -508,7 +494,7 @@ def _clear_pdf_checkpoint():
         logger.info("PDF 检查点已清除（全部重试完成）")
 
 
-def load_failed_items_from_csv(out_dir: Path = OUTPUT_DIR) -> list[dict]:
+def load_failed_items_from_csv(out_dir: Path = OUTPUT_DIR) -> list[PdfWorkItem]:
     """从最新 failed_downloads_*.csv 加载待重试清单。"""
     csv_files = sorted(Path(out_dir).glob("failed_downloads_*.csv"), reverse=True)
     if not csv_files:
@@ -517,7 +503,7 @@ def load_failed_items_from_csv(out_dir: Path = OUTPUT_DIR) -> list[dict]:
 
     csv_file = csv_files[0]
     logger.info(f"从失败清单加载重试项: {csv_file}")
-    items: list[dict] = []
+    items: list[PdfWorkItem] = []
     try:
         with open(csv_file, encoding="utf-8-sig", newline="") as f:
             for row in csv.DictReader(f):
@@ -525,17 +511,42 @@ def load_failed_items_from_csv(out_dir: Path = OUTPUT_DIR) -> list[dict]:
                 pdf_url = normalize_pmc_asset_url(row.get("pdf_url", ""))
                 if pdf_url:
                     links["pdf"] = pdf_url
-                items.append(
-                    {
-                        "pmid": row.get("pmid", ""),
-                        "pmc_id": normalize_pmc_id(row.get("pmc_id", "")) or "",
-                        "links": links,
-                    }
-                )
-    except Exception as e:
-        logger.warning(f"读取失败清单 CSV 失败: {csv_file} -> {e}")
+                pmid = row.get("pmid", "").strip()
+                pmc_id = normalize_pmc_id(row.get("pmc_id", ""))
+                if not pmid or not pmc_id:
+                    logger.warning("失败清单记录缺少有效 pmid/pmc_id，已跳过")
+                    continue
+                items.append(PdfWorkItem(pmid=pmid, pmc_id=pmc_id, links=dict(links)))
+    except (OSError, UnicodeError, csv.Error) as exc:
+        logger.warning("读取失败清单 CSV 失败: %s -> %s", csv_file, type(exc).__name__)
         return []
     return items
+
+
+DOWNLOAD_PDF_QUERY = """
+SELECT a.pmid, a.pmc_id
+FROM articles a
+JOIN llm_validation v ON a.pmid = v.pmid
+WHERE (v.human_review = 'Y' OR (v.human_review IS NULL AND v.llm_verdict = 'RELEVANT'))
+  AND a.pmc_id IS NOT NULL AND a.pmc_id != ''
+"""
+
+
+def _downloadable_articles(db_path: Path) -> list[tuple[str, str]]:
+    """读取当前仍可下载的文献，并规范化 PMC 身份。"""
+    with get_conn(db_path) as conn:
+        records = conn.execute(DOWNLOAD_PDF_QUERY).fetchall()
+    result: list[tuple[str, str]] = []
+    invalid_pmc_count = 0
+    for row in records:
+        pmc_id = normalize_pmc_id(row["pmc_id"])
+        if not pmc_id:
+            invalid_pmc_count += 1
+            continue
+        result.append((str(row["pmid"]), pmc_id))
+    if invalid_pmc_count:
+        logger.warning("已跳过 %d 条格式无效的 PMC ID。", invalid_pmc_count)
+    return result
 
 
 # ── 下载核心 ──────────────────────────────────────────────────
@@ -687,16 +698,7 @@ def run_pdf_download(db_path: Path = DB_PATH) -> int:
     logger.info("=" * 60)
 
     # 1. 查找高/中相关且有 PMC ID 的文献
-    query = """
-    SELECT a.pmid, a.pmc_id
-    FROM articles a
-    JOIN llm_validation v ON a.pmid = v.pmid
-    WHERE (v.human_review = 'Y' OR (v.human_review IS NULL AND v.llm_verdict = 'RELEVANT'))
-      AND a.pmc_id IS NOT NULL AND a.pmc_id != ''
-    """
-
-    with get_conn(db_path) as conn:
-        records = conn.execute(query).fetchall()
+    records = _downloadable_articles(db_path)
 
     if not records:
         logger.info("未发现符合下载条件（有 PMC ID 且 LLM 判定相关）的文献。")
@@ -706,18 +708,10 @@ def run_pdf_download(db_path: Path = DB_PATH) -> int:
 
     # 2. 批量获取 PDF 链接
     pmc_to_info = {}
-    invalid_pmc_count = 0
-    for r in records:
-        pid = normalize_pmc_id(r["pmc_id"])
-        if not pid:
-            invalid_pmc_count += 1
-            continue
+    for pmid, pid in records:
         # 勘误/重复记录会让多条 PMID 共享同一个 PMC，不能用 dict 覆盖。
-        entry = pmc_to_info.setdefault(pid, {"pmid": r["pmid"], "pmids": []})
-        entry["pmids"].append(r["pmid"])
-
-    if invalid_pmc_count:
-        logger.warning(f"已跳过 {invalid_pmc_count} 条格式无效的 PMC ID。")
+        entry = pmc_to_info.setdefault(pid, {"pmid": pmid, "pmids": []})
+        entry["pmids"].append(pmid)
 
     pmc_ids = list(pmc_to_info.keys())
     cached_oa_links = load_cached_oa_links(pmc_ids)
@@ -735,125 +729,49 @@ def run_pdf_download(db_path: Path = DB_PATH) -> int:
     links_csv = export_oa_links_csv(oa_links=oa_links, pmc_to_info=pmc_to_info)
     logger.info(f"已导出下载链接清单: {links_csv}")
 
-    # 3. 执行下载
-    pdf_success_count = 0
-    failed_count = 0
-    skip_count = 0
-    failed_items: list[dict] = []
-
+    # 3. 构造工作项并执行统一下载生命周期
     # 网络失败项并入 failed_items，后续 --step pdf-retry 重新查链并下载。
     # 先查本地全文：链接解析失败 ≠ 下载失败，本地已有 .pdf/.txt 的计入跳过、
     # 不写入失败清单/检查点，否则已下载文献会被 pdf-retry 无限重试
-    network_failed_items: list[dict] = []
+    network_failed_items: list[PdfWorkItem] = []
     for pid in network_failed:
         info = pmc_to_info.get(pid, {})
         for pmid in info.get("pmids") or [info.get("pmid", "")]:
-            if _local_fulltext_exists(pmid):
-                skip_count += 1
-                continue
-            network_failed_items.append(
-                {
-                    "pmc_id": pid,
-                    "links": {},
-                    "pdf_path": PDF_DIR / f"{pmid}.pdf",
-                    "pmid": pmid,
-                }
-            )
+            network_failed_items.append(PdfWorkItem(pmid=pmid, pmc_id=pid, links={}))
 
-    # 使用线程池并发下载，提高效率
-    with ThreadPoolExecutor(max_workers=DOWNLOAD_MAX_WORKERS) as executor:
-        future_to_meta: dict = {}
-        for pmc_id, links in oa_links.items():
-            info = pmc_to_info[pmc_id]
-            dest_dir = PDF_DIR
-            # shortcut: 共享 PMC 时每个 PMID 各下载一次；若成为常态再改为下载后复制
-            for pmid in info.get("pmids") or [info["pmid"]]:
-                pdf_path = dest_dir / f"{pmid}.pdf"
+    work_items = list(network_failed_items)
+    for pmc_id, links in oa_links.items():
+        info = pmc_to_info[pmc_id]
+        # shortcut: 共享 PMC 时每个 PMID 各下载一次；若成为常态再改为下载后复制
+        for pmid in info.get("pmids") or [info["pmid"]]:
+            work_items.append(PdfWorkItem(pmid=pmid, pmc_id=pmc_id, links=dict(links)))
 
-                if _local_fulltext_exists(pmid):
-                    skip_count += 1
-                    continue
+    if work_items:
+        _save_pdf_checkpoint(work_items)
+    result = execute_pdf_work_items(
+        work_items,
+        automatic_retry_rounds=2,
+        local_fulltext_exists=lambda item: _local_fulltext_exists(item.pmid),
+        download=lambda item: download_oa_pdf(
+            dict(item.links),
+            PDF_DIR / f"{item.pmid}.pdf",
+        ),
+        progress=_save_pdf_checkpoint,
+    )
 
-                meta = {
-                    "pmc_id": pmc_id,
-                    "links": links,
-                    "pdf_path": pdf_path,
-                    "pmid": pmid,
-                }
-                future = executor.submit(
-                    download_oa_pdf,
-                    links,
-                    pdf_path,
-                )
-                future_to_meta[future] = meta
-
-        for future in as_completed(future_to_meta):
-            ok = future.result()
-            meta = future_to_meta[future]
-            if ok:
-                pdf_success_count += 1
-            else:
-                failed_count += 1
-                failed_items.append(meta)
-
-            if pdf_success_count > 0 and pdf_success_count % 10 == 0:
-                logger.info(f"  已下载 {pdf_success_count} 篇 PDF...")
-
-    # 网络失败项（无链接）计入失败清单，待 --step pdf-retry 重查链接
-    failed_items = network_failed_items + failed_items
-    failed_count += len(network_failed_items)
+    pdf_success_count = len(result.succeeded)
+    failed_count = len(result.failed)
+    skip_count = len(result.skipped)
+    failed_items = list(result.failed)
 
     logger.info(
         f"首次下载完成：PDF {pdf_success_count} 篇，失败 {failed_count} 篇，跳过 {skip_count} 篇。"
     )
 
-    # 4. 重试下载失败的链接（最多 2 次）
-    # 网络失败项无链接，跳过自动重试，交由 --step pdf-retry 重查链接
-    retryable = [item for item in failed_items if item["links"]]
-    non_retryable = [item for item in failed_items if not item["links"]]
-    MAX_RETRIES = 2
-    retry_round = 0
-    while retryable and retry_round < MAX_RETRIES:
-        retry_round += 1
-        retry_success_pdf = 0
-        retry_fail: list[dict] = []
-
-        logger.info(
-            f"重试第 {retry_round}/{MAX_RETRIES} 轮，剩余 {len(retryable)} 篇（有链接）待重试..."
-        )
-
-        with ThreadPoolExecutor(max_workers=DOWNLOAD_MAX_WORKERS) as executor:
-            retry_future_to_meta = {
-                executor.submit(
-                    download_oa_pdf,
-                    item["links"],
-                    item["pdf_path"],
-                ): item
-                for item in retryable
-            }
-
-            for future in as_completed(retry_future_to_meta):
-                ok = future.result()
-                if ok:
-                    retry_success_pdf += 1
-                else:
-                    retry_fail.append(retry_future_to_meta[future])
-
-        failed_items = non_retryable + retry_fail
-        retryable = retry_fail
-        logger.info(
-            f"重试第 {retry_round} 轮完成：PDF {retry_success_pdf} 篇，"
-            f"仍失败 {len(failed_items)} 篇。"
-        )
-
-    # 5. 导出最终失败链接列表
+    # 4. 导出最终失败链接列表
     if failed_items:
         failed_csv = export_failed_links_csv(failed_items, out_dir=OUTPUT_DIR)
-        checkpoint_items = [
-            {"pmid": item["pmid"], "pmc_id": item["pmc_id"], "links": item["links"]}
-            for item in failed_items
-        ]
-        _save_pdf_checkpoint(checkpoint_items)
+        _save_pdf_checkpoint(failed_items)
         logger.info(
             f"仍有 {len(failed_items)} 篇下载失败，失败链接清单: {failed_csv}，运行 --step pdf-retry 可续跑。"
         )
@@ -888,50 +806,55 @@ def run_pdf_retry(db_path: Path = DB_PATH) -> int:
             logger.info("无检查点且无失败清单，没有可重试项。")
             return 0
 
-    # 与 run_pdf_download 使用同一判据过滤本地已有全文，避免两阶段口径不一致
-    pending = [item for item in pending if not _local_fulltext_exists(item.get("pmid") or "")]
-    logger.info(f"过滤已下载后待重试 {len(pending)} 篇。")
+    current_records = {pmid: pmc_id for pmid, pmc_id in _downloadable_articles(db_path)}
+    current_pending: list[PdfWorkItem] = []
+    for item in pending:
+        current_pmc_id = current_records.get(item.pmid)
+        if current_pmc_id is None:
+            continue
+        current_pending.append(
+            item
+            if item.pmc_id == current_pmc_id
+            else replace(item, pmc_id=current_pmc_id, links={})
+        )
+    pending = current_pending
+    logger.info(f"按当前审核状态与身份过滤后待重试 {len(pending)} 篇。")
 
     if not pending:
         _clear_pdf_checkpoint()
-        logger.info("所有待重试项均已存在，无需下载。")
+        logger.info("待重试项均已完成、失效或不再符合当前审核状态。")
         return 0
 
     # 混合取链：已有链接的直接用；链接缺失的重新查 OA API
-    missing = [item for item in pending if not item.get("links")]
+    missing = [item for item in pending if not item.links]
     if missing:
-        missing_pmcs = [item["pmc_id"] for item in missing if item.get("pmc_id")]
+        missing_pmcs = [item.pmc_id for item in missing]
         if missing_pmcs:
             logger.info(f"需重新查询 OA 链接 {len(missing_pmcs)} 篇...")
             oa_links, _ = fetch_oa_links(missing_pmcs)
-            for item in pending:
-                if not item.get("links"):
-                    item["links"] = oa_links.get(item.get("pmc_id"), {})
+            pending = [
+                replace(item, links=dict(oa_links.get(item.pmc_id, {}))) if not item.links else item
+                for item in pending
+            ]
 
-    success_count = 0
-    failed_items: list[dict] = []
-    remaining = list(pending)
-
-    with ThreadPoolExecutor(max_workers=DOWNLOAD_MAX_WORKERS) as executor:
-        future_to_item: dict = {}
-        for item in pending:
-            pmid = item["pmid"]
-            pdf_path = PDF_DIR / f"{pmid}.pdf"
-            future = executor.submit(download_oa_pdf, item.get("links") or {}, pdf_path)
-            future_to_item[future] = item
-
-        for future in as_completed(future_to_item):
-            item = future_to_item[future]
-            if future.result():
-                success_count += 1
-                remaining.remove(item)
-            else:
-                failed_items.append(item)
-
-            if success_count > 0 and success_count % RETRY_CHECKPOINT_INTERVAL == 0:
-                _save_pdf_checkpoint(remaining)
-
-    logger.info(f"重试完成：成功 {success_count} 篇，失败 {len(failed_items)} 篇。")
+    _save_pdf_checkpoint(pending)
+    result = execute_pdf_work_items(
+        pending,
+        automatic_retry_rounds=0,
+        local_fulltext_exists=lambda item: _local_fulltext_exists(item.pmid),
+        download=lambda item: download_oa_pdf(
+            dict(item.links),
+            PDF_DIR / f"{item.pmid}.pdf",
+        ),
+        progress=_save_pdf_checkpoint,
+    )
+    failed_items = list(result.failed)
+    logger.info(
+        "重试完成：成功 %d 篇，失败 %d 篇，跳过 %d 篇。",
+        len(result.succeeded),
+        len(failed_items),
+        len(result.skipped),
+    )
 
     if failed_items:
         _save_pdf_checkpoint(failed_items)

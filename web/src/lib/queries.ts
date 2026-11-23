@@ -1,5 +1,6 @@
 import { useQuery, type UseQueryResult } from '@tanstack/react-query'
-import { fetchMessages, fetchSidebar, listProjects, listSessions } from '@/lib/api'
+import { fetchSidebar, listProjects, listSessions } from '@/lib/api'
+import { sessionWorkspace } from '@/lib/sessionWorkspace'
 import type { MessagesResponse, Project, SessionSummary, SidebarResponse } from '@/lib/types'
 
 export const queryKeys = {
@@ -30,7 +31,7 @@ export function useMessages(
 ): UseQueryResult<MessagesResponse> {
   return useQuery({
     queryKey: queryKeys.messages(sessionId ?? ''),
-    queryFn: () => fetchMessages(sessionId as string),
+    queryFn: () => sessionWorkspace.loadMessages(sessionId as string),
     enabled: Boolean(sessionId),
   })
 }

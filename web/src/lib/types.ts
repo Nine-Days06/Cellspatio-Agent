@@ -375,6 +375,8 @@ export interface FilterAttempt {
 export type PendingScriptStatus = 'pending' | 'confirmed' | 'cancelled' | 'expired'
 
 export interface PendingScript {
+  /** 新卡片关联的本地运行记录；旧卡片可能没有此字段。 */
+  run_id?: string
   script: string
   analysis_type: string | null
   params: Record<string, unknown>
@@ -442,7 +444,7 @@ export interface SidebarResponse {
 export interface MessagesResponse {
   session: Session
   messages: WireMessage[]
-  /** GET ?restore=1 时：pending → expired；其余状态 → null */
+  /** GET ?restore=1 时：可核验运行绑定的卡片保留 pending；旧卡或错配卡过期。 */
   pending_script: PendingScript | null
   soft_warn: boolean
 }

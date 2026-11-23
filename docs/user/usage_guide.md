@@ -3,7 +3,7 @@
 > **文档定位**：[README](../../README.md) 是项目概览，本指南是详细操作手册，面向实验生物学家
 > 与数据分析用户，覆盖安装、配置、Web 界面、数据获取、分析、知识问答、记录与限制。
 >
-> 最后核对日期：2026-11-13（Windows / Python 3.12 / R 4.6.1 / FastAPI + React）。
+> 最后核对日期：2026-11-22（本次核对复核与证据卡；Windows / Python 3.12 / R 4.6.1 / FastAPI + React）。
 
 ## 目录
 
@@ -267,6 +267,9 @@ data/raw/geo/GSE123456/
 - 执行失败时，差异表达/空间脚本最多自动携带报错修复 2 次；
 - 单次 R 执行上限 300 秒，超时按失败处理。
 
+待确认脚本已关联本地准备记录时，刷新页面或重启应用后会校验会话、脚本和参数，
+校验通过的卡片仍可确认。旧卡片或绑定不匹配的卡片会过期，需要重新发起分析。
+
 没有输入数据时：
 
 - 差异表达返回 `needs_input`，先下载或指定输入文件；
@@ -326,6 +329,17 @@ counts 必须是有限的非负整数，不能缺失或四舍五入；不支持 
 - 代码快照：`snapshots/<run_id>/`（Git worktree）；
 - 复现胶囊：`data/analysis/capsules/<时间戳>/`（项目会话在 `data/projects/<id>/analysis/capsules/`）；
 - 数据血缘：`data/lineage.jsonl`。
+
+差异表达与空间分析等待脚本确认时，只保存 `.wrroc/` 中的准备事实与运行身份，
+尚未执行 R，也不触发运行完成时的代码快照或知识图谱写入。
+确认请求会恢复并核验原运行，保留准备时间与步骤。成功后的结果文件、已生成空间图
+和胶囊文件登记在同一运行中，胶囊保存实际执行成功的脚本，包括自动修复后的版本。
+重复确认不会重复执行。执行成功后如果记录或消息写入失败，卡片仍保持已确认，
+需要检查本地记录和产物后处理故障。已知执行失败会保留尝试步骤，卡片释放后可由用户
+明确重试；取消会核验原准备身份并保存取消事实，取消记录发生临时读写故障时释放本次领取，
+用户可明确再次取消。执行结果未知时记录中断，不开放自动
+恢复或复制卡重跑。无身份旧卡的当前确认请求会记录本次兼容执行，不推断原准备运行；
+刷新恢复仍会使无身份旧卡过期。
 
 ```bash
 python -m src.cli.replay <run_id>
@@ -398,9 +412,19 @@ python -m src.knowledge.build_methods_kb      # 重建方法学知识库
 ```powershell
 python -m src.cli.records export session <session_id> --out record.zip
 python -m src.cli.records export project <project_id> --redact --out project.zip
+python -m src.cli.records export session <session_id> --hash --out hashed-record.zip
 python -m src.cli.records delete session <session_id> --dry-run
 python -m src.cli.records delete project <project_id> --cascade --dry-run
 ```
+
+导出 zip 包含 `record.json`、可读 Markdown 与 `artifacts.csv`，不复制原产物。
+清单的 `run_id` 与 `source` 区分已登记的 `wrroc_output`、固定阶段 `stage_directory`
+及旧项目目录补录 `directory_discovery`；补录文件的运行身份留空，不根据目录猜测归属。
+新动态运行登记的 CSV、实际空间图和脚本胶囊会关联同一运行，目录和单文件登记重叠时
+在同一运行中只列一次；不同运行显式登记同一文件时保留各自关联。仅列数据根内现存的
+普通文件，排除逃逸路径和符号链接；`--hash` 逐文件计算
+当前 SHA256。默认保留路径；`--redact` 会覆盖消息、旧记录以及动态脚本和参数中的路径。
+记录格式版本为 `cellspatio-record/1.2.0`。
 
 删除会移动记录到 `.trash` 并清理数据库；确认无误后再去掉 `--dry-run` 并加 `--yes`。
 
@@ -414,6 +438,8 @@ python -m src.cli.evidence export cluster <session_id> <run_id>
 python -m src.cli.evidence export pca <session_id> <run_id>
 python -m src.cli.evidence export marker <session_id> <run_id>
 ```
+
+页面、CLI 复核和导出会重验本地来源与产物；文件缺失、漂移或复核身份失效时，旧选择保留为历史，不能生成当前证据卡。相同历史事实重发不会恢复其有效性；应检查证据并重新明确复核。科学质量不合格的 QC 预览仍可人工拒绝，并在证据身份有效时生成拒绝卡。
 
 公共证据服务的账号、上传、双签、检索、备份和 Caddy/TLS 部署见
 [部署说明](../deploy.md)。浏览器入口是 `http://127.0.0.1:8700/review/`。

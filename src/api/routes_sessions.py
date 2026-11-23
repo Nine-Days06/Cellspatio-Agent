@@ -131,14 +131,21 @@ def delete_session(session_id: str, request: Request, store: StoreDep) -> dict[s
 
 
 @router.get("/sessions/{session_id}/messages")
-def list_messages(session_id: str, store: StoreDep, restore: int = 0) -> dict[str, Any]:
+def list_messages(
+    session_id: str, request: Request, store: StoreDep, restore: int = 0
+) -> dict[str, Any]:
     """返回会话与消息；只读，仅 restore=1 时改写待确认脚本并落库。"""
     session = _require_session(store, session_id)
     messages = store.get_messages(session_id)
+    recorder = getattr(
+        getattr(request.app.state.agent, "workflow_manager", None), "workflow_recorder", None
+    )
     return {
         "session": session,
         "messages": [wire_message(m) for m in messages],
-        "pending_script": restore_pending(store, session_id, messages) if restore else None,
+        "pending_script": (
+            restore_pending(store, session_id, messages, recorder=recorder) if restore else None
+        ),
         "soft_warn": soft_warn_for(store, session_id),
     }
 

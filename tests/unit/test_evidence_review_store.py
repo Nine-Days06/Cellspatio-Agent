@@ -277,49 +277,22 @@ def test_record_marker_review_accepted_then_rejected(tmp_path):
     assert len(store.get_messages("s")) == messages_before + 2
 
 
-def test_cli_records_qc_cluster_and_marker_reviews(tmp_path):
+@pytest.mark.parametrize(
+    ("kind", "target", "extra"),
+    [("qc", "p1", []), ("cluster", "c1", []), ("marker", "m1", ["--decision", "accepted"])],
+)
+def test_cli_rejects_saved_states_without_real_evidence(tmp_path, kind, target, extra):
+    """仅有保存完成状态时，三个 CLI 复核入口都不能新增事实。"""
     store = SessionStore(tmp_path / ".cellspatio" / "sessions.db")
     _seed(store, tmp_path)
-    root = ["--root", str(tmp_path)]
-
-    assert evidence.main(["review", "qc", "s", "r", "p1", "--reason", "阈值过宽", *root]) == 0
-    assert evidence.main(["review", "cluster", "s", "r", "c1", "--reason", "簇不稳定", *root]) == 0
+    before = len(store.get_messages("s"))
     assert (
         evidence.main(
-            [
-                "review",
-                "marker",
-                "s",
-                "r",
-                "m1",
-                "--decision",
-                "accepted",
-                "--reason",
-                "候选一致",
-                *root,
-            ]
-        )
-        == 0
-    )
-    assert (
-        evidence.main(
-            [
-                "review",
-                "qc",
-                "s",
-                "r",
-                "p1",
-                "--reason",
-                "阈值过宽",
-                "--decision",
-                "accepted",
-                *root,
-            ]
+            ["review", kind, "s", "r", target, "--reason", "复核", *extra, "--root", str(tmp_path)]
         )
         == 2
     )
-
     run = store.get_qc_run("s", "r")
-    assert run["previews"][0]["status"] == "rejected"
-    assert run["cluster_rejections"][0]["reason"] == "簇不稳定"
-    assert run["marker_reviews"][0]["decision"] == "accepted"
+    assert run["previews"][0]["status"] == "pending"
+    assert not run["cluster_rejections"] and not run["marker_reviews"]
+    assert len(store.get_messages("s")) == before

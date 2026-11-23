@@ -46,6 +46,38 @@ def test_router_executes_skill_lifecycle():
     assert result["output"] == {"result": "ok"}
 
 
+def test_read_analysis_plan_executes_plan_builder_only():
+    """方案读取只调用 execute，不运行 setup/teardown，也不注入 KG。"""
+    registry = SkillRegistry(Path("/tmp/skills"))
+    loader = MagicMock(spec=SkillLoader)
+    skill_instance = AsyncMock()
+    expected = {"analysis_type": "differential_expression", "plan": ["load"], "required_inputs": []}
+    skill_instance.execute.return_value = expected
+    loader.create_instance.return_value = skill_instance
+    router = ModalRouter(registry, loader, kg_memory=MagicMock())
+
+    output = router.read_analysis_plan("分析差异表达基因", best_practices="优先使用 DESeq2")
+
+    assert output == expected
+    loader.load.assert_called_once_with("differential_expression")
+    loader.create_instance.assert_called_once_with("differential_expression")
+    skill_instance.execute.assert_awaited_once()
+    context = skill_instance.execute.await_args.args[0]
+    assert context.best_practices == "优先使用 DESeq2"
+    skill_instance.setup.assert_not_awaited()
+    skill_instance.teardown.assert_not_awaited()
+
+
+def test_read_analysis_plan_is_none_for_general_request():
+    """非分析请求不加载任何技能。"""
+    registry = SkillRegistry(Path("/tmp/skills"))
+    loader = MagicMock(spec=SkillLoader)
+    router = ModalRouter(registry, loader)
+
+    assert router.read_analysis_plan("随便聊聊天气") is None
+    loader.load.assert_not_called()
+
+
 def test_router_fallback_chain():
     registry = SkillRegistry(Path("/tmp/skills"))
     loader = MagicMock(spec=SkillLoader)
@@ -66,6 +98,7 @@ def test_router_hitl_interrupt():
     # 模拟 HITL 状态
     result = router.route("分析差异表达基因", context={"script_approved": False})
     assert result["status"] == "needs_script_confirmation"
+    loader.load.assert_not_called()
 
 
 def test_hint_returns_classification_without_loading_skill():

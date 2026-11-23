@@ -1309,6 +1309,10 @@ class SpyRecorder:
         self.finishes.append(run_id)
         return Path("spy") / run_id / "workflow.json"
 
+    def get_record(self, run_id: str) -> None:
+        """此 spy 只覆盖完成路径，不保存运行上下文。"""
+        return None
+
     def record_output(self, run_id, name, path, type):
         self.outputs.append({"run_id": run_id, "name": name, "path": path, "type": type})
 

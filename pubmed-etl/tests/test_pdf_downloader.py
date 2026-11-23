@@ -15,6 +15,7 @@ from downloader.pdf_downloader import (
     normalize_pmc_asset_url,
     normalize_pmc_id,
 )
+from downloader.pdf_work_items import PdfWorkItem
 from utils.db import CREATE_ARTICLES_SQL, CREATE_LLM_VALIDATION_SQL
 
 # PMC Cloud Service on AWS（OA 链接解析通道）的测试夹具。
@@ -712,8 +713,12 @@ class TestPdfCheckpoint(unittest.TestCase):
         )
 
         pending = [
-            {"pmid": "111", "pmc_id": "PMC1", "links": {"pdf": "https://a/1.pdf"}},
-            {"pmid": "112", "pmc_id": "PMC2", "links": {}},
+            PdfWorkItem(
+                pmid="111",
+                pmc_id="PMC1",
+                links={"pdf": "https://a/1.pdf"},
+            ),
+            PdfWorkItem(pmid="112", pmc_id="PMC2", links={}),
         ]
 
         with tempfile.TemporaryDirectory() as td:
@@ -768,14 +773,14 @@ class TestLoadFailedItemsFromCsv(unittest.TestCase):
         self.assertEqual(
             items,
             [
-                {"pmid": "222", "pmc_id": "PMC2", "links": {}},
-                {
-                    "pmid": "333",
-                    "pmc_id": "PMC3",
-                    "links": {
+                PdfWorkItem(pmid="222", pmc_id="PMC2", links={}),
+                PdfWorkItem(
+                    pmid="333",
+                    pmc_id="PMC3",
+                    links={
                         "pdf": "https://ftp.ncbi.nlm.nih.gov/pub/pmc/deprecated/oa_pdf/a/b/3.PMC3.pdf",
                     },
-                },
+                ),
             ],
         )
 
@@ -803,12 +808,12 @@ class TestLoadFailedItemsFromCsv(unittest.TestCase):
         self.assertEqual(
             items,
             [
-                {"pmid": "444", "pmc_id": "PMC4", "links": {}},
-                {
-                    "pmid": "555",
-                    "pmc_id": "PMC5",
-                    "links": {"pdf": "https://ok.example/5.pdf"},
-                },
+                PdfWorkItem(pmid="444", pmc_id="PMC4", links={}),
+                PdfWorkItem(
+                    pmid="555",
+                    pmc_id="PMC5",
+                    links={"pdf": "https://ok.example/5.pdf"},
+                ),
             ],
         )
 
@@ -830,122 +835,288 @@ class TestLoadFailedItemsFromCsv(unittest.TestCase):
 
 
 class TestRunPdfRetry(unittest.TestCase):
-    @patch("downloader.pdf_downloader._load_pdf_checkpoint")
-    @patch("downloader.pdf_downloader.load_failed_items_from_csv")
+    def _make_db(self, td: Path, pmids: tuple[str, ...]) -> Path:
+        """构造多篇 RELEVANT 文献的小型 SQLite。"""
+        import sqlite3
+
+        db = td / "retry.db"
+        conn = sqlite3.connect(db)
+        conn.execute(CREATE_ARTICLES_SQL)
+        conn.execute(CREATE_LLM_VALIDATION_SQL)
+        for pmid in pmids:
+            conn.execute(
+                "INSERT INTO articles (pmid, pmc_id) VALUES (?, ?)",
+                (pmid, f"PMC{pmid[-1]}"),
+            )
+            conn.execute(
+                "INSERT INTO llm_validation (pmid, llm_verdict) VALUES (?, 'RELEVANT')",
+                (pmid,),
+            )
+        conn.commit()
+        conn.close()
+        return db
+
     @patch("downloader.pdf_downloader.fetch_oa_links")
     @patch("downloader.pdf_downloader.download_oa_pdf")
-    @patch("downloader.pdf_downloader.export_failed_links_csv")
-    @patch("downloader.pdf_downloader._clear_pdf_checkpoint")
     def test_should_resume_from_checkpoint_and_clear_on_success(
         self,
-        mock_clear,
-        mock_export_csv,
-        mock_dl,
+        mock_download,
         mock_fetch,
-        mock_csv,
-        mock_checkpoint,
-    ):
-        mock_dl.return_value = True
+    ) -> None:
+        mock_download.return_value = True
         mock_fetch.return_value = ({}, [])
         with tempfile.TemporaryDirectory() as td:
-            pdf_dir = Path(td)
-            (pdf_dir / "222.pdf").write_bytes(b"%PDF-1.4\n" + b"A" * 2000)
-            mock_checkpoint.return_value = [
-                {"pmid": "111", "pmc_id": "PMC1", "links": {}},
-                {"pmid": "222", "pmc_id": "PMC2", "links": {"pdf": "https://a/2.pdf"}},
-            ]
-            with patch("downloader.pdf_downloader.PDF_DIR", pdf_dir):
-                from downloader.pdf_downloader import run_pdf_retry
+            root = Path(td)
+            db = self._make_db(root, ("111", "222"))
+            (root / "222.pdf").write_bytes(b"%PDF-1.4\n" + b"A" * 2000)
+            checkpoint = root / "pdf_download_progress.json"
+            with (
+                patch("downloader.pdf_downloader.PDF_DIR", root),
+                patch("downloader.pdf_downloader.OUTPUT_DIR", root),
+            ):
+                from downloader.pdf_downloader import (
+                    _save_pdf_checkpoint,
+                    run_pdf_retry,
+                )
 
-                run_pdf_retry()
+                _save_pdf_checkpoint(
+                    [
+                        PdfWorkItem(pmid="111", pmc_id="PMC1", links={}),
+                        PdfWorkItem(
+                            pmid="222",
+                            pmc_id="PMC2",
+                            links={"pdf": "https://a/2.pdf"},
+                        ),
+                    ]
+                )
+                result = run_pdf_retry(db_path=db)
 
-        mock_csv.assert_not_called()  # 有 checkpoint 不读 CSV
-        mock_fetch.assert_called_once()  # 仅 PMC1 无链接需重查
-        mock_dl.assert_called_once()  # 222.pdf 已存在被过滤，仅 111 需下载
-        mock_clear.assert_called_once()  # 全部处理后清除
+            self.assertEqual(result, 0)
+            self.assertFalse(checkpoint.exists())
+        mock_fetch.assert_called_once_with(["PMC1"])
+        mock_download.assert_called_once()
 
-    @patch("downloader.pdf_downloader._load_pdf_checkpoint")
-    @patch("downloader.pdf_downloader.load_failed_items_from_csv")
     @patch("downloader.pdf_downloader.fetch_oa_links")
-    @patch("downloader.pdf_downloader.download_oa_pdf")
     @patch("downloader.pdf_downloader.export_failed_links_csv")
-    @patch("downloader.pdf_downloader._save_pdf_checkpoint")
-    @patch("downloader.pdf_downloader._clear_pdf_checkpoint")
+    @patch("downloader.pdf_downloader.download_oa_pdf")
     def test_should_keep_checkpoint_when_partial_failure(
         self,
-        mock_clear,
-        mock_save,
+        mock_download,
         mock_export,
-        mock_dl,
         mock_fetch,
-        mock_csv,
-        mock_checkpoint,
-    ):
-        mock_checkpoint.return_value = []
-        mock_csv.return_value = [
-            {"pmid": "333", "pmc_id": "PMC3", "links": {"pdf": "https://a/3.pdf"}},
-            {"pmid": "444", "pmc_id": "PMC4", "links": {"pdf": "https://a/4.pdf"}},
-        ]
+    ) -> None:
         mock_fetch.return_value = ({}, [])
-        mock_dl.return_value = False
+        mock_download.return_value = False
         mock_export.return_value = Path("failed_downloads_x.csv")
         with tempfile.TemporaryDirectory() as td:
-            with patch("downloader.pdf_downloader.PDF_DIR", Path(td)):
-                from downloader.pdf_downloader import run_pdf_retry
+            root = Path(td)
+            db = self._make_db(root, ("333", "444"))
+            with (
+                patch("downloader.pdf_downloader.PDF_DIR", root),
+                patch("downloader.pdf_downloader.OUTPUT_DIR", root),
+            ):
+                from downloader.pdf_downloader import (
+                    _load_pdf_checkpoint,
+                    _save_pdf_checkpoint,
+                    run_pdf_retry,
+                )
 
-                run_pdf_retry()
+                _save_pdf_checkpoint(
+                    [
+                        PdfWorkItem(
+                            pmid="333",
+                            pmc_id="PMC3",
+                            links={"pdf": "https://a/3.pdf"},
+                        ),
+                        PdfWorkItem(
+                            pmid="444",
+                            pmc_id="PMC4",
+                            links={"pdf": "https://a/4.pdf"},
+                        ),
+                    ]
+                )
+                result = run_pdf_retry(db_path=db)
+                remaining = _load_pdf_checkpoint()
 
-        mock_save.assert_called()
-        mock_clear.assert_not_called()
+        self.assertEqual(result, 2)
+        self.assertEqual({item.pmid for item in remaining}, {"333", "444"})
         mock_export.assert_called_once()
 
-    @patch("downloader.pdf_downloader._load_pdf_checkpoint")
-    @patch("downloader.pdf_downloader.load_failed_items_from_csv")
-    @patch("downloader.pdf_downloader.fetch_oa_links")
-    @patch("downloader.pdf_downloader.download_oa_pdf")
-    @patch("downloader.pdf_downloader.export_failed_links_csv")
-    @patch("downloader.pdf_downloader._save_pdf_checkpoint")
-    @patch("downloader.pdf_downloader._clear_pdf_checkpoint")
-    def test_should_snapshot_only_unfinished_items(
+
+class TestRunPdfRetryCurrentWorkItems(unittest.TestCase):
+    """重试入口在工作项执行前重新核验当前数据库身份。"""
+
+    def _make_db(
         self,
-        mock_clear,
-        mock_save,
-        mock_export,
-        mock_dl,
-        mock_fetch,
-        mock_csv,
-        mock_checkpoint,
-    ):
-        mock_checkpoint.return_value = []
-        mock_csv.return_value = [
-            {"pmid": str(i), "pmc_id": f"PMC{i}", "links": {"pdf": f"https://a/{i}.pdf"}}
-            for i in range(1, 16)
-        ]
-        mock_fetch.return_value = ({}, [])
-        mock_dl.side_effect = lambda links, pdf_path: (
-            Path(pdf_path).name in {f"{i}.pdf" for i in range(1, 11)}
+        td: Path,
+        *,
+        pmid: str = "111",
+        pmc_id: str = "PMC1",
+        verdict: str = "NOT_RELEVANT",
+        human_review: str | None = "N",
+    ) -> Path:
+        """构造仅含一篇文献和验证判定的小型 SQLite。"""
+        import sqlite3
+
+        db = td / "test.db"
+        conn = sqlite3.connect(db)
+        conn.execute(CREATE_ARTICLES_SQL)
+        conn.execute(CREATE_LLM_VALIDATION_SQL)
+        conn.execute("INSERT INTO articles (pmid, pmc_id) VALUES (?, ?)", (pmid, pmc_id))
+        conn.execute(
+            "INSERT INTO llm_validation (pmid, llm_verdict, human_review) VALUES (?, ?, ?)",
+            (pmid, verdict, human_review),
         )
-        mock_export.return_value = Path("failed_downloads_x.csv")
+        conn.commit()
+        conn.close()
+        return db
+
+    @patch("downloader.pdf_downloader.download_oa_pdf")
+    def test_retry_does_not_download_no_longer_relevant_article(
+        self,
+        mock_download: Mock,
+    ) -> None:
+        """不再相关的 checkpoint 项被过滤且不触发下载。"""
         with tempfile.TemporaryDirectory() as td:
-            with patch("downloader.pdf_downloader.PDF_DIR", Path(td)):
+            root = Path(td)
+            db = self._make_db(root)
+            checkpoint = root / "pdf_download_progress.json"
+            checkpoint.write_text(
+                json.dumps(
+                    {
+                        "pending": [
+                            {
+                                "pmid": "111",
+                                "pmc_id": "PMC1",
+                                "links": {"pdf": "https://example.test/111.pdf"},
+                            }
+                        ]
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            with (
+                patch("downloader.pdf_downloader.OUTPUT_DIR", root),
+                patch("downloader.pdf_downloader.PDF_DIR", root),
+            ):
                 from downloader.pdf_downloader import run_pdf_retry
 
-                run_pdf_retry()
+                result = run_pdf_retry(db_path=db)
 
-        saved_snapshots = [call.args[0] for call in mock_save.call_args_list]
-        self.assertTrue(saved_snapshots)
-        for snapshot in saved_snapshots:
-            snapshot_pmids = {item["pmid"] for item in snapshot}
-            self.assertFalse(snapshot_pmids & {str(i) for i in range(1, 11)})
-            self.assertTrue(snapshot_pmids)
+            self.assertEqual(result, 0)
+            self.assertFalse(checkpoint.exists())
+
+        mock_download.assert_not_called()
+
+    def test_wrong_pending_shape_does_not_crash_retry(self) -> None:
+        """合法 JSON 但错误 pending shape 不应触发 AttributeError。"""
+        from downloader.pdf_downloader import _load_pdf_checkpoint
+
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            checkpoint = root / "pdf_download_progress.json"
+            checkpoint.write_text(
+                json.dumps({"pending": {"pmid": "111"}}),
+                encoding="utf-8",
+            )
+
+            with (
+                patch("downloader.pdf_downloader.OUTPUT_DIR", root),
+                patch("downloader.pdf_downloader.PDF_DIR", root),
+                patch("downloader.pdf_downloader.load_failed_items_from_csv", return_value=[]),
+            ):
+                from downloader.pdf_downloader import run_pdf_retry
+
+                self.assertEqual(_load_pdf_checkpoint(), [])
+                self.assertEqual(run_pdf_retry(), 0)
+
+    @patch("downloader.pdf_downloader.fetch_oa_links")
+    @patch("downloader.pdf_downloader.download_oa_pdf")
+    def test_retry_uses_current_pmc_identity(
+        self,
+        mock_download: Mock,
+        mock_fetch: Mock,
+    ) -> None:
+        """PMC 身份变化时丢弃旧链接并按当前 ID 重查。"""
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            db = self._make_db(root, pmc_id="PMC9", verdict="RELEVANT", human_review=None)
+            checkpoint = root / "pdf_download_progress.json"
+            checkpoint.write_text(
+                json.dumps(
+                    {
+                        "pending": [
+                            {
+                                "pmid": "111",
+                                "pmc_id": "PMC1",
+                                "links": {"pdf": "https://old.example/111.pdf"},
+                            }
+                        ]
+                    }
+                ),
+                encoding="utf-8",
+            )
+            mock_fetch.return_value = (
+                {"PMC9": {"pdf": "https://current.example/111.pdf"}},
+                [],
+            )
+            mock_download.return_value = True
+            with (
+                patch("downloader.pdf_downloader.OUTPUT_DIR", root),
+                patch("downloader.pdf_downloader.PDF_DIR", root),
+            ):
+                from downloader.pdf_downloader import run_pdf_retry
+
+                self.assertEqual(run_pdf_retry(db_path=db), 0)
+
+            self.assertFalse(checkpoint.exists())
+
+        mock_fetch.assert_called_once_with(["PMC9"])
+        mock_download.assert_called_once()
         self.assertEqual(
-            {item["pmid"] for item in saved_snapshots[-1]},
-            {str(i) for i in range(11, 16)},
+            mock_download.call_args.args[0],
+            {"pdf": "https://current.example/111.pdf"},
         )
+
+    def test_retry_database_failure_preserves_checkpoint(self) -> None:
+        """数据库读取失败保持原 checkpoint 字节不变。"""
+        import sqlite3
+
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            db = root / "broken.db"
+            sqlite3.connect(db).close()
+            checkpoint = root / "pdf_download_progress.json"
+            original = json.dumps(
+                {
+                    "pending": [
+                        {
+                            "pmid": "111",
+                            "pmc_id": "PMC1",
+                            "links": {"pdf": "https://example.test/111.pdf"},
+                        }
+                    ]
+                }
+            )
+            checkpoint.write_text(original, encoding="utf-8")
+            with (
+                patch("downloader.pdf_downloader.OUTPUT_DIR", root),
+                patch("downloader.pdf_downloader.PDF_DIR", root),
+            ):
+                from downloader.pdf_downloader import run_pdf_retry
+
+                with self.assertRaises(sqlite3.OperationalError):
+                    run_pdf_retry(db_path=db)
+
+            self.assertEqual(checkpoint.read_text(encoding="utf-8"), original)
 
 
 class TestRunPdfWriteCheckpoint(unittest.TestCase):
+    """初次下载入口的 checkpoint 生命周期。"""
+
     def _make_db_with_pmc(self, td: Path, pmid: str = "1111", pmc_id: str = "PMC1") -> Path:
+        """构造带一篇 RELEVANT 文献的小型 SQLite。"""
         import sqlite3
 
         db = td / "test.db"
@@ -960,6 +1131,46 @@ class TestRunPdfWriteCheckpoint(unittest.TestCase):
         conn.commit()
         conn.close()
         return db
+
+    @patch("downloader.pdf_downloader.fetch_oa_links")
+    @patch("downloader.pdf_downloader.download_oa_pdf")
+    @patch("downloader.pdf_downloader.load_cached_oa_links")
+    @patch("downloader.pdf_downloader.export_oa_links_csv")
+    def test_should_preserve_prepared_checkpoint_when_worker_raises(
+        self,
+        mock_export_csv: Mock,
+        mock_cached: Mock,
+        mock_download: Mock,
+        mock_fetch: Mock,
+    ) -> None:
+        """下载异常保持可恢复工作项，且不伪装成普通失败结果。"""
+        mock_fetch.return_value = ({"PMC1": {"pdf": "https://a/1.pdf"}}, [])
+        mock_download.side_effect = RuntimeError("transport exploded")
+        mock_export_csv.return_value = Path("links.csv")
+        with tempfile.TemporaryDirectory() as td:
+            td_path = Path(td)
+            db = self._make_db_with_pmc(td_path)
+            with (
+                patch("downloader.pdf_downloader.PDF_DIR", td_path),
+                patch("downloader.pdf_downloader.OUTPUT_DIR", td_path),
+            ):
+                from downloader.pdf_downloader import (
+                    _load_pdf_checkpoint,
+                    _pdf_checkpoint_path,
+                    run_pdf_download,
+                )
+
+                with self.assertRaisesRegex(RuntimeError, "transport exploded"):
+                    run_pdf_download(db_path=db)
+
+                checkpoint_exists = _pdf_checkpoint_path().exists()
+                checkpoint_items = _load_pdf_checkpoint()
+
+        self.assertTrue(checkpoint_exists)
+        self.assertEqual(
+            checkpoint_items,
+            [PdfWorkItem(pmid="1111", pmc_id="PMC1", links={"pdf": "https://a/1.pdf"})],
+        )
 
     @patch("downloader.pdf_downloader.fetch_oa_links")
     @patch("downloader.pdf_downloader.download_oa_pdf")
@@ -1028,10 +1239,12 @@ class TestRunPdfWriteCheckpoint(unittest.TestCase):
 
                     self.assertTrue(checkpoint_path.exists())
                     self.assertEqual(len(checkpoint_items), 1)
-                    self.assertEqual(checkpoint_items[0]["pmid"], "1111")
-                    self.assertEqual(checkpoint_items[0]["pmc_id"], "PMC1")
-                    self.assertEqual(checkpoint_items[0]["links"], {"pdf": "https://a/1.pdf"})
-                    self.assertNotIn("pdf_path", checkpoint_items[0])
+                    self.assertEqual(checkpoint_items[0].pmid, "1111")
+                    self.assertEqual(checkpoint_items[0].pmc_id, "PMC1")
+                    self.assertEqual(
+                        checkpoint_items[0].links,
+                        {"pdf": "https://a/1.pdf"},
+                    )
 
     @patch("downloader.pdf_downloader.fetch_oa_links")
     @patch("downloader.pdf_downloader.download_oa_pdf")
@@ -1058,7 +1271,7 @@ class TestRunPdfWriteCheckpoint(unittest.TestCase):
                         run_pdf_download,
                     )
 
-                    _save_pdf_checkpoint([{"pmid": "9999", "pmc_id": "PMC9", "links": {}}])
+                    _save_pdf_checkpoint([PdfWorkItem(pmid="9999", pmc_id="PMC9", links={})])
                     run_pdf_download(db_path=db)
 
                     checkpoint_exists = _pdf_checkpoint_path().exists()
@@ -1087,7 +1300,7 @@ class TestRunPdfWriteCheckpoint(unittest.TestCase):
                         run_pdf_download,
                     )
 
-                    _save_pdf_checkpoint([{"pmid": "9999", "pmc_id": "PMC9", "links": {}}])
+                    _save_pdf_checkpoint([PdfWorkItem(pmid="9999", pmc_id="PMC9", links={})])
                     run_pdf_download(db_path=db)
 
                     checkpoint_exists = _pdf_checkpoint_path().exists()
@@ -1198,7 +1411,7 @@ class TestRunPdfDownloadSkipsExistingFulltext(unittest.TestCase):
             self._stop((m_cached, m_export, m_fetch, m_dl, m_failcsv))
 
         self.assertTrue(exists)
-        self.assertEqual([i["pmid"] for i in checkpoint], ["1111"])
+        self.assertEqual([item.pmid for item in checkpoint], ["1111"])
         m_failcsv.assert_called_once()
 
 

@@ -261,7 +261,9 @@ def build_preview(run: dict[str, Any], root: Path, thresholds: Thresholds) -> di
     return preview
 
 
-def check_preview(run: dict[str, Any], root: Path, preview: dict[str, Any]) -> None:
+def check_preview(
+    run: dict[str, Any], root: Path, preview: dict[str, Any], *, allow_blocked: bool = False
+) -> None:
     """批准看到的精确预览，不接受参数或文件的后续替换。"""
     checked_evidence(run, root)
     if preview["schema"] != THRESHOLD_SCHEMA or preview["tool_version"] != PREVIEW_TOOL_VERSION:
@@ -282,6 +284,8 @@ def check_preview(run: dict[str, Any], root: Path, preview: dict[str, Any]) -> N
         or directory.resolve().parent != directory.parent.resolve()
     ):
         raise ValueError("预览目录非法")
+    if set(preview["artifacts"]) != {"selection.csv", "preview.json"}:
+        raise ValueError("预览证据集合不符，请重新预览")
     for name, expected in preview["artifacts"].items():
         path = directory / name
         if (
@@ -290,5 +294,11 @@ def check_preview(run: dict[str, Any], root: Path, preview: dict[str, Any]) -> N
             or identity(path.read_bytes()) != expected
         ):
             raise ValueError("预览证据已变化，请重新预览")
-    if preview["summary"]["blocked"]:
+    saved = json.loads((directory / "preview.json").read_bytes())
+    if saved != {
+        key: preview[key]
+        for key in ("preview_id", "params", "summary", "binding_sha256", "schema", "tool_version")
+    }:
+        raise ValueError("预览记录与本地产物不符，请重新预览")
+    if preview["summary"]["blocked"] and not allow_blocked:
         raise ValueError("；".join(preview["summary"]["blocked"]))

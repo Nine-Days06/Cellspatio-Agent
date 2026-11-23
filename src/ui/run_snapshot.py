@@ -158,6 +158,14 @@ class RunSnapshot(Mapping[str, Any]):
             raise ValueError(f"未知阶段: {stage}")
         return list(self._raw.get(key) or [])
 
+    def running_stages(self) -> set[str]:
+        """由阶段访问器投影运行阶段，供复核事实与路由门控共同消费。"""
+        return {
+            stage
+            for stage in _STAGE_KEYS
+            if any(attempt["status"] == "running" for attempt in self.stage_attempts(stage))
+        }
+
     def attempt(
         self, stage: str, attempt_id: str, parent_id: str | None = None
     ) -> dict[str, Any] | None:

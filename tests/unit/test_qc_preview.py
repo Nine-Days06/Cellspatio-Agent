@@ -137,6 +137,7 @@ def test_api_registration_preview_approval_restart_and_idempotency(registered):
     assert store.get_qc_run(sid, rid) is None and selection.is_file()
 
 
+@pytest.mark.parametrize("decision", ["approve", "reject"])
 @pytest.mark.parametrize(
     "change",
     [
@@ -152,7 +153,7 @@ def test_api_registration_preview_approval_restart_and_idempotency(registered):
         "preview.json",
     ],
 )
-def test_evidence_replacement_blocks_approval(registered, change):
+def test_evidence_replacement_blocks_review(registered, change, decision):
     store, sid, rid, root, source, client = registered
     url = f"/api/sessions/{sid}/qc/{rid}"
     preview = client.post(url + "/preview", json=PARAMS).json()["active_preview"]
@@ -167,10 +168,11 @@ def test_evidence_replacement_blocks_approval(registered, change):
     )
     target.write_bytes(target.read_bytes() + b"changed")
     response = client.post(
-        url + "/approve", json={"preview_id": preview["preview_id"], "reason": "review"}
+        url + f"/{decision}", json={"preview_id": preview["preview_id"], "reason": "review"}
     )
     assert response.status_code == 409
     assert not store.get_qc_run(sid, rid)["previews"][0]["approved_at"]
+    assert store.get_qc_run(sid, rid).active_preview["status"] == "pending"
 
 
 def test_missing_association_cross_session_invalid_parameters_stale_and_blocked(registered):
