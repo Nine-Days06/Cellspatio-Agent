@@ -75,6 +75,24 @@ def test_accounts_are_isolated():
     assert second.get(f"/api/sessions/{sid}/messages").status_code == 404
 
 
+def test_account_rename_changes_login_name_without_moving_workspace():
+    client = _client()
+    store, workspace_id, account_id = _add_account(client, "admin1")
+    store.set_account_username(account_id, "admin_yao")
+    store.set_account_display_name(account_id, "admin_yao")
+
+    old = client.post(
+        "/api/auth/login", json={"username": "admin1", "password": "correct-password"}
+    )
+    new = client.post(
+        "/api/auth/login", json={"username": "admin_yao", "password": "correct-password"}
+    )
+
+    assert old.status_code == 401
+    assert new.status_code == 200
+    assert new.json()["workspace"]["id"] == workspace_id
+
+
 def test_logout_revokes_token_and_returns_to_visitor_workspace():
     client = _client()
     visitor_workspace = client.get("/api/workspace").json()["workspace"]["id"]

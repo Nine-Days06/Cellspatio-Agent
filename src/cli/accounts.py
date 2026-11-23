@@ -63,6 +63,10 @@ def main(argv: list[str] | None = None) -> int:
     passwd = sub.add_parser("passwd", help="修改密码")
     passwd.add_argument("username")
 
+    rename = sub.add_parser("rename", help="修改登录名")
+    rename.add_argument("username")
+    rename.add_argument("new_username")
+
     disable = sub.add_parser("disable", help="禁用账户")
     disable.add_argument("username")
 
@@ -98,6 +102,12 @@ def main(argv: list[str] | None = None) -> int:
             raise ValueError("账户不存在")
         if args.command == "passwd":
             store.set_account_password(account["id"], _hasher.hash(_read_password()))
+        elif args.command == "rename":
+            if store.get_account_by_username(args.new_username):
+                raise ValueError(f"账户已存在：{args.new_username}")
+            store.set_account_username(account["id"], args.new_username)
+            store.set_account_display_name(account["id"], args.new_username)
+            account["username"] = args.new_username
         elif args.command == "disable":
             store.set_account_disabled(account["id"], True)
         print(json.dumps({"status": "ok", "username": account["username"]}, ensure_ascii=False))

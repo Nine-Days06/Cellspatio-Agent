@@ -634,6 +634,11 @@ class SessionStore:
                 "UPDATE accounts SET display_name=? WHERE id=?", (display_name, account_id)
             )
 
+    def set_account_username(self, account_id: str, username: str) -> None:
+        """改登录名；现有 token 不失效，会话与工作区不变。"""
+        with self._conn() as conn:
+            conn.execute("UPDATE accounts SET username=? WHERE id=?", (username, account_id))
+
     def set_account_disabled(self, account_id: str, disabled: bool) -> None:
         """禁用账户时同时吊销 token。"""
         with self._conn() as conn:
