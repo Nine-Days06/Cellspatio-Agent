@@ -16,6 +16,8 @@ import type {
   LocalInputResponse,
   Project,
   UsageSummary,
+  WorkspaceResponse,
+  LoginResponse,
 } from '@/lib/types'
 import { jsonHeaders, requestJson } from '@/lib/http'
 
@@ -91,6 +93,15 @@ export function registerLocalInput(sessionId: string, path: string): Promise<Loc
   )
 }
 
+export function uploadInput(sessionId: string, file: File): Promise<LocalInputResponse> {
+  const form = new FormData()
+  form.append('file', file)
+  return requestJson(
+    `/api/sessions/${encodeURIComponent(sessionId)}/upload`,
+    { method: 'POST', body: form },
+  )
+}
+
 export function fetchMessages(
   sessionId: string,
   restore = false,
@@ -104,6 +115,22 @@ export function fetchMessages(
 export function fetchSidebar(sessionId?: string): Promise<SidebarResponse> {
   const query = sessionId ? `?session_id=${encodeURIComponent(sessionId)}` : ''
   return requestJson(`/api/sidebar${query}`)
+}
+
+export function fetchWorkspace(): Promise<WorkspaceResponse> {
+  return requestJson('/api/workspace')
+}
+
+export function startNewWorkspace(): Promise<WorkspaceResponse> {
+  return requestJson('/api/workspace/new', { method: 'POST' })
+}
+
+export function login(username: string, password: string): Promise<LoginResponse> {
+  return requestJson('/api/auth/login', jsonInit('POST', { username, password }))
+}
+
+export function logout(): Promise<{ ok: boolean }> {
+  return requestJson('/api/auth/logout', { method: 'POST' })
 }
 
 export function confirmAction(body: ConfirmRequestBody): Promise<{ message: WireMessage }> {

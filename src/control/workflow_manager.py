@@ -176,14 +176,21 @@ class WorkflowManager:
 
     def _resolve_input_file(self, params: dict[str, Any], context: dict[str, Any]) -> str | None:
         """解析输入文件：显式路径优先，不可用时回退下载资产。"""
+        allowed_root = context.get("allowed_input_root")
         if params.get("input_files"):
             candidate = params["input_files"][0]
             if Path(candidate).exists():
-                return candidate
+                if not allowed_root or Path(candidate).resolve().is_relative_to(
+                    Path(allowed_root).resolve()
+                ):
+                    return candidate
         if context.get("downloaded_assets"):
             candidate = context["downloaded_assets"][-1].get("access_path")
             if candidate and Path(candidate).exists():
-                return candidate
+                if not allowed_root or Path(candidate).resolve().is_relative_to(
+                    Path(allowed_root).resolve()
+                ):
+                    return candidate
         return None
 
     @staticmethod

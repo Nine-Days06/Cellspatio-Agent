@@ -224,6 +224,16 @@ afterEach(() => {
 })
 
 describe('ChatPage 本地输入', () => {
+  it('临时工作区 410 时显示新建入口，而不是空白工作台', async () => {
+    const sid = nextSid()
+    fetchSidebarMock.mockRejectedValue(new ApiError(410, '临时工作区已到期'))
+
+    await renderReady(sid)
+
+    expect(await screen.findByRole('alert')).toHaveTextContent('已到期')
+    expect(screen.getByRole('button', { name: '新建临时空间' })).toBeInTheDocument()
+  })
+
   it('把路径登记到当前会话并刷新消息', async () => {
     const sid = nextSid()
     await renderReady(sid, { messages: [] })

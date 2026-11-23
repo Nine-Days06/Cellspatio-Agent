@@ -8,10 +8,11 @@ from pathlib import Path
 from typing import Any
 
 from fastapi import FastAPI, Request
-from fastapi.responses import JSONResponse
+from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 from src.api import (
+    routes_auth,
     routes_chat,
     routes_clusters,
     routes_input,
@@ -21,7 +22,10 @@ from src.api import (
     routes_projects,
     routes_qc,
     routes_sessions,
+    routes_upload,
 )
+from src.api.auth import WorkspaceMiddleware
+from src.public_api.login_limiter import LoginLimiter
 from src.ui.analysis_roots import AnalysisRoots
 from src.ui.session_store import SessionStore
 
@@ -55,7 +59,9 @@ def create_app(agent: Any) -> FastAPI:
         yield
 
     app = FastAPI(title="CellSpatio API", lifespan=lifespan)
+    app.add_middleware(WorkspaceMiddleware)
     app.state.agent = agent
+    app.state.login_limiter = LoginLimiter(window=15 * 60, max_attempts=5)
     app.state.store_factory = SessionStore
     recorder = getattr(getattr(agent, "workflow_manager", None), "workflow_recorder", None)
     app.state.repo_root = Path(recorder.repo_root) if recorder else Path.cwd()
@@ -65,10 +71,12 @@ def create_app(agent: Any) -> FastAPI:
         app.state.repo_root,
     )
     app.include_router(routes_sessions.router)
+    app.include_router(routes_auth.router)
     app.include_router(routes_projects.router)
     app.include_router(routes_chat.router)
     app.include_router(routes_meta.router)
     app.include_router(routes_input.router)
+    app.include_router(routes_upload.router)
     app.include_router(routes_qc.router)
     app.include_router(routes_pca.router)
     app.include_router(routes_clusters.router)
@@ -76,6 +84,14 @@ def create_app(agent: Any) -> FastAPI:
     app.add_exception_handler(Exception, _unhandled_exception_handler)
     # router 必须先于 StaticFiles 挂载，否则 /api/* 会被 SPA 回退拦截
     if _WEB_DIST.is_dir():
+        index = _WEB_DIST / "index.html"
+
+        @app.get("/login", include_in_schema=False)
+        @app.get("/workspace", include_in_schema=False)
+        def spa_index() -> FileResponse:
+            """前端路由直达时返回同一入口，由 App 按 pathname 渲染页面。"""
+            return FileResponse(index)
+
         app.mount("/", StaticFiles(directory=_WEB_DIST, html=True))
     _warm_up_ollama()
     return app

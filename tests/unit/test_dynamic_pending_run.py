@@ -4,7 +4,6 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
-from fastapi.testclient import TestClient
 
 from src.api.app import create_app
 from src.api.chat_service import run_turn
@@ -15,6 +14,7 @@ from src.schemas.workflow import WorkflowExecution
 from src.ui.analysis_roots import AnalysisRoots
 from src.ui.session_store import SessionStore
 from tests.unit.fakes import FakeExec, FakeGen, FakeIntent
+from tests.unit.workspace_support import legacy_client
 
 
 class MemoryTransport:
@@ -82,7 +82,7 @@ def test_prepared_run_survives_card_persistence_and_app_reconstruction(
     rebuilt_agent, rebuilt_memory = make_agent(tmp_path, rebuilt_store, analysis_type)
     app = create_app(rebuilt_agent)
     app.state.store_factory = lambda: SessionStore(tmp_path / "sessions.db")
-    with TestClient(app) as client:
+    with legacy_client(app) as client:
         response = client.get(f"/api/sessions/{session_id}/messages?restore=1")
 
     assert response.status_code == 200
@@ -151,7 +151,7 @@ def test_restore_keeps_expiry_protection_when_preparation_cannot_be_verified(
     rebuilt, _ = make_agent(tmp_path, store)
     app = create_app(rebuilt)
     app.state.store_factory = lambda: SessionStore(tmp_path / "sessions.db")
-    with TestClient(app) as client:
+    with legacy_client(app) as client:
         response = client.get(f"/api/sessions/{sid}/messages?restore=1")
     assert response.json()["pending_script"]["status"] == "expired"
     assert response.json()["pending_script"]["run_id"] == pending["run_id"]

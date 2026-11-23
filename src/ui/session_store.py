@@ -27,11 +27,42 @@ from src.ui.store_errors import StoreError
 logger = logging.getLogger(__name__)
 
 DEFAULT_DB_PATH = Path(".cellspatio") / "sessions.db"
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
+LEGACY_WORKSPACE_ID = "legacy"
 
 SCHEMA = """
+CREATE TABLE IF NOT EXISTS workspaces (
+    id TEXT PRIMARY KEY,
+    kind TEXT NOT NULL DEFAULT 'persistent' CHECK(kind IN ('ephemeral', 'persistent')),
+    label TEXT NOT NULL DEFAULT '',
+    root_path TEXT,
+    owner_account_id TEXT,
+    created_at TEXT NOT NULL,
+    last_seen_at TEXT NOT NULL,
+    expires_at TEXT,
+    status TEXT NOT NULL DEFAULT 'active' CHECK(status IN ('active', 'expired', 'deleted'))
+);
+CREATE TABLE IF NOT EXISTS accounts (
+    id TEXT PRIMARY KEY,
+    username TEXT NOT NULL UNIQUE COLLATE NOCASE,
+    password_hash TEXT NOT NULL,
+    display_name TEXT NOT NULL DEFAULT '',
+    is_admin INTEGER NOT NULL DEFAULT 0,
+    workspace_id TEXT REFERENCES workspaces(id) ON DELETE SET NULL,
+    disabled INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS access_tokens (
+    token_hash TEXT PRIMARY KEY,
+    principal_kind TEXT NOT NULL CHECK(principal_kind IN ('visitor', 'account')),
+    principal_id TEXT NOT NULL,
+    workspace_id TEXT NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+    created_at TEXT NOT NULL,
+    expires_at TEXT NOT NULL
+);
 CREATE TABLE IF NOT EXISTS projects (
     id TEXT PRIMARY KEY,
+    workspace_id TEXT REFERENCES workspaces(id) ON DELETE CASCADE,
     label TEXT NOT NULL,
     kind TEXT NOT NULL DEFAULT 'local',
     root_path TEXT,
@@ -41,6 +72,7 @@ CREATE TABLE IF NOT EXISTS projects (
 );
 CREATE TABLE IF NOT EXISTS sessions (
     id TEXT PRIMARY KEY,
+    workspace_id TEXT REFERENCES workspaces(id) ON DELETE CASCADE,
     title TEXT NOT NULL DEFAULT '新会话',
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL,
@@ -222,8 +254,22 @@ CREATE INDEX IF NOT EXISTS idx_knowledge_qa_reviews_answer
 
 def _migrate_schema(conn: sqlite3.Connection) -> None:
     """旧库补列并建索引：CREATE TABLE IF NOT EXISTS 不会修改既有 sessions 表。"""
+    now = _now()
+    conn.execute(
+        "INSERT OR IGNORE INTO workspaces "
+        "(id, kind, label, root_path, created_at, last_seen_at, status) "
+        "VALUES (?, 'persistent', '历史工作区', NULL, ?, ?, 'active')",
+        (LEGACY_WORKSPACE_ID, now, now),
+    )
+    project_columns = {row[1] for row in conn.execute("PRAGMA table_info(projects)").fetchall()}
+    if "workspace_id" not in project_columns:
+        conn.execute(
+            "ALTER TABLE projects ADD COLUMN workspace_id TEXT "
+            "REFERENCES workspaces(id) ON DELETE CASCADE"
+        )
     columns = {row[1] for row in conn.execute("PRAGMA table_info(sessions)").fetchall()}
     additions = {
+        "workspace_id": "TEXT REFERENCES workspaces(id) ON DELETE CASCADE",
         "project_id": "TEXT REFERENCES projects(id) ON DELETE RESTRICT",
         "pinned": "INTEGER NOT NULL DEFAULT 0",
         "archived_at": "TEXT",
@@ -231,11 +277,24 @@ def _migrate_schema(conn: sqlite3.Connection) -> None:
     for name, ddl in additions.items():
         if name not in columns:
             conn.execute(f"ALTER TABLE sessions ADD COLUMN {name} {ddl}")
+    conn.execute(
+        "UPDATE projects SET workspace_id=? WHERE workspace_id IS NULL",
+        (LEGACY_WORKSPACE_ID,),
+    )
+    conn.execute(
+        "UPDATE sessions SET workspace_id=? WHERE workspace_id IS NULL",
+        (LEGACY_WORKSPACE_ID,),
+    )
     preview_columns = {row[1] for row in conn.execute("PRAGMA table_info(qc_previews)").fetchall()}
     for name, ddl in {"rejected_at": "TEXT", "reviewer": "TEXT"}.items():
         if name not in preview_columns:
             conn.execute(f"ALTER TABLE qc_previews ADD COLUMN {name} {ddl}")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_sessions_project ON sessions(project_id)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_sessions_workspace ON sessions(workspace_id)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_projects_workspace ON projects(workspace_id)")
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_access_tokens_workspace ON access_tokens(workspace_id)"
+    )
     conn.execute("CREATE INDEX IF NOT EXISTS idx_sessions_updated ON sessions(updated_at)")
 
 
@@ -273,9 +332,11 @@ def _running_stage(conn: sqlite3.Connection, session_id: str) -> str | None:
 class SessionStore:
     """会话/消息 CRUD。每次操作独立短连接，不做连接池。"""
 
-    def __init__(self, db_path: str | Path | None = None):
+    def __init__(self, db_path: str | Path | None = None, workspace_id: str | None = None):
         path = db_path or os.environ.get("CELLSPATIO_SESSIONS_DB") or DEFAULT_DB_PATH
         self.db_path = Path(path)
+        #: None 表示系统/CLI 全局视图；设置后所有会话与项目查询都限定在该工作区。
+        self.workspace_id = workspace_id
 
     @property
     def stages(self) -> ScStages:
@@ -295,6 +356,9 @@ class SessionStore:
                 conn.executescript(SCHEMA)
                 _migrate_schema(conn)
                 conn.execute(f"PRAGMA user_version={SCHEMA_VERSION}")
+                # 迁移里的 INSERT/UPDATE 会隐式开启事务；先提交，
+                # 否则后续方法里的 BEGIN IMMEDIATE 会报嵌套事务。
+                conn.commit()
             yield conn
             conn.commit()
         finally:
@@ -303,32 +367,41 @@ class SessionStore:
     def create_session(self, title: str = "新会话", project_id: str | None = None) -> str:
         sid = uuid.uuid4().hex
         now = _now()
+        workspace_id = self.workspace_id or LEGACY_WORKSPACE_ID
         with self._conn() as conn:
             conn.execute("BEGIN IMMEDIATE")
             if project_id is not None:
                 # 校验必须在写事务内：归档可与建会话并发。
                 project = conn.execute(
-                    "SELECT archived_at FROM projects WHERE id=?", (project_id,)
+                    "SELECT archived_at, workspace_id FROM projects WHERE id=?", (project_id,)
                 ).fetchone()
                 if project is None:
+                    raise StoreError("not_found", "项目不存在")
+                if project["workspace_id"] != workspace_id:
                     raise StoreError("not_found", "项目不存在")
                 if project["archived_at"]:
                     raise StoreError("conflict", "项目已归档")
             conn.execute(
-                "INSERT INTO sessions (id, title, created_at, updated_at, project_id) "
-                "VALUES (?, ?, ?, ?, ?)",
-                (sid, title, now, now, project_id),
+                "INSERT INTO sessions "
+                "(id, workspace_id, title, created_at, updated_at, project_id) "
+                "VALUES (?, ?, ?, ?, ?, ?)",
+                (sid, workspace_id, title, now, now, project_id),
             )
             if project_id is not None:
                 conn.execute("UPDATE projects SET updated_at=? WHERE id=?", (now, project_id))
         return sid
 
     def list_sessions(self, include_archived: bool = False) -> list[dict[str, Any]]:
-        where = (
-            ""
-            if include_archived
-            else "WHERE s.archived_at IS NULL AND (s.project_id IS NULL OR p.archived_at IS NULL)"
-        )
+        clauses: list[str] = []
+        params: list[Any] = []
+        if self.workspace_id is not None:
+            clauses.append("s.workspace_id = ?")
+            params.append(self.workspace_id)
+        if not include_archived:
+            clauses.append(
+                "s.archived_at IS NULL AND (s.project_id IS NULL OR p.archived_at IS NULL)"
+            )
+        where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
         with self._conn() as conn:
             rows = conn.execute(
                 "SELECT s.id, s.title, s.updated_at, s.project_id, s.pinned, "
@@ -336,7 +409,8 @@ class SessionStore:
                 "(SELECT COUNT(*) FROM messages m WHERE m.session_id = s.id) "
                 f"AS message_count FROM sessions s LEFT JOIN projects p "
                 f"ON p.id = s.project_id {where} "
-                "ORDER BY s.pinned DESC, s.updated_at DESC"
+                "ORDER BY s.pinned DESC, s.updated_at DESC",
+                params,
             ).fetchall()
         sessions = [dict(r) for r in rows]
         for session in sessions:
@@ -345,7 +419,7 @@ class SessionStore:
 
     def get_session(self, session_id: str) -> dict[str, Any] | None:
         with self._conn() as conn:
-            row = conn.execute("SELECT * FROM sessions WHERE id = ?", (session_id,)).fetchone()
+            row = self._session_row(conn, session_id)
         if row is None:
             return None
         session = dict(row)
@@ -353,38 +427,273 @@ class SessionStore:
         session["pinned"] = bool(session["pinned"])
         return session
 
+    def _session_row(self, conn: sqlite3.Connection, session_id: str) -> sqlite3.Row | None:
+        """读取会话并按当前 store 的工作区过滤；未配置工作区时保持全局视图。"""
+        if self.workspace_id is None:
+            return conn.execute("SELECT * FROM sessions WHERE id = ?", (session_id,)).fetchone()
+        return conn.execute(
+            "SELECT * FROM sessions WHERE id = ? AND workspace_id = ?",
+            (session_id, self.workspace_id),
+        ).fetchone()
+
+    def create_workspace(
+        self,
+        kind: str = "persistent",
+        label: str = "",
+        root_path: str | None = None,
+        owner_account_id: str | None = None,
+        expires_at: str | None = None,
+    ) -> str:
+        """创建工作区；临时工作区由调用方传入固定 expires_at。"""
+        workspace_id = uuid.uuid4().hex
+        now = _now()
+        with self._conn() as conn:
+            conn.execute(
+                "INSERT INTO workspaces "
+                "(id, kind, label, root_path, owner_account_id, created_at, last_seen_at, "
+                "expires_at, status) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'active')",
+                (
+                    workspace_id,
+                    kind,
+                    label,
+                    root_path,
+                    owner_account_id,
+                    now,
+                    now,
+                    expires_at,
+                ),
+            )
+        return workspace_id
+
+    def get_workspace(self, workspace_id: str) -> dict[str, Any] | None:
+        """按 id 读取工作区。"""
+        with self._conn() as conn:
+            row = conn.execute("SELECT * FROM workspaces WHERE id = ?", (workspace_id,)).fetchone()
+        return dict(row) if row else None
+
+    def list_workspaces(
+        self, kind: str | None = None, include_inactive: bool = False
+    ) -> list[dict[str, Any]]:
+        """列出工作区；默认只返回 active。"""
+        clauses = [] if include_inactive else ["status = 'active'"]
+        params: list[Any] = []
+        if kind is not None:
+            clauses.append("kind = ?")
+            params.append(kind)
+        where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+        with self._conn() as conn:
+            rows = conn.execute(
+                f"SELECT * FROM workspaces {where} ORDER BY created_at DESC", params
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def touch_workspace(self, workspace_id: str) -> None:
+        """刷新最近访问时间；到期时间不随之延长。"""
+        with self._conn() as conn:
+            conn.execute(
+                "UPDATE workspaces SET last_seen_at=? WHERE id=? AND status='active'",
+                (_now(), workspace_id),
+            )
+
+    def set_workspace_status(self, workspace_id: str, status: str) -> None:
+        """更新工作区状态。"""
+        if status not in {"active", "expired", "deleted"}:
+            raise ValueError("未知工作区状态")
+        with self._conn() as conn:
+            conn.execute("UPDATE workspaces SET status=? WHERE id=?", (status, workspace_id))
+
+    def set_workspace_root(self, workspace_id: str, root_path: str | None) -> None:
+        """设置工作区文件根；legacy 保持 None 以继续使用 repo_root/data。"""
+        with self._conn() as conn:
+            conn.execute("UPDATE workspaces SET root_path=? WHERE id=?", (root_path, workspace_id))
+
+    def delete_workspace(self, workspace_id: str) -> None:
+        """删除工作区及其项目/会话；文件清理由调用方负责。"""
+        with self._conn() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            conn.execute("DELETE FROM access_tokens WHERE workspace_id=?", (workspace_id,))
+            conn.execute("DELETE FROM sessions WHERE workspace_id=?", (workspace_id,))
+            conn.execute("DELETE FROM projects WHERE workspace_id=?", (workspace_id,))
+            conn.execute("DELETE FROM workspaces WHERE id=?", (workspace_id,))
+
+    def create_access_token(
+        self,
+        token_hash: str,
+        principal_kind: str,
+        principal_id: str,
+        workspace_id: str,
+        expires_at: str,
+    ) -> None:
+        """保存已哈希的 cookie token；明文只在响应里出现一次。"""
+        with self._conn() as conn:
+            conn.execute(
+                "INSERT INTO access_tokens "
+                "(token_hash, principal_kind, principal_id, workspace_id, created_at, "
+                "expires_at) VALUES (?, ?, ?, ?, ?, ?)",
+                (token_hash, principal_kind, principal_id, workspace_id, _now(), expires_at),
+            )
+
+    def get_access_token(self, token_hash: str) -> dict[str, Any] | None:
+        """按哈希读取 token 与所属工作区；过期判断交给调用方。"""
+        with self._conn() as conn:
+            row = conn.execute(
+                "SELECT t.*, w.kind AS workspace_kind, w.label AS workspace_label, "
+                "w.root_path AS workspace_root_path, w.status AS workspace_status, "
+                "w.created_at AS workspace_created_at, w.expires_at AS workspace_expires_at "
+                "FROM access_tokens t JOIN workspaces w ON w.id = t.workspace_id "
+                "WHERE t.token_hash = ?",
+                (token_hash,),
+            ).fetchone()
+        return dict(row) if row else None
+
+    def delete_access_token(self, token_hash: str) -> None:
+        """退出登录或轮换 cookie 时吊销 token。"""
+        with self._conn() as conn:
+            conn.execute("DELETE FROM access_tokens WHERE token_hash = ?", (token_hash,))
+
+    def delete_access_tokens_for_workspace(self, workspace_id: str) -> None:
+        """删除工作区的全部 token，用于到期/删除。"""
+        with self._conn() as conn:
+            conn.execute("DELETE FROM access_tokens WHERE workspace_id = ?", (workspace_id,))
+
+    def create_account(
+        self,
+        username: str,
+        password_hash: str,
+        display_name: str,
+        workspace_id: str,
+        is_admin: bool = True,
+    ) -> str:
+        """创建管理账户；用户名大小写不敏感唯一。"""
+        account_id = uuid.uuid4().hex
+        with self._conn() as conn:
+            conn.execute(
+                "INSERT INTO accounts "
+                "(id, username, password_hash, display_name, is_admin, workspace_id, created_at) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?)",
+                (
+                    account_id,
+                    username,
+                    password_hash,
+                    display_name,
+                    int(is_admin),
+                    workspace_id,
+                    _now(),
+                ),
+            )
+        return account_id
+
+    def get_account(self, account_id: str) -> dict[str, Any] | None:
+        """按 id 读取账户（含工作区状态）。"""
+        with self._conn() as conn:
+            row = conn.execute(
+                "SELECT a.*, w.status AS workspace_status, w.kind AS workspace_kind "
+                "FROM accounts a LEFT JOIN workspaces w ON w.id = a.workspace_id "
+                "WHERE a.id = ?",
+                (account_id,),
+            ).fetchone()
+        return dict(row) if row else None
+
+    def get_account_by_username(self, username: str) -> dict[str, Any] | None:
+        """登录查询：用户名大小写不敏感。"""
+        with self._conn() as conn:
+            row = conn.execute(
+                "SELECT a.*, w.status AS workspace_status, w.kind AS workspace_kind "
+                "FROM accounts a LEFT JOIN workspaces w ON w.id = a.workspace_id "
+                "WHERE a.username = ? COLLATE NOCASE",
+                (username,),
+            ).fetchone()
+        return dict(row) if row else None
+
+    def list_accounts(self) -> list[dict[str, Any]]:
+        """列出账户，不返回密码哈希。"""
+        with self._conn() as conn:
+            rows = conn.execute(
+                "SELECT a.id, a.username, a.display_name, a.is_admin, a.workspace_id, "
+                "a.disabled, a.created_at, w.kind AS workspace_kind "
+                "FROM accounts a LEFT JOIN workspaces w ON w.id = a.workspace_id "
+                "ORDER BY a.created_at"
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def set_account_password(self, account_id: str, password_hash: str) -> None:
+        """改密并吊销该账户现有 token。"""
+        with self._conn() as conn:
+            conn.execute(
+                "UPDATE accounts SET password_hash=? WHERE id=?", (password_hash, account_id)
+            )
+            conn.execute(
+                "DELETE FROM access_tokens WHERE principal_kind='account' AND principal_id=?",
+                (account_id,),
+            )
+
+    def set_account_display_name(self, account_id: str, display_name: str) -> None:
+        """更新账户显示名，不触碰凭据与会话。"""
+        with self._conn() as conn:
+            conn.execute(
+                "UPDATE accounts SET display_name=? WHERE id=?", (display_name, account_id)
+            )
+
+    def set_account_disabled(self, account_id: str, disabled: bool) -> None:
+        """禁用账户时同时吊销 token。"""
+        with self._conn() as conn:
+            conn.execute("UPDATE accounts SET disabled=? WHERE id=?", (int(disabled), account_id))
+            if disabled:
+                conn.execute(
+                    "DELETE FROM access_tokens WHERE principal_kind='account' AND principal_id=?",
+                    (account_id,),
+                )
+
     def create_project(self, label: str, root_path: str | None = None, kind: str = "local") -> str:
         """创建扁平项目；同名允许，靠 id 区分。"""
         pid = uuid.uuid4().hex
         now = _now()
+        workspace_id = self.workspace_id or LEGACY_WORKSPACE_ID
         with self._conn() as conn:
             conn.execute(
-                "INSERT INTO projects (id, label, kind, root_path, created_at, updated_at) "
-                "VALUES (?, ?, ?, ?, ?, ?)",
-                (pid, label, kind, root_path, now, now),
+                "INSERT INTO projects "
+                "(id, workspace_id, label, kind, root_path, created_at, updated_at) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?)",
+                (pid, workspace_id, label, kind, root_path, now, now),
             )
         return pid
 
     def list_projects(self, include_archived: bool = False) -> list[dict[str, Any]]:
         """列出项目及未归档会话数；默认隐藏已归档。"""
-        where = "" if include_archived else "WHERE p.archived_at IS NULL"
+        clauses: list[str] = []
+        params: list[Any] = []
+        if self.workspace_id is not None:
+            clauses.append("p.workspace_id = ?")
+            params.append(self.workspace_id)
+        if not include_archived:
+            clauses.append("p.archived_at IS NULL")
+        where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
         with self._conn() as conn:
             rows = conn.execute(
                 "SELECT p.*, (SELECT COUNT(*) FROM sessions s "
                 "WHERE s.project_id = p.id AND s.archived_at IS NULL) AS session_count "
-                f"FROM projects p {where} ORDER BY p.updated_at DESC"
+                f"FROM projects p {where} ORDER BY p.updated_at DESC",
+                params,
             ).fetchall()
         return [dict(r) for r in rows]
 
     def get_project(self, project_id: str) -> dict[str, Any] | None:
         """按 id 取项目（含未归档会话数）；不存在返回 None。"""
         with self._conn() as conn:
-            row = conn.execute(
-                "SELECT p.*, (SELECT COUNT(*) FROM sessions s "
-                "WHERE s.project_id = p.id AND s.archived_at IS NULL) AS session_count "
-                "FROM projects p WHERE p.id = ?",
-                (project_id,),
-            ).fetchone()
+            if self.workspace_id is None:
+                row = conn.execute(
+                    "SELECT p.*, (SELECT COUNT(*) FROM sessions s "
+                    "WHERE s.project_id = p.id AND s.archived_at IS NULL) AS session_count "
+                    "FROM projects p WHERE p.id = ?",
+                    (project_id,),
+                ).fetchone()
+            else:
+                row = conn.execute(
+                    "SELECT p.*, (SELECT COUNT(*) FROM sessions s "
+                    "WHERE s.project_id = p.id AND s.archived_at IS NULL) AS session_count "
+                    "FROM projects p WHERE p.id = ? AND p.workspace_id = ?",
+                    (project_id, self.workspace_id),
+                ).fetchone()
         return dict(row) if row else None
 
     def update_project(
@@ -422,7 +731,11 @@ class SessionStore:
                     running = _running_stage(conn, row["id"])
                     if running:
                         raise StoreError("conflict", f"{running}运行中，不能归档项目")
-            cursor = conn.execute(f"UPDATE projects SET {', '.join(sets)} WHERE id=?", vals)
+            where = "id=?"
+            if self.workspace_id is not None:
+                where += " AND workspace_id=?"
+                vals.append(self.workspace_id)
+            cursor = conn.execute(f"UPDATE projects SET {', '.join(sets)} WHERE {where}", vals)
             if cursor.rowcount == 0:
                 raise StoreError("not_found", "项目不存在")
 
@@ -435,7 +748,13 @@ class SessionStore:
             ).fetchone()
             if row["total"]:
                 raise ValueError("项目仍有会话，不能删除")
-            cursor = conn.execute("DELETE FROM projects WHERE id = ?", (project_id,))
+            if self.workspace_id is None:
+                cursor = conn.execute("DELETE FROM projects WHERE id = ?", (project_id,))
+            else:
+                cursor = conn.execute(
+                    "DELETE FROM projects WHERE id = ? AND workspace_id = ?",
+                    (project_id, self.workspace_id),
+                )
             if cursor.rowcount == 0:
                 raise ValueError("项目不存在")
 
@@ -445,15 +764,15 @@ class SessionStore:
             conn.execute("BEGIN IMMEDIATE")
             if project_id is not None:
                 project = conn.execute(
-                    "SELECT archived_at FROM projects WHERE id=?", (project_id,)
+                    "SELECT archived_at, workspace_id FROM projects WHERE id=?", (project_id,)
                 ).fetchone()
                 if project is None:
                     raise StoreError("not_found", "项目不存在")
+                if self.workspace_id is not None and project["workspace_id"] != self.workspace_id:
+                    raise StoreError("not_found", "项目不存在")
                 if project["archived_at"]:
                     raise StoreError("conflict", "项目已归档")
-            previous = conn.execute(
-                "SELECT project_id FROM sessions WHERE id=?", (session_id,)
-            ).fetchone()
+            previous = self._session_row(conn, session_id)
             if previous is None:
                 raise StoreError("not_found", "会话不存在")
             if previous["project_id"] != project_id:
@@ -461,10 +780,16 @@ class SessionStore:
                 running = _running_stage(conn, session_id)
                 if running is not None:
                     raise StoreError("conflict", f"{running}运行中，不能移动会话")
-            cursor = conn.execute(
-                "UPDATE sessions SET project_id=?, updated_at=? WHERE id=?",
-                (project_id, _now(), session_id),
-            )
+            if self.workspace_id is None:
+                cursor = conn.execute(
+                    "UPDATE sessions SET project_id=?, updated_at=? WHERE id=?",
+                    (project_id, _now(), session_id),
+                )
+            else:
+                cursor = conn.execute(
+                    "UPDATE sessions SET project_id=?, updated_at=? WHERE id=? AND workspace_id=?",
+                    (project_id, _now(), session_id, self.workspace_id),
+                )
             if cursor.rowcount == 0:
                 raise StoreError("not_found", "会话不存在")
             for touched in {previous["project_id"], project_id} - {None}:
@@ -473,10 +798,16 @@ class SessionStore:
     def set_session_pinned(self, session_id: str, pinned: bool) -> None:
         """设置会话置顶状态。"""
         with self._conn() as conn:
-            cursor = conn.execute(
-                "UPDATE sessions SET pinned=?, updated_at=? WHERE id=?",
-                (1 if pinned else 0, _now(), session_id),
-            )
+            if self.workspace_id is None:
+                cursor = conn.execute(
+                    "UPDATE sessions SET pinned=?, updated_at=? WHERE id=?",
+                    (1 if pinned else 0, _now(), session_id),
+                )
+            else:
+                cursor = conn.execute(
+                    "UPDATE sessions SET pinned=?, updated_at=? WHERE id=? AND workspace_id=?",
+                    (1 if pinned else 0, _now(), session_id, self.workspace_id),
+                )
             if cursor.rowcount == 0:
                 raise StoreError("not_found", "会话不存在")
 
@@ -489,10 +820,16 @@ class SessionStore:
                 running = _running_stage(conn, session_id)
                 if running:
                     raise StoreError("conflict", f"{running}运行中，不能归档会话")
-            cursor = conn.execute(
-                "UPDATE sessions SET archived_at=?, updated_at=? WHERE id=?",
-                (_now() if archived else None, _now(), session_id),
-            )
+            if self.workspace_id is None:
+                cursor = conn.execute(
+                    "UPDATE sessions SET archived_at=?, updated_at=? WHERE id=?",
+                    (_now() if archived else None, _now(), session_id),
+                )
+            else:
+                cursor = conn.execute(
+                    "UPDATE sessions SET archived_at=?, updated_at=? WHERE id=? AND workspace_id=?",
+                    (_now() if archived else None, _now(), session_id, self.workspace_id),
+                )
             if cursor.rowcount == 0:
                 raise StoreError("not_found", "会话不存在")
 
@@ -503,6 +840,9 @@ class SessionStore:
             running = _running_stage(conn, session_id)
             if running:
                 raise StoreError("conflict", f"{running}运行中，不能删除会话")
+            row = self._session_row(conn, session_id)
+            if row is None:
+                raise StoreError("not_found", "会话不存在")
             conn.execute("DELETE FROM messages WHERE session_id = ?", (session_id,))
             conn.execute("DELETE FROM sessions WHERE id = ?", (session_id,))
 
@@ -601,11 +941,15 @@ class SessionStore:
     def get_qc_run(self, session_id: str, run_id: str) -> RunSnapshot | None:
         """读取权威 run 与预览/批准历史，不从消息倒推状态。"""
         with self._conn() as conn:
+            if self._session_row(conn, session_id) is None:
+                return None
             return RunSnapshot.load(conn, session_id, run_id)
 
     def list_qc_runs(self, session_id: str) -> list[dict[str, Any]]:
         """按创建顺序列出会话的 QC run（供导出/删除 CLI 枚举产物）。"""
         with self._conn() as conn:
+            if self._session_row(conn, session_id) is None:
+                return []
             rows = conn.execute(
                 "SELECT * FROM qc_runs WHERE session_id=? ORDER BY rowid", (session_id,)
             ).fetchall()

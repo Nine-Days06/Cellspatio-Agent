@@ -8,6 +8,7 @@ from typing import Any
 from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel
 
+from src.api.auth import is_ephemeral_workspace
 from src.api.deps import StoreDep
 from src.api.errors import store_status
 from src.api.session_locks import lock_for
@@ -58,6 +59,8 @@ def list_projects(store: StoreDep, include_archived: bool = False) -> dict[str, 
 @router.post("/projects")
 def create_project(body: ProjectCreateRequest, request: Request, store: StoreDep) -> dict[str, Any]:
     """新建项目；标签可省略，缺省取工作目录名。"""
+    if is_ephemeral_workspace(request) and body.root_path:
+        raise HTTPException(403, "访客不能指定服务器本地工作目录")
     label = (body.label or "").strip()
     root_path = _validated_root_path(body.root_path, request.app.state.repo_root)
     if not label:
@@ -84,6 +87,8 @@ def update_project(
     project_id: str, body: ProjectUpdateRequest, request: Request, store: StoreDep
 ) -> dict[str, Any]:
     """更新项目；归档前先拿项目下所有会话锁，运行中拒绝。"""
+    if is_ephemeral_workspace(request) and "root_path" in body.model_fields_set:
+        raise HTTPException(403, "访客不能指定服务器本地工作目录")
     if store.get_project(project_id) is None:
         raise HTTPException(status_code=404, detail="项目不存在")
     if body.label is not None and not body.label.strip():

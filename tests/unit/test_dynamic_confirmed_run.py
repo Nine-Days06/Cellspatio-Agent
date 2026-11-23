@@ -8,7 +8,6 @@ from types import SimpleNamespace
 from typing import Any
 
 import pytest
-from fastapi.testclient import TestClient
 
 from src.analysis.r_executor import RExecutorError
 from src.api.app import create_app
@@ -18,6 +17,7 @@ from src.ui.confirm_flow import ConfirmFlowError, confirm_script
 from src.ui.session_store import SessionStore
 from tests.unit.fakes import FakeExec, write_declared_output
 from tests.unit.test_dynamic_pending_run import make_agent
+from tests.unit.workspace_support import legacy_client
 
 
 def prepare_card(
@@ -63,7 +63,7 @@ def test_nested_preparation_params_are_copied_and_confirmed_after_restore(
     )
 
     app, rebuilt = confirmed_app(tmp_path, store, "differential_expression")
-    with TestClient(app) as client:
+    with legacy_client(app) as client:
         restored = client.get(f"/api/sessions/{sid}/messages?restore=1")
         assert restored.status_code == 200
         assert restored.json()["pending_script"]["status"] == "pending"
@@ -108,7 +108,7 @@ def test_confirm_after_reconstruction_records_repaired_outputs_on_prepared_run(
 
     rebuilt.workflow_manager.r_executor = FakeExec(side_effect=execute)
     rebuilt.workflow_manager.code_repairer = SimpleNamespace(repair=lambda code, error: fixed)
-    with TestClient(app) as client:
+    with legacy_client(app) as client:
         response = client.post("/api/confirm", json={"session_id": sid, "action": "script_confirm"})
         duplicate = client.post(
             "/api/confirm", json={"session_id": sid, "action": "script_confirm"}
@@ -174,7 +174,7 @@ def test_confirmation_rejects_mismatched_preparation_without_executing_r(
         pending["analysis_type"] = "spatial"
     store.append_message(sid, "assistant", "错配卡", pending_script=pending)
     app, rebuilt = confirmed_app(tmp_path, store, "differential_expression")
-    with TestClient(app) as client:
+    with legacy_client(app) as client:
         response = client.post("/api/confirm", json={"session_id": sid, "action": "script_confirm"})
     assert response.status_code == 200
     assert "分析完成" not in response.json()["message"]["content"]
@@ -191,7 +191,7 @@ def test_copied_card_cannot_execute_an_already_successful_run(
     store, sid, prepared, _ = prepare_card(tmp_path, "differential_expression")
     pending = store.get_messages(sid)[-1]["pending_script"].copy()
     app, rebuilt = confirmed_app(tmp_path, store, "differential_expression")
-    with TestClient(app) as client:
+    with legacy_client(app) as client:
         assert (
             client.post(
                 "/api/confirm", json={"session_id": sid, "action": "script_confirm"}
@@ -201,7 +201,7 @@ def test_copied_card_cannot_execute_an_already_successful_run(
     record = rebuilt.workflow_manager.workflow_recorder.restore_run(prepared["run_id"])
     store.append_message(sid, "assistant", "复制卡", pending_script=pending)
     second_app, second = confirmed_app(tmp_path, store, "differential_expression")
-    with TestClient(second_app) as client:
+    with legacy_client(second_app) as client:
         response = client.post("/api/confirm", json={"session_id": sid, "action": "script_confirm"})
     assert response.status_code == 200
     assert second.workflow_manager.r_executor.codes == []

@@ -13,9 +13,10 @@ from src.api.app import create_app
 from src.ui.run_snapshot import RunSnapshot
 from src.ui.session_store import SessionStore
 from tests.unit.fakes import FakeAgent
+from tests.unit.workspace_support import authenticate_legacy
 
 _API_DIR = Path(__file__).resolve().parents[2] / "src" / "api"
-_FACTORY_BYPASS_EXEMPT = {"app.py", "deps.py"}
+_FACTORY_BYPASS_EXEMPT = {"app.py", "auth.py", "deps.py"}
 
 
 def _session_store_aliases(tree: ast.Module) -> set[str]:
@@ -198,6 +199,7 @@ def test_chat_input_qc_routes_use_overridden_factory(
     app.state.store_factory = RecordingStore
 
     with TestClient(app) as client:
+        authenticate_legacy(client)
         baseline = len(RecordingStore.instances)
 
         assert client.request(method, url, json=payload).status_code == 404

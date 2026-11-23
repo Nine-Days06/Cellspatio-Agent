@@ -439,6 +439,27 @@ export interface SidebarResponse {
   kb_stats: KbStats
   env: EnvStatus
   soft_warn: boolean
+  workspace?: WorkspaceInfo
+}
+
+/** GET /api/workspace、/api/sidebar：当前请求所属工作区，不包含 token。 */
+export interface WorkspaceInfo {
+  id: string | null
+  kind: 'ephemeral' | 'persistent' | null
+  principal_kind?: 'visitor' | 'account'
+  label: string
+  created_at: string | null
+  expires_at: string | null
+  remaining_seconds: number | null
+  expired: boolean
+}
+
+export interface WorkspaceResponse {
+  workspace: WorkspaceInfo
+}
+
+export interface LoginResponse extends WorkspaceResponse {
+  account: { username: string }
 }
 
 export interface MessagesResponse {

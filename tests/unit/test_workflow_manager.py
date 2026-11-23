@@ -1536,3 +1536,19 @@ def test_query_memory_for_agent_does_not_record():
     assert spy.starts == []
     assert spy.steps == []
     assert spy.finishes == []
+
+
+def test_resolve_input_file_rejects_path_outside_allowed_root(tmp_path):
+    """临时访客聊天里提到的服务器路径不能绕过上传入口。"""
+    manager = WorkflowManager.__new__(WorkflowManager)
+    outside = tmp_path / "secret.csv"
+    outside.write_text("gene,c1\nG1,1\n", encoding="utf-8")
+    allowed = tmp_path / "workspace"
+    allowed.mkdir()
+
+    assert (
+        manager._resolve_input_file(
+            {"input_files": [str(outside)]}, {"allowed_input_root": str(allowed)}
+        )
+        is None
+    )

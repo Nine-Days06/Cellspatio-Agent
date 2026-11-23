@@ -23,6 +23,7 @@ from src.api.app import create_app
 from src.api.chat_service import run_turn
 from src.ui.session_store import SessionStore
 from tests.unit.fakes import FakeAgent, FakeRuntime
+from tests.unit.workspace_support import authenticate_legacy
 
 PARAMS = {"n_feature_min": 1, "n_feature_max": 3, "percent_mt_max": 100}
 
@@ -153,6 +154,7 @@ def parent_ready(tmp_path, monkeypatch, request):
     rid = result["results"]["qc_run_id"]
     monkeypatch.setenv("OLLAMA_EAGER_START", "0")
     client = TestClient(create_app(agent))
+    authenticate_legacy(client)
     url = f"/api/sessions/{sid}/qc/{rid}"
     pid = client.post(url + "/preview", json=PARAMS).json()["active_preview"]["preview_id"]
     assert (
@@ -431,6 +433,7 @@ def test_multi_connection_claim_running_guards_restart_and_atomic_finish(parent_
     with store._conn() as conn:
         conn.execute("DROP TRIGGER reject_pca")
     with TestClient(create_app(client.app.state.agent)) as restarted:
+        authenticate_legacy(restarted)
         assert restarted.get(path).json()["attempts"][0]["status"] == "interrupted"
         assert (
             restarted.post(path, json={"binding_sha256": binding, "reason": "test"}).json()[

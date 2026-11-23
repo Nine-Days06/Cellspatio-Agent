@@ -51,4 +51,5 @@
 - [协作约定](../../CONTRIBUTING.md)：分支、提交、PR、本地门禁和发版。
 - [接口规范](../api/inter_project_interface.md)：主项目与文献 ETL 的跨项目契约。
 - [部署说明](../deploy.md)：公共证据服务的 Caddy/TLS、备份与审计。
+- [InstaBox 部署](../deploy/instabox.md)：主站原生全栈、nginx、账户初始化与回滚。
 - `GLOSSARY.md`：受控分析复核术语。

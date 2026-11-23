@@ -10,7 +10,6 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
-from fastapi.testclient import TestClient
 
 from src.api.chat_service import run_turn
 from src.cli.records import export_records
@@ -19,6 +18,7 @@ from src.ui.session_store import SessionStore
 from tests.unit.fakes import FakeExec, write_declared_output
 from tests.unit.test_dynamic_confirmed_run import confirmed_app
 from tests.unit.test_dynamic_pending_run import make_agent
+from tests.unit.workspace_support import legacy_client
 
 
 @pytest.mark.parametrize("scope", ["session", "project"])
@@ -48,7 +48,7 @@ def test_export_registered_dynamic_outputs_with_original_run_and_no_discovery_du
         return SimpleNamespace(returncode=0)
 
     rebuilt.workflow_manager.r_executor = FakeExec(side_effect=execute)
-    with TestClient(app) as client:
+    with legacy_client(app) as client:
         assert (
             client.post(
                 "/api/confirm", json={"session_id": sid, "action": "script_confirm"}
@@ -62,7 +62,7 @@ def test_export_registered_dynamic_outputs_with_original_run_and_no_discovery_du
     other_agent, _ = make_agent(tmp_path, store)
     other_prepared = run_turn(other_agent, store, other, "做差异表达", lambda event: True)
     other_app, _ = confirmed_app(tmp_path, store, "differential_expression")
-    with TestClient(other_app) as client:
+    with legacy_client(other_app) as client:
         assert (
             client.post(
                 "/api/confirm", json={"session_id": other, "action": "script_confirm"}
