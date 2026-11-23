@@ -1,4 +1,4 @@
-"""模态路由器：任务分类 → Skill 分发 → 回退链 + 自动记忆。"""
+"""模态路由器：完整技能执行与只读分析方案两个明确入口。"""
 
 from __future__ import annotations
 
@@ -30,19 +30,17 @@ class ModalRouter:
     def route(self, user_input: str, context: dict | None = None) -> dict[str, Any]:
         """路由入口：分类 → 查询最佳实践 → 调用 Skill → 自动记忆 → 处理 HITL/回退。"""
         context = context or {}
-        classification = self.classifier.classify(user_input)
-        modality = classification["modality"]
-        skill_name = classification["skill"]
-
-        if modality == "general" or skill_name is None:
+        dispatched_skill = self._classify_skill(user_input, require_analysis=False)
+        if dispatched_skill is None:
             return {
                 "status": "success",
                 "modality": "general",
                 "message": "收到，请问有什么可以帮您？",
             }
+        modality, skill_name = dispatched_skill
 
         # HITL 检查：需要脚本确认但未批准
-        if skill_name and not context.get("script_approved"):
+        if not context.get("script_approved"):
             return {
                 "status": "needs_script_confirmation",
                 "skill": skill_name,
@@ -90,6 +88,37 @@ class ModalRouter:
         except Exception as e:  # noqa: BLE001
             return {"status": "error", "modality": modality, "skill": skill_name, "message": str(e)}
 
+    def read_analysis_plan(
+        self, user_input: str, *, best_practices: str | None = None
+    ) -> dict[str, Any] | None:
+        """执行技能方案构建器，不运行 setup/teardown 或发布执行事实。"""
+        analysis_skill = self._classify_skill(user_input, require_analysis=True)
+        if analysis_skill is None:
+            return None
+        _, skill_name = analysis_skill
+
+        self.loader.load(skill_name)
+        skill_instance = self.loader.create_instance(skill_name)
+        context = SkillContext(
+            run_id=f"plan-{uuid4().hex[:8]}",
+            params={"user_input": user_input},
+            artifacts={},
+            best_practices=best_practices,
+        )
+        output = asyncio.run(skill_instance.execute(context))
+        return output if isinstance(output, dict) else None
+
+    def _classify_skill(self, user_input: str, *, require_analysis: bool) -> tuple[str, str] | None:
+        """分类可分发技能；方案读取时只允许分析模态，不加载技能。"""
+        classification = self.classifier.classify(user_input)
+        modality = classification["modality"]
+        skill_name = classification["skill"]
+        if modality == "general" or skill_name is None:
+            return None
+        if require_analysis and modality != "analysis":
+            return None
+        return modality, skill_name
+
     def _query_best_practices(self, skill_name: str, user_input: str) -> str | None:
         """查询知识图谱获取该技能的最佳实践。"""
         if not self.kg_memory:
@@ -108,9 +137,8 @@ class ModalRouter:
         """轻量路由提示：仅分类 + 最佳实践查询，不加载 Skill。
 
         每轮 tool-calling 都调（AgentRuntime._route_hint），结果注入 system prompt。
-        与 route() 分工：route() 会真正 load 技能并跑 setup → execute → teardown，
-        只在确定要跑分析时由 AgentRuntime._skill_plan 调一次；
-        skills/ 下已有 5 个真实技能，load 不会失败。
+        与 route() 分工：route() 运行完整技能生命周期并发布执行事实；
+        AgentRuntime 读取分析方案时使用 read_analysis_plan()。
         """
         classification = self.classifier.classify(user_input)
         modality = classification["modality"]

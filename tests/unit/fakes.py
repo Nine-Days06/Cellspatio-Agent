@@ -27,6 +27,19 @@ def write_declared_output(code: str, text: str = "gene,padj\nG1,0.01\n") -> None
         path.write_text(text, encoding="utf-8")
 
 
+class RecordingKGMemory:
+    """记录执行事实的 KGMemory 测试替身；查询不访问外部服务。"""
+
+    def __init__(self) -> None:
+        self.records: list[Any] = []
+
+    def ingest(self, execution: Any) -> None:
+        self.records.append(execution)
+
+    def query_entities(self, query: str) -> list[str]:
+        return []
+
+
 class FakeIntent:
     """意图解析器桩。
 

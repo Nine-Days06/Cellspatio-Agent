@@ -5,7 +5,7 @@ legacy intent path (still served by IntentParser.parse / extract_parameters), en
 offline/tests work. Response without tool_calls returns general_response directly.
 Optional router (ModalRouter) is used two ways when wired by CellSpatioAgent:
 hint() injects modality/skill/best-practice hints into the system prompt every round;
-route() runs the analysis skill lifecycle once the LLM actually picks run_analysis.
+read_analysis_plan() reads the static analysis plan once the LLM picks run_analysis.
 """
 
 from __future__ import annotations
@@ -229,7 +229,7 @@ class AgentRuntime:
             return None
 
     def _skill_plan(self, user_input: str, analysis_type: str) -> dict[str, Any] | None:
-        """QC 直接取静态方案以避开共享记忆；其他分析复用既有技能生命周期。"""
+        """读取分析技能的静态方案；真实执行事实仍由 WorkflowManager 发布。"""
         if analysis_type == "single_cell":
             from skills.single_cell.main import PLAN, REQUIRED_INPUTS
 
@@ -243,16 +243,13 @@ class AgentRuntime:
         if not hint or hint.get("modality") != "analysis":
             return None
         try:
-            result = self.router.route(user_input, context={"script_approved": True})
+            output = self.router.read_analysis_plan(
+                user_input, best_practices=hint.get("best_practices")
+            )
         except Exception as e:  # noqa: BLE001 - 技能路由失败必须可降级
             logger.warning("skill route failed, continue without plan: %s", e)
             return None
-        output = result.get("output") or {}
-        if (
-            result.get("status") != "success"
-            or output.get("analysis_type") != analysis_type
-            or "plan" not in output
-        ):
+        if not output or output.get("analysis_type") != analysis_type or "plan" not in output:
             return None
         return output
 
@@ -328,7 +325,7 @@ class AgentRuntime:
             params = IntentParser().extract_parameters(user_input)
             if args.get("question"):
                 params["question"] = args["question"]
-            # 技能静态方案（route() 内 teardown 同时写技能执行记忆）；真实分析仍由 WorkflowManager 承担
+            # 技能静态方案；真实执行与 KG 事实仍由 WorkflowManager/WorkflowRecorder 承担
             plan = self._skill_plan(user_input, analysis_type)
             if plan:
                 params["skill_plan"] = plan
