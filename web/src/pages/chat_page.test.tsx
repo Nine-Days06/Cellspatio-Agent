@@ -7,7 +7,7 @@
  * - queries 走真实实现 + 每用例独立 QueryClient；全局 fetch 只服务 /messages，
  *   按 sid 路由载荷，从而真实验证 restore=1 与 hydrate 链路。
  *
- * 会话 id 每用例唯一：api.ts 模块级 `restoredSessions` Set 跨用例存活，
+ * 会话 id 每用例唯一：SessionWorkspace 单例的 restore 标记跨用例存活，
  * 同一 sid 的第二次拉取不再带 restore=1。
  */
 import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
@@ -750,6 +750,57 @@ describe('ChatPage 确认卡片接线', () => {
     expect(screen.queryByText('已确认执行')).not.toBeInTheDocument()
   })
 
+  it('旧会话确认迟到时不清除新会话仍在途的提交态', async () => {
+    const sidA = nextSid()
+    const sidB = nextSid()
+    await renderReady(sidA)
+    act(() => useChatStore.setState({ scriptCard: pendingCard() }))
+    let resolveA!: (value: { message: WireMessage }) => void
+    let resolveB!: (value: { message: WireMessage }) => void
+    confirmActionMock
+      .mockImplementationOnce(
+        () =>
+          new Promise<{ message: WireMessage }>((resolve) => {
+            resolveA = resolve
+          }),
+      )
+      .mockImplementationOnce(
+        () =>
+          new Promise<{ message: WireMessage }>((resolve) => {
+            resolveB = resolve
+          }),
+      )
+
+    fireEvent.click(screen.getByRole('button', { name: '执行脚本' }))
+
+    const pendingB: PendingScript = {
+      script: 'y <- 2',
+      analysis_type: null,
+      params: {},
+      method_context: null,
+      user_request: 'B 分析',
+      status: 'pending',
+    }
+    const holderB = makeMsg(sidB, { pending_script: pendingB })
+    seedMessages(sidB, [holderB], { pending_script: pendingB })
+    act(() => useChatStore.getState().setSession(sidB, []))
+    await waitFor(() => expect(screen.getByText('y <- 2')).toBeInTheDocument())
+    fireEvent.click(screen.getByRole('button', { name: '执行脚本' }))
+    await waitFor(() => expect(confirmActionMock).toHaveBeenCalledTimes(2))
+    expect(screen.getByRole('button', { name: '执行脚本' })).toBeDisabled()
+
+    await act(async () => {
+      resolveA({ message: makeMsg(sidA) })
+    })
+
+    expect(screen.getByRole('button', { name: '执行脚本' })).toBeDisabled()
+    expect(useChatStore.getState().scriptCard?.status).toBe('pending')
+    await act(async () => {
+      resolveB({ message: makeMsg(sidB) })
+    })
+    await waitFor(() => expect(useChatStore.getState().scriptCard?.status).toBe('confirmed'))
+  })
+
   it('脚本确认在途时出现数据卡：不重置提交态', async () => {
     const sid = nextSid()
     await renderReady(sid)
@@ -861,6 +912,72 @@ describe('ChatPage 确认卡片接线', () => {
 })
 
 describe('ChatPage 会话列表接线', () => {
+  it('切换活动会话会中止旧流并清空旧会话的生成与会话状态', async () => {
+    const sidA = nextSid()
+    const sidB = nextSid()
+    await renderReady(sidA, {
+      sessions: [makeSummary(sidA, '甲会话'), makeSummary(sidB, '乙会话')],
+    })
+    let oldSignal: AbortSignal | undefined
+    streamChatMock.mockImplementation((options: { signal: AbortSignal }) => {
+      oldSignal = options.signal
+      return new Promise<void>(() => {})
+    })
+
+    act(() => {
+      useChatStore.setState({
+        draft: '旧草稿',
+        scriptCard: pendingCard(),
+        softWarn: true,
+      })
+    })
+    const box = screen.getByRole('textbox', { name: '输入你的问题' })
+    fireEvent.change(box, { target: { value: '旧会话任务' } })
+    fireEvent.keyDown(box, { key: 'Enter' })
+    await waitFor(() => expect(oldSignal).toBeDefined())
+
+    fireEvent.click(screen.getByRole('button', { name: /^乙会话/ }))
+
+    expect(oldSignal!.aborted).toBe(true)
+    await waitFor(() => expect(useChatStore.getState().sessionId).toBe(sidB))
+    const state = useChatStore.getState()
+    expect(state.busy).toBe(false)
+    expect(state.history).toEqual([])
+    expect(state.draft).toBe('')
+    expect(state.scriptCard).toBeNull()
+    expect(state.softWarn).toBe(false)
+  })
+
+  it('切走后在缓存历史返回前切回，仍会重新 hydrate 同一会话缓存', async () => {
+    const sidA = nextSid()
+    const sidB = nextSid()
+    const historyA = [makeMsg(sidA, { role: 'user', content: 'A 缓存历史' })]
+    await renderReady(sidA, {
+      messages: historyA,
+      sessions: [makeSummary(sidA, '甲会话'), makeSummary(sidB, '乙会话')],
+    })
+    fetchMock.mockImplementation((url: unknown) => {
+      if (String(url).includes(`/sessions/${sidB}/messages`)) {
+        return new Promise(() => {})
+      }
+      return routeFetch(url)
+    })
+
+    fireEvent.click(screen.getByRole('button', { name: /^乙会话/ }))
+    await waitFor(() =>
+      expect(fetchMock).toHaveBeenCalledWith(
+        expect.stringContaining(`/sessions/${sidB}/messages?restore=1`),
+        undefined,
+      ),
+    )
+    expect(useChatStore.getState().history).toEqual([])
+
+    fireEvent.click(screen.getByRole('button', { name: /^甲会话/ }))
+
+    await waitFor(() => expect(useChatStore.getState().history).toEqual(historyA))
+    expect(useChatStore.getState().sessionId).toBe(sidA)
+  })
+
   it('点击侧栏会话：切换活动会话并为新会话首次拉历史（带 restore=1）', async () => {
     const sidA = nextSid()
     const sidB = nextSid()
@@ -922,11 +1039,26 @@ describe('ChatPage 会话列表接线', () => {
     const sid = nextSid()
     deleteSessionMock.mockResolvedValue({ deleted: sid })
     await renderReady(sid)
+    act(() => {
+      useChatStore.setState({
+        draft: '待清理草稿',
+        tools: [{ name: 'run_analysis', phase: 'start', label: '执行中' }],
+        scriptCard: pendingCard(),
+        softWarn: true,
+      })
+    })
 
     fireEvent.click(screen.getByRole('button', { name: '删除 测试会话' }))
     fireEvent.click(screen.getByRole('button', { name: '确认删除' }))
 
     await waitFor(() => expect(useChatStore.getState().sessionId).toBeNull())
-    expect(useChatStore.getState().history).toEqual([])
+    const state = useChatStore.getState()
+    expect(state.history).toEqual([])
+    expect(state.draft).toBe('')
+    expect(state.busy).toBe(false)
+    expect(state.tools).toEqual([])
+    expect(state.scriptCard).toBeNull()
+    expect(state.dataCard).toBeNull()
+    expect(state.softWarn).toBe(false)
   })
 })

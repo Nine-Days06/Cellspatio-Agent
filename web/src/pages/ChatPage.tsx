@@ -20,7 +20,12 @@ import { ThemeToggle } from '@/components/ThemeToggle'
 import { ApiError, confirmAction, createSession, registerLocalInput } from '@/lib/api'
 import { confirmReducer, initialConfirmState, scriptStatusForAction } from '@/lib/confirmState'
 import { queryKeys, useMessages, useProjects, useSessions, useSidebar } from '@/lib/queries'
-import { collectArchivedProjectIds, isActiveSession } from '@/lib/sessions'
+import { sessionWorkspace } from '@/lib/sessionWorkspace'
+import {
+  collectArchivedProjectIds,
+  isActiveSession,
+  nextSessionAfterDelete,
+} from '@/lib/sessions'
 import type {
   ChatMode,
   ConfirmRequestBody,
@@ -69,6 +74,7 @@ export function ChatPage() {
   const dataCard = useChatStore((s) => s.dataCard)
   const send = useChatStore((s) => s.send)
   const setSession = useChatStore((s) => s.setSession)
+  const clearSession = useChatStore((s) => s.clearSession)
   const setScriptCard = useChatStore((s) => s.setScriptCard)
   const setDataCard = useChatStore((s) => s.setDataCard)
   const appendMessage = useChatStore((s) => s.appendMessage)
@@ -98,17 +104,27 @@ export function ChatPage() {
     if (!useChatStore.getState().sessionId) setSession(first.id, [])
   }, [sessionsQuery.data, projectsQuery.data, setSession])
 
+  // 会话激活边界：同一次激活只接纳一份历史；切回缓存会话时允许重新 hydrate。
+  useEffect(() => {
+    sessionWorkspace.activateSession(sessionId)
+  }, [sessionId])
+
   // ② 历史拉取成功 → hydrate：history + soft_warn + 恢复的 pending 脚本卡。
   //    顶层 pending_script 是 restore 的权威结果（后端先取 messages 后置 expired，
   //    messages[].pending_script 状态是旧值），message_id 从携带卡片的消息取。
-  const hydratedQueryRef = useRef<unknown>(null)
   useEffect(() => {
     const data = messagesQuery.data
     if (!data) return
-    if (hydratedQueryRef.current === data) return
     const state = useChatStore.getState()
-    if (state.busy || state.sessionId !== data.session.id) return
-    hydratedQueryRef.current = data
+    if (
+      !sessionWorkspace.acceptsHistory({
+        data,
+        busy: state.busy,
+        currentSessionId: state.sessionId,
+      })
+    ) {
+      return
+    }
     // 只刷历史：同会话刷新不能走“切会话”语义，确认卡与输入草稿必须保留。
     useChatStore.setState({ history: data.messages })
     if (data.soft_warn) useChatStore.setState({ softWarn: true })
@@ -117,7 +133,7 @@ export function ChatPage() {
       setScriptCard({ ...data.pending_script, message_id: holder?.id ?? -1 })
     }
     // busy 期间跳过后，本轮结束时必须重新尝试，否则历史永远不会 hydrate。
-  }, [messagesQuery.data, setSession, setScriptCard, busy])
+  }, [messagesQuery.data, setScriptCard, busy])
 
   // ②-b 当前展示卡的 message_id 变化（恢复出新卡/换卡）→ 丢弃上一张卡的失败/成功态；
   //      同一 message_id 的 status 回写不算换卡。scriptCard 优先，与 ConfirmCard 一致。
@@ -206,23 +222,26 @@ export function ChatPage() {
   async function handleConfirm(body: ConfirmRequestBody): Promise<void> {
     dispatchConfirm({ type: 'submit', action: body.action })
     const scriptStatus = scriptStatusForAction(body.action)
-    const currentCard = () => {
+    const currentCards = () => {
       const state = useChatStore.getState()
-      return scriptStatus === null ? state.dataCard : state.scriptCard
+      return { scriptCard: state.scriptCard, dataCard: state.dataCard }
     }
-    const sessionAtSubmit = useChatStore.getState().sessionId
-    const cardIdAtSubmit = currentCard()?.message_id ?? null
-    const isStale = (): boolean => {
-      const state = useChatStore.getState()
-      return (
-        state.sessionId !== sessionAtSubmit ||
-        (currentCard()?.message_id ?? null) !== cardIdAtSubmit
-      )
-    }
+    const submitted = sessionWorkspace.captureConfirmation(
+      body.action,
+      useChatStore.getState().sessionId ?? '',
+      currentCards(),
+    )
     try {
       const { message } = await confirmAction(body)
-      if (isStale()) {
-        dispatchConfirm({ type: 'reset' })
+      const state = useChatStore.getState()
+      if (
+        !sessionWorkspace.acceptsConfirmation(submitted, state.sessionId, {
+          scriptCard: state.scriptCard,
+          dataCard: state.dataCard,
+        })
+      ) {
+        // 导致身份失效的切会话/换卡已经复位过确认态；这里若再 reset，会误清
+        // 新会话随后发起的在途确认，使按钮提前解锁并允许重复提交。
         return
       }
       appendMessage(message)
@@ -239,8 +258,13 @@ export function ChatPage() {
       }
       dispatchConfirm({ type: 'success' })
     } catch (err) {
-      if (isStale()) {
-        dispatchConfirm({ type: 'reset' })
+      const state = useChatStore.getState()
+      if (
+        !sessionWorkspace.acceptsConfirmation(submitted, state.sessionId, {
+          scriptCard: state.scriptCard,
+          dataCard: state.dataCard,
+        })
+      ) {
         return
       }
       dispatchConfirm({
@@ -262,7 +286,6 @@ export function ChatPage() {
   const switchTo = useCallback(
     (id: string) => {
       if (id === useChatStore.getState().sessionId) return
-      useChatStore.getState().stop()
       setStopping(false)
       setSlowHint(false)
       dispatchConfirm({ type: 'reset' })
@@ -287,21 +310,22 @@ export function ChatPage() {
   const handleDeleted = useCallback(
     (id: string) => {
       refreshNavigation()
-      const state = useChatStore.getState()
-      if (state.sessionId !== id) return
-      const archived = collectArchivedProjectIds(projectsQuery.data?.projects ?? [])
-      const remaining = (sessionsQuery.data?.sessions ?? []).filter(
-        (session) => session.id !== id && isActiveSession(session, archived),
+      if (useChatStore.getState().sessionId !== id) return
+      const next = nextSessionAfterDelete(
+        sessionsQuery.data?.sessions ?? [],
+        projectsQuery.data?.projects ?? [],
+        id,
       )
-      if (remaining[0]) {
-        switchTo(remaining[0].id)
+      if (next) {
+        switchTo(next)
         return
       }
-      // store 无 clearSession：复用 setSession 的复位语义，再把 sessionId 置空
-      setSession('', [])
-      useChatStore.setState({ sessionId: null })
+      clearSession()
+      dispatchConfirm({ type: 'reset' })
+      setStopping(false)
+      setSlowHint(false)
     },
-    [refreshNavigation, sessionsQuery.data, projectsQuery.data, setSession, switchTo],
+    [clearSession, refreshNavigation, sessionsQuery.data, projectsQuery.data, switchTo],
   )
 
   /** 本地输入：无会话时先建会话；QC 成功后靠消息失效刷新出证据与复核链。 */
