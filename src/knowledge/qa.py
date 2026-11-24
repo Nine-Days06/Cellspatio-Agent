@@ -360,6 +360,7 @@ class EvidenceRetrieval:
     sources: list[dict[str, Any]]
     untraceable: int
     config: dict[str, Any]
+    no_results: bool = False
     error: RetrievalError | None = None
 
     @classmethod
@@ -376,6 +377,7 @@ class EvidenceRetrieval:
             sources=[],
             untraceable=0,
             config=config if config is not None else {"retrieval_calls": 0},
+            no_results=False,
             error=RetrievalError(reason=reason, message=message),
         )
 
@@ -443,6 +445,12 @@ def retrieve_evidence(
         failure_reason = str(metadata.get("failure_reason") or "")
         config["retrieval_status"] = retrieval_status
         config["retrieval_metadata"] = metadata
+        if retrieval_status not in ("success", "failure"):
+            return EvidenceRetrieval.failed(
+                "知识检索返回了无法识别的结果。",
+                reason=RETRIEVAL_INVALID_RESULT,
+                config=config,
+            )
         # LightRAG 只有明确的 no_results 算“证据不足”，其余 failure 是依赖/配置故障
         if retrieval_status == "failure" and failure_reason != "no_results":
             return EvidenceRetrieval.failed(
@@ -450,8 +458,18 @@ def retrieve_evidence(
                 reason=RETRIEVAL_SERVICE_FAILURE,
                 config=config,
             )
-        data = retrieval.get("data") if isinstance(retrieval.get("data"), dict) else {}
-        chunks = data.get("chunks") if isinstance(data.get("chunks"), list) else []
+        data = retrieval.get("data")
+        chunks = data.get("chunks") if isinstance(data, dict) else None
+        # 成功响应必须是 {data: {chunks: [...]}}；形状异常归为依赖故障而非“无证据”
+        if retrieval_status == "success" and (
+            not isinstance(data, dict) or not isinstance(chunks, list)
+        ):
+            return EvidenceRetrieval.failed(
+                "知识检索返回了无法识别的结果。",
+                reason=RETRIEVAL_INVALID_RESULT,
+                config=config,
+            )
+        chunks = chunks if isinstance(chunks, list) else []
         evidence, sources, untraceable = _build_evidence(
             chunks, max_evidence=limit_evidence, max_chars=limit_chars
         )
@@ -461,6 +479,7 @@ def retrieve_evidence(
             sources=sources,
             untraceable=untraceable,
             config=config,
+            no_results=retrieval_status == "failure" and failure_reason == "no_results",
         )
 
 

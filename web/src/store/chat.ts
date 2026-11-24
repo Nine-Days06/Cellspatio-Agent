@@ -31,6 +31,8 @@ export interface ToolStatusEntry {
   name: string
   phase: 'start' | 'end'
   label?: string
+  /** 检索类工具结束时的结果条数；仅用于展示事实，不代表成功/完成。 */
+  count?: number
   at?: number
 }
 
@@ -162,6 +164,7 @@ export function createChatStore() {
             name: event.name,
             phase,
             label: typeof event.label === 'string' ? event.label : undefined,
+            count: typeof event.count === 'number' ? event.count : undefined,
           })
           break
         }

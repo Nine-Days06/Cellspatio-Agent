@@ -7,6 +7,7 @@ Design rationale (2026 SOTA alignment):
 
 from __future__ import annotations
 
+import os
 from typing import Any
 
 from src.control.intent_vocabulary import ANALYSIS_TYPES
@@ -110,6 +111,48 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
     },
 ]
 
+SEARCH_KNOWLEDGE_SCHEMA: dict[str, Any] = {
+    "type": "function",
+    "function": {
+        "name": "search_knowledge",
+        "description": (
+            "Retrieve literature evidence (chunks with E-ids and traceable sources) from the "
+            "local knowledge base. This tool does NOT answer the question and does NOT generate "
+            "text: continue reasoning from the returned evidence and cite evidence ids as [E#]. "
+            "Call it when the user needs literature support."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "query": {
+                    "type": "string",
+                    "description": "Literature search query, keeping key genes/methods/terms",
+                },
+            },
+            "required": ["query"],
+        },
+    },
+}
+
+
+def knowledge_tool_enabled() -> bool:
+    """对话 agent 的文献证据工具开关：只有显式设为 search 才开启。"""
+    return os.getenv("AGENT_KNOWLEDGE_TOOL", "").strip().lower() == "search"
+
+
+def build_tool_schemas() -> list[dict[str, Any]]:
+    """返回本轮可用工具清单；开关关闭时与既有清单完全一致。
+
+    开启期间只暴露 ``search_knowledge``：与 ``query_knowledge`` 并存会让模型
+    在“知识问答”和“文献证据”之间摇摆，旧工具留到 07 票统一下线。
+    """
+    if not knowledge_tool_enabled():
+        return list(TOOL_SCHEMAS)
+    return [
+        schema for schema in TOOL_SCHEMAS if schema["function"]["name"] != "query_knowledge"
+    ] + [SEARCH_KNOWLEDGE_SCHEMA]
+
+
 SYSTEM_PROMPT = """You are CellSpatio — single-cell & spatial omics analysis agent.
 
 Strictly follow these rules to choose actions:
@@ -125,3 +168,22 @@ Constraints:
 - Tool returning needs_* status means waiting for user confirmation or more input; forward that status's message to user directly.
 - single_cell runs only unfiltered human RNA QC; never claim filtering, clustering, annotation or scientific acceptance.
 """
+
+KNOWLEDGE_TOOL_PROMPT = """
+
+## Literature evidence tool
+While this tool is enabled, rule 3 is superseded: query_knowledge is not exposed;
+use search_knowledge for biology knowledge that needs literature support.
+6. When the user needs literature support (mechanism, gene function, methodology) → call
+   search_knowledge first. The tool returns only evidence chunks with E-ids and sources, never a
+   final answer: keep reasoning yourself and cite the evidence ids inline as [E#].
+- If retrieval fails or the service is unavailable, say so truthfully; never claim "there is no
+   evidence" without a successful empty retrieval.
+"""
+
+
+def build_system_prompt() -> str:
+    """返回本轮系统提示；开关关闭时与既有 SYSTEM_PROMPT 完全一致。"""
+    if knowledge_tool_enabled():
+        return SYSTEM_PROMPT + KNOWLEDGE_TOOL_PROMPT
+    return SYSTEM_PROMPT

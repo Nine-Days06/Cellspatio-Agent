@@ -2,6 +2,7 @@ import csv
 import hashlib
 import logging
 import math
+import time
 import uuid
 import zlib
 from collections.abc import Iterator
@@ -10,6 +11,7 @@ from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from typing import Any
 
+from src.config import env_int
 from src.control.kb_coverage import (
     LAZY_INGEST_MAX_ASSETS,
     LAZY_INGEST_MIN_CONTEXT,
@@ -1154,6 +1156,40 @@ class WorkflowManager:
         params = self.intent_parser.extract_parameters(query) if self.intent_parser else {}
         with self._record_run(intent, params, context) as run_id:
             return self._execute_knowledge_workflow(intent, params, context, run_id)
+
+    def search_knowledge_for_agent(
+        self, query: str, context: dict[str, Any] | None = None
+    ) -> dict[str, Any]:
+        """Agent 面向的只读文献检索：返回证据与来源，不生成答案、不写运行记录。"""
+        from src.knowledge.qa import retrieve_evidence
+
+        timeout = env_int("AGENT_KNOWLEDGE_TIMEOUT", 60)
+        retrieval = retrieve_evidence(
+            self.knowledge_client,
+            query,
+            deadline=time.monotonic() + timeout,
+        )
+        if retrieval.error is not None:
+            return {
+                "status": "error",
+                "type": "knowledge_evidence",
+                "query": query,
+                "message": retrieval.error.message,
+                "retrieval_error_reason": retrieval.error.reason,
+                "continue_tool_loop": False,
+            }
+        return {
+            "status": "success",
+            "type": "knowledge_evidence",
+            "query": query,
+            "evidence": retrieval.evidence,
+            "sources": retrieval.sources,
+            "untraceable": retrieval.untraceable,
+            "evidence_count": len(retrieval.evidence),
+            "retrieval_status": "no_results" if retrieval.no_results else "success",
+            "message": "" if retrieval.evidence else "当前知识库没有检索到相关证据。",
+            "continue_tool_loop": True,
+        }
 
     def query_memory_for_agent(
         self, query: str, context: dict[str, Any] | None = None

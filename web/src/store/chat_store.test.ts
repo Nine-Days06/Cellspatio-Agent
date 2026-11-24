@@ -616,6 +616,31 @@ describe('约束2：收尾唯一通道（动作层）', () => {
 })
 
 describe('send：SSE 接线', () => {
+  it('tool_status 透传检索结果条数', async () => {
+    const { ctl, release } = holdStream()
+    useChatStore.getState().setSession('s1', [])
+    const pending = useChatStore.getState().send('hi')
+
+    ctl.onEvent?.({
+      type: 'tool_status',
+      name: 'search_knowledge',
+      phase: 'end',
+      label: '检索文献',
+      count: 3,
+    })
+
+    expect(useChatStore.getState().tools[0]).toMatchObject({
+      name: 'search_knowledge',
+      phase: 'end',
+      label: '检索文献',
+      count: 3,
+    })
+
+    ctl.onEnd?.('closed')
+    release()
+    await pending
+  })
+
   it('约束2（流式层）：tool_status/delta 不关 busy，onEnd 才关', async () => {
     const { ctl, release } = holdStream()
     useChatStore.getState().setSession('s1', [])

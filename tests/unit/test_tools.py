@@ -24,6 +24,26 @@ def test_query_memory_schema_requires_query_param():
     assert "query_memory" in SYSTEM_PROMPT
 
 
+def test_knowledge_tool_is_opt_in_and_does_not_answer(monkeypatch):
+    """默认不暴露检索工具；只有 AGENT_KNOWLEDGE_TOOL=search 才加入且声明不生成答案。"""
+    from src.control.tools import build_system_prompt, build_tool_schemas
+
+    monkeypatch.delenv("AGENT_KNOWLEDGE_TOOL", raising=False)
+    assert "search_knowledge" not in {schema["function"]["name"] for schema in build_tool_schemas()}
+    assert "search_knowledge" not in build_system_prompt()
+
+    monkeypatch.setenv("AGENT_KNOWLEDGE_TOOL", "search")
+    schemas = {schema["function"]["name"]: schema for schema in build_tool_schemas()}
+    tool = schemas["search_knowledge"]
+
+    assert "query_knowledge" not in schemas
+    assert tool["function"]["parameters"]["required"] == ["query"]
+    assert "does NOT answer" in tool["function"]["description"]
+    assert "search_knowledge" in build_system_prompt()
+    assert "query_knowledge is not exposed" in build_system_prompt()
+    assert "[E#]" in build_system_prompt()
+
+
 def test_run_analysis_enum_only_supported_types():
     from src.control.tools import SUPPORTED_ANALYSIS_TYPES, TOOL_SCHEMAS
 

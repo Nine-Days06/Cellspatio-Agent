@@ -183,8 +183,16 @@ def test_stream_tool_calls_accumulate_across_chunks_then_dispatch():
     assert wm.calls == [("query_knowledge", {"query": "TP53 的作用"})]
     assert result["message"] == "抑癌基因"
     assert [e["type"] for e in sink.events] == ["tool_status", "tool_status", "delta"]
-    assert sink.events[0] == {"type": "tool_status", "name": "query_knowledge", "phase": "start"}
-    assert sink.events[1] == {"type": "tool_status", "name": "query_knowledge", "phase": "end"}
+    assert sink.events[0] == {
+        "type": "tool_status",
+        "name": "query_knowledge",
+        "phase": "start",
+    }
+    assert sink.events[1] == {
+        "type": "tool_status",
+        "name": "query_knowledge",
+        "phase": "end",
+    }
 
 
 def test_stream_tool_message_history_carries_assembled_tool_call():
@@ -480,6 +488,44 @@ def test_tool_signature_normalizes_key_order_and_tolerates_bad_json():
         AgentRuntime._tool_signature(call('{"b": 2, "a": 1}'))
     )
     assert AgentRuntime._tool_signature(call("not-json")) == "query_knowledge\x00not-json"
+
+
+def test_search_knowledge_status_reports_evidence_count(monkeypatch):
+    """检索工具过程条结束事件附带证据条数；label 由 SSE 层统一补。"""
+    monkeypatch.setenv("AGENT_KNOWLEDGE_TOOL", "search")
+    llm = FakeStreamLLM(
+        [
+            [_tool_chunk(0, "c1", "search_knowledge", '{"query": "TP53"}')],
+            [_text_chunk("答")],
+        ]
+    )
+    wm = FakeWM(
+        {
+            "search_knowledge": {
+                "status": "success",
+                "type": "knowledge_evidence",
+                "evidence": [{"evidence_id": "E1"}, {"evidence_id": "E2"}],
+                "sources": [],
+                "evidence_count": 2,
+                "continue_tool_loop": True,
+            }
+        }
+    )
+    runtime, _ = _runtime(llm, wm)
+    sink = EventSink()
+
+    runtime.execute("TP53 的证据", on_event=sink)
+
+    status_events = [e for e in sink.events if e.get("type") == "tool_status"]
+    assert status_events[0] == {
+        "type": "tool_status",
+        "name": "search_knowledge",
+        "phase": "start",
+    }
+    assert "label" not in status_events[0]
+    assert status_events[1]["phase"] == "end"
+    assert status_events[1]["count"] == 2
+    assert "label" not in status_events[1]
 
 
 def test_stream_tool_calls_accumulate_with_missing_index():

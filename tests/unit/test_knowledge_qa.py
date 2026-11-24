@@ -11,6 +11,7 @@ import pytest
 
 from src.knowledge.qa import (
     RETRIEVAL_DEADLINE,
+    RETRIEVAL_INVALID_RESULT,
     RETRIEVAL_SERVICE_FAILURE,
     interrupted_package,
     retrieve_evidence,
@@ -910,10 +911,29 @@ def test_retrieve_evidence_classifies_lightrag_failure(failure_reason, is_error)
     retrieval = retrieve_evidence(client, "问题", deadline=time.monotonic() + 5)
 
     assert (retrieval.error is not None) is is_error
+    assert retrieval.no_results is (not is_error)
     if is_error:
         assert retrieval.error.reason == RETRIEVAL_SERVICE_FAILURE
     assert retrieval.evidence == []
     assert retrieval.config["retrieval_status"] == "failure"
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        {"status": "success", "data": "bad"},
+        {"status": "success", "data": {"chunks": "bad"}},
+        {"status": "success", "metadata": {}},
+        {"status": "", "data": {"chunks": []}},
+    ],
+)
+def test_retrieve_evidence_rejects_malformed_success_payload(payload):
+    """成功响应形状不对是依赖故障，不能伪装成“检索成功但无证据”。"""
+    retrieval = retrieve_evidence(FakeKnowledge(payload), "问题", deadline=time.monotonic() + 5)
+
+    assert retrieval.error.reason == RETRIEVAL_INVALID_RESULT
+    assert retrieval.evidence == []
+    assert retrieval.config["retrieval_calls"] == 1
 
 
 def test_retrieve_evidence_mid_call_timeout_is_reported_as_deadline():

@@ -44,9 +44,9 @@ def prepare_history(messages: list[dict]) -> list[dict]:
 def context_tokens(summary: str | None, window: list[dict], system: str | None = None) -> int:
     """system + 摘要 + 历史窗口的 token 总量。"""
     if system is None:
-        from src.control.tools import SYSTEM_PROMPT
+        from src.control.tools import build_system_prompt
 
-        system = SYSTEM_PROMPT
+        system = build_system_prompt()
     total = estimate_tokens(system or "")
     total += estimate_tokens(summary or "")
     for msg in window:

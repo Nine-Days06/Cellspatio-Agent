@@ -23,6 +23,18 @@ def test_sse_frame_appends_label_from_tool_table():
     assert json.loads(frame[6:-2])["label"] == "运行分析"
 
 
+def test_sse_frame_labels_search_knowledge_and_keeps_count():
+    from src.api.events import sse_frame
+
+    frame = sse_frame(
+        {"type": "tool_status", "name": "search_knowledge", "phase": "end", "count": 3}
+    )
+
+    payload = json.loads(frame[6:-2])
+    assert payload["label"] == "检索文献"
+    assert payload["count"] == 3
+
+
 def test_sse_frame_label_falls_back_to_tool_name_when_unmapped():
     from src.api.events import sse_frame
 

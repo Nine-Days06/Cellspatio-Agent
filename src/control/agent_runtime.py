@@ -14,10 +14,15 @@ import json
 import logging
 from collections.abc import Callable
 from types import SimpleNamespace
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Literal
 
 from src.config import env_int
-from src.control.tools import SYSTEM_PROMPT, TERMINAL_STATUSES, TOOL_SCHEMAS
+from src.control.tools import (
+    TERMINAL_STATUSES,
+    build_system_prompt,
+    build_tool_schemas,
+    knowledge_tool_enabled,
+)
 from src.reasoning import split_delta
 
 if TYPE_CHECKING:
@@ -90,6 +95,7 @@ class AgentRuntime:
 
         hint = self._route_hint(user_input)
         messages = self._build_messages(user_input, context, hint=hint)
+        schemas = build_tool_schemas()
         dispatched: dict[str, Any] | None = None
         reasoning_seen = False
         result_limit_chars = env_int("AGENT_TOOL_RESULT_MAX_CHARS", DEFAULT_TOOL_RESULT_MAX_CHARS)
@@ -98,6 +104,8 @@ class AgentRuntime:
         seen_signatures: set[str] = set()
         force_answer = False
         disconnected = False
+        next_evidence_number = 1
+        seen_chunks: set[str] = set()
         try:
             # 不设固定轮数：以最终回答、人工终态、重复调用、预算用尽或中止收口。
             while True:
@@ -107,7 +115,7 @@ class AgentRuntime:
                     response = self.llm_client.chat.completions.create(
                         model=self.model,
                         messages=messages,
-                        tools=TOOL_SCHEMAS,
+                        tools=schemas,
                         temperature=0,
                         tool_choice="none" if force_answer else "auto",
                     )
@@ -119,6 +127,7 @@ class AgentRuntime:
                         on_event,
                         has_prior_reasoning=reasoning_seen,
                         tool_choice="none" if force_answer else "auto",
+                        tools=schemas,
                     )
                     reasoning_seen = reasoning_seen or round_reasoning
                     if aborted:
@@ -152,17 +161,19 @@ class AgentRuntime:
                     continue
                 seen_signatures.add(signature)
 
-                if on_event is not None and not on_event(
-                    {"type": "tool_status", "name": name, "phase": "start"}
-                ):
+                if on_event is not None and not on_event(self._tool_status_event(name, "start")):
                     return dict(ABORTED_RESULT)
                 result = self._dispatch(tool_calls[0], user_input, context)
+                result, added_evidence = self._merge_evidence(
+                    result, next_evidence_number, seen_chunks
+                )
+                next_evidence_number += added_evidence
                 dispatched = result
                 status = result.get("status")
                 if result.get("analysis_type") == "single_cell":
                     # 固定单细胞链自带人工审批，不再回灌模型；但流式过程条必须收尾。
                     if on_event is not None:
-                        on_event({"type": "tool_status", "name": name, "phase": "end"})
+                        on_event(self._tool_status_event(name, "end", result))
                     return result
 
                 # 非流式：所有 TERMINAL_STATUSES 即刻返回（保持原有行为）
@@ -176,12 +187,12 @@ class AgentRuntime:
                     status == "success" and result.get(CONTINUE_TOOL_LOOP_FLAG) is True
                 ):
                     if on_event is not None:
-                        on_event({"type": "tool_status", "name": name, "phase": "end"})
+                        on_event(self._tool_status_event(name, "end", result))
                     return result
                 # 非终态：发 end 事件并继续下一轮
                 if on_event is not None:
                     # end 写失败说明客户端已断开：结果照常回灌，但下一轮模型调用前中止。
-                    if on_event({"type": "tool_status", "name": name, "phase": "end"}) is False:
+                    if on_event(self._tool_status_event(name, "end", result)) is False:
                         disconnected = True
 
                 remaining_chars = budget_chars - spent_chars
@@ -222,6 +233,7 @@ class AgentRuntime:
         *,
         has_prior_reasoning: bool = False,
         tool_choice: str = "auto",
+        tools: list[dict[str, Any]],
     ) -> tuple[Any, list | None, bool, bool]:
         """流式跑一轮 LLM 调用。
 
@@ -231,12 +243,13 @@ class AgentRuntime:
 
         第四项表示本轮是否产生过思考增量；``has_prior_reasoning`` 为真时，
         本轮首段思考前插入轻量分隔，让多轮工具调用之间的思考按顺序可辨。
-        ``tool_choice="none"`` 用于预算/重复调用后的强制收口轮。
+        ``tool_choice="none"`` 用于预算/重复调用后的强制收口轮；``tools`` 由调用方
+        按开关构建。
         """
         stream = self.llm_client.chat.completions.create(
             model=self.model,
             messages=messages,
-            tools=TOOL_SCHEMAS,
+            tools=tools,
             temperature=0,
             tool_choice=tool_choice,
             stream=True,
@@ -309,6 +322,74 @@ class AgentRuntime:
         return f"{tool_call.function.name}\x00{canonical}"
 
     @staticmethod
+    def _tool_status_event(
+        name: str, phase: Literal["start", "end"], result: dict[str, Any] | None = None
+    ) -> dict[str, Any]:
+        """过程条事件；检索工具结束时附带证据条数。label 由 SSE 层统一补。"""
+        event: dict[str, Any] = {
+            "type": "tool_status",
+            "name": name,
+            "phase": phase,
+        }
+        count = (result or {}).get("evidence_count")
+        if phase == "end" and isinstance(count, int):
+            event["count"] = count
+        return event
+
+    @staticmethod
+    def _merge_evidence(
+        result: dict[str, Any], start: int, seen_chunks: set[str]
+    ) -> tuple[dict[str, Any], int]:
+        """按 chunk 跨调用去重、重映射来源并接续 E 编号，返回结果与新增数。"""
+        if result.get("type") != "knowledge_evidence" or result.get("status") != "success":
+            return result, 0
+        evidence = result.get("evidence") or []
+        if not evidence:
+            return result, 0
+        mapping: dict[str, str] = {}
+        renumbered: list[dict[str, Any]] = []
+        for item in evidence:
+            # chunk_id 缺失时退回内容哈希；两者都缺失则保留（测试桩/旧数据）。
+            key = str(item.get("chunk_id") or item.get("content_sha256") or "")
+            if key and key in seen_chunks:
+                continue
+            if key:
+                seen_chunks.add(key)
+            new_id = f"E{start + len(renumbered)}"
+            mapping[item.get("evidence_id")] = new_id
+            renumbered.append({**item, "evidence_id": new_id})
+        if not renumbered:
+            return (
+                {
+                    **result,
+                    "evidence": [],
+                    "sources": [],
+                    "evidence_count": 0,
+                    "message": "本次检索结果与已有证据重复，未新增证据；沿用原有 [E] 编号。",
+                },
+                0,
+            )
+        sources = [
+            {
+                **source,
+                "evidence_ids": [
+                    mapping[item] for item in source.get("evidence_ids") or [] if item in mapping
+                ],
+            }
+            for source in result.get("sources") or []
+        ]
+        sources = [source for source in sources if source["evidence_ids"]]
+        return (
+            {
+                **result,
+                "evidence": renumbered,
+                "sources": sources,
+                "evidence_count": len(renumbered),
+            },
+            len(renumbered),
+        )
+
+    @staticmethod
     def _tool_payload(result: dict[str, Any], limit: int) -> str:
         """序列化工具结果，超出上限时返回合法 JSON 的截断预览。"""
         payload = json.dumps(result, ensure_ascii=False, default=str)
@@ -363,7 +444,7 @@ class AgentRuntime:
     def _build_messages(
         self, user_input: str, context: dict[str, Any], hint: dict[str, Any] | None = None
     ) -> list[dict[str, Any]]:
-        system = SYSTEM_PROMPT
+        system = build_system_prompt()
         if hint and hint.get("modality") and hint["modality"] != "general":
             lines = [
                 "\n\n## 任务路由提示（本地关键词分类，仅供参考）",
@@ -444,6 +525,8 @@ class AgentRuntime:
             return wm.search_datasets_for_agent(args.get("query", user_input), params, context)
         if name == "query_knowledge":
             return wm.query_knowledge_for_agent(args.get("query", user_input), context)
+        if name == "search_knowledge" and knowledge_tool_enabled():
+            return wm.search_knowledge_for_agent(args.get("query", user_input), context)
         if name == "query_memory":
             return wm.query_memory_for_agent(args.get("query", user_input), context)
         return {

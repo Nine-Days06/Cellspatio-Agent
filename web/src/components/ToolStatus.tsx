@@ -1,11 +1,12 @@
-import { Loader2 } from 'lucide-react'
+import { BookOpen, Loader2 } from 'lucide-react'
 import type { ToolStatusEntry } from '@/store/chat'
 
 /** 类型再导出：规范定义在 store（T5a 冻结契约），组件侧从本文件导入即可。 */
 export type { ToolStatusEntry }
 
 /**
- * 工具过程条：只渲染「正在进行」的过程文案。
+ * 工具过程条：渲染「正在进行」的过程文案；检索工具结束且带 count 时，
+ * 改为展示结果条数这一事实。
  * 后端不保证发 phase:'end'（agent_runtime 终态提前 return），
  * 因此绝不据此显示「已完成」之类的终态语义（约束 2）。
  *
@@ -19,17 +20,27 @@ export function ToolStatus({
   entry: ToolStatusEntry | null
   fallback?: string | null
 }) {
-  const text = entry && entry.phase !== 'end' ? (entry.label ?? entry.name) : fallback
+  const endedWithCount = entry?.phase === 'end' && typeof entry.count === 'number'
+  const text =
+    entry && entry.phase !== 'end'
+      ? (entry.label ?? entry.name)
+      : endedWithCount
+        ? `${entry.label ?? entry.name}：${entry.count} 条证据`
+        : fallback
   if (!text) return null
   return (
     <div
       data-testid="tool-status"
       className="motion-fade-fast mb-1 flex min-w-0 items-center gap-1.5 text-xs text-muted-foreground"
     >
-      <Loader2 className="size-3 animate-spin" aria-hidden="true" />
+      {endedWithCount ? (
+        <BookOpen className="size-3" aria-hidden="true" />
+      ) : (
+        <Loader2 className="size-3 animate-spin" aria-hidden="true" />
+      )}
       {/* key=text：文案切换时只淡入新文案，行高不变，无退出动画。 */}
       <span key={text} className="motion-swap truncate">{text}</span>
-      {entry && <span aria-hidden="true">…</span>}
+      {entry && !endedWithCount && <span aria-hidden="true">…</span>}
     </div>
   )
 }

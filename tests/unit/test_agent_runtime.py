@@ -6,6 +6,14 @@ import json
 import logging
 from types import SimpleNamespace
 
+import pytest
+
+
+@pytest.fixture(autouse=True)
+def _knowledge_tool_default_off(monkeypatch):
+    """系统提示与工具清单断言基于默认关闭状态，避免开发环境 .env 干扰。"""
+    monkeypatch.delenv("AGENT_KNOWLEDGE_TOOL", raising=False)
+
 
 def _tool_call_response(name: str, arguments: dict) -> SimpleNamespace:
     tc = SimpleNamespace(
@@ -58,6 +66,11 @@ class FakeWM:
     def query_knowledge_for_agent(self, query, context):
         self.calls.append(("query_knowledge", {"query": query}))
         return self.results["query_knowledge"]
+
+    def search_knowledge_for_agent(self, query, context):
+        self.calls.append(("search_knowledge", {"query": query}))
+        result = self.results["search_knowledge"]
+        return result.pop(0) if isinstance(result, list) else result
 
     def query_memory_for_agent(self, query, context):
         self.calls.append(("query_memory", {"query": query}))
@@ -245,6 +258,125 @@ def test_query_memory_dispatch():
     assert wm.calls == [("query_memory", {"query": "上次差异表达用的什么参数"})]
     assert result["type"] == "memory_response"
     assert result["status"] == "success"
+
+
+def test_search_knowledge_hidden_and_rejected_when_flag_off(monkeypatch):
+    """默认关闭：工具清单不暴露，模型硬调用也只得到未知工具错误。"""
+    monkeypatch.delenv("AGENT_KNOWLEDGE_TOOL", raising=False)
+    from src.control.tools import build_tool_schemas
+
+    assert "search_knowledge" not in {schema["function"]["name"] for schema in build_tool_schemas()}
+    llm = FakeLLM([_tool_call_response("search_knowledge", {"query": "TP53"})])
+    runtime, wm = _make_runtime(llm)
+
+    result = runtime.execute("TP53 的证据")
+
+    assert wm.calls == []
+    assert result["status"] == "error"
+    assert "未知工具" in result["message"]
+
+
+def test_search_knowledge_dispatches_and_continues_round(monkeypatch):
+    """开启后：schema 暴露、证据结果非终态，模型据此继续回答。"""
+    monkeypatch.setenv("AGENT_KNOWLEDGE_TOOL", "search")
+    llm = FakeLLM(
+        [
+            _tool_call_response("search_knowledge", {"query": "TP53"}),
+            _text_response("基于 E1 的回答"),
+        ]
+    )
+    wm = FakeWM(
+        {
+            "search_knowledge": {
+                "status": "success",
+                "type": "knowledge_evidence",
+                "evidence": [{"evidence_id": "E1", "content": "x"}],
+                "sources": [],
+                "evidence_count": 1,
+                "continue_tool_loop": True,
+            }
+        }
+    )
+    runtime, wm = _make_runtime(llm, wm)
+
+    result = runtime.execute("TP53 的证据")
+
+    assert wm.calls == [("search_knowledge", {"query": "TP53"})]
+    assert "search_knowledge" in {schema["function"]["name"] for schema in llm.calls[0]["tools"]}
+    assert "[E#]" in llm.calls[0]["messages"][0]["content"]
+    assert result["message"] == "基于 E1 的回答"
+
+
+def test_evidence_ids_continue_across_multiple_tool_calls(monkeypatch):
+    """同一轮两次检索的 E 编号接续（E1 → E2），不跨调用重号。"""
+    monkeypatch.setenv("AGENT_KNOWLEDGE_TOOL", "search")
+    evidences = [
+        {
+            "status": "success",
+            "type": "knowledge_evidence",
+            "evidence": [{"evidence_id": "E1", "chunk_id": "c1", "content": "x"}],
+            "sources": [{"source_id": "s1", "evidence_ids": ["E1"]}],
+            "evidence_count": 1,
+            "continue_tool_loop": True,
+        },
+        {
+            "status": "success",
+            "type": "knowledge_evidence",
+            "evidence": [{"evidence_id": "E1", "chunk_id": "c2", "content": "y"}],
+            "sources": [{"source_id": "s2", "evidence_ids": ["E1"]}],
+            "evidence_count": 1,
+            "continue_tool_loop": True,
+        },
+    ]
+    llm = FakeLLM(
+        [
+            _tool_call_response("search_knowledge", {"query": "q1"}),
+            _tool_call_response("search_knowledge", {"query": "q2"}),
+            _text_response("ok"),
+        ]
+    )
+    runtime, _ = _make_runtime(llm, FakeWM({"search_knowledge": evidences}))
+
+    runtime.execute("两个检索")
+
+    tool_messages = [m for m in llm.calls[2]["messages"] if m.get("role") == "tool"]
+    first = json.loads(tool_messages[0]["content"])
+    second = json.loads(tool_messages[1]["content"])
+    assert first["evidence"][0]["evidence_id"] == "E1"
+    assert second["evidence"][0]["evidence_id"] == "E2"
+    assert second["sources"][0]["evidence_ids"] == ["E2"]
+
+
+def test_duplicate_chunk_across_tool_calls_is_dropped(monkeypatch):
+    """同一 chunk 被两次检索命中时只保留首条证据，第二次不再分配 E 编号。"""
+    monkeypatch.setenv("AGENT_KNOWLEDGE_TOOL", "search")
+    evidence = {
+        "status": "success",
+        "type": "knowledge_evidence",
+        "evidence": [{"evidence_id": "E1", "chunk_id": "same", "content": "x"}],
+        "sources": [{"source_id": "s1", "evidence_ids": ["E1"]}],
+        "evidence_count": 1,
+        "continue_tool_loop": True,
+    }
+    llm = FakeLLM(
+        [
+            _tool_call_response("search_knowledge", {"query": "q1"}),
+            _tool_call_response("search_knowledge", {"query": "q2"}),
+            _text_response("ok"),
+        ]
+    )
+    runtime, _ = _make_runtime(llm, FakeWM({"search_knowledge": [evidence, dict(evidence)]}))
+
+    runtime.execute("同一 chunk 两次")
+
+    tool_messages = [m for m in llm.calls[2]["messages"] if m.get("role") == "tool"]
+    first = json.loads(tool_messages[0]["content"])
+    second = json.loads(tool_messages[1]["content"])
+    assert [item["evidence_id"] for item in first["evidence"]] == ["E1"]
+    assert second["evidence"] == []
+    assert second["sources"] == []
+    assert second["evidence_count"] == 0
+    assert "未新增证据" in second["message"]
 
 
 def test_run_analysis_merges_regex_params_from_user_input():

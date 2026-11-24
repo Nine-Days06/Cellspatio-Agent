@@ -211,6 +211,14 @@ describe('流式与过程条', () => {
     expect(screen.getByText('运行分析')).toBeInTheDocument()
   })
 
+  it('展示检索结束后的证据条数', () => {
+    const tools: ToolStatusEntry[] = [
+      { name: 'search_knowledge', phase: 'end', label: '检索文献', count: 3 },
+    ]
+    render(<MessageList {...baseProps} busy tools={tools} />)
+    expect(screen.getByText('检索文献：3 条证据')).toBeInTheDocument()
+  })
+
   it('soft_warn 展示横幅', () => {
     render(<MessageList {...baseProps} softWarn />)
     expect(screen.getByText(/上下文接近压缩阈值/)).toBeInTheDocument()
