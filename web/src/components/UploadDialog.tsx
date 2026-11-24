@@ -1,6 +1,7 @@
 import { useRef, useState } from 'react'
 import { Upload } from 'lucide-react'
 import { Button } from '@/components/ui/button'
+import { cn } from '@/lib/utils'
 import {
   Dialog,
   DialogContent,
@@ -57,7 +58,7 @@ export function UploadDialog({
           </Button>
         }
       />
-      <DialogContent>
+      <DialogContent aria-busy={pending}>
         <DialogHeader>
           <DialogTitle>上传单细胞数据</DialogTitle>
           <DialogDescription>
@@ -69,11 +70,24 @@ export function UploadDialog({
           aria-label="选择上传文件"
           type="file"
           accept=".csv,.zip"
-          className="block w-full rounded-lg border border-input bg-background px-3 py-2 text-sm file:mr-3 file:rounded-md file:border-0 file:bg-muted file:px-2 file:py-1 file:text-sm"
+          className={cn(
+            'block w-full rounded-lg border border-input bg-background px-3 py-2 text-sm transition-colors duration-[var(--motion-fast)] file:mr-3 file:rounded-md file:border-0 file:bg-muted file:px-2 file:py-1 file:text-sm',
+            file && 'border-primary/60 bg-primary/5',
+          )}
           onChange={(event) => setFile(event.target.files?.[0] ?? null)}
         />
+        {pending && (
+          <div
+            role="progressbar"
+            aria-label="上传进行中"
+            className="h-1 overflow-hidden rounded-full bg-muted"
+          >
+            <div className="motion-shimmer h-full w-2/5 rounded-full bg-primary" />
+            <span className="sr-only">正在上传，无法预估剩余进度</span>
+          </div>
+        )}
         {error && (
-          <p role="alert" className="text-sm text-destructive">
+          <p role="alert" className="motion-fade-fast text-sm text-destructive">
             {error}
           </p>
         )}

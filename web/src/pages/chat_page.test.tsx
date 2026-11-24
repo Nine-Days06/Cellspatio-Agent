@@ -233,6 +233,7 @@ describe('ChatPage 本地输入', () => {
     await renderReady(sid)
 
     expect(await screen.findByRole('alert')).toHaveTextContent('已到期')
+    expect(screen.getByRole('alert')).toHaveClass('motion-fade')
     expect(screen.getByRole('button', { name: '新建临时空间' })).toBeInTheDocument()
   })
 
@@ -683,6 +684,7 @@ describe('ChatPage 约束落点（1/2）', () => {
 
     expect(await screen.findByText(/上下文接近压缩阈值/)).toBeInTheDocument()
     expect(screen.getAllByText(/上下文接近压缩阈值/)).toHaveLength(1)
+    expect(screen.getByText(/上下文接近压缩阈值/)).toHaveClass('motion-fade')
   })
 
   it('历史在生成期间返回时，结束后仍会 hydrate 一次', async () => {

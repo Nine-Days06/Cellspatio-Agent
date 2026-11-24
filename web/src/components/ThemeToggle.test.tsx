@@ -1,5 +1,5 @@
 import html from '../../index.html?raw'
-import { fireEvent, render, screen } from '@testing-library/react'
+import { fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { ThemeToggle } from '@/components/ThemeToggle'
 
@@ -56,5 +56,17 @@ describe('ThemeToggle', () => {
     fireEvent.click(screen.getByRole('button', { name: '切换到深色模式' }))
     expect(document.documentElement).toHaveClass('dark')
     expect(screen.getByRole('button', { name: '切换到浅色模式' })).toBeInTheDocument()
+  })
+
+  it('首屏无过渡标记，点击后短暂启用并自动移除，图标带旋转类', async () => {
+    render(<ThemeToggle />)
+    expect(document.documentElement).not.toHaveClass('theme-transition')
+    const button = screen.getByRole('button', { name: '切换到深色模式' })
+    expect(button.querySelector('.motion-icon')).not.toBeNull()
+
+    fireEvent.click(button)
+    expect(document.documentElement).toHaveClass('theme-transition')
+    await waitFor(() => expect(document.documentElement).not.toHaveClass('theme-transition'))
+    expect(document.documentElement).toHaveClass('dark')
   })
 })

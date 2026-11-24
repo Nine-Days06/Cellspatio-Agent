@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import { Check, ChevronDown, ChevronRight, Loader2 } from 'lucide-react'
+import { Check, ChevronDown, Loader2 } from 'lucide-react'
 import { cn } from '@/lib/utils'
 
 export interface ReasoningPanelProps {
@@ -75,15 +75,25 @@ export function ReasoningPanel({
         {!expanded && preview && (
           <span className="min-w-0 flex-1 truncate text-xs opacity-70">{preview}</span>
         )}
-        {expanded ? (
-          <ChevronDown className="ml-auto size-4 shrink-0" aria-hidden="true" />
-        ) : (
-          <ChevronRight className="ml-auto size-4 shrink-0" aria-hidden="true" />
-        )}
+        <ChevronDown
+          className={cn(
+            'ml-auto size-4 shrink-0 transition-transform duration-[var(--motion-fast)] ease-[var(--motion-ease)]',
+            !expanded && '-rotate-90',
+          )}
+          aria-hidden="true"
+        />
       </button>
-      {expanded && (
+      {/* 正文常驻挂载：收起时 0fr 且对辅助技术隐藏，展开 200ms；不残留高度或 transform。 */}
+      <div
+        className={cn(
+          'motion-collapse-panel',
+          expanded ? 'grid-rows-[1fr]' : 'grid-rows-[0fr]',
+        )}
+        aria-hidden={!expanded}
+      >
         <div className="border-t border-border/60 px-3 py-2">
           <div
+            data-testid="reasoning-body"
             ref={bodyRef}
             className={cn(
               'max-h-60 overflow-y-auto whitespace-pre-wrap break-words text-xs leading-6 text-muted-foreground',
@@ -96,7 +106,7 @@ export function ReasoningPanel({
             模型自述，不是证据，可能不准确。
           </p>
         </div>
-      )}
+      </div>
     </section>
   )
 }

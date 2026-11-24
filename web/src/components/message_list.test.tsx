@@ -34,8 +34,13 @@ const baseProps = {
   onRetry: vi.fn(),
 }
 
+const originalMatchMedia = window.matchMedia
+const originalScrollIntoView = HTMLElement.prototype.scrollIntoView
+
 afterEach(() => {
   vi.restoreAllMocks()
+  window.matchMedia = originalMatchMedia
+  HTMLElement.prototype.scrollIntoView = originalScrollIntoView
 })
 
 describe('空内容兜底（约束 1）', () => {
@@ -344,5 +349,153 @@ describe('Markdown 惰性渲染与代码块复制', () => {
     fireEvent.click(await screen.findByRole('button', { name: '复制' }))
     expect(await screen.findByRole('status')).toHaveTextContent('无法复制')
     expect(screen.queryByText('已复制')).not.toBeInTheDocument()
+  })
+})
+
+describe('新内容入场标记', () => {
+  it('历史消息不带入场标记', () => {
+    render(
+      <MessageList
+        {...baseProps}
+        messages={[
+          msg({ id: 5, role: 'user', content: '旧问题' }),
+          msg({ id: 6, content: '旧回答' }),
+        ]}
+      />,
+    )
+    expect(document.querySelectorAll('[data-motion-enter]')).toHaveLength(0)
+  })
+
+  it('追加本轮用户消息后只有该条带标记', () => {
+    const history = msg({ id: 5, role: 'user', content: '旧问题' })
+    const { rerender } = render(<MessageList {...baseProps} messages={[history]} />)
+    rerender(
+      <MessageList
+        {...baseProps}
+        messages={[history, msg({ id: -1, seq: -1, role: 'user', content: '新问题' })]}
+      />,
+    )
+    const marked = document.querySelectorAll('[data-motion-enter]')
+    expect(marked).toHaveLength(1)
+    expect(marked[0]).toHaveTextContent('新问题')
+    expect(marked[0].querySelector('.motion-enter-up')).not.toBeNull()
+  })
+
+  it('历史未加载完成时本地消息不播入场', () => {
+    render(
+      <MessageList
+        {...baseProps}
+        historyReady={false}
+        messages={[msg({ id: -1, seq: -1, role: 'user', content: '新问题' })]}
+      />,
+    )
+    expect(document.querySelectorAll('[data-motion-enter]')).toHaveLength(0)
+  })
+
+  it('活动气泡带标记，落历史后只渲染一份，下一轮开始时不重挂', () => {
+    const final = msg({ id: 21, content: '回答正文' })
+    const { rerender } = render(
+      <MessageList
+        {...baseProps}
+        busy
+        draft="回答正文"
+        reasoning={reasoningState({ text: '先想', startedAt: Date.now() })}
+      />,
+    )
+    expect(document.querySelectorAll('[data-motion-enter]')).toHaveLength(1)
+
+    rerender(
+      <MessageList
+        {...baseProps}
+        messages={[final]}
+        reasoning={reasoningState({ text: '先想', elapsedMs: 1000, messageId: 21 })}
+      />,
+    )
+    expect(screen.getAllByTestId('reasoning-panel')).toHaveLength(1)
+    expect(document.querySelectorAll('[data-motion-enter]')).toHaveLength(0)
+    const body = screen.getByText('回答正文')
+
+    // 下一轮开始：reasoning 被清空，历史消息的 key 必须稳定，展开状态不被重置。
+    rerender(<MessageList {...baseProps} messages={[final]} reasoning={reasoningState({})} />)
+    expect(screen.getByText('回答正文')).toBe(body)
+  })
+})
+
+
+describe('流式光标与回到最新内容', () => {
+  it('光标只在生成中显示，aria-hidden 且正文不含光标文本', () => {
+    render(<MessageList {...baseProps} busy draft="正在输出的正文" />)
+
+    const caret = screen.getByTestId('stream-caret')
+    expect(caret).toHaveAttribute('aria-hidden', 'true')
+    expect(caret.className).toContain('motion-caret')
+    expect(caret).not.toHaveTextContent('正在输出的正文')
+    expect(screen.getByText('正在生成回答')).toBeInTheDocument()
+    expect(screen.getByText('正在输出的正文')).toBeInTheDocument()
+  })
+
+  it('没开始输出或已收尾时不显示光标', () => {
+    const { rerender } = render(<MessageList {...baseProps} busy />)
+    expect(screen.queryByTestId('stream-caret')).toBeNull()
+
+    rerender(<MessageList {...baseProps} draft="已收尾的正文" />)
+    expect(screen.queryByTestId('stream-caret')).toBeNull()
+  })
+
+  it('回到最新内容默认平滑滚动', () => {
+    const scrollIntoView = vi.fn()
+    Object.defineProperty(HTMLElement.prototype, 'scrollIntoView', { configurable: true, value: scrollIntoView })
+    render(<MessageList {...baseProps} messages={[msg({ id: 1, content: '旧回答' })]} />)
+    const host = screen.getByTestId('message-list')
+    Object.defineProperties(host, {
+      scrollHeight: { configurable: true, value: 1000 },
+      clientHeight: { configurable: true, value: 300 },
+      scrollTop: { configurable: true, writable: true, value: 100 },
+    })
+    fireEvent.scroll(host)
+    fireEvent.click(screen.getByRole('button', { name: '回到最新内容' }))
+    expect(scrollIntoView).toHaveBeenLastCalledWith(expect.objectContaining({ behavior: 'smooth' }))
+  })
+
+  it('减少动效时即时滚动，且按钮隐藏时不进可访问树', () => {
+    expect(screen.queryByRole('button', { name: '回到最新内容' })).toBeNull()
+    const scrollIntoView = vi.fn()
+    Object.defineProperty(HTMLElement.prototype, 'scrollIntoView', { configurable: true, value: scrollIntoView })
+    window.matchMedia = vi.fn().mockReturnValue({ matches: true }) as unknown as typeof window.matchMedia
+    render(<MessageList {...baseProps} messages={[msg({ id: 1, content: '旧回答' })]} />)
+    const host = screen.getByTestId('message-list')
+    Object.defineProperties(host, {
+      scrollHeight: { configurable: true, value: 1000 },
+      clientHeight: { configurable: true, value: 300 },
+      scrollTop: { configurable: true, writable: true, value: 100 },
+    })
+    fireEvent.scroll(host)
+    fireEvent.click(screen.getByRole('button', { name: '回到最新内容' }))
+    expect(scrollIntoView).toHaveBeenLastCalledWith(expect.objectContaining({ behavior: 'auto' }))
+    delete (window as { matchMedia?: typeof window.matchMedia }).matchMedia
+    delete (HTMLElement.prototype as Partial<HTMLElement>).scrollIntoView
+  })
+})
+
+describe('工具阶段动效', () => {
+  it('状态行整体淡入，文案切换用 key 短淡入且行结构不变', () => {
+    const first: ToolStatusEntry[] = [{ name: 'a', phase: 'start', label: '检索知识库' }]
+    const { rerender } = render(<MessageList {...baseProps} busy tools={first} />)
+
+    const row = screen.getByTestId('tool-status')
+    expect(row.className).toContain('motion-fade-fast')
+    const label = screen.getByText('检索知识库')
+    expect(label.className).toContain('motion-swap')
+
+    rerender(
+      <MessageList
+        {...baseProps}
+        busy
+        tools={[{ name: 'b', phase: 'start', label: '生成回答' }]}
+      />,
+    )
+    expect(screen.getByTestId('tool-status')).toBe(row)
+    expect(label).not.toBeInTheDocument()
+    expect(screen.getByText('生成回答').className).toContain('motion-swap')
   })
 })
