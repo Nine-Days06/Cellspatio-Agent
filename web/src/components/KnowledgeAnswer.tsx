@@ -1,6 +1,11 @@
 import { useId, useRef } from 'react'
 import { MarkdownMessage } from '@/components/MarkdownMessage'
-import type { KnowledgeQAOutcome, KnowledgeQAResult } from '@/lib/types'
+import type {
+  KnowledgeQAEvidence,
+  KnowledgeQAOutcome,
+  KnowledgeQAResult,
+  KnowledgeQASource,
+} from '@/lib/types'
 import { cn } from '@/lib/utils'
 
 const OUTCOME_LABEL: Record<KnowledgeQAOutcome, string> = {
@@ -12,6 +17,11 @@ const OUTCOME_LABEL: Record<KnowledgeQAOutcome, string> = {
   out_of_scope: '超出问答范围',
 }
 
+interface SourceGroup {
+  source: KnowledgeQASource | null
+  evidence: KnowledgeQAEvidence[]
+}
+
 function safeHttpUrl(url: string): string | undefined {
   try {
     const parsed = new URL(url)
@@ -21,11 +31,74 @@ function safeHttpUrl(url: string): string | undefined {
   }
 }
 
-/** 论断与来源并排阅读；引用展开确切原文，不执行新检索。 */
+/** 按证据自身的来源编号归组；同一篇文献只保留一个一级条目。 */
+function groupBySource(data: KnowledgeQAResult): SourceGroup[] {
+  const groups: SourceGroup[] = []
+  const bySourceId = new Map<string, SourceGroup>()
+  for (const source of data.sources) {
+    if (bySourceId.has(source.source_id)) continue
+    const group: SourceGroup = { source, evidence: [] }
+    bySourceId.set(source.source_id, group)
+    groups.push(group)
+  }
+  const unassigned: KnowledgeQAEvidence[] = []
+  for (const item of data.evidence) {
+    const group = bySourceId.get(item.source_id)
+    if (group) group.evidence.push(item)
+    else unassigned.push(item)
+  }
+  if (unassigned.length > 0) {
+    groups.push({ source: null, evidence: unassigned })
+  }
+  return groups
+}
+
+/** 论断与来源同屏阅读；引用展开确切原文，不执行新检索。 */
 export function KnowledgeAnswer({ data, text }: { data: KnowledgeQAResult; text?: string }) {
   const detailPrefix = useId()
+  const excerptsRef = useRef<HTMLDetailsElement>(null)
+  const sourceRefs = useRef(new Map<string, HTMLDetailsElement>())
   const evidenceRefs = useRef(new Map<string, HTMLDetailsElement>())
   const outcome = data.outcome ? OUTCOME_LABEL[data.outcome] : null
+  const groups = groupBySource(data)
+  const unassignedKey = `${detailPrefix}-unassigned`
+  const groupKey = (group: SourceGroup) =>
+    group.source?.source_id ?? unassignedKey
+  const groupByEvidence = new Map<string, string>()
+  for (const group of groups) {
+    for (const item of group.evidence) groupByEvidence.set(item.evidence_id, groupKey(group))
+  }
+
+  const renderEvidence = (item: KnowledgeQAEvidence) => (
+    <details
+      key={item.evidence_id}
+      id={`${detailPrefix}-${item.evidence_id}`}
+      className="evidence-item min-w-0"
+      ref={(element) => {
+        if (element) evidenceRefs.current.set(item.evidence_id, element)
+        else evidenceRefs.current.delete(item.evidence_id)
+      }}
+    >
+      <summary className="cursor-pointer break-words text-sm text-primary">
+        {item.evidence_id} · 片段 {item.chunk_id}
+      </summary>
+      <p className="mt-3 whitespace-pre-wrap break-words text-sm leading-7">{item.content}</p>
+      <dl className="mt-3 space-y-1 text-xs text-muted-foreground">
+        <div>
+          <dt className="inline">片段编号</dt>
+          <dd className="ml-1 inline break-all">{item.chunk_id}</dd>
+        </div>
+        <div>
+          <dt className="inline">文件路径</dt>
+          <dd className="ml-1 inline break-all">{item.file_path || '（未记录）'}</dd>
+        </div>
+        <div>
+          <dt className="inline">SHA256</dt>
+          <dd className="ml-1 inline break-all">{item.content_sha256}</dd>
+        </div>
+      </dl>
+    </details>
+  )
 
   return (
     <section aria-label="知识问答证据" className="knowledge-answer min-w-0 space-y-5 text-[15px] leading-7">
@@ -46,10 +119,6 @@ export function KnowledgeAnswer({ data, text }: { data: KnowledgeQAResult; text?
               ? '已中断'
               : outcome}
         </span>
-        {data.status !== 'interrupted' && <span className="rounded-full bg-[color:var(--review-surface)] px-2 py-0.5 text-[color:var(--review)]">未复核</span>}
-        {data.evidence.length > 0 && (
-          <a href={`#${detailPrefix}-excerpts`} className="inline-flex min-h-9 items-center text-primary underline underline-offset-4 max-md:min-h-11">证据片段 {data.evidence.length} 条</a>
-        )}
       </div>
 
       {data.status === 'error' ? (
@@ -57,8 +126,7 @@ export function KnowledgeAnswer({ data, text }: { data: KnowledgeQAResult; text?
       ) : data.status === 'interrupted' ? (
         <p role="status" className="text-muted-foreground">{data.answer}</p>
       ) : (
-        <div className="knowledge-grid">
-          <div className="min-w-0 space-y-6">
+        <div className="knowledge-answer-body min-w-0 space-y-6">
           <MarkdownMessage text={text?.trim() ? text : data.answer} restrictExternalContent className="reading-prose" />
           {data.claims.length > 0 && (
             <div className="knowledge-claims">
@@ -85,6 +153,10 @@ export function KnowledgeAnswer({ data, text }: { data: KnowledgeQAResult; text?
                               const detail = evidenceRefs.current.get(id)
                               if (!detail) return
                               event.preventDefault()
+                              if (excerptsRef.current) excerptsRef.current.open = true
+                              const sourceKey = groupByEvidence.get(id)
+                              const source = sourceKey ? sourceRefs.current.get(sourceKey) : undefined
+                              if (source) source.open = true
                               detail.open = true
                               detail.querySelector('summary')?.focus()
                               detail.scrollIntoView?.({ block: 'nearest' })
@@ -118,45 +190,79 @@ export function KnowledgeAnswer({ data, text }: { data: KnowledgeQAResult; text?
               </ul>
             </div>
           )}
-          {data.evidence.length > 0 && (
-            <section id={`${detailPrefix}-excerpts`} aria-label="检索原文" className="evidence-excerpts space-y-2">
-              <h4 className="text-base font-semibold">查看检索原文</h4>
-              {data.evidence.map((item) => (
-                <details key={item.evidence_id} id={`${detailPrefix}-${item.evidence_id}`} className="border-b border-border py-3"
-                  ref={(element) => { if (element) evidenceRefs.current.set(item.evidence_id, element); else evidenceRefs.current.delete(item.evidence_id) }}>
-                  <summary className="cursor-pointer text-sm text-primary">{item.evidence_id} · {item.source_id}{item.title ? ` · ${item.title}` : ''}</summary>
-                  <p className="mt-3 whitespace-pre-wrap break-words text-sm leading-7">{item.content}</p>
-                  <details className="mt-3 text-xs text-muted-foreground"><summary>片段身份与校验</summary><p className="mt-2 break-all">片段 {item.chunk_id} · 路径 {item.file_path}</p><p className="break-all">SHA256 {item.content_sha256}</p></details>
-                </details>
-              ))}
-            </section>
-          )}
-          </div>
 
-          {data.sources.length > 0 && (
-            <aside aria-label="回答来源" className="min-w-0 border-t border-border pt-4 min-[1101px]:border-t-0 min-[1101px]:border-l min-[1101px]:pl-5 min-[1101px]:pt-0">
-              <h4 className="mb-3 text-base font-semibold">来源 <span className="ml-1 text-xs font-normal text-muted-foreground">{data.sources.length} 篇</span></h4>
-              <ul className="divide-y divide-border text-sm">
-                {data.sources.map((source) => {
-                  const href = safeHttpUrl(source.url)
-                  const background = [source.species, source.tissue, source.technology]
-                    .filter(Boolean)
-                    .join(' · ')
+          {groups.length > 0 && (
+            <details
+              ref={excerptsRef}
+              className="evidence-sources min-w-0"
+              aria-label="来源与检索原文"
+            >
+              <summary className="cursor-pointer break-words text-base font-semibold">
+                来源与检索原文
+                <span className="ml-2 text-xs font-normal text-muted-foreground">
+                  {groups.length} 篇 · {data.evidence.length} 段
+                </span>
+              </summary>
+              <div className="mt-3 min-w-0">
+                {groups.map((group) => {
+                  const key = groupKey(group)
+                  const href = group.source ? safeHttpUrl(group.source.url) : undefined
+                  const background = group.source
+                    ? [group.source.species, group.source.tissue, group.source.technology]
+                        .filter(Boolean)
+                        .join(' · ')
+                    : ''
                   return (
-                    <li key={source.source_id} className="space-y-1 py-3">
-                      <p className="font-medium">{source.source_id} {source.year && <span className="ml-1 font-normal text-muted-foreground">{source.year}</span>}</p>
-                      {source.title && <p>{source.title}</p>}
-                      {background && <p className="text-xs text-muted-foreground">[{background}]</p>}
-                      {href && (
-                        <a href={href} target="_blank" rel="noopener noreferrer" className="inline-flex min-h-8 items-center text-primary underline underline-offset-4 max-md:min-h-11">
-                          原文
-                        </a>
-                      )}
-                    </li>
+                    <details
+                      key={key}
+                      className="evidence-source min-w-0"
+                      ref={(element) => {
+                        if (element) sourceRefs.current.set(key, element)
+                        else sourceRefs.current.delete(key)
+                      }}
+                    >
+                      <summary className="cursor-pointer break-words text-sm text-primary">
+                        {group.source ? (
+                          <>
+                            {group.source.source_id}
+                            {group.source.year && (
+                              <span className="ml-1 text-muted-foreground">{group.source.year}</span>
+                            )}
+                          </>
+                        ) : (
+                          <>未归属来源<span className="ml-2 text-muted-foreground">{group.evidence.length} 段</span></>
+                        )}
+                      </summary>
+                      <div className="mt-2 min-w-0 space-y-2">
+                        {group.source && (
+                          <>
+                            {group.source.title && <p className="break-words text-sm">{group.source.title}</p>}
+                            {background && (
+                              <p className="break-words text-xs text-muted-foreground">[{background}]</p>
+                            )}
+                            {href && (
+                              <a
+                                href={href}
+                                target="_blank"
+                                rel="noopener noreferrer"
+                                className="inline-flex min-h-8 items-center text-primary underline underline-offset-4 max-md:min-h-11"
+                              >
+                                原文
+                              </a>
+                            )}
+                          </>
+                        )}
+                        {group.evidence.length > 0 ? (
+                          group.evidence.map(renderEvidence)
+                        ) : (
+                          <p className="text-xs text-muted-foreground">暂无可展示的检索片段。</p>
+                        )}
+                      </div>
+                    </details>
                   )
                 })}
-              </ul>
-            </aside>
+              </div>
+            </details>
           )}
         </div>
       )}

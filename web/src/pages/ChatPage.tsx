@@ -636,7 +636,7 @@ export function ChatPage() {
             )}
           </div>
           </div>
-          <p className="composer-help mt-2 text-xs text-muted-foreground">{mode === 'knowledge_qa' ? '回答附论断与原文证据；结果仍需人工复核。' : 'Enter 发送，Shift + Enter 换行；分析须独立授权。'}</p>
+          <p className="composer-help mt-2 text-xs text-muted-foreground">{mode === 'knowledge_qa' ? '回答附论断与原文证据。' : 'Enter 发送，Shift + Enter 换行；分析须独立授权。'}</p>
           </div>
         </div>
       </main>

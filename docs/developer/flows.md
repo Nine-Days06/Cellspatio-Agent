@@ -56,12 +56,11 @@ marker：独立授权的全细胞 Presto marker → 结果待复核
 
 ```text
 POST /api/chat mode=knowledge_qa
-  → 检索 → 证据 → claims → 复核 → package
-  → answer_binding_sha256 绑定答案
+  → 检索 → 证据 → claims → package
 ```
 
-质量门槛依赖按 `answer_id` 记录的人工复核；请求完成不等于质量复核。评测用例在
-`evals/qa_cases.jsonl`，入口在 `evals/run_qa_eval.py`。
+评测只做技术跑批，不自动判定回答正确性。用例在 `evals/qa_cases.jsonl`，入口在
+`evals/run_qa_eval.py`。
 
 ## 记录、快照与溯源
 

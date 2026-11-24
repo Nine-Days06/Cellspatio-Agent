@@ -82,7 +82,7 @@ export interface MessageResults {
 /** 对话模式：智能对话走 AgentRuntime，知识问答走受控检索链路。 */
 export type ChatMode = 'chat' | 'knowledge_qa'
 
-/** 知识问答回答包（src/knowledge/qa.py，协议 knowledge-qa/1.0.0）。 */
+/** 知识问答回答包（src/knowledge/qa.py，协议 knowledge-qa/2.0.0）。 */
 export type KnowledgeQAOutcome =
   | 'supported_answer'
   | 'insufficient_evidence'
@@ -141,7 +141,6 @@ export interface KnowledgeQAResult {
   clarifications: string[]
   evidence: KnowledgeQAEvidence[]
   sources: KnowledgeQASource[]
-  review_status: 'unreviewed'
   error?: { stage: string; message: string }
   config?: Record<string, unknown>
 }

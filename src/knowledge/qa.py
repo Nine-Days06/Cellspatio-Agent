@@ -23,7 +23,7 @@ from src.knowledge.llm_factory import build_llm_func
 
 logger = logging.getLogger(__name__)
 
-SCHEMA_VERSION = "knowledge-qa/1.0.0"
+SCHEMA_VERSION = "knowledge-qa/2.0.0"
 ANSWER_PROTOCOL = "knowledge-qa-answer/1.0.0"
 OUTCOMES = {
     "supported_answer",
@@ -99,65 +99,6 @@ def _answer_id() -> str:
     return f"qa-{uuid.uuid4().hex}"
 
 
-def answer_binding_sha256(answer: dict[str, Any]) -> str:
-    """计算人工复核绑定的规范哈希。
-
-    绑定回答身份、结论、引用关系、证据原文和来源适用性；耗时、缓存标志等
-    运行信息不参与哈希，避免同一回答重跑后无法匹配复核记录。
-    """
-    evidence = sorted(
-        (
-            {
-                "evidence_id": item.get("evidence_id"),
-                "chunk_id": item.get("chunk_id"),
-                "source_id": item.get("source_id"),
-                "content": item.get("content"),
-                "content_sha256": item.get("content_sha256"),
-            }
-            for item in answer.get("evidence") or []
-            if isinstance(item, dict)
-        ),
-        key=lambda item: (
-            str(item.get("evidence_id") or ""),
-            str(item.get("chunk_id") or ""),
-        ),
-    )
-    sources = sorted(
-        (
-            {
-                "source_id": item.get("source_id"),
-                "pmid": item.get("pmid"),
-                "doi": item.get("doi"),
-                "species": item.get("species"),
-                "tissue": item.get("tissue"),
-                "technology": item.get("technology"),
-            }
-            for item in answer.get("sources") or []
-            if isinstance(item, dict)
-        ),
-        key=lambda item: str(item.get("source_id") or ""),
-    )
-    config = answer.get("config") if isinstance(answer.get("config"), dict) else {}
-    payload = {
-        "answer_id": answer.get("answer_id"),
-        "schema_version": answer.get("schema_version"),
-        "question": answer.get("question"),
-        "status": answer.get("status"),
-        "outcome": answer.get("outcome"),
-        "answer": answer.get("answer"),
-        "claims": answer.get("claims") or [],
-        "limitations": answer.get("limitations") or [],
-        "clarifications": answer.get("clarifications") or [],
-        "evidence": evidence,
-        "sources": sources,
-        "error": answer.get("error"),
-        "workspace": config.get("workspace"),
-        "lightrag_version": config.get("lightrag_version"),
-    }
-    canonical = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
-    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
-
-
 def _lightrag_version() -> str:
     """记录实际运行的知识库版本；取不到时显式写 unknown。"""
     try:
@@ -194,8 +135,6 @@ def _package(
         "clarifications": [],
         "evidence": [],
         "sources": [],
-        "review_status": "unreviewed",
-        "review": None,
         "config": config or {},
     }
 

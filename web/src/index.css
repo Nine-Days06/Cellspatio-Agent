@@ -164,15 +164,15 @@ body {
 .analysis-record :is(code, pre) { overflow-wrap: anywhere; }
 .analysis-record [role="alert"] { color: var(--destructive); }
 .analysis-record [role="status"] { color: var(--review); }
-.knowledge-grid { display: grid; grid-template-columns: minmax(0, 1fr) minmax(16rem, 19rem); gap: 2.5rem; }
-.knowledge-grid > div { max-width: 48rem; }
-.knowledge-grid > aside { align-self: start; }
-.knowledge-grid > aside li:first-child { padding-top: 0; }
+.knowledge-answer-body { max-width: 48rem; }
 .knowledge-claims { padding-top: 1rem; border-top: 1px solid var(--border); }
 .knowledge-claims li { line-height: 1.9; }
-.evidence-excerpts { padding-top: 1rem; scroll-margin-top: 1rem; }
-.evidence-excerpts summary { padding-block: 0.25rem; line-height: 1.7; }
-.evidence-excerpts details[open] > p { border-left: 2px solid var(--border); padding: 0.5rem 1rem; background: var(--card); }
+.evidence-sources { padding-top: 1rem; }
+.evidence-source { border-bottom: 1px solid var(--border); padding-block: 0.65rem; }
+.evidence-sources summary { padding-block: 0.25rem; line-height: 1.7; }
+.evidence-sources summary:focus-visible { outline: 2px solid var(--ring); outline-offset: 2px; }
+.evidence-item { border-top: 1px dashed var(--border); margin-top: 0.5rem; padding-top: 0.5rem; scroll-margin-top: 1rem; }
+.evidence-item[open] > p { border-left: 2px solid var(--border); padding: 0.5rem 1rem; background: var(--card); }
 .reading-prose { max-width: 48rem; font-size: 0.9375rem; line-height: 1.85; }
 .reading-prose > :is(p, ul, ol, blockquote) { margin-block: 0.75rem; }
 .reading-prose :is(h1, h2, h3, h4) { margin-top: 1.25rem; font-size: 1.125rem; font-weight: 600; }
@@ -184,9 +184,6 @@ body {
 .reading-prose pre { max-width: 100%; }
 .reading-prose a { overflow-wrap: anywhere; }
 .original-image-dialog { overflow: hidden; }
-@media (max-width: 1100px) {
-  .knowledge-grid { grid-template-columns: minmax(0, 1fr); }
-}
 @media (max-width: 767px) {
   .workspace-header { padding-block: 0.65rem; }
   .workspace-start { padding-top: 1rem; }

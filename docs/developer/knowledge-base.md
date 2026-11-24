@@ -41,5 +41,5 @@ PG 后端 LightRAG 的连接池、事件循环和 workspace 是进程级共享�
 
 ## 评测
 
-用例在 `evals/qa_cases.jsonl`；`evals/run_qa_eval.py` 跑五阶段问答，
-`evals/qa_review.py` 记录人工复核。质量门槛只认按 `answer_id` 记录的复核事实。
+用例在 `evals/qa_cases.jsonl`；`evals/run_qa_eval.py` 跑五阶段问答并输出技术跑批报告。
+评测不记录人工复核，也不自动判定回答正确性。
