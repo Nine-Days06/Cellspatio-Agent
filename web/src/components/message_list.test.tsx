@@ -3,6 +3,11 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { MessageList, EMPTY_FALLBACK } from '@/components/MessageList'
 import type { ToolStatusEntry } from '@/components/ToolStatus'
 import type { ChatMode, PendingScript, WireMessage } from '@/lib/types'
+import { emptyReasoning, type ReasoningState } from '@/store/chat'
+
+function reasoningState(overrides: Partial<ReasoningState> = {}): ReasoningState {
+  return { ...emptyReasoning(), ...overrides }
+}
 
 function msg(overrides: Partial<WireMessage> = {}): WireMessage {
   return {
@@ -88,6 +93,75 @@ describe('空内容兜底（约束 1）', () => {
     )
     fireEvent.click(screen.getByRole('button', { name: '重试' }))
     expect(onRetry).toHaveBeenCalledTimes(1)
+  })
+})
+
+describe('统一思考条', () => {
+  it('历史消息带绑定思考时渲染在正文之前', () => {
+    render(
+      <MessageList
+        {...baseProps}
+        messages={[msg({ id: 9, content: '正式回答' })]}
+        reasoning={reasoningState({ text: '先分析问题', elapsedMs: 3000, messageId: 9 })}
+      />,
+    )
+
+    const panel = screen.getByTestId('reasoning-panel')
+    const answer = screen.getByText('正式回答')
+    expect(panel).toBeInTheDocument()
+    expect(screen.getByText('已思考 3 秒')).toBeInTheDocument()
+    expect(panel.compareDocumentPosition(answer) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+  })
+
+  it('流式阶段只显示一条思考条，不再显示「思考中」兜底', () => {
+    render(
+      <MessageList
+        {...baseProps}
+        busy
+        reasoning={reasoningState({ text: '正在思考', startedAt: Date.now() - 2000 })}
+      />,
+    )
+
+    expect(screen.getByTestId('reasoning-panel')).toBeInTheDocument()
+    expect(screen.getAllByText('思考中')).toHaveLength(1)
+  })
+
+  it('没有思考内容时不渲染思考条', () => {
+    render(<MessageList {...baseProps} messages={[msg({ content: '回答' })]} />)
+    expect(screen.queryByTestId('reasoning-panel')).not.toBeInTheDocument()
+  })
+
+  it('知识问答历史消息同样显示绑定的思考条', () => {
+    render(
+      <MessageList
+        {...baseProps}
+        mode="knowledge_qa"
+        messages={[
+          msg({
+            id: 11,
+            content: '证据回答',
+            results: {
+              knowledge_qa: {
+                answer_id: 'qa-1',
+                schema_version: 'knowledge-qa/2.0.0',
+                status: 'success',
+                outcome: 'supported_answer',
+                answer: '证据回答',
+                claims: [],
+                evidence: [],
+                sources: [],
+                limitations: [],
+                clarifications: [],
+              },
+            },
+          }),
+        ]}
+        reasoning={reasoningState({ text: '先检索再作答', elapsedMs: 2000, messageId: 11 })}
+      />,
+    )
+
+    expect(screen.getByTestId('reasoning-panel')).toBeInTheDocument()
+    expect(screen.getByText('已思考 2 秒')).toBeInTheDocument()
   })
 })
 

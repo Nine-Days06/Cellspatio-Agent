@@ -5,13 +5,19 @@ import { ChartBlock } from '@/components/ChartBlock'
 import { KnowledgeAnswer } from '@/components/KnowledgeAnswer'
 import { QcEvidence } from '@/components/QcEvidence'
 import { MarkdownMessage } from '@/components/MarkdownMessage'
+import { ReasoningPanel } from '@/components/ReasoningPanel'
 import { SoftWarnBanner } from '@/components/SoftWarnBanner'
 import { ToolStatus, type ToolStatusEntry } from '@/components/ToolStatus'
+import { emptyReasoning, type ReasoningState } from '@/store/chat'
 import type { ChatMode, WireMessage } from '@/lib/types'
 import { cn } from '@/lib/utils'
 
 /** 约束 1：知识库不可用时 done.message.content 可能为空字符串，需要兜底文案。 */
 export const EMPTY_FALLBACK = '本次未产生内容，请重试或换个问法'
+
+const NO_REASONING = emptyReasoning()
+
+function noop(): void {}
 
 export interface MessageListProps {
   messages: WireMessage[]
@@ -23,6 +29,9 @@ export interface MessageListProps {
   hideStatus?: boolean
   notice: { kind: 'info' | 'error'; text: string } | null
   softWarn: boolean
+  /** 本轮思考状态；只在内存中展示，不进入消息正文。 */
+  reasoning?: ReasoningState
+  onToggleReasoning?: () => void
   onRetry?: () => void
   onQcRecorded?: () => void
   onStarter?: (prompt: string, mode: ChatMode) => void
@@ -59,6 +68,8 @@ export function MessageList({
   hideStatus = false,
   notice,
   softWarn,
+  reasoning = NO_REASONING,
+  onToggleReasoning = noop,
   onRetry,
   onQcRecorded,
   onStarter,
@@ -68,15 +79,23 @@ export function MessageList({
   const following = useRef(true)
   const [awayFromLatest, setAwayFromLatest] = useState(false)
   const lastTool = tools.length > 0 ? tools[tools.length - 1] : null
+  const hasReasoning = reasoning.text.trim().length > 0
+  /** 已挂到历史消息上的思考由消息自己渲染，活动气泡不再重复显示。 */
+  const liveReasoning = hasReasoning && reasoning.messageId === null
   /** 同一时刻只显示一条状态：有活动阶段用阶段文案，否则按模式兜底；正文出现后都不显示。 */
   const showStatus = draft.length === 0 && !hideStatus
   const statusEntry = showStatus ? lastTool : null
-  const statusFallback = showStatus && busy ? (mode === 'knowledge_qa' ? '准备回答' : '思考中') : null
+  const statusFallback =
+    showStatus && busy && !liveReasoning
+      ? mode === 'knowledge_qa'
+        ? '准备回答'
+        : '思考中'
+      : null
 
   useEffect(() => {
     // 只跟随正在读最新内容的人；流式更新不抢走历史阅读位置。
     if (following.current) endRef.current?.scrollIntoView?.({ block: 'end' })
-  }, [messages.length, draft, tools.length, notice])
+  }, [messages.length, draft, reasoning.text, tools.length, notice])
 
   return (
     <div className="relative flex min-h-0 flex-1 flex-col">
@@ -107,12 +126,29 @@ export function MessageList({
           </section>
         )}
         {messages.map((message) => {
+          const messageReasoning =
+            message.role === 'assistant' &&
+            hasReasoning &&
+            message.id === reasoning.messageId
           const empty =
-            !message.content.trim() && !hasVisuals(message) && message.role === 'assistant'
+            !message.content.trim() &&
+            !hasVisuals(message) &&
+            !messageReasoning &&
+            message.role === 'assistant'
           return (
             <Bubble key={`${message.id}-${message.seq}`} role={message.role}>
               {message.role === 'assistant' ? (
                 <>
+                  {messageReasoning && (
+                    <ReasoningPanel
+                      text={reasoning.text}
+                      running={false}
+                      elapsedMs={reasoning.elapsedMs}
+                      truncated={reasoning.truncated}
+                      expanded={reasoning.expanded}
+                      onToggle={onToggleReasoning}
+                    />
+                  )}
                   {empty ? (
                     <div className="flex flex-col gap-2 text-sm">
                       <span>{EMPTY_FALLBACK}</span>
@@ -149,8 +185,19 @@ export function MessageList({
           )
         })}
 
-        {(draft.length > 0 || (busy && !hideStatus)) && (
+        {(draft.length > 0 || liveReasoning || (busy && !hideStatus)) && (
           <Bubble role="assistant">
+            {liveReasoning && (
+              <ReasoningPanel
+                text={reasoning.text}
+                running={reasoning.startedAt !== null}
+                startedAt={reasoning.startedAt}
+                elapsedMs={reasoning.elapsedMs}
+                truncated={reasoning.truncated}
+                expanded={reasoning.expanded}
+                onToggle={onToggleReasoning}
+              />
+            )}
             <ToolStatus entry={statusEntry} fallback={statusFallback} />
             {draft.length > 0 && <MarkdownMessage text={draft} className="reading-prose" />}
           </Bubble>

@@ -244,6 +244,26 @@ def test_partial_answer_persisted_when_runtime_fails_mid_stream(client):
     assert stored[-1]["content"] == "已生成一半"
 
 
+def test_reasoning_delta_is_not_persisted_as_partial_answer(client):
+    """思考增量照常推给前端，但失败落库的正文只能含正式内容。"""
+    sid = _new_session(client)
+
+    class HalfRuntime:
+        def execute(self, user_input, context=None, on_event=None):
+            on_event({"type": "delta", "text": "先分析", "source": "reasoning"})
+            on_event({"type": "delta", "text": "正式一半"})
+            raise RuntimeError("上游超时")
+
+    client.app.state.agent.agent_runtime = HalfRuntime()
+
+    events = _stream(client, sid, "问个问题")
+
+    assert events[0] == {"type": "delta", "text": "先分析", "source": "reasoning"}
+    assert events[-1]["type"] == "error"
+    stored = SessionStore().get_messages(sid)
+    assert stored[-1]["content"] == "正式一半"
+
+
 def test_unknown_mode_is_rejected_before_creating_turn(client):
     sid = _new_session(client)
     response = client.post("/api/chat", json={"session_id": sid, "prompt": "hi", "mode": "bogus"})
@@ -283,6 +303,37 @@ def test_knowledge_qa_mode_returns_evidence_package(client, monkeypatch):
     stored = SessionStore().get_messages(sid)
     assert stored[-1]["content"] == "没有可追溯证据。"
     assert client.app.state.agent.agent_runtime.calls == []
+
+
+def test_knowledge_qa_reasoning_is_streamed_with_source(client, monkeypatch):
+    """问答思考走 delta 的 source=reasoning，正式回答仍只由 done 携带。"""
+    sid = _new_session(client)
+    payload = {
+        "answer_id": "qa-reasoning",
+        "schema_version": "knowledge-qa/2.0.0",
+        "status": "success",
+        "outcome": "insufficient_evidence",
+        "answer": "没有可追溯证据。",
+        "claims": [],
+        "evidence": [],
+        "sources": [],
+    }
+
+    def fake_run(client, question, **kwargs):
+        kwargs["on_reasoning"]("先核对证据")
+        kwargs["on_stage"]("answer", "start")
+        kwargs["on_stage"]("answer", "end")
+        return payload
+
+    monkeypatch.setattr("src.knowledge.qa.run_knowledge_qa", fake_run)
+
+    events = _stream(client, sid, "TP53 的功能是什么？", mode="knowledge_qa")
+
+    assert events[0] == {"type": "delta", "text": "先核对证据", "source": "reasoning"}
+    assert [e["type"] for e in events[1:]] == ["tool_status", "tool_status", "done"]
+    assert "先核对证据" not in events[-1]["message"]["content"]
+    stored = SessionStore().get_messages(sid)
+    assert stored[-1]["content"] == "没有可追溯证据。"
 
 
 def test_route_wires_auto_name_hook_to_first_turn(client):

@@ -17,6 +17,7 @@ from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any
 
 from src.control.tools import SYSTEM_PROMPT, TERMINAL_STATUSES, TOOL_SCHEMAS
+from src.reasoning import split_delta
 
 if TYPE_CHECKING:
     from src.control.router import ModalRouter
@@ -68,6 +69,7 @@ class AgentRuntime:
         hint = self._route_hint(user_input)
         messages = self._build_messages(user_input, context, hint=hint)
         dispatched: dict[str, Any] | None = None
+        reasoning_seen = False
         try:
             for _ in range(MAX_ROUNDS):
                 if on_event is None:
@@ -81,7 +83,10 @@ class AgentRuntime:
                     message = response.choices[0].message
                     tool_calls = getattr(message, "tool_calls", None)
                 else:
-                    message, tool_calls, aborted = self._stream_round(messages, on_event)
+                    message, tool_calls, aborted, round_reasoning = self._stream_round(
+                        messages, on_event, has_prior_reasoning=reasoning_seen
+                    )
+                    reasoning_seen = reasoning_seen or round_reasoning
                     if aborted:
                         return dict(ABORTED_RESULT)
 
@@ -148,13 +153,20 @@ class AgentRuntime:
             return self.workflow_manager.execute_workflow(user_input, context)
 
     def _stream_round(
-        self, messages: list[dict[str, Any]], on_event: Callable[[dict], bool]
-    ) -> tuple[Any, list | None, bool]:
+        self,
+        messages: list[dict[str, Any]],
+        on_event: Callable[[dict], bool],
+        *,
+        has_prior_reasoning: bool = False,
+    ) -> tuple[Any, list | None, bool, bool]:
         """流式跑一轮 LLM 调用。
 
-        返回 (message, tool_calls, aborted)：message 为
+        返回 (message, tool_calls, aborted, reasoning_emitted)：message 为
         SimpleNamespace(content=..., tool_calls=[...])，形状与 SDK 非流式返回一致，
         可直接喂给既有 _dispatch / _tool_message_dict；aborted=True 时调用方须立即返回。
+
+        第四项表示本轮是否产生过思考增量；``has_prior_reasoning`` 为真时，
+        本轮首段思考前插入轻量分隔，让多轮工具调用之间的思考按顺序可辨。
         """
         stream = self.llm_client.chat.completions.create(
             model=self.model,
@@ -167,16 +179,24 @@ class AgentRuntime:
         content_parts: list[str] = []
         slots: dict[int, dict[str, Any]] = {}
         current_slot: int | None = None  # 追踪当前正在累积的槽位（用于无 index 的 chunk）
+        reasoning_emitted = False
         for chunk in stream:
             choices = getattr(chunk, "choices", None) or []
             if not choices:
                 continue  # usage-only chunk
             delta = choices[0].delta
-            piece = getattr(delta, "content", None)
+            reasoning_piece, piece = split_delta(delta)
+            if reasoning_piece:
+                text = reasoning_piece
+                if has_prior_reasoning and not reasoning_emitted:
+                    text = f"\n\n{text}"
+                if not on_event({"type": "delta", "text": text, "source": "reasoning"}):
+                    return None, None, True, reasoning_emitted
+                reasoning_emitted = True
             if piece:
                 content_parts.append(piece)
                 if not on_event({"type": "delta", "text": piece}):
-                    return None, None, True
+                    return None, None, True, reasoning_emitted
             for call in getattr(delta, "tool_calls", None) or []:
                 # 防御性处理 index：OpenAI/Zhipu 兼容协议保证 tool_call chunk 恒带 index，
                 # 但为兼容潜在异常 SDK，若缺失则沿用当前槽位，无当前槽则归入槽 0。
@@ -211,7 +231,7 @@ class AgentRuntime:
             content="".join(content_parts),
             tool_calls=tool_calls or None,
         )
-        return message, tool_calls or None, False
+        return message, tool_calls or None, False, reasoning_emitted
 
     def _route_hint(self, user_input: str) -> dict[str, Any] | None:
         """调用 ModalRouter.hint；无 router 或失败时返回 None（不阻断主流程）。"""

@@ -14,6 +14,7 @@
 | `web/src/lib/navigation.ts` | 无路由库的 `/`、`/login`、`/workspace` 三页切换与 popstate |
 | `web/src/components/UploadDialog.tsx` | 临时访客上传 CSV / 10x zip，前端只挡单文件 100 MB |
 | `web/src/components/` | 会话、确认卡、阶段复核、图表、Markdown 等交互组件 |
+| `web/src/components/ReasoningPanel.tsx` | 统一思考条：进行中指示、字数、预览、展开回看与耗时 |
 | `web/src/lib/http.ts` | JSON 与 SSE 共用的请求/错误解析层 |
 | `web/src/lib/sse.ts` | `/api/chat` 流式事件解析 |
 | `web/src/lib/api.ts` | 后端 API 封装 |

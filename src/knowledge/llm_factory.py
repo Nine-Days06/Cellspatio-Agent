@@ -2,8 +2,12 @@
 
 import asyncio
 import logging
+from collections.abc import Iterator
+from typing import Any
 
 import httpx
+
+from src.reasoning import split_delta
 
 logger = logging.getLogger(__name__)
 
@@ -84,6 +88,87 @@ def build_llm_func(provider: str | None = None) -> tuple:
             )
 
     return llm_func, model
+
+
+def build_streaming_llm_func(provider: str | None = None) -> tuple[Any, str]:
+    """构建同步流式生成函数，逐块产出 ``(kind, text)``。
+
+    ``kind`` 为 ``reasoning`` 或 ``content``；思考与正式内容分开返回，调用方
+    可只转发前者、完整缓冲后者。供应商不支持流式或 SDK 拒绝 ``stream=True``
+    时由调用方回退到 ``build_llm_func``，本函数不自行重试。
+    """
+    from src.config import get_llm_config
+
+    config = get_llm_config(provider)
+    api_key = config["api_key"]
+    model = config["model"]
+    base_url = config.get("base_url")
+    client_type = config["client_type"]
+
+    def stream_func(
+        prompt: str,
+        system_prompt: str | None = None,
+        history_messages: list[dict] | None = None,
+        **kwargs: Any,
+    ) -> Iterator[tuple[str, str]]:
+        timeout = kwargs.pop("timeout", None)
+        max_tokens = kwargs.pop("max_tokens", None)
+        messages: list[dict[str, Any]] = []
+        if system_prompt:
+            messages.append({"role": "system", "content": system_prompt})
+        messages.extend(history_messages or [])
+        messages.append({"role": "user", "content": prompt})
+
+        request: dict[str, Any] = {
+            "model": model,
+            "messages": messages,
+            "stream": True,
+            **kwargs,
+        }
+        if max_tokens is not None:
+            request["max_tokens"] = max_tokens
+        if timeout is not None:
+            request["timeout"] = timeout
+
+        if client_type == "zhipuai":
+            import zhipuai
+
+            client = zhipuai.ZhipuAI(api_key=api_key, timeout=timeout)
+        else:
+            from openai import OpenAI
+
+            client = OpenAI(api_key=api_key, base_url=base_url, timeout=timeout)
+
+        stream = None
+        try:
+            stream = client.chat.completions.create(**request)
+            for chunk in stream:
+                choices = getattr(chunk, "choices", None) or []
+                if not choices:
+                    continue
+                delta = getattr(choices[0], "delta", None)
+                if delta is None:
+                    continue
+                reasoning, content = split_delta(delta)
+                if reasoning:
+                    yield "reasoning", reasoning
+                if content:
+                    yield "content", content
+        finally:
+            close_stream = getattr(stream, "close", None)
+            if callable(close_stream):
+                try:
+                    close_stream()
+                except Exception:  # noqa: BLE001 - 清理失败不改变生成结果
+                    logger.debug("stream close failed", exc_info=True)
+            close_client = getattr(client, "close", None)
+            if callable(close_client):
+                try:
+                    close_client()
+                except Exception:  # noqa: BLE001 - 同上
+                    logger.debug("stream client close failed", exc_info=True)
+
+    return stream_func, model
 
 
 def build_embedding_func(embedding_func=None):

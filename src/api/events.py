@@ -1,7 +1,7 @@
 """SSE 事件契约：统一构造、帧序列化、图表与消息的线路编码。
 
 事件类型共 7 类（与前端共享契约）：
-- delta        {text}                          LLM 逐块输出
+- delta        {text, source?}                 LLM 逐块输出；source=reasoning 表示思考
 - tool_status  {name, phase, label}            tool-calling 循环过程
 - confirm_card {kind, payload}                 needs_script / needs_data_confirmation
 - chart        {plotly_json | image_b64}       分析产出图表

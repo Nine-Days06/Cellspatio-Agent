@@ -21,7 +21,7 @@ from typing import Any
 
 from src.config import EMBEDDING_MODEL, LLM_PROVIDER, get_llm_config
 from src.knowledge.async_runtime import runtime as async_runtime
-from src.knowledge.llm_factory import build_llm_func
+from src.knowledge.llm_factory import build_llm_func, build_streaming_llm_func
 
 logger = logging.getLogger(__name__)
 
@@ -60,7 +60,8 @@ class _StageAborted(Exception):
 def _stage(on_stage: StageCallback | None, name: str, *, abortable: bool = False) -> Iterator[None]:
     """上报一个阶段的开始与结束；异常和提前 return 也会发结束。
 
-    只有检索阶段允许在开始前因断连放弃本轮；生成阶段一旦开始就不再取消。
+    只有检索阶段允许在开始前因断连放弃本轮；生成阶段的阶段回调不会取消，
+    流式思考回写见 ``_stream_answer``。
     """
     if on_stage is not None and on_stage(name, "start") is False and abortable:
         # 已开始的阶段必须有结束事件，即使这次结束事件也送不到已断开的客户端
@@ -403,6 +404,57 @@ def _run_stage(coro: Any, deadline: float) -> Any:
     return async_runtime.run(asyncio.wait_for(coro, timeout=left))
 
 
+def _stream_answer(
+    stream_func: Any,
+    prompt: str,
+    request_limits: dict[str, Any],
+    deadline: float,
+    on_reasoning: Callable[[str], bool | None] | None,
+) -> str | None:
+    """消费一次流式生成，返回完整正文；None 表示可安全回退非流式。
+
+    正文为 None 表示可以安全回退非流式：尚未产生任何内容或思考，不涉及重复
+    计费。一旦已产生输出，后续异常按生成失败收口，不再重试。
+    """
+    stream = None
+    parts: list[str] = []
+    produced = False
+    try:
+        stream = stream_func(prompt, **request_limits)
+        for kind, piece in stream:
+            if not piece:
+                continue
+            if time.monotonic() > deadline:
+                raise TimeoutError("knowledge qa deadline exceeded")
+            if kind == "reasoning":
+                produced = True
+                # 回调返回 False 表示客户端已断开，立即停止生成以节省调用。
+                if on_reasoning is not None and on_reasoning(piece) is False:
+                    raise _StageAborted
+            elif kind == "content":
+                produced = True
+                parts.append(piece)
+    except _StageAborted:
+        raise
+    except Exception as exc:  # noqa: BLE001 - 供应商流式失败统一回退一次
+        if produced:
+            raise
+        logger.warning("knowledge qa stream unavailable: %s", type(exc).__name__)
+        return None
+    finally:
+        close = getattr(stream, "close", None)
+        if callable(close):
+            try:
+                close()
+            except Exception:  # noqa: BLE001 - 关闭失败不改变生成结果
+                logger.debug("knowledge qa stream close failed", exc_info=True)
+    if not parts:
+        if produced:
+            raise ValueError("stream ended without answer content")
+        return None
+    return "".join(parts)
+
+
 def _compose_answer(
     question: str,
     evidence: list[dict[str, Any]],
@@ -410,6 +462,9 @@ def _compose_answer(
     llm_func: Any,
     *,
     max_tokens: int,
+    on_reasoning: Callable[[str], bool | None] | None = None,
+    stream_func: Any = None,
+    streaming: bool = False,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
     """调用一次模型并校验结构与引用，返回(待装配字段, 配置记录)；失败抛 QaStageError。"""
     started = time.monotonic()
@@ -417,6 +472,8 @@ def _compose_answer(
     try:
         if llm_func is None:
             llm_func, model = build_llm_func()
+            if stream_func is None and streaming:
+                stream_func, _ = build_streaming_llm_func()
             meta["answer_provider"] = LLM_PROVIDER
             meta["answer_client_type"] = get_llm_config().get("client_type", "")
         else:
@@ -425,7 +482,17 @@ def _compose_answer(
         meta["answer_model"] = model
         prompt = _ANSWER_PROMPT.format(question=question, evidence=_evidence_block(evidence))
         meta["answer_llm_calls"] = 1
-        raw = _run_stage(llm_func(prompt, **request_limits), deadline)
+        raw = None
+        if stream_func is not None:
+            raw = _stream_answer(stream_func, prompt, request_limits, deadline, on_reasoning)
+            if raw is None:
+                # 流式在产生任何内容/思考前失败或空转：立即回退一次非流式，
+                # 避免把可恢复的供应商不支持当成整轮失败。
+                meta["answer_llm_calls"] = 2
+        if raw is None:
+            raw = _run_stage(llm_func(prompt, **request_limits), deadline)
+    except _StageAborted:
+        raise
     except Exception as exc:  # noqa: BLE001 - 生成失败不自动重试
         logger.warning("knowledge qa generation failed: %s", type(exc).__name__)
         meta["generation_error"] = type(exc).__name__
@@ -483,11 +550,16 @@ def run_knowledge_qa(
     llm_func: Any = None,
     timeout: float | None = None,
     on_stage: StageCallback | None = None,
+    on_reasoning: Callable[[str], bool | None] | None = None,
+    stream_func: Any = None,
+    streaming: bool = False,
 ) -> dict[str, Any]:
     """执行一次知识问答，返回持久化用回答包。
 
     llm_func 仅用于测试注入；生产路径复用 `build_llm_func` 的当前模型配置。
-    on_stage 可选，用于按真实阶段上报进度；不传时行为与之前一致。
+    on_stage 可选，用于按真实阶段上报进度；on_reasoning 接收流式思考增量；
+    stream_func/streaming 仅由生产入口或测试显式开启，默认保持非流式，
+    避免注入假 LLM 的单测意外触网。
     """
     # timeout=0 是合法输入（立即过期），只有 None 才回退到环境默认值
     limit = timeout if timeout is not None else _env_float("KNOWLEDGE_QA_TIMEOUT", 120.0)
@@ -586,7 +658,14 @@ def run_knowledge_qa(
         with _stage(on_stage, STAGE_ANSWER):
             try:
                 fields, meta = _compose_answer(
-                    question, evidence, deadline, llm_func, max_tokens=max_tokens
+                    question,
+                    evidence,
+                    deadline,
+                    llm_func,
+                    max_tokens=max_tokens,
+                    on_reasoning=on_reasoning,
+                    stream_func=stream_func,
+                    streaming=streaming,
                 )
             except QaStageError as exc:
                 base["config"].update(exc.meta)
