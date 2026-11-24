@@ -7,6 +7,7 @@ import json
 import pytest
 
 from src.api.chat_service import _persist, persist_message, persist_outcome, run_turn, session_lock
+from src.knowledge.qa import interrupted_package
 from src.ui.session_store import SessionStore
 from tests.unit.fakes import FakeAgent, FakeRuntime
 
@@ -74,6 +75,10 @@ def test_knowledge_qa_mode_bypasses_history_runtime_and_compaction(store, monkey
     def fake_run(client, question, **kwargs):
         seen.append(question)
         seen_kwargs.append(kwargs)
+        on_stage = kwargs["on_stage"]
+        for stage in ("retrieval", "answer"):
+            on_stage(stage, "start")
+            on_stage(stage, "end")
         return payload
 
     monkeypatch.setattr("src.knowledge.qa.run_knowledge_qa", fake_run)
@@ -85,17 +90,23 @@ def test_knowledge_qa_mode_bypasses_history_runtime_and_compaction(store, monkey
 
     assert seen == ["新问题"]
     user_message_id = [m for m in store.get_messages(sid) if m["role"] == "user"][-1]["id"]
-    assert seen_kwargs == [{"session_id": sid, "question_message_id": user_message_id}]
+    assert seen_kwargs[0]["session_id"] == sid
+    assert seen_kwargs[0]["question_message_id"] == user_message_id
+    assert callable(seen_kwargs[0]["on_stage"])
     assert agent.agent_runtime.calls == []
     assert store.get_session(sid)["summary"] == "历史摘要"
     last = store.get_messages(sid)[-1]
     assert last["content"] == "可追溯回答"
     assert last["results"]["knowledge_qa"]["answer_id"] == "qa-test"
-    assert [event["type"] for event in emit.collected] == [
-        "tool_status",
-        "tool_status",
-        "done",
+    assert [(event["type"], event.get("name"), event.get("phase")) for event in emit.collected] == [
+        ("tool_status", "knowledge_qa_retrieval", "start"),
+        ("tool_status", "knowledge_qa_retrieval", "end"),
+        ("tool_status", "knowledge_qa_answer", "start"),
+        ("tool_status", "knowledge_qa_answer", "end"),
+        ("done", None, None),
     ]
+    assert emit.collected[0]["label"] == "检索知识库"
+    assert emit.collected[2]["label"] == "生成回答"
     assert result["type"] == "knowledge_qa"
 
 
@@ -105,6 +116,12 @@ def test_knowledge_qa_stops_before_retrieval_when_client_is_gone(store, monkeypa
     called: list[str] = []
 
     def fake_run(client, question, **kwargs):
+        if kwargs["on_stage"]("retrieval", "start") is False:
+            return interrupted_package(
+                question,
+                session_id=kwargs["session_id"],
+                question_message_id=kwargs["question_message_id"],
+            )
         called.append(question)
         return {}
 
@@ -531,9 +548,13 @@ def test_session_lock_is_per_session_and_reentrant_lookup():
 def test_knowledge_qa_persist_failure_is_not_reported_as_success(store, monkeypatch):
     """落库失败必须冒泡，不能对外宣称这一轮已完成。"""
     sid = store.create_session()
-    monkeypatch.setattr(
-        "src.knowledge.qa.run_knowledge_qa",
-        lambda client, question, **kwargs: {
+
+    def fake_run(client, question, **kwargs):
+        on_stage = kwargs["on_stage"]
+        for stage in ("retrieval", "answer"):
+            on_stage(stage, "start")
+            on_stage(stage, "end")
+        return {
             "answer_id": "qa-test",
             "status": "success",
             "outcome": "supported_answer",
@@ -541,8 +562,9 @@ def test_knowledge_qa_persist_failure_is_not_reported_as_success(store, monkeypa
             "claims": [],
             "evidence": [],
             "sources": [],
-        },
-    )
+        }
+
+    monkeypatch.setattr("src.knowledge.qa.run_knowledge_qa", fake_run)
     real_append = store.append_message
 
     def flaky_append(session_id, role, content, **kwargs):
@@ -558,7 +580,7 @@ def test_knowledge_qa_persist_failure_is_not_reported_as_success(store, monkeypa
     with pytest.raises(RuntimeError, match="disk full"):
         run_turn(agent, store, sid, "问题", emit, mode="knowledge_qa")
 
-    assert [e["type"] for e in emit.collected] == ["tool_status", "tool_status"]
+    assert [e["type"] for e in emit.collected] == ["tool_status"] * 4
 
 
 def test_knowledge_qa_disconnect_after_generation_keeps_answer(store, monkeypatch):
@@ -573,7 +595,15 @@ def test_knowledge_qa_disconnect_after_generation_keeps_answer(store, monkeypatc
         "evidence": [],
         "sources": [],
     }
-    monkeypatch.setattr("src.knowledge.qa.run_knowledge_qa", lambda client, question, **kw: payload)
+
+    def fake_run(client, question, **kwargs):
+        on_stage = kwargs["on_stage"]
+        for stage in ("retrieval", "answer"):
+            on_stage(stage, "start")
+            on_stage(stage, "end")
+        return payload
+
+    monkeypatch.setattr("src.knowledge.qa.run_knowledge_qa", fake_run)
     collected: list[dict] = []
     seen: list[int] = []
 
@@ -590,7 +620,7 @@ def test_knowledge_qa_disconnect_after_generation_keeps_answer(store, monkeypatc
     result = run_turn(agent, store, sid, "问题", emit, mode="knowledge_qa")
 
     assert result["status"] == "interrupted"
-    assert [e["type"] for e in collected] == ["tool_status", "tool_status"]
+    assert [e["type"] for e in collected] == ["tool_status"] * 4
     pkg = store.get_messages(sid)[-1]["results"]["knowledge_qa"]
     assert pkg["status"] == "interrupted"
     assert pkg["answer"] == "已有回答"

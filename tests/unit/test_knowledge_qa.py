@@ -577,3 +577,110 @@ def test_interrupted_package_matches_answer_contract():
     assert "review_status" not in pkg
     assert "review" not in pkg
     json.dumps(pkg)  # 可直接落库
+
+
+def _stage_recorder(*, abort_on_start: bool = False):
+    events: list[tuple[str, str]] = []
+
+    def on_stage(stage: str, phase: str) -> bool:
+        events.append((stage, phase))
+        return not (abort_on_start and phase == "start")
+
+    on_stage.events = events
+    return on_stage
+
+
+def test_stage_callback_reports_retrieval_then_answer():
+    """正常路径按真实阶段成对上报，且检索结束后才进入生成。"""
+    payload = {
+        "outcome": "supported_answer",
+        "answer": "回答",
+        "claims": [{"text": "论断", "evidence_ids": ["E1"], "basis": "fact"}],
+    }
+    on_stage = _stage_recorder()
+
+    result = run_knowledge_qa(FakeKnowledge(), "问题", llm_func=_llm(payload), on_stage=on_stage)
+
+    assert result["status"] == "success"
+    assert on_stage.events == [
+        ("retrieval", "start"),
+        ("retrieval", "end"),
+        ("answer", "start"),
+        ("answer", "end"),
+    ]
+
+
+def test_stage_callback_ends_retrieval_when_retrieval_fails():
+    """检索抛错也要发检索结束，且不进入生成阶段。"""
+    on_stage = _stage_recorder()
+
+    result = run_knowledge_qa(FakeKnowledge(error=RuntimeError("boom")), "问题", on_stage=on_stage)
+
+    assert result["error"]["stage"] == "retrieval"
+    assert on_stage.events == [("retrieval", "start"), ("retrieval", "end")]
+
+
+def test_stage_callback_ends_retrieval_without_evidence():
+    """无证据提前返回时只结束检索，不进入生成。"""
+    on_stage = _stage_recorder()
+
+    result = run_knowledge_qa(FakeKnowledge(_retrieval(chunks=[])), "问题", on_stage=on_stage)
+
+    assert result["outcome"] == "insufficient_evidence"
+    assert on_stage.events == [("retrieval", "start"), ("retrieval", "end")]
+
+
+def test_stage_callback_ends_answer_when_generation_fails():
+    """生成异常同样发结束，状态不会悬挂在「生成回答」。"""
+    on_stage = _stage_recorder()
+
+    result = run_knowledge_qa(
+        FakeKnowledge(),
+        "问题",
+        llm_func=_llm({}, error=TimeoutError("slow")),
+        on_stage=on_stage,
+    )
+
+    assert result["error"]["stage"] == "generation"
+    assert on_stage.events == [
+        ("retrieval", "start"),
+        ("retrieval", "end"),
+        ("answer", "start"),
+        ("answer", "end"),
+    ]
+
+
+def test_stage_callback_aborts_before_retrieval_when_client_is_gone():
+    """检索开始事件发不出去时不再发起检索，并返回中断包。"""
+    on_stage = _stage_recorder(abort_on_start=True)
+    client = FakeKnowledge()
+
+    result = run_knowledge_qa(
+        client,
+        "问题",
+        session_id="s1",
+        question_message_id=3,
+        on_stage=on_stage,
+    )
+
+    assert client.calls == []
+    assert result["status"] == "interrupted"
+    assert result["question_message_id"] == 3
+    assert on_stage.events == [("retrieval", "start"), ("retrieval", "end")]
+
+
+def test_stage_callback_is_optional_and_does_not_change_result():
+    """不传回调时行为保持一致。"""
+    payload = {
+        "outcome": "supported_answer",
+        "answer": "回答",
+        "claims": [{"text": "论断", "evidence_ids": ["E1"], "basis": "fact"}],
+    }
+
+    plain = run_knowledge_qa(FakeKnowledge(), "问题", llm_func=_llm(payload))
+    staged = run_knowledge_qa(
+        FakeKnowledge(), "问题", llm_func=_llm(payload), on_stage=_stage_recorder()
+    )
+
+    for key in ("status", "outcome", "answer", "claims", "evidence", "sources"):
+        assert plain[key] == staged[key]

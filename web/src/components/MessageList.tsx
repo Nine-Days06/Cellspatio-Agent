@@ -18,6 +18,9 @@ export interface MessageListProps {
   draft: string
   busy: boolean
   tools: ToolStatusEntry[]
+  mode: ChatMode
+  /** 停止/慢提示在输入区独立显示时，隐藏气泡内的阶段与兜底文案。 */
+  hideStatus?: boolean
   notice: { kind: 'info' | 'error'; text: string } | null
   softWarn: boolean
   onRetry?: () => void
@@ -52,6 +55,8 @@ export function MessageList({
   draft,
   busy,
   tools,
+  mode,
+  hideStatus = false,
   notice,
   softWarn,
   onRetry,
@@ -63,6 +68,10 @@ export function MessageList({
   const following = useRef(true)
   const [awayFromLatest, setAwayFromLatest] = useState(false)
   const lastTool = tools.length > 0 ? tools[tools.length - 1] : null
+  /** 同一时刻只显示一条状态：有活动阶段用阶段文案，否则按模式兜底；正文出现后都不显示。 */
+  const showStatus = draft.length === 0 && !hideStatus
+  const statusEntry = showStatus ? lastTool : null
+  const statusFallback = showStatus && busy ? (mode === 'knowledge_qa' ? '准备回答' : '思考中') : null
 
   useEffect(() => {
     // 只跟随正在读最新内容的人；流式更新不抢走历史阅读位置。
@@ -140,14 +149,10 @@ export function MessageList({
           )
         })}
 
-        {(draft.length > 0 || busy) && (
+        {(draft.length > 0 || (busy && !hideStatus)) && (
           <Bubble role="assistant">
-            <ToolStatus entry={lastTool} />
-            {draft.length > 0 ? (
-              <MarkdownMessage text={draft} className="reading-prose" />
-            ) : (
-              <span className="text-sm text-muted-foreground">思考中…</span>
-            )}
+            <ToolStatus entry={statusEntry} fallback={statusFallback} />
+            {draft.length > 0 && <MarkdownMessage text={draft} className="reading-prose" />}
           </Bubble>
         )}
 

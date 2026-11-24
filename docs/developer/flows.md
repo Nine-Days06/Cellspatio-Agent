@@ -56,8 +56,13 @@ marker：独立授权的全细胞 Presto marker → 结果待复核
 
 ```text
 POST /api/chat mode=knowledge_qa
-  → 检索 → 证据 → claims → package
+  → tool_status knowledge_qa_retrieval start → 检索 → 证据 → end
+  → tool_status knowledge_qa_answer start → 生成 → 校验 → end
+  → 回答落库 → done
 ```
+
+两个阶段事件复用 `tool_status`，不新增 SSE 类型；前端只显示最新进入且未结束的阶段。
+阶段事件只做过程展示，不参与 busy 收尾。
 
 评测只做技术跑批，不自动判定回答正确性。用例在 `evals/qa_cases.jsonl`，入口在
 `evals/run_qa_eval.py`。
