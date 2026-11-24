@@ -46,7 +46,6 @@ export function KnowledgeAnswer({ data, text }: { data: KnowledgeQAResult; text?
               ? '已中断'
               : outcome}
         </span>
-        {data.status !== 'interrupted' && <span className="rounded-full bg-[color:var(--review-surface)] px-2 py-0.5 text-[color:var(--review)]">未复核</span>}
         {data.evidence.length > 0 && (
           <a href={`#${detailPrefix}-excerpts`} className="inline-flex min-h-9 items-center text-primary underline underline-offset-4 max-md:min-h-11">证据片段 {data.evidence.length} 条</a>
         )}

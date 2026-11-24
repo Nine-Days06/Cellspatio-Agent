@@ -23,7 +23,7 @@ from src.knowledge.llm_factory import build_llm_func
 
 logger = logging.getLogger(__name__)
 
-SCHEMA_VERSION = "knowledge-qa/1.0.0"
+SCHEMA_VERSION = "knowledge-qa/2.0.0"
 ANSWER_PROTOCOL = "knowledge-qa-answer/1.0.0"
 OUTCOMES = {
     "supported_answer",
@@ -194,8 +194,6 @@ def _package(
         "clarifications": [],
         "evidence": [],
         "sources": [],
-        "review_status": "unreviewed",
-        "review": None,
         "config": config or {},
     }
 

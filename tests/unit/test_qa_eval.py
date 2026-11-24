@@ -43,8 +43,6 @@ def _answer(question: str, *, answer_id: str = "qa-test") -> dict[str, Any]:
                 "technology": "scRNA-seq",
             }
         ],
-        "review_status": "unreviewed",
-        "review": None,
         "config": {"workspace": "knowledge_base", "lightrag_version": "test"},
         "error": None,
     }
@@ -116,6 +114,8 @@ def test_run_cases_keeps_model_drafted_report_non_quality() -> None:
     assert report["summary"]["case_count"] == 2
     assert report["summary"]["status_counts"] == {"success": 1, "error": 1}
     assert report["cases"][1]["answer"]["error"]["stage"] == "eval"
+    assert "review_status" not in report["cases"][1]["answer"]
+    assert "review" not in report["cases"][1]["answer"]
     assert len(report["cases"][0]["binding_sha256"]) == 64
 
 

@@ -80,7 +80,8 @@ def test_supported_answer_maps_evidence_and_sources():
     assert result["evidence"][0]["url"] == "https://pubmed.ncbi.nlm.nih.gov/38947524/"
     assert result["evidence"][0]["title"] == "A paper"
     assert result["sources"][0]["pmid"] == "38947524"
-    assert result["review_status"] == "unreviewed"
+    assert "review_status" not in result
+    assert "review" not in result
     assert result["config"]["retrieval_calls"] == 1
     assert result["config"]["answer_llm_calls"] == 1
     assert client.calls == [{"question": "问题", "mode": "mix", "use_cache": False}]
@@ -573,4 +574,6 @@ def test_interrupted_package_matches_answer_contract():
     assert pkg["created_at"]
     assert pkg["config"]["retrieval_calls"] == 0
     assert pkg["config"]["answer_llm_calls"] == 0
+    assert "review_status" not in pkg
+    assert "review" not in pkg
     json.dumps(pkg)  # 可直接落库

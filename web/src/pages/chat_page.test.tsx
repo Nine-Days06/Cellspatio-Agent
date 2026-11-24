@@ -562,6 +562,8 @@ describe('ChatPage 约束落点（1/2）', () => {
     fireEvent.keyDown(chatRadio, { key: 'ArrowRight' })
     expect(qaRadio).toHaveAttribute('aria-checked', 'true')
     expect(qaRadio).toHaveFocus()
+    expect(screen.getByText('回答附论断与原文证据。')).toBeInTheDocument()
+    expect(screen.queryByText(/人工复核/)).not.toBeInTheDocument()
 
     const box = screen.getByPlaceholderText(/提出一个单细胞或空间组学问题/)
     fireEvent.change(box, { target: { value: 'Which markers identify exhausted T cells?' } })

@@ -256,7 +256,7 @@ def test_knowledge_qa_mode_returns_evidence_package(client, monkeypatch):
     sid = _new_session(client)
     payload = {
         "answer_id": "qa-route",
-        "schema_version": "knowledge-qa/1.0.0",
+        "schema_version": "knowledge-qa/2.0.0",
         "status": "success",
         "outcome": "insufficient_evidence",
         "answer": "没有可追溯证据。",
@@ -265,7 +265,6 @@ def test_knowledge_qa_mode_returns_evidence_package(client, monkeypatch):
         "clarifications": [],
         "evidence": [],
         "sources": [],
-        "review_status": "unreviewed",
     }
     monkeypatch.setattr("src.knowledge.qa.run_knowledge_qa", lambda *a, **k: payload)
 

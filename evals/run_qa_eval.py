@@ -79,8 +79,6 @@ def _eval_error(case: dict[str, Any], exc: Exception) -> dict[str, Any]:
         "clarifications": [],
         "evidence": [],
         "sources": [],
-        "review_status": "unreviewed",
-        "review": None,
         "config": {},
         "error": {"stage": "eval", "message": f"{type(exc).__name__}: {exc}"},
     }

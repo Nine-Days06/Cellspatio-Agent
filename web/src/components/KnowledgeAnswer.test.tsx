@@ -6,7 +6,7 @@ import type { KnowledgeQAResult, WireMessage } from '@/lib/types'
 function qa(overrides: Partial<KnowledgeQAResult> = {}): KnowledgeQAResult {
   return {
     answer_id: 'qa-1',
-    schema_version: 'knowledge-qa/1.0.0',
+    schema_version: 'knowledge-qa/2.0.0',
     status: 'success',
     outcome: 'supported_answer',
     answer: '该文献支持结论。',
@@ -38,7 +38,6 @@ function qa(overrides: Partial<KnowledgeQAResult> = {}): KnowledgeQAResult {
         evidence_ids: ['E1'],
       },
     ],
-    review_status: 'unreviewed',
     ...overrides,
   }
 }
@@ -68,12 +67,12 @@ describe('KnowledgeAnswer', () => {
     expect(screen.getAllByText('该文献支持结论。')).toHaveLength(1)
     expect(target.querySelector('details')?.open).toBe(false)
   })
-  it('shows outcome, citation, source link and unreviewed status', () => {
+  it('shows outcome, citation and source link without a review badge', () => {
     render(<MessageList messages={[message(qa())]} draft="" busy={false} tools={[]} notice={null} softWarn={false} />)
 
     expect(screen.getByRole('region', { name: '知识问答证据' })).toBeInTheDocument()
     expect(screen.getByText('有证据支持')).toBeInTheDocument()
-    expect(screen.getByText('未复核')).toBeInTheDocument()
+    expect(screen.queryByText('未复核')).not.toBeInTheDocument()
     expect(screen.getByRole('link', { name: /查看证据 E1/ })).toBeInTheDocument()
     expect(screen.getByRole('link', { name: '原文' })).toHaveAttribute(
       'href',
@@ -94,6 +93,7 @@ describe('KnowledgeAnswer', () => {
     render(<MessageList messages={[message(data)]} draft="" busy={false} tools={[]} notice={null} softWarn={false} />)
 
     expect(screen.getByRole('alert')).toHaveTextContent('知识检索失败')
+    expect(screen.queryByText('未复核')).not.toBeInTheDocument()
     expect(screen.queryByRole('link')).not.toBeInTheDocument()
     expect(screen.queryByText(EMPTY_FALLBACK)).not.toBeInTheDocument()
   })

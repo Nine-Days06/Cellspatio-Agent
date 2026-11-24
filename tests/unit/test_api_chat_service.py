@@ -60,14 +60,13 @@ def test_knowledge_qa_mode_bypasses_history_runtime_and_compaction(store, monkey
     store.update_session_meta(sid, summary="历史摘要", summary_upto=2)
     payload = {
         "answer_id": "qa-test",
-        "schema_version": "knowledge-qa/1.0.0",
+        "schema_version": "knowledge-qa/2.0.0",
         "status": "success",
         "outcome": "supported_answer",
         "answer": "可追溯回答",
         "claims": [],
         "evidence": [],
         "sources": [],
-        "review_status": "unreviewed",
     }
     seen: list[str] = []
     seen_kwargs: list[dict] = []
@@ -542,7 +541,6 @@ def test_knowledge_qa_persist_failure_is_not_reported_as_success(store, monkeypa
             "claims": [],
             "evidence": [],
             "sources": [],
-            "review_status": "unreviewed",
         },
     )
     real_append = store.append_message
@@ -574,7 +572,6 @@ def test_knowledge_qa_disconnect_after_generation_keeps_answer(store, monkeypatc
         "claims": [],
         "evidence": [],
         "sources": [],
-        "review_status": "unreviewed",
     }
     monkeypatch.setattr("src.knowledge.qa.run_knowledge_qa", lambda client, question, **kw: payload)
     collected: list[dict] = []
