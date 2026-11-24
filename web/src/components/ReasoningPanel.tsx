@@ -91,20 +91,23 @@ export function ReasoningPanel({
         )}
         aria-hidden={!expanded}
       >
-        <div className="border-t border-border/60 px-3 py-2">
-          <div
-            data-testid="reasoning-body"
-            ref={bodyRef}
-            className={cn(
-              'max-h-60 overflow-y-auto whitespace-pre-wrap break-words text-xs leading-6 text-muted-foreground',
-            )}
-          >
-            {text}
+        {/* 外边这层必须是零内边距，否则收起时 overflow 会按 padding box 裁切、露出半行。 */}
+        <div>
+          <div className="border-t border-border/60 px-3 py-2">
+            <div
+              data-testid="reasoning-body"
+              ref={bodyRef}
+              className={cn(
+                'max-h-60 overflow-y-auto whitespace-pre-wrap break-words text-xs leading-6 text-muted-foreground',
+              )}
+            >
+              {text}
+            </div>
+            <p className="mt-2 text-xs text-muted-foreground/80">
+              {truncated && '思考内容超过上限，已停止追加。'}
+              模型自述，不是证据，可能不准确。
+            </p>
           </div>
-          <p className="mt-2 text-xs text-muted-foreground/80">
-            {truncated && '思考内容超过上限，已停止追加。'}
-            模型自述，不是证据，可能不准确。
-          </p>
         </div>
       </div>
     </section>

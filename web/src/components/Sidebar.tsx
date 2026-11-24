@@ -561,9 +561,11 @@ export function Sidebar({
                     aria-hidden={collapsed}
                     {...(collapsed ? { inert: '' } : {})}
                   >
-                    <ul className="ml-3 flex flex-col gap-1 border-l border-border pl-2">
-                      {items.map(renderSession)}
-                    </ul>
+                    <div>
+                      <ul className="ml-3 flex flex-col gap-1 border-l border-border pl-2">
+                        {items.map(renderSession)}
+                      </ul>
+                    </div>
                   </div>
                 )}
               </section>
