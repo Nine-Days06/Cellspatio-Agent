@@ -24,6 +24,16 @@ logger = logging.getLogger(__name__)
 session_lock = lock_for
 
 Emit = Callable[[dict], bool]
+BeforeDone = Callable[[SessionStore, str], None]
+PreDone = Callable[[dict[str, Any]], list[dict[str, Any]]]
+
+# 只有这些状态才算“这一轮正常完成”；中断与报错的首轮不触发自动命名。
+_INCOMPLETE_STATUSES = frozenset({"aborted", "error", "interrupted"})
+
+
+def turn_completed(result: dict[str, Any]) -> bool:
+    """本轮是否正常完成（用于只在成功首轮接线的扩展点）。"""
+    return result.get("status") not in _INCOMPLETE_STATUSES
 
 
 def soft_warn_for(store: SessionStore, session_id: str) -> bool:
@@ -57,20 +67,56 @@ def persist_message(
 _persist = persist_message
 
 
+def finalize_turn(
+    store: SessionStore,
+    session_id: str,
+    *,
+    content: str,
+    results: dict[str, Any] | None = None,
+    pending_script: dict[str, Any] | None = None,
+    emit: Emit | None = None,
+    events_before_done: PreDone | None = None,
+    before_done: BeforeDone | None = None,
+) -> dict[str, Any]:
+    """所有分支共用的轮次收尾：落库助手消息 → 附加事件 → before_done → done。
+
+    ``events_before_done`` 用落库消息构造需带 message_id 的事件（确认卡）；
+    ``before_done`` 是“助手消息已落库、done 未发射”的唯一扩展点（会话自动命名在此接线）。
+    """
+    last = persist_message(
+        store, session_id, content, results=results, pending_script=pending_script
+    )
+    if emit is None:
+        return last
+    for chart in chart_events(results):
+        emit(chart)
+    if events_before_done is not None:
+        for event in events_before_done(last):
+            emit(event)
+    if before_done is not None:
+        before_done(store, session_id)
+    emit(make_event("done", message_id=last["id"], message=wire_message(last)))
+    return last
+
+
 def persist_outcome(
     store: SessionStore,
     session_id: str,
     result: dict[str, Any],
     *,
     emit: Emit | None = None,
+    before_done: BeforeDone | None = None,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
     """落库助手终态并按需发射 chart 与 done；返回 (result, last)。"""
     message = build_assistant_message(result)
-    last = persist_message(store, session_id, message["content"], results=result.get("results"))
-    if emit is not None:
-        for chart in chart_events(result.get("results")):
-            emit(chart)
-        emit(make_event("done", message_id=last["id"], message=wire_message(last)))
+    last = finalize_turn(
+        store,
+        session_id,
+        content=message["content"],
+        results=result.get("results"),
+        emit=emit,
+        before_done=before_done,
+    )
     return result, last
 
 
@@ -93,7 +139,7 @@ def _persist_interrupted_qa(
         )
     )
     answer = str(pkg.get("answer") or "本轮已中断，未生成回答。")
-    _persist(store, session_id, answer, results={"knowledge_qa": pkg})
+    finalize_turn(store, session_id, content=answer, results={"knowledge_qa": pkg})
     return {
         "status": "interrupted",
         "type": "knowledge_qa",
@@ -151,6 +197,7 @@ def run_turn(
     prompt: str,
     emit: Emit,
     mode: Literal["chat", "knowledge_qa"] = "chat",
+    before_done: BeforeDone | None = None,
 ) -> dict[str, Any]:
     """执行一轮对话并返回运行时结果。
 
@@ -159,6 +206,7 @@ def run_turn(
     并发射 confirm_card / chart / done。
 
     emit(event) -> bool：返回 False 表示客户端已断开，后续发射应被忽略。
+    before_done：助手消息落库后、``done`` 发射前的唯一扩展点；中断与报错分支不触发。
     """
     question = store.append_message(session_id, "user", prompt)
 
@@ -180,8 +228,14 @@ def run_turn(
         )
         if not emit(make_event("tool_status", name="knowledge_qa", phase="end")):
             return _persist_interrupted_qa(store, session_id, prompt, question_message_id, qa)
-        last = _persist(store, session_id, qa["answer"], results={"knowledge_qa": qa})
-        emit(make_event("done", message_id=last["id"], message=wire_message(last)))
+        finalize_turn(
+            store,
+            session_id,
+            content=qa["answer"],
+            results={"knowledge_qa": qa},
+            emit=emit,
+            before_done=before_done if turn_completed({"status": qa["status"]}) else None,
+        )
         return {
             "status": qa["status"],
             "type": "knowledge_qa",
@@ -218,8 +272,7 @@ def run_turn(
     result = agent.agent_runtime.execute(prompt, context, on_event=emit)
 
     if result.get("status") == "aborted":
-        last = _persist(store, session_id, "（已中断）")
-        emit(make_event("done", message_id=last["id"], message=wire_message(last)))
+        finalize_turn(store, session_id, content="（已中断）", emit=emit)
         return result
 
     if result.get("status") == "needs_script_confirmation":
@@ -233,35 +286,50 @@ def run_turn(
         }
         if result.get("run_id"):
             pending["run_id"] = result["run_id"]
-        last = _persist(
-            store, session_id, format_script_confirmation(result), pending_script=pending
+        finalize_turn(
+            store,
+            session_id,
+            content=format_script_confirmation(result),
+            pending_script=pending,
+            emit=emit,
+            events_before_done=lambda last: [
+                make_event(
+                    "confirm_card", kind="script", payload={"message_id": last["id"], **pending}
+                )
+            ],
         )
-        emit(
-            make_event("confirm_card", kind="script", payload={"message_id": last["id"], **pending})
-        )
-        emit(make_event("done", message_id=last["id"], message=wire_message(last)))
         return result
 
     if result.get("type") == "fetch_data" and result.get("status") == "needs_confirmation":
         text = result.get("message", "找到候选数据集，请选择要下载的项：")
         # 候选只放事件 payload 不落库（与 Streamlit session_state 语义一致）
-        last = _persist(store, session_id, text)
-        emit(
-            make_event(
-                "confirm_card",
-                kind="data",
-                payload={
-                    "message_id": last["id"],
-                    "candidates": result.get("candidates") or [],
-                    "query": result.get("query", ""),
-                    "message": text,
-                },
-            )
+        finalize_turn(
+            store,
+            session_id,
+            content=text,
+            emit=emit,
+            events_before_done=lambda last: [
+                make_event(
+                    "confirm_card",
+                    kind="data",
+                    payload={
+                        "message_id": last["id"],
+                        "candidates": result.get("candidates") or [],
+                        "query": result.get("query", ""),
+                        "message": text,
+                    },
+                )
+            ],
         )
-        emit(make_event("done", message_id=last["id"], message=wire_message(last)))
         return result
 
     result = register_qc_result(agent, store, session_id, result)
 
-    result, _ = persist_outcome(store, session_id, result, emit=emit)
+    result, _ = persist_outcome(
+        store,
+        session_id,
+        result,
+        emit=emit,
+        before_done=before_done if turn_completed(result) else None,
+    )
     return result

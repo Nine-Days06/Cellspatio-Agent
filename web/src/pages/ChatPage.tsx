@@ -112,6 +112,8 @@ export function ChatPage() {
 
   // ① 打开页面自动选中首个会话（一次性；已有活动会话时不覆盖）
   const autoSelectedRef = useRef(false)
+  /** 无会话时正在建会话：挡住建会话期间的重复发送（busy 此时仍为 false）。 */
+  const creatingSessionRef = useRef(false)
   useEffect(() => {
     if (autoSelectedRef.current) return
     // 项目未返回前无法判断哪些会话属于归档项目，等下一次 effect
@@ -173,6 +175,16 @@ export function ChatPage() {
     setSlowHint(false)
   }, [busy])
 
+  // ③-b 一轮结束（完成/中断/报错收尾）→ 重取会话列表，让本轮自动标题立刻出现。
+  //      只在 true→false 边界触发；不动流、不动确认卡与草稿。
+  const wasBusyRef = useRef(false)
+  useEffect(() => {
+    const wasBusy = wasBusyRef.current
+    wasBusyRef.current = busy
+    if (!wasBusy || busy) return
+    void queryClient.invalidateQueries({ queryKey: queryKeys.sessions() })
+  }, [busy, queryClient])
+
   // ④ 请求停止（按钮 + Esc 共用）：只置 abort 与诚实文案，busy 等 onEnd 收尾
   const requestStop = useCallback(() => {
     const state = useChatStore.getState()
@@ -207,12 +219,25 @@ export function ChatPage() {
     return () => clearInterval(timer)
   }, [busy])
 
-  function handleSend(): void {
+  async function handleSend(): Promise<void> {
     const prompt = input.trim()
     if (!prompt || busy) return
     if (!sessionId) {
-      useChatStore.getState().setNotice({ kind: 'error', text: '请先新建或选择会话' })
-      return
+      // 建会话是异步的：期间 busy 仍为 false，必须自己挡住重复回车/双击，
+      // 否则会建出两个会话，其中一条提问被静默丢弃。
+      if (creatingSessionRef.current) return
+      creatingSessionRef.current = true
+      try {
+        const { session } = await createSession(undefined, null)
+        refreshNavigation()
+        switchTo(session.id)
+      } catch (err) {
+        const text = err instanceof ApiError ? err.message : '新建会话失败'
+        useChatStore.getState().setNotice({ kind: 'error', text })
+        return
+      } finally {
+        creatingSessionRef.current = false
+      }
     }
     setInput('')
     dispatchConfirm({ type: 'reset' })
@@ -359,6 +384,7 @@ export function ChatPage() {
         handleCreated({
           id: session.id,
           title: session.title,
+          title_source: session.title_source,
           updated_at: session.updated_at,
           message_count: 0,
           project_id: session.project_id,
@@ -382,6 +408,7 @@ export function ChatPage() {
         handleCreated({
           id: session.id,
           title: session.title,
+          title_source: session.title_source,
           updated_at: session.updated_at,
           message_count: 0,
           project_id: session.project_id,

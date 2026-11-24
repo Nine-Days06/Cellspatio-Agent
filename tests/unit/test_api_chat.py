@@ -276,3 +276,26 @@ def test_knowledge_qa_mode_returns_evidence_package(client, monkeypatch):
     stored = SessionStore().get_messages(sid)
     assert stored[-1]["content"] == "没有可追溯证据。"
     assert client.app.state.agent.agent_runtime.calls == []
+
+
+def test_route_wires_auto_name_hook_to_first_turn(client):
+    """`/api/chat` 必须把自动命名挂到 run_turn，而不是只在单元测试里手工注入。"""
+
+    class _Completions:
+        def create(self, **kwargs):
+            message = type("Message", (), {"content": "PBMC 质控"})()
+            choice = type("Choice", (), {"message": message})()
+            return type("Response", (), {"choices": [choice]})()
+
+    class _LLM:
+        def __init__(self):
+            self.chat = type("Chat", (), {"completions": _Completions()})()
+
+    client.app.state.agent.llm_client = _LLM()
+    client.app.state.agent.llm_model = "m1"
+    sid = _new_session(client)
+
+    _stream(client, sid, "帮我做 PBMC 质控")
+
+    session = SessionStore().get_session(sid)
+    assert (session["title"], session["title_source"]) == ("PBMC 质控", "model")

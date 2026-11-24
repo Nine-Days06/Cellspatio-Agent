@@ -51,7 +51,7 @@ def _require_session(store: SessionStore, session_id: str) -> dict[str, Any]:
 
 
 class CreateSessionRequest(BaseModel):
-    """POST /api/sessions 请求体：title 缺省时由 store 生成时间戳标题。"""
+    """POST /api/sessions 请求体：title 缺省时记 ``default``（“新会话”），传值记 ``explicit``。"""
 
     title: str | None = None
     project_id: str | None = None
@@ -65,8 +65,12 @@ def list_sessions(store: StoreDep, include_archived: bool = False) -> dict[str, 
 
 @router.post("/sessions")
 def create_session(store: StoreDep, body: CreateSessionRequest | None = None) -> dict[str, Any]:
-    """新建会话；显式 project_id 时归入该项目，否则保持未归类。"""
-    title = body.title if body and body.title else "新会话"
+    """新建会话；显式 project_id 时归入该项目，否则保持未归类。
+
+    未传标题时传 None 给存储层，由存储层记为 ``default`` 以便首条消息覆盖；
+    传了标题则记为 ``explicit``，不再被自动命名改写。
+    """
+    title = body.title if body and body.title else None
     try:
         session_id = store.create_session(title, body.project_id if body else None)
     except StoreError as exc:
@@ -84,20 +88,23 @@ def get_session_usage(session_id: str, request: Request, store: StoreDep) -> dic
 
 
 class UpdateSessionRequest(BaseModel):
-    """PATCH /api/sessions/{id}：project_id 显式传 null 表示移回未归类。"""
+    """PATCH /api/sessions/{id}：project_id 显式传 null 表示移回未归类；title 非空时写 ``explicit``。"""
 
     project_id: str | None = None
     pinned: bool | None = None
     archived: bool | None = None
+    title: str | None = None
 
 
 @router.patch("/sessions/{session_id}")
 def update_session(session_id: str, body: UpdateSessionRequest, store: StoreDep) -> dict[str, Any]:
-    """更新归属/置顶/归档；归档前先拿会话锁，避免误藏运行中的对话。"""
+    """更新标题/归属/置顶/归档；归档前先拿会话锁，避免误藏运行中的对话。"""
     _require_session(store, session_id)
     guard = session_guard(session_id) if body.archived else nullcontext()
     with guard:
         try:
+            if body.title is not None:
+                store.set_session_title(session_id, body.title, source="explicit")
             if "project_id" in body.model_fields_set:
                 store.move_session(session_id, body.project_id)
             if body.pinned is not None:

@@ -10,7 +10,7 @@
 | `src/api/` | FastAPI 路由、应用工厂、SSE、会话锁、工作区中间件、登录/上传与受控阶段 HTTP 映射 |
 | `src/control/` | Agent 运行时、工具路由、技能、工作流、WRROC、快照、KG 记忆 |
 | `src/analysis/` | 受控单细胞固定工具、动态 R 脚本执行、产物与复核校验 |
-| `src/ui/` | SQLite 会话/工作区/账户存储、确认流程、阶段生命周期、到期清理与占用管理 |
+| `src/ui/` | SQLite 会话/工作区/账户存储、会话标题来源与自动命名（`session_title.py`）、确认流程、阶段生命周期、到期清理与占用管理 |
 | `src/knowledge/` | LightRAG 封装、PG 存储、知识导入与问答、Ollama 运行时 |
 | `src/evidence/` | 本地证据卡、公共证据治理、账号与远程客户端 |
 | `src/public_api/` | 独立公共证据 HTTP 服务与无构建静态页 |

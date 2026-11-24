@@ -6,6 +6,7 @@ function summary(id: string, overrides: Partial<SessionSummary> = {}): SessionSu
   return {
     id,
     title: id,
+    title_source: 'derived',
     updated_at: '2026-11-23T00:00:00Z',
     message_count: 0,
     project_id: null,

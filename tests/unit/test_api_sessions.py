@@ -53,6 +53,7 @@ def test_create_session_returns_new_session(client):
     assert response.status_code == 200
     body = response.json()["session"]
     assert body["title"] == "肝癌项目"
+    assert body["title_source"] == "explicit"
     assert body["downloaded_assets"] == []
     assert [s["id"] for s in client.get("/api/sessions").json()["sessions"]] == [body["id"]]
 
@@ -61,7 +62,9 @@ def test_create_session_without_body_uses_default_title(client):
     response = client.post("/api/sessions")
 
     assert response.status_code == 200
-    assert response.json()["session"]["title"] == "新会话"
+    session = response.json()["session"]
+    assert session["title"] == "新会话"
+    assert session["title_source"] == "default"
 
 
 def test_create_session_in_project_and_patch_assignment(client):
@@ -83,6 +86,39 @@ def test_create_session_in_project_and_patch_assignment(client):
 
     client.patch(f"/api/sessions/{sid}", json={"archived": False})
     assert client.get("/api/sessions").json()["sessions"][0]["id"] == sid
+
+
+def test_patch_session_title_sets_explicit_source(client):
+    sid = client.post("/api/sessions").json()["session"]["id"]
+    assert client.get("/api/sessions").json()["sessions"][0]["title"] == "新会话"
+
+    response = client.patch(f"/api/sessions/{sid}", json={"title": "  我的分析  "})
+
+    assert response.status_code == 200
+    session = response.json()["session"]
+    assert (session["title"], session["title_source"]) == ("我的分析", "explicit")
+    # 显式改名后，首条消息不再覆盖标题
+    store = SessionStore()
+    store.append_message(sid, "user", "首条提问内容")
+    assert store.get_session(sid)["title"] == "我的分析"
+
+
+def test_patch_session_title_rejects_blank(client):
+    sid = client.post("/api/sessions").json()["session"]["id"]
+    response = client.patch(f"/api/sessions/{sid}", json={"title": "   "})
+
+    assert response.status_code == 400
+    assert SessionStore().get_session(sid)["title"] == "新会话"
+
+
+def test_patch_session_without_title_keeps_existing_behaviour(client):
+    sid = client.post("/api/sessions").json()["session"]["id"]
+    response = client.patch(f"/api/sessions/{sid}", json={"pinned": True})
+
+    assert response.status_code == 200
+    session = response.json()["session"]
+    assert session["pinned"] is True
+    assert (session["title"], session["title_source"]) == ("新会话", "default")
 
 
 def test_create_session_with_unknown_project_returns_404(client):

@@ -331,6 +331,146 @@ def test_aborted_branch_persists_interrupted_marker(store):
     assert "不该出现" not in messages[-1]["content"]
 
 
+def test_before_done_runs_after_assistant_persisted_and_before_done_event(store):
+    """收尾挂点：助手消息已落库、done 尚未发射，且只触发一次。"""
+    sid = store.create_session()
+    seen: list[tuple[str, list[str], list[str]]] = []
+    emit = _sink()
+
+    def hook(store_arg, session_id):
+        seen.append(
+            (
+                session_id,
+                [m["role"] for m in store_arg.get_messages(session_id)],
+                [e["type"] for e in emit.collected],
+            )
+        )
+
+    run_turn(
+        FakeAgent(runtime=FakeRuntime(default={"status": "success", "message": "回答"})),
+        store,
+        sid,
+        "你好",
+        emit,
+        before_done=hook,
+    )
+
+    assert seen == [(sid, ["user", "assistant"], [])]
+    assert emit.collected[-1]["type"] == "done"
+
+
+def test_before_done_not_called_on_aborted_or_error_branch(store):
+    """中断与报错首轮不满足“首轮问答完成”，收尾挂点不得触发。"""
+    sid = store.create_session()
+    called: list[str] = []
+    emit = _sink()
+
+    runtime = FakeRuntime(
+        events=[{"type": "delta", "text": "半句"}],
+        default={"status": "success", "message": "不该出现"},
+    )
+
+    def abort_on_delta(event):
+        emit(event)
+        return False
+
+    run_turn(
+        FakeAgent(runtime=runtime),
+        store,
+        sid,
+        "长任务",
+        abort_on_delta,
+        before_done=lambda store_arg, session_id: called.append(session_id),
+    )
+
+    assert called == []
+    assert store.get_messages(sid)[-1]["content"] == "（已中断）"
+
+
+def test_first_turn_updates_title_before_done_event(store):
+    """首轮完成时标题在 done 之前写入，前端本轮结束即可刷新看到。"""
+    from src.ui.session_title import maybe_name_session
+
+    sid = store.create_session()
+    emit = _sink()
+    titles_at_done: list[str] = []
+
+    def emit_and_capture(event):
+        if event.get("type") == "done":
+            titles_at_done.append(store.get_session(sid)["title"])
+        return emit(event)
+
+    class FakeCompletions:
+        def create(self, **kwargs):
+            message = type("Message", (), {"content": "PBMC 质控与聚类"})()
+            choice = type("Choice", (), {"message": message})()
+            return type("Response", (), {"choices": [choice]})()
+
+    class FakeLLM:
+        def __init__(self):
+            self.chat = type("Chat", (), {"completions": FakeCompletions()})()
+
+    run_turn(
+        FakeAgent(
+            runtime=FakeRuntime(default={"status": "success", "message": "完成"}),
+            llm_client=FakeLLM(),
+        ),
+        store,
+        sid,
+        "帮我做 PBMC 质控和聚类",
+        emit_and_capture,
+        before_done=lambda store_arg, session_id: maybe_name_session(
+            store_arg, session_id, FakeLLM(), "m1"
+        ),
+    )
+
+    assert titles_at_done == ["PBMC 质控与聚类"]
+    assert store.get_session(sid)["title_source"] == "model"
+
+
+def test_error_first_turn_does_not_trigger_auto_name(store):
+    """报错首轮没有完成问答，收尾挂点不得用错误文案生成标题。"""
+    sid = store.create_session()
+    called: list[str] = []
+    emit = _sink()
+
+    run_turn(
+        FakeAgent(runtime=FakeRuntime(default={"status": "error", "message": "模型调用失败"})),
+        store,
+        sid,
+        "帮我做质控",
+        emit,
+        before_done=lambda store_arg, session_id: called.append(session_id),
+    )
+
+    assert called == []
+    assert store.get_session(sid)["title"] == "帮我做质控"
+    assert store.get_session(sid)["title_source"] == "derived"
+
+
+def test_no_llm_client_keeps_derived_title_and_emits_done(store):
+    """没有 LLM 客户端时沿用首条消息兜底标题，done 照常发射。"""
+    from src.ui.session_title import maybe_name_session
+
+    sid = store.create_session()
+    emit = _sink()
+
+    run_turn(
+        FakeAgent(runtime=FakeRuntime(default={"status": "success", "message": "回答"})),
+        store,
+        sid,
+        "TP53 的作用",
+        emit,
+        before_done=lambda store_arg, session_id: maybe_name_session(
+            store_arg, session_id, None, "m1"
+        ),
+    )
+
+    assert emit.collected[-1]["type"] == "done"
+    assert store.get_session(sid)["title"] == "TP53 的作用"
+    assert store.get_session(sid)["title_source"] == "derived"
+
+
 def test_context_carries_history_summary_and_assets(store):
     sid = store.create_session()
     store.append_message(sid, "user", "上一问")

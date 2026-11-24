@@ -68,6 +68,7 @@ function sessionFor(sid: string): MessagesResponse['session'] {
   return {
     id: sid,
     title: '测试会话',
+    title_source: 'derived',
     created_at: '2026-10-01T00:00:00Z',
     updated_at: '2026-10-01T00:00:00Z',
     summary: null,
@@ -132,6 +133,7 @@ function makeSummary(id: string, title = '测试会话'): SessionSummary {
   return {
     id,
     title,
+    title_source: 'derived',
     updated_at: '2026-10-01T00:00:00Z',
     message_count: 0,
     project_id: null,
@@ -290,10 +292,42 @@ describe('ChatPage 本地输入', () => {
 })
 
 describe('ChatPage 输入区：键位 / 停止 / 错误提示（约束 3）', () => {
-  it('无会话发送时保留输入并提示先选择会话', async () => {
+  it('无会话发送：先建会话、选中并以新 id 发起流', async () => {
+    const created = nextSid()
+    createSessionMock.mockResolvedValue({ session: sessionFor(created) })
     const client = new QueryClient({
       defaultOptions: { queries: { retry: false, refetchOnWindowFocus: false } },
     })
+    render(
+      <QueryClientProvider client={client}>
+        <ChatPage />
+      </QueryClientProvider>,
+    )
+    await waitFor(() =>
+      expect(client.getQueryState(queryKeys.sessions())?.status).toBe('success'),
+    )
+    const field = screen.getByLabelText('输入你的问题')
+    fireEvent.change(field, { target: { value: '看看 PBMC' } })
+    fireEvent.click(screen.getByRole('button', { name: '发送' }))
+
+    await waitFor(() => expect(createSessionMock).toHaveBeenCalledWith(undefined, null))
+    await waitFor(() => expect(useChatStore.getState().sessionId).toBe(created))
+    await waitFor(() => expect(streamChatMock).toHaveBeenCalled())
+    expect(streamChatMock.mock.calls[0][0]).toMatchObject({
+      sessionId: created,
+      prompt: '看看 PBMC',
+    })
+    expect(field).toHaveValue('')
+    await waitFor(() =>
+      expect(listSessionsMock.mock.calls.length).toBeGreaterThanOrEqual(2),
+    )
+  })
+
+  it('无会话且新建失败：不发流、显示错误、保留输入', async () => {
+    const client = new QueryClient({
+      defaultOptions: { queries: { retry: false, refetchOnWindowFocus: false } },
+    })
+    createSessionMock.mockRejectedValue(new ApiError(500, '工作区已到期'))
     render(
       <QueryClientProvider client={client}>
         <ChatPage />
@@ -303,11 +337,40 @@ describe('ChatPage 输入区：键位 / 停止 / 错误提示（约束 3）', ()
     fireEvent.change(field, { target: { value: '看看 PBMC' } })
     fireEvent.click(screen.getByRole('button', { name: '发送' }))
 
-    expect(field).toHaveValue('看看 PBMC')
-    await waitFor(() =>
-      expect(screen.getByText('请先新建或选择会话')).toBeInTheDocument(),
-    )
+    await waitFor(() => expect(screen.getByText('工作区已到期')).toBeInTheDocument())
     expect(streamChatMock).not.toHaveBeenCalled()
+    expect(useChatStore.getState().sessionId).toBeNull()
+    expect(field).toHaveValue('看看 PBMC')
+  })
+
+  it('建会话期间重复回车只建一个会话', async () => {
+    const created = nextSid()
+    let releaseCreate: (value: { session: ReturnType<typeof sessionFor> }) => void = () => {}
+    createSessionMock.mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          releaseCreate = resolve
+        }),
+    )
+    const client = new QueryClient({
+      defaultOptions: { queries: { retry: false, refetchOnWindowFocus: false } },
+    })
+    render(
+      <QueryClientProvider client={client}>
+        <ChatPage />
+      </QueryClientProvider>,
+    )
+    await waitFor(() =>
+      expect(client.getQueryState(queryKeys.sessions())?.status).toBe('success'),
+    )
+    const field = screen.getByLabelText('输入你的问题')
+    fireEvent.change(field, { target: { value: '看看 PBMC' } })
+    fireEvent.click(screen.getByRole('button', { name: '发送' }))
+    fireEvent.click(screen.getByRole('button', { name: '发送' }))
+
+    expect(createSessionMock).toHaveBeenCalledTimes(1)
+    releaseCreate({ session: sessionFor(created) })
+    await waitFor(() => expect(streamChatMock).toHaveBeenCalledTimes(1))
   })
 
   it('起步提示填入问题、切换模式并聚焦，不自动发送或创建会话', async () => {
@@ -918,6 +981,45 @@ describe('ChatPage 确认卡片接线', () => {
         expect.objectContaining({ prompt: '重新跑差异分析', sessionId: sid }),
       ),
     )
+  })
+})
+
+describe('ChatPage 轮次结束刷新侧栏', () => {
+  it('一轮结束（busy 回到空闲）后重新拉取会话列表', async () => {
+    const sid = nextSid()
+    await renderReady(sid)
+    await waitFor(() => expect(listSessionsMock).toHaveBeenCalledTimes(1))
+
+    act(() => useChatStore.setState({ busy: true }))
+    act(() => useChatStore.setState({ busy: false }))
+
+    await waitFor(() => expect(listSessionsMock).toHaveBeenCalledTimes(2))
+  })
+
+  it('空闲状态变化不触发重取（只在忙碌→空闲边界刷新）', async () => {
+    const sid = nextSid()
+    await renderReady(sid)
+    await waitFor(() => expect(listSessionsMock).toHaveBeenCalledTimes(1))
+
+    act(() => useChatStore.setState({ busy: false }))
+    act(() => useChatStore.setState({ busy: true }))
+
+    expect(listSessionsMock).toHaveBeenCalledTimes(1)
+  })
+
+  it('一轮结束时不清空确认卡与输入草稿', async () => {
+    const sid = nextSid()
+    await renderReady(sid)
+    act(() => {
+      useChatStore.setState({ busy: true, scriptCard: pendingCard(), draft: '未发出的草稿' })
+    })
+
+    act(() => useChatStore.setState({ busy: false }))
+
+    await waitFor(() => expect(listSessionsMock).toHaveBeenCalledTimes(2))
+    const state = useChatStore.getState()
+    expect(state.scriptCard?.message_id).toBe(7)
+    expect(state.draft).toBe('未发出的草稿')
   })
 })
 

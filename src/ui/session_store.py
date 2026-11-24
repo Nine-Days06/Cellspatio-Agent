@@ -9,7 +9,7 @@ import sqlite3
 import uuid
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 from src.ui.confirm_protocol import (
     STATUS_CANCELLED,
@@ -27,8 +27,16 @@ from src.ui.store_errors import StoreError
 logger = logging.getLogger(__name__)
 
 DEFAULT_DB_PATH = Path(".cellspatio") / "sessions.db"
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 LEGACY_WORKSPACE_ID = "legacy"
+
+DEFAULT_SESSION_TITLE = "新会话"
+# 标题来源：default=未给标题，explicit=调用方/用户显式命名，derived=首条消息截断，model=模型生成
+TitleSource = Literal["default", "explicit", "derived", "model"]
+# 自动命名只允许覆盖这两个来源；用户显式命名与已由模型命名的标题保持不动。
+OVERWRITABLE_TITLE_SOURCES: tuple[TitleSource, ...] = ("default", "derived")
+# 首条用户消息截断出的兜底标题长度
+DERIVED_TITLE_MAX_CHARS = 20
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS workspaces (
@@ -74,6 +82,7 @@ CREATE TABLE IF NOT EXISTS sessions (
     id TEXT PRIMARY KEY,
     workspace_id TEXT REFERENCES workspaces(id) ON DELETE CASCADE,
     title TEXT NOT NULL DEFAULT '新会话',
+    title_source TEXT NOT NULL DEFAULT 'derived',
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL,
     summary TEXT,
@@ -273,6 +282,8 @@ def _migrate_schema(conn: sqlite3.Connection) -> None:
         "project_id": "TEXT REFERENCES projects(id) ON DELETE RESTRICT",
         "pinned": "INTEGER NOT NULL DEFAULT 0",
         "archived_at": "TEXT",
+        # 旧库无法区分来源，统一回填 derived（历史标题都来自首条消息截断或显式命名）
+        "title_source": "TEXT NOT NULL DEFAULT 'derived'",
     }
     for name, ddl in additions.items():
         if name not in columns:
@@ -364,10 +375,13 @@ class SessionStore:
         finally:
             conn.close()
 
-    def create_session(self, title: str = "新会话", project_id: str | None = None) -> str:
+    def create_session(self, title: str | None = None, project_id: str | None = None) -> str:
+        """新建会话；``title=None`` 记为 default，显式标题记为 explicit。"""
         sid = uuid.uuid4().hex
         now = _now()
         workspace_id = self.workspace_id or LEGACY_WORKSPACE_ID
+        source = "default" if title is None else "explicit"
+        effective_title = DEFAULT_SESSION_TITLE if title is None else title
         with self._conn() as conn:
             conn.execute("BEGIN IMMEDIATE")
             if project_id is not None:
@@ -383,9 +397,9 @@ class SessionStore:
                     raise StoreError("conflict", "项目已归档")
             conn.execute(
                 "INSERT INTO sessions "
-                "(id, workspace_id, title, created_at, updated_at, project_id) "
-                "VALUES (?, ?, ?, ?, ?, ?)",
-                (sid, workspace_id, title, now, now, project_id),
+                "(id, workspace_id, title, title_source, created_at, updated_at, project_id) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?)",
+                (sid, workspace_id, effective_title, source, now, now, project_id),
             )
             if project_id is not None:
                 conn.execute("UPDATE projects SET updated_at=? WHERE id=?", (now, project_id))
@@ -404,7 +418,7 @@ class SessionStore:
         where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
         with self._conn() as conn:
             rows = conn.execute(
-                "SELECT s.id, s.title, s.updated_at, s.project_id, s.pinned, "
+                "SELECT s.id, s.title, s.title_source, s.updated_at, s.project_id, s.pinned, "
                 "s.archived_at, p.label AS project_label, "
                 "(SELECT COUNT(*) FROM messages m WHERE m.session_id = s.id) "
                 f"AS message_count FROM sessions s LEFT JOIN projects p "
@@ -816,6 +830,36 @@ class SessionStore:
             if cursor.rowcount == 0:
                 raise StoreError("not_found", "会话不存在")
 
+    def set_session_title(
+        self, session_id: str, title: str, *, source: Literal["explicit", "model"]
+    ) -> bool:
+        """按来源设置会话标题；返回是否真的写入。
+
+        - ``explicit``（用户/调用方显式命名）总是覆盖；
+        - ``model``（自动命名）只覆盖 ``default``/``derived``，不覆盖 ``explicit``/``model``。
+        """
+        clean = title.strip()
+        if not clean:
+            raise StoreError("invalid", "标题不能为空")
+        if source not in ("explicit", "model"):
+            raise StoreError("invalid", f"未知标题来源：{source}")
+        sql = "UPDATE sessions SET title=?, title_source=?, updated_at=? WHERE id=?"
+        params: list[Any] = [clean, source, _now(), session_id]
+        if source == "model":
+            placeholders = ", ".join("?" for _ in OVERWRITABLE_TITLE_SOURCES)
+            sql += f" AND title_source IN ({placeholders})"
+            params.extend(OVERWRITABLE_TITLE_SOURCES)
+        if self.workspace_id is not None:
+            sql += " AND workspace_id=?"
+            params.append(self.workspace_id)
+        with self._conn() as conn:
+            cursor = conn.execute(sql, params)
+            if cursor.rowcount > 0:
+                return True
+            if self._session_row(conn, session_id) is None:
+                raise StoreError("not_found", "会话不存在")
+        return False
+
     def archive_session(self, session_id: str, archived: bool = True) -> None:
         """归档或恢复会话；运行中的受控阶段拒绝归档。"""
         with self._conn() as conn:
@@ -910,12 +954,17 @@ class SessionStore:
                     json.dumps(pending_script, ensure_ascii=False) if pending_script else None,
                 ),
             )
-            # 首条用户消息自动作为会话标题（截断 20 字）
+            # 首条用户消息自动作为会话标题（截断 20 字），只覆盖仍为 default 的标题
             if seq == 1 and role == "user":
-                conn.execute(
-                    "UPDATE sessions SET title = ?, updated_at = ? WHERE id = ?",
-                    (content[:20], now, session_id),
+                updated = conn.execute(
+                    "UPDATE sessions SET title = ?, title_source = 'derived', updated_at = ? "
+                    "WHERE id = ? AND title_source = 'default'",
+                    (content[:DERIVED_TITLE_MAX_CHARS], now, session_id),
                 )
+                if updated.rowcount == 0:
+                    conn.execute(
+                        "UPDATE sessions SET updated_at = ? WHERE id = ?", (now, session_id)
+                    )
             else:
                 conn.execute("UPDATE sessions SET updated_at = ? WHERE id = ?", (now, session_id))
             conn.execute(

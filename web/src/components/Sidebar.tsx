@@ -6,6 +6,7 @@ import {
   FolderPlus,
   Menu,
   MoreHorizontal,
+  Pencil,
   Pin,
   PinOff,
   Plus,
@@ -25,6 +26,7 @@ import {
 import type { EnvStatus, KbStats, Project, SessionSummary, UsageSummary } from '@/lib/types'
 import { groupSessions } from '@/lib/sessionGroups'
 import { Button } from '@/components/ui/button'
+import { Input } from '@/components/ui/input'
 import {
   Dialog,
   DialogClose,
@@ -93,6 +95,9 @@ export function Sidebar({
   const [pendingDelete, setPendingDelete] = useState<SessionSummary | null>(null)
   const [pendingSession, setPendingSession] = useState<SessionSummary | null>(null)
   const [pendingProject, setPendingProject] = useState<Project | null>(null)
+  const [pendingRename, setPendingRename] = useState<SessionSummary | null>(null)
+  const [renameTitle, setRenameTitle] = useState('')
+  const [renameError, setRenameError] = useState<string | null>(null)
   const [newProjectOpen, setNewProjectOpen] = useState(false)
   const [collapsedProjects, setCollapsedProjects] = useState<Set<string>>(new Set())
   const [deleteError, setDeleteError] = useState<string | null>(null)
@@ -137,6 +142,7 @@ export function Sidebar({
       onCreated({
         id: session.id,
         title: session.title,
+        title_source: session.title_source,
         updated_at: session.updated_at,
         message_count: 0,
         project_id: session.project_id,
@@ -312,6 +318,30 @@ export function Sidebar({
       onChanged?.()
     } catch (err) {
       setActionError(errorMessage(err, '恢复项目失败'))
+    }
+  }
+
+  function openRename(session: SessionSummary) {
+    setPendingSession(null)
+    setRenameError(null)
+    setRenameTitle(session.title)
+    setPendingRename(session)
+  }
+
+  async function handleConfirmRename() {
+    if (!pendingRename) return
+    const title = renameTitle.trim()
+    if (!title) {
+      setRenameError('标题不能为空')
+      return
+    }
+    setRenameError(null)
+    try {
+      await updateSession(pendingRename.id, { title })
+      setPendingRename(null)
+      onChanged?.()
+    } catch (err) {
+      setRenameError(errorMessage(err, '重命名失败'))
     }
   }
 
@@ -629,6 +659,14 @@ export function Sidebar({
           {usageLine()}
         </p>
         <div className="flex flex-col gap-3">
+          <Button
+            variant="outline"
+            className="justify-start"
+            onClick={() => pendingSession && openRename(pendingSession)}
+          >
+            <Pencil className="size-4" aria-hidden="true" />
+            重命名
+          </Button>
           <Button variant="outline" className="justify-start" onClick={() => void togglePinned()}>
             {pendingSession?.pinned ? (
               <PinOff className="size-4" aria-hidden="true" />
@@ -758,8 +796,37 @@ export function Sidebar({
     </Dialog>
   )
 
+  const renameDialog = (
+    <Dialog
+      open={pendingRename !== null}
+      onOpenChange={(open) => !open && setPendingRename(null)}
+    >
+      <DialogContent>
+        <DialogHeader>
+          <DialogTitle>重命名会话</DialogTitle>
+          <DialogDescription>手动命名后，模型不会再用自动标题覆盖它。</DialogDescription>
+        </DialogHeader>
+        <label className="flex flex-col gap-1 text-xs text-muted-foreground">
+          会话标题
+          <Input
+            aria-label="会话标题"
+            value={renameTitle}
+            onChange={(event) => setRenameTitle(event.target.value)}
+            className="min-h-11 bg-card px-3 text-sm"
+          />
+        </label>
+        {renameError && <p className="text-xs text-destructive">{renameError}</p>}
+        <DialogFooter>
+          <DialogClose>取消</DialogClose>
+          <Button onClick={() => void handleConfirmRename()}>保存标题</Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  )
+
   return (
     <>
+      {renameDialog}
       <aside className="workspace-sidebar hidden w-[17rem] shrink-0 flex-col border-r border-border md:flex">
         {navigation}
       </aside>

@@ -7,6 +7,7 @@ function session(overrides: Partial<SessionSummary>): SessionSummary {
   return {
     id: 's',
     title: '会话',
+    title_source: 'derived',
     updated_at: '2026-01-01',
     message_count: 1,
     project_id: null,
