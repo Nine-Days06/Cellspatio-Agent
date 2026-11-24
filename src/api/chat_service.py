@@ -212,21 +212,34 @@ def run_turn(
 
     # 知识问答必须在历史压缩与上下文构造之前分叉：只允许本轮问题进入模型。
     if mode == "knowledge_qa":
-        from src.knowledge.qa import run_knowledge_qa
+        from src.knowledge.qa import STAGE_RETRIEVAL, run_knowledge_qa
 
         question_message_id = question["id"]
-        # shortcut: 只在开始前和事件发射处检查断连；进行中的检索/生成不会取消
-        if not emit(
-            make_event("tool_status", name="knowledge_qa", phase="start", label="检索知识库")
-        ):
-            return _persist_interrupted_qa(store, session_id, prompt, question_message_id)
+        connected = True
+
+        def on_stage(stage: str, phase: str) -> bool:
+            """把问答阶段翻译成现有工具状态事件；返回连接是否仍可写。"""
+            nonlocal connected
+            label = "检索知识库" if stage == STAGE_RETRIEVAL else "生成回答"
+            connected = emit(
+                make_event(
+                    "tool_status",
+                    name=f"knowledge_qa_{stage}",
+                    phase=phase,
+                    label=label,
+                )
+            )
+            return connected
+
+        # shortcut: 只允许检索开始前因断连放弃；进行中的检索/生成不会取消
         qa = run_knowledge_qa(
             getattr(agent, "knowledge_client", None),
             prompt,
             session_id=session_id,
             question_message_id=question_message_id,
+            on_stage=on_stage,
         )
-        if not emit(make_event("tool_status", name="knowledge_qa", phase="end")):
+        if not connected or qa.get("status") == "interrupted":
             return _persist_interrupted_qa(store, session_id, prompt, question_message_id, qa)
         finalize_turn(
             store,

@@ -34,6 +34,12 @@ export interface ToolStatusEntry {
   at?: number
 }
 
+/** 知识问答阶段顺序：只用于丢弃迟到的旧阶段事件，避免状态文案回退。 */
+const KNOWLEDGE_QA_STAGE_ORDER: Record<string, number> = {
+  knowledge_qa_retrieval: 1,
+  knowledge_qa_answer: 2,
+}
+
 interface ChatState {
   sessionId: string | null
   history: WireMessage[]
@@ -196,8 +202,22 @@ export function createChatStore() {
       },
 
       pushTool(entry) {
-        // 同名工具只留最新一条（start → end 覆盖）
-        set((state) => ({ tools: [...state.tools.filter((t) => t.name !== entry.name), entry] }))
+        set((state) => {
+          // 迟到的旧阶段不能覆盖已经进入的新阶段
+          const incoming = KNOWLEDGE_QA_STAGE_ORDER[entry.name]
+          if (incoming !== undefined) {
+            const seen = Math.max(
+              0,
+              ...state.tools.map((tool) => KNOWLEDGE_QA_STAGE_ORDER[tool.name] ?? 0),
+            )
+            if (incoming < seen) return state
+          }
+          // 同一阶段结束后迟到的 start 不能让它重新出现
+          const existing = state.tools.find((tool) => tool.name === entry.name)
+          if (entry.phase === 'start' && existing?.phase === 'end') return state
+          // 同名工具只留最新一条（start → end 覆盖）
+          return { tools: [...state.tools.filter((t) => t.name !== entry.name), entry] }
+        })
       },
 
       pushChart(item) {

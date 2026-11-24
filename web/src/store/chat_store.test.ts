@@ -98,6 +98,60 @@ describe('turn 生命周期', () => {
     expect(s.draft).toBe('')
   })
 
+  it('beginTurn 清空上一轮的过程条', () => {
+    const store = useChatStore.getState()
+    store.setSession('s1', [])
+    store.beginTurn('第一轮')
+    store.pushTool({ name: 'knowledge_qa_retrieval', phase: 'start', label: '检索知识库' })
+    useChatStore.getState().endTurn('done')
+
+    useChatStore.getState().beginTurn('第二轮')
+
+    expect(useChatStore.getState().tools).toEqual([])
+  })
+
+  it('同一阶段重复开始只保留一条', () => {
+    const store = useChatStore.getState()
+    store.setSession('s1', [])
+    store.beginTurn('hi')
+    store.pushTool({ name: 'knowledge_qa_retrieval', phase: 'start', label: '检索知识库' })
+    store.pushTool({ name: 'knowledge_qa_retrieval', phase: 'start', label: '检索知识库' })
+
+    expect(useChatStore.getState().tools).toEqual([
+      { name: 'knowledge_qa_retrieval', phase: 'start', label: '检索知识库' },
+    ])
+  })
+
+  it('迟到的旧阶段事件不回退当前阶段', () => {
+    const store = useChatStore.getState()
+    store.setSession('s1', [])
+    store.beginTurn('hi')
+    store.pushTool({ name: 'knowledge_qa_retrieval', phase: 'start', label: '检索知识库' })
+    store.pushTool({ name: 'knowledge_qa_retrieval', phase: 'end', label: '检索知识库' })
+    store.pushTool({ name: 'knowledge_qa_answer', phase: 'start', label: '生成回答' })
+
+    store.pushTool({ name: 'knowledge_qa_retrieval', phase: 'start', label: '检索知识库' })
+
+    expect(useChatStore.getState().tools.at(-1)).toMatchObject({
+      name: 'knowledge_qa_answer',
+      phase: 'start',
+    })
+  })
+
+  it('同一阶段结束后迟到的 start 不会让它重新显示', () => {
+    const store = useChatStore.getState()
+    store.setSession('s1', [])
+    store.beginTurn('hi')
+    store.pushTool({ name: 'knowledge_qa_retrieval', phase: 'start', label: '检索知识库' })
+    store.pushTool({ name: 'knowledge_qa_retrieval', phase: 'end', label: '检索知识库' })
+
+    store.pushTool({ name: 'knowledge_qa_retrieval', phase: 'start', label: '检索知识库' })
+
+    expect(useChatStore.getState().tools).toEqual([
+      { name: 'knowledge_qa_retrieval', phase: 'end', label: '检索知识库' },
+    ])
+  })
+
   it('failTurn 关闭 busy 并写入错误提示', () => {
     const store = useChatStore.getState()
     store.setSession('s1', [])

@@ -266,11 +266,19 @@ def test_knowledge_qa_mode_returns_evidence_package(client, monkeypatch):
         "evidence": [],
         "sources": [],
     }
-    monkeypatch.setattr("src.knowledge.qa.run_knowledge_qa", lambda *a, **k: payload)
+
+    def fake_run(client, question, **kwargs):
+        on_stage = kwargs["on_stage"]
+        for stage in ("retrieval", "answer"):
+            on_stage(stage, "start")
+            on_stage(stage, "end")
+        return payload
+
+    monkeypatch.setattr("src.knowledge.qa.run_knowledge_qa", fake_run)
 
     events = _stream(client, sid, "TP53 的功能是什么？", mode="knowledge_qa")
 
-    assert [event["type"] for event in events] == ["tool_status", "tool_status", "done"]
+    assert [event["type"] for event in events] == ["tool_status"] * 4 + ["done"]
     assert events[-1]["message"]["results"]["knowledge_qa"]["answer_id"] == "qa-route"
     stored = SessionStore().get_messages(sid)
     assert stored[-1]["content"] == "没有可追溯证据。"

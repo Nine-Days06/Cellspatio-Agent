@@ -520,6 +520,8 @@ export function ChatPage() {
           draft={draft}
           busy={busy}
           tools={tools}
+          mode={mode}
+          hideStatus={stopping || slowHint}
           notice={notice}
           softWarn={softWarn}
           onRetry={handleRetry}
@@ -543,9 +545,6 @@ export function ChatPage() {
         {/* 输入区：状态行只看 store.busy（约束 2），停止文案不承诺瞬时取消（约束 3） */}
         <div className="composer shrink-0 px-5 pb-3 pt-2 md:px-9">
           <div className="mx-auto max-w-6xl">
-          {busy && !stopping && (
-            <p className="mb-1.5 text-xs text-muted-foreground">生成中…</p>
-          )}
           {busy && stopping && (
             <p className="mb-1.5 text-xs text-muted-foreground">
               已请求停止，正在结束当前步骤…（工具执行中无法立即中断）

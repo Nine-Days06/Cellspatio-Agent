@@ -492,15 +492,24 @@ describe('ChatPage 输入区：键位 / 停止 / 错误提示（约束 3）', ()
     await renderReady(sid)
     act(() => {
       useChatStore.setState({ busy: true })
+      useChatStore.getState().pushTool({
+        name: 'run_analysis',
+        phase: 'start',
+        label: '运行分析',
+      })
     })
 
     expect(screen.getByRole('button', { name: '停止' })).toBeInTheDocument()
     expect(screen.queryByRole('button', { name: '发送' })).not.toBeInTheDocument()
-    expect(screen.getByText('生成中…')).toBeInTheDocument()
+    expect(screen.getByText('运行分析')).toBeInTheDocument()
+    expect(screen.queryByText('思考中')).not.toBeInTheDocument()
+    expect(screen.queryByText('生成中…')).not.toBeInTheDocument()
 
     fireEvent.click(screen.getByRole('button', { name: '停止' }))
 
     expect(screen.getByText(/已请求停止，正在结束当前步骤/)).toBeInTheDocument()
+    expect(screen.queryByText('运行分析')).not.toBeInTheDocument()
+    expect(screen.queryByText('思考中')).not.toBeInTheDocument()
     expect(useChatStore.getState().busy).toBe(true)
   })
 
@@ -526,13 +535,69 @@ describe('ChatPage 输入区：键位 / 停止 / 错误提示（约束 3）', ()
 
     act(() => {
       useChatStore.setState({ busy: true })
+      useChatStore.getState().pushTool({
+        name: 'run_analysis',
+        phase: 'start',
+        label: '运行分析',
+      })
     })
+    expect(screen.getByText('运行分析')).toBeInTheDocument()
     expect(screen.queryByText(/仍在执行，可能耗时较久/)).not.toBeInTheDocument()
 
     act(() => {
       vi.advanceTimersByTime(30_000)
     })
     expect(screen.getByText(/仍在执行，可能耗时较久/)).toBeInTheDocument()
+    expect(screen.queryByText('运行分析')).not.toBeInTheDocument()
+  })
+
+  it('知识问答阶段按事件顺序切换，结束后不残留', async () => {
+    const sid = nextSid()
+    await renderReady(sid)
+    fireEvent.click(screen.getByRole('radio', { name: '知识问答' }))
+    act(() => {
+      useChatStore.setState({ busy: true })
+    })
+
+    act(() => {
+      useChatStore.getState().pushTool({
+        name: 'knowledge_qa_retrieval',
+        phase: 'start',
+        label: '检索知识库',
+      })
+    })
+    expect(screen.getByText('检索知识库')).toBeInTheDocument()
+    expect(screen.queryByText('准备回答')).not.toBeInTheDocument()
+
+    act(() => {
+      useChatStore.getState().pushTool({
+        name: 'knowledge_qa_retrieval',
+        phase: 'end',
+        label: '检索知识库',
+      })
+      useChatStore.getState().pushTool({
+        name: 'knowledge_qa_answer',
+        phase: 'start',
+        label: '生成回答',
+      })
+    })
+    expect(screen.getByText('生成回答')).toBeInTheDocument()
+    expect(screen.queryByText('检索知识库')).not.toBeInTheDocument()
+
+    act(() => {
+      useChatStore.getState().pushTool({
+        name: 'knowledge_qa_answer',
+        phase: 'end',
+        label: '生成回答',
+      })
+    })
+    expect(screen.queryByText('生成回答')).not.toBeInTheDocument()
+    expect(screen.getByText('准备回答')).toBeInTheDocument()
+
+    act(() => {
+      useChatStore.setState({ busy: false })
+    })
+    expect(screen.queryByText('准备回答')).not.toBeInTheDocument()
   })
 })
 
@@ -606,7 +671,8 @@ describe('ChatPage 约束落点（1/2）', () => {
     })
 
     expect(screen.getByRole('button', { name: '停止' })).toBeInTheDocument()
-    expect(screen.getByText('生成中…')).toBeInTheDocument()
+    expect(screen.getByText('思考中')).toBeInTheDocument()
+    expect(screen.queryByText('生成中…')).not.toBeInTheDocument()
     expect(screen.queryByText(/已完成/)).not.toBeInTheDocument()
     expect(useChatStore.getState().busy).toBe(true)
   })
