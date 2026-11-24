@@ -12,9 +12,12 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from collections.abc import Callable
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any, Literal
+
+import openai
 
 from src.config import env_int
 from src.control.tools import (
@@ -38,6 +41,15 @@ TOOL_CALL_OVERHEAD_CHARS = 1000
 TOOL_RESULT_TRUNCATED_NOTE = "工具结果超出单次上限，已截断"
 # 工具结果要求模型继续推理而非立即返回的标记字段。
 CONTINUE_TOOL_LOOP_FLAG = "continue_tool_loop"
+KNOWLEDGE_UNAVAILABLE = "knowledge_unavailable"
+INSUFFICIENT_EVIDENCE = "insufficient_evidence"
+CITATION_INVALID = "citation_invalid"
+UNAVAILABLE_MESSAGE = "知识检索服务暂时不可用，请稍后重试。"
+CITATION_RETRY_NOTE = (
+    "上一版回答未通过引用校验：至少引用一条本轮真实存在的 [E#] 编号，"
+    "且不得出现不存在的编号；只使用对话中已返回的证据，不要再次调用工具。"
+)
+_CITATION_RE = re.compile(r"\[(E\d+)\]")
 
 REPEATED_TOOL_NOTE = (
     "（系统提示：检测到重复的工具调用，工具已停用。请直接基于已有工具结果回答，不要再次请求工具。）"
@@ -96,6 +108,7 @@ class AgentRuntime:
         hint = self._route_hint(user_input)
         messages = self._build_messages(user_input, context, hint=hint)
         schemas = build_tool_schemas()
+        buffering = knowledge_tool_enabled()
         dispatched: dict[str, Any] | None = None
         reasoning_seen = False
         result_limit_chars = env_int("AGENT_TOOL_RESULT_MAX_CHARS", DEFAULT_TOOL_RESULT_MAX_CHARS)
@@ -106,6 +119,11 @@ class AgentRuntime:
         disconnected = False
         next_evidence_number = 1
         seen_chunks: set[str] = set()
+        knowledge_searched = False
+        knowledge_unavailable = False
+        searched_queries: list[str] = []
+        evidence_items: list[dict[str, Any]] = []
+        evidence_sources: list[dict[str, Any]] = []
         try:
             # 不设固定轮数：以最终回答、人工终态、重复调用、预算用尽或中止收口。
             while True:
@@ -128,6 +146,7 @@ class AgentRuntime:
                         has_prior_reasoning=reasoning_seen,
                         tool_choice="none" if force_answer else "auto",
                         tools=schemas,
+                        collect_only=buffering,
                     )
                     reasoning_seen = reasoning_seen or round_reasoning
                     if aborted:
@@ -135,11 +154,18 @@ class AgentRuntime:
 
                 if not tool_calls:
                     content = message.content or ""
-                    return {
-                        "status": "success",
-                        "type": "general_response",
-                        "message": content or "请尝试更具体的分析或知识问题。",
-                    }
+                    return self._finalize_answer(
+                        content or "请尝试更具体的分析或知识问题。",
+                        messages,
+                        schemas,
+                        evidence=evidence_items,
+                        sources=evidence_sources,
+                        queries=searched_queries,
+                        searched=knowledge_searched,
+                        unavailable=knowledge_unavailable,
+                        on_event=on_event,
+                        buffered=buffering,
+                    )
 
                 if force_answer:
                     # 已禁用工具仍返回 tool_calls：视为异常协议，返回安全失败。
@@ -168,6 +194,17 @@ class AgentRuntime:
                     result, next_evidence_number, seen_chunks
                 )
                 next_evidence_number += added_evidence
+                if name == "search_knowledge":
+                    knowledge_searched = True
+                    searched_queries.append(str(result.get("query") or ""))
+                    if result.get("outcome") == KNOWLEDGE_UNAVAILABLE:
+                        knowledge_unavailable = True
+                    if result.get("status") == "success":
+                        evidence_items.extend(result.get("evidence") or [])
+                        evidence_sources.extend(result.get("sources") or [])
+                    else:
+                        # 旧式 error 结果同样视为服务不可用，避免误报“没有证据”
+                        knowledge_unavailable = True
                 dispatched = result
                 status = result.get("status")
                 if result.get("analysis_type") == "single_cell":
@@ -179,13 +216,12 @@ class AgentRuntime:
                 # 非流式：所有 TERMINAL_STATUSES 即刻返回（保持原有行为）
                 # 流式：仅 STREAM_TERMINAL_STATUSES 为终态；
                 # needs_input/no_results 需让 LLM 再跑一轮生成面向用户的回复。
-                # continue_tool_loop=True 的工具（如证据检索）即使 success 也继续。
+                # continue_tool_loop=True 的工具自带“非终态”语义：检索失败也要回灌模型，
+                # 让它如实说明不可用，而不是把 error 当最终回答直接返回。
                 terminal_statuses = (
                     TERMINAL_STATUSES if on_event is None else STREAM_TERMINAL_STATUSES
                 )
-                if status in terminal_statuses and not (
-                    status == "success" and result.get(CONTINUE_TOOL_LOOP_FLAG) is True
-                ):
+                if status in terminal_statuses and result.get(CONTINUE_TOOL_LOOP_FLAG) is not True:
                     if on_event is not None:
                         on_event(self._tool_status_event(name, "end", result))
                     return result
@@ -226,6 +262,136 @@ class AgentRuntime:
             logger.warning("tool-calling failed, fallback to legacy workflow: %s", e)
             return self.workflow_manager.execute_workflow(user_input, context)
 
+    def _finalize_answer(
+        self,
+        content: str,
+        messages: list[dict[str, Any]],
+        schemas: list[dict[str, Any]],
+        *,
+        evidence: list[dict[str, Any]],
+        sources: list[dict[str, Any]],
+        queries: list[str],
+        searched: bool,
+        unavailable: bool,
+        on_event: Callable[[dict], bool] | None,
+        buffered: bool,
+    ) -> dict[str, Any]:
+        """对用过检索的答案做三态收口，并在需要时缓冲后统一发射正文。"""
+        if searched and not evidence:
+            if unavailable:
+                result = {
+                    "status": "error",
+                    "type": "general_response",
+                    "outcome": KNOWLEDGE_UNAVAILABLE,
+                    "message": UNAVAILABLE_MESSAGE,
+                    "results": {"knowledge": {"outcome": KNOWLEDGE_UNAVAILABLE}},
+                }
+            else:
+                scope = "、".join(dict.fromkeys(q for q in queries if q))
+                text = "当前知识库没有检索到相关证据。"
+                if scope:
+                    text += f"\n检索范围：{scope}。"
+                result = {
+                    "status": "success",
+                    "type": "general_response",
+                    "outcome": INSUFFICIENT_EVIDENCE,
+                    "message": text,
+                    "results": {"knowledge": {"outcome": INSUFFICIENT_EVIDENCE}},
+                }
+            return self._emit_buffered(result, on_event, buffered)
+
+        if searched and evidence:
+            valid_ids = {str(item.get("evidence_id")) for item in evidence}
+            if not self._citations_valid(content, valid_ids):
+                retried = self._retry_citation_answer(messages, content)
+                if self._citations_valid(retried, valid_ids):
+                    content = retried
+                else:
+                    listing = self._evidence_listing(evidence)
+                    result = {
+                        "status": "error",
+                        "type": "general_response",
+                        "outcome": CITATION_INVALID,
+                        "message": (
+                            f"已检索到证据，但回答未通过引用校验。\n\n**已检索到的证据**\n{listing}"
+                        ),
+                        "results": {
+                            "knowledge": {
+                                "outcome": CITATION_INVALID,
+                                "evidence": [
+                                    {k: v for k, v in item.items() if k != "file_path"}
+                                    for item in evidence
+                                ],
+                                "sources": sources,
+                            }
+                        },
+                    }
+                    return self._emit_buffered(result, on_event, buffered)
+
+        result = {
+            "status": "success",
+            "type": "general_response",
+            "message": content,
+        }
+        if searched:
+            result["outcome"] = "supported_answer"
+            result["results"] = {"knowledge": {"outcome": "supported_answer"}}
+        return self._emit_buffered(result, on_event, buffered)
+
+    @staticmethod
+    def _emit_buffered(
+        result: dict[str, Any],
+        on_event: Callable[[dict], bool] | None,
+        buffered: bool,
+    ) -> dict[str, Any]:
+        """缓冲模式下把最终正文一次性发给前端；断连按中止处理。"""
+        if buffered and on_event is not None:
+            if not on_event({"type": "delta", "text": result["message"]}):
+                return dict(ABORTED_RESULT)
+        return result
+
+    @staticmethod
+    def _citations_valid(content: str, valid_ids: set[str]) -> bool:
+        """至少引用一条且所有引用都真实存在，才算通过引用校验。"""
+        cited = set(_CITATION_RE.findall(content))
+        return bool(cited) and cited <= valid_ids
+
+    def _retry_citation_answer(self, messages: list[dict[str, Any]], invalid: str) -> str:
+        """引用校验失败后，基于同一批证据要求模型重写一次（禁用工具）。"""
+        try:
+            response = self.llm_client.chat.completions.create(
+                model=self.model,
+                messages=messages
+                + [
+                    {"role": "assistant", "content": invalid},
+                    {"role": "user", "content": CITATION_RETRY_NOTE},
+                ],
+                temperature=0,
+            )
+            return response.choices[0].message.content or ""
+        except (
+            openai.APIError,
+            AttributeError,
+            IndexError,
+            KeyError,
+            TypeError,
+            ValueError,
+        ) as exc:
+            logger.warning("citation retry failed: %s: %s", type(exc).__name__, exc)
+            return ""
+
+    @staticmethod
+    def _evidence_listing(evidence: list[dict[str, Any]]) -> str:
+        """把已检索证据渲染成可人工判断的简短清单，不含来源路径。"""
+        lines = []
+        for item in evidence:
+            title = item.get("title") or item.get("url") or "证据"
+            year = item.get("year") or ""
+            snippet = str(item.get("content") or "")[:120]
+            suffix = f"（{year}）" if year else ""
+            lines.append(f"- [{item.get('evidence_id')}] {title}{suffix}：{snippet}")
+        return "\n".join(lines)
+
     def _stream_round(
         self,
         messages: list[dict[str, Any]],
@@ -234,6 +400,7 @@ class AgentRuntime:
         has_prior_reasoning: bool = False,
         tool_choice: str = "auto",
         tools: list[dict[str, Any]],
+        collect_only: bool = False,
     ) -> tuple[Any, list | None, bool, bool]:
         """流式跑一轮 LLM 调用。
 
@@ -244,7 +411,8 @@ class AgentRuntime:
         第四项表示本轮是否产生过思考增量；``has_prior_reasoning`` 为真时，
         本轮首段思考前插入轻量分隔，让多轮工具调用之间的思考按顺序可辨。
         ``tool_choice="none"`` 用于预算/重复调用后的强制收口轮；``tools`` 由调用方
-        按开关构建。
+        按开关构建。``collect_only=True`` 时不发正文 delta（仅累积并返回），
+        供引用校验前的最终回答缓冲；思考增量仍照常输出。
         """
         stream = self.llm_client.chat.completions.create(
             model=self.model,
@@ -273,7 +441,7 @@ class AgentRuntime:
                 reasoning_emitted = True
             if piece:
                 content_parts.append(piece)
-                if not on_event({"type": "delta", "text": piece}):
+                if not collect_only and not on_event({"type": "delta", "text": piece}):
                     return None, None, True, reasoning_emitted
             for call in getattr(delta, "tool_calls", None) or []:
                 # 防御性处理 index：OpenAI/Zhipu 兼容协议保证 tool_call chunk 恒带 index，

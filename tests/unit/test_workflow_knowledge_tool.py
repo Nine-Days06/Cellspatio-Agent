@@ -2,19 +2,24 @@
 
 from __future__ import annotations
 
+from typing import Any
+
 from src.control.workflow_manager import WorkflowManager
 
 
 class FakeKnowledge:
     """最小 LightRAG 客户端桩：回放既定结果或抛出既定异常。"""
 
-    def __init__(self, result=None, error=None):
+    def __init__(self, result=None, error=None, fail_times=None):
         self.result = result
         self.error = error
+        self.fail_times = fail_times
+        self.calls: list[dict[str, Any]] = []
 
     def query_data(self, question, mode="mix", **kwargs):
         """记录调用参数；按构造时的 error/result 返回。"""
-        if self.error:
+        self.calls.append({"question": question, "mode": mode, **kwargs})
+        if self.error and (self.fail_times is None or len(self.calls) <= self.fail_times):
             raise self.error
         return self.result
 
@@ -83,10 +88,13 @@ def test_search_knowledge_no_results_status_is_reported():
 
 
 def test_search_knowledge_failure_does_not_claim_no_evidence():
-    """调用异常返回错误原因，不附带证据、不伪装成空检索。"""
-    result = _manager(FakeKnowledge(error=RuntimeError("down"))).search_knowledge_for_agent("TP53")
+    """服务故障重试一次后返回不可用状态，不附带证据、不伪装成空检索。"""
+    client = FakeKnowledge(error=RuntimeError("down"))
+    result = _manager(client).search_knowledge_for_agent("TP53")
 
+    assert len(client.calls) == 2
     assert result["status"] == "error"
+    assert result["outcome"] == "knowledge_unavailable"
     assert result["retrieval_error_reason"] == "call_failed"
     assert "没有检索到" not in result["message"]
     assert "evidence" not in result
@@ -97,4 +105,17 @@ def test_search_knowledge_client_missing_is_unavailable():
     result = _manager(None).search_knowledge_for_agent("TP53")
 
     assert result["status"] == "error"
+    assert result["outcome"] == "knowledge_unavailable"
     assert result["retrieval_error_reason"] == "client_unavailable"
+
+
+def test_search_knowledge_retries_once_then_succeeds():
+    """首次调用异常只重试一次；第二次成功即返回证据。"""
+    client = FakeKnowledge(_retrieval(), error=RuntimeError("blip"), fail_times=1)
+
+    result = _manager(client).search_knowledge_for_agent("TP53")
+
+    assert len(client.calls) == 2
+    assert result["status"] == "success"
+    assert result["evidence_count"] == 1
+    assert "outcome" not in result

@@ -496,7 +496,7 @@ def test_search_knowledge_status_reports_evidence_count(monkeypatch):
     llm = FakeStreamLLM(
         [
             [_tool_chunk(0, "c1", "search_knowledge", '{"query": "TP53"}')],
-            [_text_chunk("答")],
+            [_text_chunk("答 [E1][E2]")],
         ]
     )
     wm = FakeWM(
@@ -526,6 +526,22 @@ def test_search_knowledge_status_reports_evidence_count(monkeypatch):
     assert status_events[1]["phase"] == "end"
     assert status_events[1]["count"] == 2
     assert "label" not in status_events[1]
+    deltas = [event for event in sink.events if event.get("type") == "delta"]
+    assert "".join(event["text"] for event in deltas) == "答 [E1][E2]"
+
+
+def test_knowledge_mode_buffers_plain_answer_to_one_delta(monkeypatch):
+    """开关开启时正文统一在轮次收口后发射，避免工具轮正文先泄露。"""
+    monkeypatch.setenv("AGENT_KNOWLEDGE_TOOL", "search")
+    llm = FakeStreamLLM([[_text_chunk("普通"), _text_chunk("回答")]])
+    runtime, _ = _runtime(llm, FakeWM({}))
+    sink = EventSink()
+
+    result = runtime.execute("你好", on_event=sink)
+
+    deltas = [event for event in sink.events if event.get("type") == "delta"]
+    assert [event["text"] for event in deltas] == ["普通回答"]
+    assert result["message"] == "普通回答"
 
 
 def test_stream_tool_calls_accumulate_with_missing_index():

@@ -30,6 +30,8 @@ POST /api/chat（SSE）
 - 无工具调用时走 `general_response`。
 - 开启 `AGENT_KNOWLEDGE_TOOL=search` 后多一个只读工具 `search_knowledge`：
   只检索证据（E 编号/来源）供模型继续推理，不生成答案、不写运行记录。
+  用过检索的轮次必须引用真实 `[E#]`；服务不可用、没有证据、引用校验失败分别
+  返回 `knowledge_unavailable` / `insufficient_evidence` / `citation_invalid`。
 - 动态脚本由生成器产生，确认后才执行；已知失败保留尝试历史，用户可明确重试。
 - 中断、成功、取消或无法核验的运行拒绝重跑；不把复制卡恢复 pending。
 - 新确认请求独立恢复并核验原运行，不依赖 GET 恢复的请求上下文。

@@ -282,7 +282,7 @@ def test_search_knowledge_dispatches_and_continues_round(monkeypatch):
     llm = FakeLLM(
         [
             _tool_call_response("search_knowledge", {"query": "TP53"}),
-            _text_response("基于 E1 的回答"),
+            _text_response("基于 [E1] 的回答"),
         ]
     )
     wm = FakeWM(
@@ -304,7 +304,8 @@ def test_search_knowledge_dispatches_and_continues_round(monkeypatch):
     assert wm.calls == [("search_knowledge", {"query": "TP53"})]
     assert "search_knowledge" in {schema["function"]["name"] for schema in llm.calls[0]["tools"]}
     assert "[E#]" in llm.calls[0]["messages"][0]["content"]
-    assert result["message"] == "基于 E1 的回答"
+    assert result["message"] == "基于 [E1] 的回答"
+    assert result["outcome"] == "supported_answer"
 
 
 def test_evidence_ids_continue_across_multiple_tool_calls(monkeypatch):
@@ -332,7 +333,7 @@ def test_evidence_ids_continue_across_multiple_tool_calls(monkeypatch):
         [
             _tool_call_response("search_knowledge", {"query": "q1"}),
             _tool_call_response("search_knowledge", {"query": "q2"}),
-            _text_response("ok"),
+            _text_response("见 [E1] [E2]"),
         ]
     )
     runtime, _ = _make_runtime(llm, FakeWM({"search_knowledge": evidences}))
@@ -362,7 +363,7 @@ def test_duplicate_chunk_across_tool_calls_is_dropped(monkeypatch):
         [
             _tool_call_response("search_knowledge", {"query": "q1"}),
             _tool_call_response("search_knowledge", {"query": "q2"}),
-            _text_response("ok"),
+            _text_response("见 [E1]"),
         ]
     )
     runtime, _ = _make_runtime(llm, FakeWM({"search_knowledge": [evidence, dict(evidence)]}))
@@ -377,6 +378,160 @@ def test_duplicate_chunk_across_tool_calls_is_dropped(monkeypatch):
     assert second["sources"] == []
     assert second["evidence_count"] == 0
     assert "未新增证据" in second["message"]
+
+
+def _evidence_result() -> dict:
+    """构造带一条可引用证据的检索工具结果。"""
+    return {
+        "status": "success",
+        "type": "knowledge_evidence",
+        "query": "TP53",
+        "evidence": [
+            {"evidence_id": "E1", "chunk_id": "c1", "title": "A paper", "content": "TP53 证据"}
+        ],
+        "sources": [{"source_id": "s1", "evidence_ids": ["E1"]}],
+        "evidence_count": 1,
+        "continue_tool_loop": True,
+    }
+
+
+def test_invalid_citation_is_retried_once_then_accepted(monkeypatch):
+    """首次回答引用不存在的编号，重写一次后通过校验。"""
+    monkeypatch.setenv("AGENT_KNOWLEDGE_TOOL", "search")
+    llm = FakeLLM(
+        [
+            _tool_call_response("search_knowledge", {"query": "TP53"}),
+            _text_response("见 [E9]"),
+            _text_response("重写后见 [E1]"),
+        ]
+    )
+    runtime, _ = _make_runtime(llm, FakeWM({"search_knowledge": _evidence_result()}))
+
+    result = runtime.execute("TP53")
+
+    assert len(llm.calls) == 3
+    assert "tools" not in llm.calls[2]
+    assert result["status"] == "success"
+    assert result["message"] == "重写后见 [E1]"
+    assert result["outcome"] == "supported_answer"
+
+
+def test_invalid_citation_after_retry_reports_and_keeps_evidence(monkeypatch):
+    """两次引用校验都失败时明确报错，并把已检索证据带回结果。"""
+    monkeypatch.setenv("AGENT_KNOWLEDGE_TOOL", "search")
+    llm = FakeLLM(
+        [
+            _tool_call_response("search_knowledge", {"query": "TP53"}),
+            _text_response("没有引用"),
+            _text_response("仍然没有引用"),
+        ]
+    )
+    runtime, _ = _make_runtime(llm, FakeWM({"search_knowledge": _evidence_result()}))
+
+    result = runtime.execute("TP53")
+
+    assert result["status"] == "error"
+    assert result["outcome"] == "citation_invalid"
+    assert "未通过引用校验" in result["message"]
+    assert "[E1]" in result["message"]
+    assert result["results"]["knowledge"]["outcome"] == "citation_invalid"
+    assert result["results"]["knowledge"]["evidence"][0]["evidence_id"] == "E1"
+
+
+def test_successful_empty_search_reports_insufficient_evidence(monkeypatch):
+    """检索成功但零证据时给固定话术，不依赖模型自行“猜没有”。"""
+    monkeypatch.setenv("AGENT_KNOWLEDGE_TOOL", "search")
+    llm = FakeLLM(
+        [
+            _tool_call_response("search_knowledge", {"query": "冷门问题"}),
+            _text_response("我猜没有证据"),
+        ]
+    )
+    empty = {
+        "status": "success",
+        "type": "knowledge_evidence",
+        "query": "冷门问题",
+        "evidence": [],
+        "sources": [],
+        "evidence_count": 0,
+        "retrieval_status": "no_results",
+        "message": "当前知识库没有检索到相关证据。",
+        "outcome": "insufficient_evidence",
+        "continue_tool_loop": True,
+    }
+    runtime, _ = _make_runtime(llm, FakeWM({"search_knowledge": empty}))
+
+    result = runtime.execute("冷门问题")
+
+    assert result["status"] == "success"
+    assert result["outcome"] == "insufficient_evidence"
+    assert "当前知识库没有检索到相关证据" in result["message"]
+    assert "检索范围：冷门问题" in result["message"]
+    assert len(llm.calls) == 2  # 不做引用重试
+
+
+def test_failed_then_empty_search_stays_unavailable(monkeypatch):
+    """一次故障加一次成功空结果仍报不可用：不能把未覆盖的检索说成没有证据。"""
+    monkeypatch.setenv("AGENT_KNOWLEDGE_TOOL", "search")
+    llm = FakeLLM(
+        [
+            _tool_call_response("search_knowledge", {"query": "q1"}),
+            _tool_call_response("search_knowledge", {"query": "q2"}),
+            _text_response("没有证据"),
+        ]
+    )
+    failed = {
+        "status": "error",
+        "type": "knowledge_evidence",
+        "query": "q1",
+        "outcome": "knowledge_unavailable",
+        "message": "知识检索服务暂时不可用，请稍后重试。",
+        "continue_tool_loop": True,
+    }
+    empty = {
+        "status": "success",
+        "type": "knowledge_evidence",
+        "query": "q2",
+        "evidence": [],
+        "sources": [],
+        "evidence_count": 0,
+        "outcome": "insufficient_evidence",
+        "continue_tool_loop": True,
+    }
+    runtime, _ = _make_runtime(llm, FakeWM({"search_knowledge": [failed, empty]}))
+
+    result = runtime.execute("两次检索")
+
+    assert result["status"] == "error"
+    assert result["outcome"] == "knowledge_unavailable"
+    assert result["message"] == "知识检索服务暂时不可用，请稍后重试。"
+
+
+def test_service_failure_reports_unavailable_not_missing_evidence(monkeypatch):
+    """检索服务不可用时用固定不可用话术，覆盖模型可能编造的“没有证据”。"""
+    monkeypatch.setenv("AGENT_KNOWLEDGE_TOOL", "search")
+    llm = FakeLLM(
+        [
+            _tool_call_response("search_knowledge", {"query": "TP53"}),
+            _text_response("知识库里没有证据"),
+        ]
+    )
+    failed = {
+        "status": "error",
+        "type": "knowledge_evidence",
+        "query": "TP53",
+        "outcome": "knowledge_unavailable",
+        "message": "知识检索服务暂时不可用，请稍后重试。",
+        "retrieval_error_reason": "service_failure",
+        "continue_tool_loop": True,
+    }
+    runtime, _ = _make_runtime(llm, FakeWM({"search_knowledge": failed}))
+
+    result = runtime.execute("TP53")
+
+    assert result["status"] == "error"
+    assert result["outcome"] == "knowledge_unavailable"
+    assert result["message"] == "知识检索服务暂时不可用，请稍后重试。"
 
 
 def test_run_analysis_merges_regex_params_from_user_input():
