@@ -1,8 +1,6 @@
-"""知识问答批量评测器：顺序跑固定问题，保存完整回答包供人工复核。
+"""知识问答批量评测器：顺序跑固定问题，保存完整回答包。
 
-只做技术跑批，不自动判定答案正确性。只有 12 例用例全部 approved、来源不是
-model-drafted、回答全部 success、人工复核无否决且至少 10 例 accepted，并且
-用户显式确认阈值时，quality_claim_allowed 才为 true。
+只做技术跑批，不自动判定答案正确性，也不提供质量声明或复核状态。
 
 用法：
   python -m evals.run_qa_eval --out .scratch/qa_eval/report.json
@@ -27,24 +25,12 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from evals.review_common import (  # noqa: E402
-    QUALITY_ACCEPTED_THRESHOLD,
-    QUALITY_CASE_COUNT,
-    latest_reviews,
-    quality_claim_allowed,
-    review_counts,
-)
 from evals.run_eval import load_cases  # noqa: E402
 from src.knowledge.async_runtime import runtime as async_runtime  # noqa: E402
 from src.knowledge.lightrag_client import LightRAGClient  # noqa: E402
-from src.knowledge.qa import (  # noqa: E402
-    SCHEMA_VERSION,
-    answer_binding_sha256,
-    run_knowledge_qa,
-)
-from src.ui.session_store import SessionStore  # noqa: E402
+from src.knowledge.qa import SCHEMA_VERSION, run_knowledge_qa  # noqa: E402
 
-REPORT_SCHEMA_VERSION = "knowledge-qa-eval/1.1.0"
+REPORT_SCHEMA_VERSION = "knowledge-qa-eval/2.0.0"
 logger = logging.getLogger(__name__)
 
 
@@ -66,7 +52,7 @@ def _select_cases(cases: list[dict[str, Any]], only: list[str] | None) -> list[d
 
 
 def _eval_error(case: dict[str, Any], exc: Exception) -> dict[str, Any]:
-    """把单例异常转成可供复核表展示的错误回答包。"""
+    """把单例异常转成结构一致的错误回答包。"""
     return {
         "answer_id": f"qa-eval-error-{uuid.uuid4().hex}",
         "schema_version": SCHEMA_VERSION,
@@ -91,8 +77,6 @@ def run_cases(
     qa_runner: Callable[..., dict[str, Any]] = run_knowledge_qa,
     only: list[str] | None = None,
     timeout: float | None = None,
-    reviews: list[dict[str, Any]] | None = None,
-    threshold_confirmed: bool = False,
 ) -> dict[str, Any]:
     """顺序执行用例；单例异常转成错误包，不中断其余用例。"""
     selected = _select_cases(cases, only)
@@ -114,10 +98,8 @@ def run_cases(
                 "case_id": case.get("id"),
                 "case": case,
                 "answer": answer,
-                "binding_sha256": answer_binding_sha256(answer),
                 "elapsed_ms": round((time.monotonic() - started) * 1000),
                 "expected_outcome_match": (answer.get("outcome") == expected if expected else None),
-                "requires_manual_review": True,
             }
         )
 
@@ -126,31 +108,10 @@ def run_cases(
     sources = Counter(case.get("source") or "unknown" for case in selected)
     comparable = [r for r in records if r["expected_outcome_match"] is not None]
     configs = [r["answer"].get("config") or {} for r in records]
-    latest = latest_reviews(reviews or [])
-    counts = review_counts(records, latest)
-    quality_allowed = quality_claim_allowed(
-        selected,
-        records,
-        reviews,
-        threshold_confirmed=threshold_confirmed,
-    )
     return {
         "schema_version": REPORT_SCHEMA_VERSION,
         "generated_at": _now_iso(),
         "answer_schema_version": SCHEMA_VERSION,
-        "quality_claim_allowed": quality_allowed,
-        "threshold_confirmed": threshold_confirmed,
-        "quality_threshold": {
-            "cases": QUALITY_CASE_COUNT,
-            "accepted": QUALITY_ACCEPTED_THRESHOLD,
-            "vetoes": 0,
-        },
-        "notice": (
-            "人工复核门槛已满足，可在报告范围内描述质量结论。"
-            if quality_allowed
-            else "技术跑批报告，不是质量结论。当前用例来源或状态未达到质量声明条件；"
-            "必须逐例人工复核后才能引用。"
-        ),
         "case_source_counts": dict(sources),
         "summary": {
             "case_count": len(records),
@@ -165,8 +126,6 @@ def run_cases(
             "untraceable_chunks": sum(
                 int(config.get("untraceable_chunks") or 0) for config in configs
             ),
-            "accepted_reviews": counts["accepted"],
-            "veto_reviews": counts["vetoes"],
             "elapsed_ms": round((time.monotonic() - started_all) * 1000),
         },
         "cases": records,
@@ -193,16 +152,6 @@ def main(argv: list[str] | None = None) -> int:
         help="LightRAG 工作目录，默认仓库根目录下的 knowledge_base",
     )
     parser.add_argument("--timeout", type=float, help="单例超时秒数，默认读环境变量")
-    parser.add_argument(
-        "--threshold-confirmed",
-        action="store_true",
-        help="用户已确认阈值：12 例中至少 10 例 accepted 且否决项为 0",
-    )
-    parser.add_argument(
-        "--reviews-db",
-        default=str(ROOT / ".scratch" / "qa_eval" / "reviews.db"),
-        help="人工复核账本；不存在时视为未复核，不创建",
-    )
     args = parser.parse_args(argv)
 
     cases = load_cases(args.cases)
@@ -211,24 +160,17 @@ def main(argv: list[str] | None = None) -> int:
         working_dir = ROOT / working_dir
     client = LightRAGClient(working_dir=str(working_dir))
     try:
-        # 初始化失败要在第一条用例前暴露，避免 12 次重复报同一个错。
+        # 初始化失败要在第一条用例前暴露，避免逐例重复报同一个错。
         client._initialize_rag()
-        reviews_path = Path(args.reviews_db)
-        reviews = (
-            SessionStore(reviews_path).get_knowledge_qa_reviews() if reviews_path.exists() else []
-        )
         report = run_cases(
             cases,
             client,
             only=args.only,
             timeout=args.timeout,
-            reviews=reviews,
-            threshold_confirmed=args.threshold_confirmed,
         )
         report["cases_path"] = str(Path(args.cases).resolve())
         report["working_dir"] = str(working_dir.resolve())
         report["workspace"] = client.workspace
-        report["reviews_db"] = str(reviews_path.resolve()) if reviews_path.exists() else None
         out = Path(args.out)
         out.parent.mkdir(parents=True, exist_ok=True)
         out.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
@@ -240,7 +182,6 @@ def main(argv: list[str] | None = None) -> int:
         json.dumps(
             {
                 "report": str(Path(args.out).resolve()),
-                "quality_claim_allowed": report["quality_claim_allowed"],
                 **report["summary"],
             },
             ensure_ascii=False,

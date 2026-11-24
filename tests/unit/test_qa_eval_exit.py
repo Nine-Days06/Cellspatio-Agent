@@ -11,7 +11,7 @@ def test_exit_code_all_errors_is_nonzero():
 
 
 def test_exit_code_partial_errors_stays_zero():
-    """部分失败仍写出报告，退出码保持 0 供人工复核。"""
+    """部分失败仍写出报告，退出码保持 0 供技术排查。"""
     report = {"summary": {"case_count": 12, "status_counts": {"success": 11, "error": 1}}}
     assert exit_code(report) == 0
 

@@ -21,7 +21,7 @@ from src.ui.run_snapshot import RunSnapshot
 from src.ui.sc_stage_defs import STAGE_SPECS
 from src.ui.sc_stages import ScStages
 from src.ui.session_codec import _encode_results, _now
-from src.ui.stage_lifecycle import ReviewFactPlan, advance_run, append_review_fact, publish_message
+from src.ui.stage_lifecycle import advance_run, publish_message
 from src.ui.store_errors import StoreError
 
 logger = logging.getLogger(__name__)
@@ -243,21 +243,6 @@ CREATE TABLE IF NOT EXISTS sc_marker_reviews (
     message_id INTEGER REFERENCES messages(id) ON DELETE SET NULL,
     UNIQUE(marker_attempt_id, binding_sha256, record_version, source_revision)
 );
-CREATE TABLE IF NOT EXISTS knowledge_qa_reviews (
-    review_id TEXT PRIMARY KEY,
-    answer_id TEXT NOT NULL,
-    binding_sha256 TEXT NOT NULL,
-    record_version TEXT NOT NULL,
-    source_revision INTEGER NOT NULL,
-    decision TEXT NOT NULL CHECK(decision IN ('accepted', 'rejected')),
-    veto INTEGER NOT NULL DEFAULT 0 CHECK(veto IN (0, 1)),
-    reason TEXT NOT NULL,
-    reviewer TEXT NOT NULL,
-    created_at TEXT NOT NULL,
-    UNIQUE(answer_id, binding_sha256, record_version, source_revision)
-);
-CREATE INDEX IF NOT EXISTS idx_knowledge_qa_reviews_answer
-    ON knowledge_qa_reviews(answer_id, created_at);
 """
 
 
@@ -1129,76 +1114,6 @@ class SessionStore:
                 f"SELECT 1 FROM {spec.table} WHERE run_id = ? AND status = 'running'", (run_id,)
             ).fetchone():
                 raise ValueError(f"{spec.label}运行中，不能修改选择")
-
-    def record_knowledge_qa_review(
-        self,
-        answer_id: str,
-        binding_sha256: str,
-        record_version: str,
-        source_revision: int,
-        decision: str,
-        reason: str,
-        reviewer: str,
-        veto: bool = False,
-    ) -> dict[str, Any]:
-        """追加一条知识问答人工复核事实；同 revision 重发幂等，内容冲突报错。"""
-        if decision not in {"accepted", "rejected"}:
-            raise ValueError("复核结论必须是 accepted 或 rejected")
-        if veto and decision != "rejected":
-            raise ValueError("否决项必须标记为 rejected")
-        if not reason.strip():
-            raise ValueError("复核理由不能为空")
-
-        def same_previous(row: sqlite3.Row) -> bool:
-            """同 revision 内容一致才幂等。"""
-            return (
-                row["decision"] == decision
-                and bool(row["veto"]) == veto
-                and row["reason"] == reason
-                and row["reviewer"] == reviewer
-            )
-
-        return append_review_fact(
-            self._conn,
-            _encode_results,
-            ReviewFactPlan(
-                table="knowledge_qa_reviews",
-                previous_match={
-                    "answer_id": answer_id,
-                    "binding_sha256": binding_sha256,
-                    "record_version": record_version,
-                    "source_revision": source_revision,
-                },
-                insert_values={
-                    "answer_id": answer_id,
-                    "binding_sha256": binding_sha256,
-                    "record_version": record_version,
-                    "source_revision": source_revision,
-                    "decision": decision,
-                    "veto": int(veto),
-                    "reason": reason,
-                    "reviewer": reviewer,
-                },
-                same_previous=same_previous,
-                conflict_message="同一 revision 的知识问答复核内容冲突",
-            ),
-            clock=_now,
-        ).fact
-
-    def get_knowledge_qa_reviews(self, answer_id: str | None = None) -> list[dict[str, Any]]:
-        """按回答读取复核事实；不传 answer_id 时返回全部。"""
-        with self._conn() as conn:
-            if answer_id is None:
-                rows = conn.execute(
-                    "SELECT * FROM knowledge_qa_reviews ORDER BY created_at, rowid"
-                ).fetchall()
-            else:
-                rows = conn.execute(
-                    "SELECT * FROM knowledge_qa_reviews WHERE answer_id = ? "
-                    "ORDER BY created_at, rowid",
-                    (answer_id,),
-                ).fetchall()
-        return [dict(row) for row in rows]
 
     def get_messages(self, session_id: str) -> list[dict[str, Any]]:
         with self._conn() as conn:
