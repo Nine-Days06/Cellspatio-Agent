@@ -76,6 +76,7 @@ export interface MessageResults {
   qc_artifacts?: Record<string, string>
   qc_run_id?: string
   knowledge_qa?: KnowledgeQAResult
+  knowledge_evidence?: ChatKnowledgeResult
   [key: string]: unknown
 }
 
@@ -90,6 +91,52 @@ export type KnowledgeQAOutcome =
   | 'context_mismatch'
   | 'conflicting_evidence'
   | 'out_of_scope'
+
+/** 对话工具检索的证据包（results.knowledge_evidence），只在本轮消息内展示。 */
+export type ChatKnowledgeOutcome =
+  | 'supported_answer'
+  | 'insufficient_evidence'
+  | 'knowledge_unavailable'
+  | 'citation_invalid'
+
+export interface ChatKnowledgeEvidence {
+  evidence_id: string
+  chunk_id?: string
+  reference_id?: string
+  content?: string
+  content_sha256?: string
+  title?: string
+  year?: string
+  url?: string
+  kind?: string
+  source_id?: string
+}
+
+export interface ChatKnowledgeSource {
+  source_id: string
+  title?: string
+  year?: string
+  url?: string
+  pmid?: string
+  doi?: string
+  species?: string
+  tissue?: string
+  technology?: string
+  evidence_ids: string[]
+}
+
+export interface ChatKnowledgeClaim {
+  text: string
+  evidence_ids: string[]
+}
+
+export interface ChatKnowledgeResult {
+  outcome: ChatKnowledgeOutcome
+  evidence: ChatKnowledgeEvidence[]
+  sources: ChatKnowledgeSource[]
+  citations: string[]
+  claims: ChatKnowledgeClaim[]
+}
 
 export interface KnowledgeQAClaim {
   claim_id: string

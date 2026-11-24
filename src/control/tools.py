@@ -179,6 +179,9 @@ use search_knowledge for biology knowledge that needs literature support.
    final answer: keep reasoning yourself and cite the evidence ids inline as [E#].
 - If retrieval fails or the service is unavailable, say so truthfully; never claim "there is no
    evidence" without a successful empty retrieval.
+- Optional structured claims: when you want the UI to list key assertions, append one
+  ```claims fenced JSON array such as [{"text": "...", "evidence_ids": ["E1"]}]. Include only
+  claims you actually assert from the cited evidence; omit the block when unsure.
 """
 
 

@@ -87,6 +87,32 @@ describe('空内容兜底（约束 1）', () => {
     expect(screen.queryByText(EMPTY_FALLBACK)).not.toBeInTheDocument()
   })
 
+  it('有文献证据包时不显示兜底文案，并渲染可展开证据', () => {
+    render(
+      <MessageList
+        {...baseProps}
+        messages={[
+          msg({
+            content: '',
+            results: {
+              knowledge_evidence: {
+                outcome: 'citation_invalid',
+                evidence: [{ evidence_id: 'E1', title: 'A paper', content: '证据原文' }],
+                sources: [],
+                citations: [],
+                claims: [],
+              },
+            },
+          }),
+        ]}
+      />,
+    )
+
+    expect(screen.queryByText(EMPTY_FALLBACK)).not.toBeInTheDocument()
+    expect(screen.getByText('文献证据（1 条）')).toBeInTheDocument()
+    expect(screen.getByText('证据原文')).toBeInTheDocument()
+  })
+
   it('点击重试触发 onRetry', () => {
     const onRetry = vi.fn()
     render(

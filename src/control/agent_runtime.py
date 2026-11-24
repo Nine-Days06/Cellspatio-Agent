@@ -50,6 +50,28 @@ CITATION_RETRY_NOTE = (
     "且不得出现不存在的编号；只使用对话中已返回的证据，不要再次调用工具。"
 )
 _CITATION_RE = re.compile(r"\[(E\d+)\]")
+_CLAIMS_BLOCK_RE = re.compile(r"\n?```claims\s*(.*?)\s*```", re.DOTALL)
+PUBLIC_EVIDENCE_FIELDS = (
+    "evidence_id",
+    "title",
+    "year",
+    "url",
+    "kind",
+    "source_id",
+    "content",
+)
+PUBLIC_SOURCE_FIELDS = (
+    "source_id",
+    "title",
+    "year",
+    "url",
+    "pmid",
+    "doi",
+    "species",
+    "tissue",
+    "technology",
+    "evidence_ids",
+)
 
 REPEATED_TOOL_NOTE = (
     "（系统提示：检测到重复的工具调用，工具已停用。请直接基于已有工具结果回答，不要再次请求工具。）"
@@ -284,7 +306,11 @@ class AgentRuntime:
                     "type": "general_response",
                     "outcome": KNOWLEDGE_UNAVAILABLE,
                     "message": UNAVAILABLE_MESSAGE,
-                    "results": {"knowledge": {"outcome": KNOWLEDGE_UNAVAILABLE}},
+                    "results": {
+                        "knowledge_evidence": self._knowledge_package(
+                            KNOWLEDGE_UNAVAILABLE, [], [], "", []
+                        )
+                    },
                 }
             else:
                 scope = "、".join(dict.fromkeys(q for q in queries if q))
@@ -296,16 +322,22 @@ class AgentRuntime:
                     "type": "general_response",
                     "outcome": INSUFFICIENT_EVIDENCE,
                     "message": text,
-                    "results": {"knowledge": {"outcome": INSUFFICIENT_EVIDENCE}},
+                    "results": {
+                        "knowledge_evidence": self._knowledge_package(
+                            INSUFFICIENT_EVIDENCE, [], [], "", []
+                        )
+                    },
                 }
             return self._emit_buffered(result, on_event, buffered)
 
         if searched and evidence:
             valid_ids = {str(item.get("evidence_id")) for item in evidence}
+            content, claims = self._extract_claims(content, valid_ids)
             if not self._citations_valid(content, valid_ids):
                 retried = self._retry_citation_answer(messages, content)
-                if self._citations_valid(retried, valid_ids):
-                    content = retried
+                retried_content, retried_claims = self._extract_claims(retried, valid_ids)
+                if self._citations_valid(retried_content, valid_ids):
+                    content, claims = retried_content, retried_claims
                 else:
                     listing = self._evidence_listing(evidence)
                     result = {
@@ -316,14 +348,13 @@ class AgentRuntime:
                             f"已检索到证据，但回答未通过引用校验。\n\n**已检索到的证据**\n{listing}"
                         ),
                         "results": {
-                            "knowledge": {
-                                "outcome": CITATION_INVALID,
-                                "evidence": [
-                                    {k: v for k, v in item.items() if k != "file_path"}
-                                    for item in evidence
-                                ],
-                                "sources": sources,
-                            }
+                            "knowledge_evidence": self._knowledge_package(
+                                CITATION_INVALID,
+                                evidence,
+                                sources,
+                                "".join(f"[{item.get('evidence_id')}]" for item in evidence),
+                                [],
+                            )
                         },
                     }
                     return self._emit_buffered(result, on_event, buffered)
@@ -335,8 +366,63 @@ class AgentRuntime:
         }
         if searched:
             result["outcome"] = "supported_answer"
-            result["results"] = {"knowledge": {"outcome": "supported_answer"}}
+            result["results"] = {
+                "knowledge_evidence": self._knowledge_package(
+                    "supported_answer", evidence, sources, content, claims
+                )
+            }
         return self._emit_buffered(result, on_event, buffered)
+
+    @staticmethod
+    def _knowledge_package(
+        outcome: str,
+        evidence: list[dict[str, Any]],
+        sources: list[dict[str, Any]],
+        content: str,
+        claims: list[dict[str, Any]],
+    ) -> dict[str, Any]:
+        """本轮证据包：证据/来源按白名单落库，claims 只取模型显式结构。"""
+        return {
+            "outcome": outcome,
+            "evidence": [
+                {key: item[key] for key in PUBLIC_EVIDENCE_FIELDS if key in item}
+                for item in evidence
+            ],
+            "sources": [
+                {key: source[key] for key in PUBLIC_SOURCE_FIELDS if key in source}
+                for source in sources
+            ],
+            "citations": list(dict.fromkeys(_CITATION_RE.findall(content))),
+            "claims": claims,
+        }
+
+    @staticmethod
+    def _extract_claims(content: str, valid_ids: set[str]) -> tuple[str, list[dict[str, Any]]]:
+        """剥离可选的 ```claims 块；只保留有效引用且显式给出的论断。"""
+        match = _CLAIMS_BLOCK_RE.search(content)
+        if not match:
+            return content, []
+        clean = (content[: match.start()] + content[match.end() :]).strip()
+        try:
+            raw = json.loads(match.group(1))
+        except json.JSONDecodeError as exc:
+            logger.warning("invalid claims block ignored: %s", exc)
+            return clean, []
+        if not isinstance(raw, list):
+            return clean, []
+        claims: list[dict[str, Any]] = []
+        for item in raw[:20]:
+            if not isinstance(item, dict):
+                continue
+            text = str(item.get("text") or "").strip()
+            ids = [
+                str(evidence_id)
+                for evidence_id in item.get("evidence_ids") or []
+                if str(evidence_id) in valid_ids
+            ]
+            if text and ids:
+                claims.append({"text": text, "evidence_ids": list(dict.fromkeys(ids))})
+        return clean, claims
 
     @staticmethod
     def _emit_buffered(

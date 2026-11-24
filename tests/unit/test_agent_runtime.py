@@ -306,6 +306,30 @@ def test_search_knowledge_dispatches_and_continues_round(monkeypatch):
     assert "[E#]" in llm.calls[0]["messages"][0]["content"]
     assert result["message"] == "基于 [E1] 的回答"
     assert result["outcome"] == "supported_answer"
+    package = result["results"]["knowledge_evidence"]
+    assert package["citations"] == ["E1"]
+    assert package["evidence"][0]["content"] == "x"
+    assert package["claims"] == []
+
+
+def test_explicit_claims_block_is_stored_and_stripped(monkeypatch):
+    """模型显式给出的 claims 才落包；围栏块不进入用户可见正文。"""
+    monkeypatch.setenv("AGENT_KNOWLEDGE_TOOL", "search")
+    claims_block = '\n```claims\n[{"text": "TP53 是抑癌基因", "evidence_ids": ["E1"]}]\n```'
+    llm = FakeLLM(
+        [
+            _tool_call_response("search_knowledge", {"query": "TP53"}),
+            _text_response("TP53 是抑癌基因 [E1]" + claims_block),
+        ]
+    )
+    runtime, _ = _make_runtime(llm, FakeWM({"search_knowledge": _evidence_result()}))
+
+    result = runtime.execute("TP53")
+
+    assert result["message"] == "TP53 是抑癌基因 [E1]"
+    assert result["results"]["knowledge_evidence"]["claims"] == [
+        {"text": "TP53 是抑癌基因", "evidence_ids": ["E1"]}
+    ]
 
 
 def test_evidence_ids_continue_across_multiple_tool_calls(monkeypatch):
@@ -387,7 +411,13 @@ def _evidence_result() -> dict:
         "type": "knowledge_evidence",
         "query": "TP53",
         "evidence": [
-            {"evidence_id": "E1", "chunk_id": "c1", "title": "A paper", "content": "TP53 证据"}
+            {
+                "evidence_id": "E1",
+                "chunk_id": "c1",
+                "title": "A paper",
+                "content": "TP53 证据",
+                "file_path": "D:/private/paper.pdf",
+            }
         ],
         "sources": [{"source_id": "s1", "evidence_ids": ["E1"]}],
         "evidence_count": 1,
@@ -434,8 +464,13 @@ def test_invalid_citation_after_retry_reports_and_keeps_evidence(monkeypatch):
     assert result["outcome"] == "citation_invalid"
     assert "未通过引用校验" in result["message"]
     assert "[E1]" in result["message"]
-    assert result["results"]["knowledge"]["outcome"] == "citation_invalid"
-    assert result["results"]["knowledge"]["evidence"][0]["evidence_id"] == "E1"
+    package = result["results"]["knowledge_evidence"]
+    assert package["outcome"] == "citation_invalid"
+    assert package["evidence"][0]["evidence_id"] == "E1"
+    assert package["citations"] == ["E1"]
+    assert "file_path" not in package["evidence"][0]
+    assert "chunk_id" not in package["evidence"][0]
+    assert package["claims"] == []
 
 
 def test_successful_empty_search_reports_insufficient_evidence(monkeypatch):
@@ -816,3 +851,32 @@ def test_qc_results_and_artifacts_do_not_enter_model_history():
     )
     assert "CELL_SECRET" not in str(out) and "PRIVATE_PATH" not in str(out)
     assert out[1] == {"role": "assistant", "content": "QC 等待审阅"}
+
+
+def test_knowledge_history_keeps_claims_but_strips_evidence_and_sources():
+    """后续轮次只带正文/引用/显式论断，证据原文与来源路径不进入模型上下文。"""
+    from src.control import compact
+
+    rt, _ = _make_runtime(None)
+    history = compact.prepare_history(
+        [
+            {
+                "role": "assistant",
+                "content": "TP53 是抑癌基因 [E1]",
+                "results": {
+                    "knowledge_evidence": {
+                        "outcome": "supported_answer",
+                        "evidence": [{"evidence_id": "E1", "content": "SECRET_CHUNK"}],
+                        "sources": [{"file_path": "PRIVATE_PATH"}],
+                        "claims": [{"text": "TP53 是抑癌基因", "evidence_ids": ["E1"]}],
+                    }
+                },
+            }
+        ]
+    )
+    out = rt._build_messages("继续", {"history": history})
+
+    rendered = str(out)
+    assert "SECRET_CHUNK" not in rendered and "PRIVATE_PATH" not in rendered
+    assert "结构化论断" in out[1]["content"]
+    assert "TP53 是抑癌基因 [E1]" in out[1]["content"]
