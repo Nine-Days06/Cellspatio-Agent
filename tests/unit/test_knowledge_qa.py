@@ -5,10 +5,17 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+import time
 
 import pytest
 
-from src.knowledge.qa import interrupted_package, run_knowledge_qa
+from src.knowledge.qa import (
+    RETRIEVAL_DEADLINE,
+    RETRIEVAL_SERVICE_FAILURE,
+    interrupted_package,
+    retrieve_evidence,
+    run_knowledge_qa,
+)
 
 
 class FakeKnowledge:
@@ -826,3 +833,108 @@ def test_streamed_answer_still_goes_through_evidence_validation():
     assert result["status"] == "error"
     assert result["error"]["stage"] == "validation"
     assert reasoning == ["思考"]
+
+
+def test_retrieve_evidence_maps_chunks_without_calling_a_model():
+    """检索服务只做检索与证据装配，生成模型不参与。"""
+    client = FakeKnowledge()
+
+    retrieval = retrieve_evidence(client, "问题", deadline=time.monotonic() + 5)
+
+    assert retrieval.error is None
+    assert [item["evidence_id"] for item in retrieval.evidence] == ["E1"]
+    assert retrieval.sources[0]["pmid"] == "38947524"
+    assert retrieval.untraceable == 0
+    assert retrieval.config["retrieval_calls"] == 1
+    assert retrieval.config["retrieval_status"] == "success"
+    assert client.calls == [{"question": "问题", "mode": "mix", "use_cache": False}]
+
+
+def test_retrieve_evidence_without_traceable_chunks_is_not_an_error():
+    """无可用证据由调用方决定如何呈现；检索服务本身不算失败。"""
+    client = FakeKnowledge(
+        _retrieval(
+            chunks=[
+                {
+                    "chunk_id": "c-unknown",
+                    "file_path": "unknown_source",
+                    "content": "标题：来路不明的片段\n摘要：无身份信息。",
+                }
+            ]
+        )
+    )
+
+    retrieval = retrieve_evidence(client, "问题", deadline=time.monotonic() + 5)
+
+    assert retrieval.error is None
+    assert retrieval.evidence == []
+    assert retrieval.sources == []
+    assert retrieval.untraceable == 1
+    assert retrieval.config["untraceable_chunks"] == 1
+
+
+def test_retrieve_evidence_past_deadline_skips_the_call():
+    """截止时间已过时不发起检索，计数保持 0。"""
+    client = FakeKnowledge()
+
+    retrieval = retrieve_evidence(client, "问题", deadline=time.monotonic() - 1)
+
+    assert retrieval.error.reason == RETRIEVAL_DEADLINE
+    assert "超时" in retrieval.error.message
+    assert retrieval.config["retrieval_calls"] == 0
+    assert client.calls == []
+
+
+def test_retrieve_evidence_missing_client_is_unavailable():
+    retrieval = retrieve_evidence(None, "问题", deadline=time.monotonic() + 5)
+
+    assert retrieval.error.reason == "client_unavailable"
+    assert "不可用" in retrieval.error.message
+    assert retrieval.config["retrieval_calls"] == 0
+
+
+@pytest.mark.parametrize(
+    ("failure_reason", "is_error"),
+    [("no_results", False), ("embedding_unavailable", True)],
+)
+def test_retrieve_evidence_classifies_lightrag_failure(failure_reason, is_error):
+    """只有 no_results 是“没有证据”，其余 failure 是服务故障。"""
+    client = FakeKnowledge(
+        {
+            "status": "failure",
+            "data": {},
+            "metadata": {"failure_reason": failure_reason, "mode": "mix"},
+        }
+    )
+
+    retrieval = retrieve_evidence(client, "问题", deadline=time.monotonic() + 5)
+
+    assert (retrieval.error is not None) is is_error
+    if is_error:
+        assert retrieval.error.reason == RETRIEVAL_SERVICE_FAILURE
+    assert retrieval.evidence == []
+    assert retrieval.config["retrieval_status"] == "failure"
+
+
+def test_retrieve_evidence_mid_call_timeout_is_reported_as_deadline():
+    """检索已发出后超时属于超时，不能被归并成普通检索失败。"""
+
+    class SlowKnowledge(FakeKnowledge):
+        def query_data(self, question, mode="mix", **kwargs):
+            time.sleep(0.2)
+            return super().query_data(question, mode, **kwargs)
+
+    retrieval = retrieve_evidence(SlowKnowledge(), "问题", deadline=time.monotonic() + 0.01)
+
+    assert retrieval.error.reason == RETRIEVAL_DEADLINE
+    assert retrieval.config["retrieval_calls"] == 1
+
+
+def test_empty_question_is_rejected_before_retrieval_service():
+    """空问题在输入校验就结束，不进入检索阶段。"""
+    on_stage = _stage_recorder()
+
+    result = run_knowledge_qa(FakeKnowledge(), "   ", on_stage=on_stage)
+
+    assert result["error"]["stage"] == "input"
+    assert on_stage.events == []
