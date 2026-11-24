@@ -11,9 +11,13 @@ export interface Project {
   session_count: number
 }
 
+/** 标题来源：default=未命名，explicit=用户/调用方命名，derived=首条消息截断，model=模型生成。 */
+export type TitleSource = 'default' | 'explicit' | 'derived' | 'model'
+
 export interface SessionSummary {
   id: string
   title: string
+  title_source: TitleSource
   updated_at: string
   message_count: number
   project_id: string | null
@@ -25,6 +29,7 @@ export interface SessionSummary {
 export interface Session {
   id: string
   title: string
+  title_source: TitleSource
   created_at: string
   updated_at: string
   summary: string | null

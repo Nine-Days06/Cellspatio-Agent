@@ -37,6 +37,7 @@ const sessions: SessionSummary[] = [
   {
     id: 's1',
     title: '肝癌项目',
+    title_source: 'explicit',
     updated_at: '2026-09-30T00:00:00',
     message_count: 3,
     project_id: null,
@@ -46,6 +47,7 @@ const sessions: SessionSummary[] = [
   {
     id: 's2',
     title: '新会话',
+    title_source: 'default',
     updated_at: '2026-09-29T00:00:00',
     message_count: 0,
     project_id: null,
@@ -301,6 +303,28 @@ it('会话菜单可移动与归档', async () => {
   fireEvent.click(screen.getByRole('button', { name: '更多 新会话' }))
   fireEvent.click(screen.getByRole('button', { name: '归档会话' }))
   await waitFor(() => expect(onArchived).toHaveBeenCalledWith('s2'))
+})
+
+it('会话菜单可重命名并刷新侧栏', async () => {
+  updateSession.mockResolvedValue({ session: {} })
+  const onChanged = vi.fn()
+  renderSidebar({ onChanged })
+  fireEvent.click(screen.getByRole('button', { name: '更多 新会话' }))
+  fireEvent.click(screen.getByRole('button', { name: '重命名' }))
+  fireEvent.change(screen.getByLabelText('会话标题'), { target: { value: '  质控复核  ' } })
+  fireEvent.click(screen.getByRole('button', { name: '保存标题' }))
+  await waitFor(() => expect(updateSession).toHaveBeenCalledWith('s2', { title: '质控复核' }))
+  await waitFor(() => expect(onChanged).toHaveBeenCalled())
+})
+
+it('重命名拒绝空白标题且不调用接口', async () => {
+  renderSidebar()
+  fireEvent.click(screen.getByRole('button', { name: '更多 新会话' }))
+  fireEvent.click(screen.getByRole('button', { name: '重命名' }))
+  fireEvent.change(screen.getByLabelText('会话标题'), { target: { value: '   ' } })
+  fireEvent.click(screen.getByRole('button', { name: '保存标题' }))
+  expect(await screen.findByText('标题不能为空')).toBeInTheDocument()
+  expect(updateSession).not.toHaveBeenCalled()
 })
 
 it('显示已归档后置灰展示归档项目与会话，并可恢复', async () => {

@@ -51,6 +51,7 @@ export interface UpdateSessionBody {
   project_id?: string | null
   pinned?: boolean
   archived?: boolean
+  title?: string
 }
 
 export function updateSession(sessionId: string, body: UpdateSessionBody): Promise<{ session: Session }> {

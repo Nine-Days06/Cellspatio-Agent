@@ -22,6 +22,16 @@ def test_create_and_list_sessions():
     assert sessions[0]["id"] == sid
     assert sessions[0]["title"] == "第一个会话"
     assert sessions[0]["message_count"] == 0
+    assert store.get_session(sid)["title_source"] == "explicit"
+
+
+def test_create_session_without_title_is_default_source():
+    """未给标题 = default，才能被首条消息覆盖。"""
+    store = SessionStore()
+    sid = store.create_session()
+    session = store.get_session(sid)
+    assert session["title"] == "新会话"
+    assert session["title_source"] == "default"
 
 
 def test_append_message_returns_inserted_row() -> None:
@@ -62,6 +72,7 @@ def test_migrates_legacy_sessions_table(tmp_path):
     session = store.get_session("old")
     assert session is not None
     assert session["title"] == "旧会话"
+    assert session["title_source"] == "derived"
     assert session["project_id"] is None
     assert session["pinned"] is False
     assert session["archived_at"] is None
@@ -228,14 +239,62 @@ def test_batch_delete_rolls_back_when_a_later_session_is_running():
 
 def test_append_message_sets_title_from_first_user_message():
     store = SessionStore()
-    sid = store.create_session("新会话")
+    sid = store.create_session()
     store.append_message(sid, "user", "请帮我做差异表达分析，谢谢")
     session = store.get_session(sid)
     assert session["title"] == "请帮我做差异表达分析，谢谢"[:20]
+    assert session["title_source"] == "derived"
     messages = store.get_messages(sid)
     assert len(messages) == 1
     assert messages[0]["role"] == "user"
     assert messages[0]["seq"] == 1
+
+
+def test_explicit_title_survives_first_user_message():
+    """显式标题（上传/本地路径入口）不被首条消息覆盖。"""
+    store = SessionStore()
+    sid = store.create_session("上传 10x 数据")
+    store.append_message(sid, "user", "完全不同的提问内容，不应该变成标题")
+    session = store.get_session(sid)
+    assert session["title"] == "上传 10x 数据"
+    assert session["title_source"] == "explicit"
+
+
+def test_model_title_skips_explicit_and_model_sources():
+    """自动命名只覆盖 default/derived，不覆盖 explicit/model。"""
+    store = SessionStore()
+    explicit = store.create_session("用户命名")
+    assert store.set_session_title(explicit, "模型标题", source="model") is False
+    assert store.get_session(explicit)["title"] == "用户命名"
+
+    derived = store.create_session()
+    store.append_message(derived, "user", "首条提问内容")
+    assert store.set_session_title(derived, "模型标题", source="model") is True
+    session = store.get_session(derived)
+    assert (session["title"], session["title_source"]) == ("模型标题", "model")
+
+    # 已由模型命名后不再被再次覆盖
+    assert store.set_session_title(derived, "第二个标题", source="model") is False
+    assert store.get_session(derived)["title"] == "模型标题"
+
+
+def test_explicit_title_overwrites_any_source():
+    store = SessionStore()
+    sid = store.create_session()
+    store.append_message(sid, "user", "首条提问内容")
+    assert store.set_session_title(sid, "用户改名", source="explicit") is True
+    session = store.get_session(sid)
+    assert (session["title"], session["title_source"]) == ("用户改名", "explicit")
+    assert store.set_session_title(sid, "模型标题", source="model") is False
+
+
+def test_set_session_title_rejects_blank():
+    store = SessionStore()
+    sid = store.create_session()
+    with pytest.raises(StoreError) as exc:
+        store.set_session_title(sid, "   ", source="explicit")
+    assert exc.value.kind == "invalid"
+    assert store.get_session(sid)["title"] == "新会话"
 
 
 def test_append_and_get_messages_roundtrip_with_results():
