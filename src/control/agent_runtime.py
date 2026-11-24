@@ -16,6 +16,7 @@ from collections.abc import Callable
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any
 
+from src.config import env_int
 from src.control.tools import SYSTEM_PROMPT, TERMINAL_STATUSES, TOOL_SCHEMAS
 from src.reasoning import split_delta
 
@@ -24,7 +25,22 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-MAX_ROUNDS = 3
+# 工具结果预算：单次结果先按上限截断，本轮累计超出后禁用工具、要求模型收口。
+DEFAULT_TOOL_RESULT_MAX_CHARS = 20000
+DEFAULT_TOOL_RESULT_BUDGET_CHARS = 60000
+# 每次工具调用至少按该开销计入预算；即使结果很小，也能在有限轮内自然收口。
+TOOL_CALL_OVERHEAD_CHARS = 1000
+TOOL_RESULT_TRUNCATED_NOTE = "工具结果超出单次上限，已截断"
+# 工具结果要求模型继续推理而非立即返回的标记字段。
+CONTINUE_TOOL_LOOP_FLAG = "continue_tool_loop"
+
+REPEATED_TOOL_NOTE = (
+    "（系统提示：检测到重复的工具调用，工具已停用。请直接基于已有工具结果回答，不要再次请求工具。）"
+)
+BUDGET_EXHAUSTED_NOTE = (
+    "（系统提示：本轮工具结果预算已用尽，工具已停用。请直接基于已有结果回答，不要再次请求工具。）"
+)
+
 
 # 协作式中止返回体。aborted 刻意不进 TERMINAL_STATUSES（src/control/tools.py:19），
 # 由 chat_service 特判落库为「（已中断）」。
@@ -59,6 +75,12 @@ class AgentRuntime:
         on_event 为 None 时与改造前逐字节等价（create 不带 stream 键）。
         非 None 时走流式：逐 chunk 推 delta / tool_status；回调返回 False 视为
         客户端已断开，在下一个检查点（delta 之后、dispatch 之前）安全中止。
+
+        循环不设固定轮数，以下任一条件收口：模型给出最终回答、人工终态、
+        连续/重复的工具调用、工具结果累计预算用尽、客户端中止。
+        工具结果可用 ``continue_tool_loop=True`` 声明本轮非终态，让模型带着结果
+        继续推理；每次调用至少按 ``TOOL_CALL_OVERHEAD_CHARS`` 计入预算，
+        即使结果很小也能在有限轮内收口。
         """
         context = dict(context) if context else {}
         context.setdefault("last_user_input", user_input)
@@ -70,21 +92,33 @@ class AgentRuntime:
         messages = self._build_messages(user_input, context, hint=hint)
         dispatched: dict[str, Any] | None = None
         reasoning_seen = False
+        result_limit_chars = env_int("AGENT_TOOL_RESULT_MAX_CHARS", DEFAULT_TOOL_RESULT_MAX_CHARS)
+        budget_chars = env_int("AGENT_TOOL_RESULT_BUDGET_CHARS", DEFAULT_TOOL_RESULT_BUDGET_CHARS)
+        spent_chars = 0
+        seen_signatures: set[str] = set()
+        force_answer = False
+        disconnected = False
         try:
-            for _ in range(MAX_ROUNDS):
+            # 不设固定轮数：以最终回答、人工终态、重复调用、预算用尽或中止收口。
+            while True:
+                if disconnected:
+                    return dict(ABORTED_RESULT)
                 if on_event is None:
                     response = self.llm_client.chat.completions.create(
                         model=self.model,
                         messages=messages,
                         tools=TOOL_SCHEMAS,
                         temperature=0,
-                        tool_choice="auto",
+                        tool_choice="none" if force_answer else "auto",
                     )
                     message = response.choices[0].message
                     tool_calls = getattr(message, "tool_calls", None)
                 else:
                     message, tool_calls, aborted, round_reasoning = self._stream_round(
-                        messages, on_event, has_prior_reasoning=reasoning_seen
+                        messages,
+                        on_event,
+                        has_prior_reasoning=reasoning_seen,
+                        tool_choice="none" if force_answer else "auto",
                     )
                     reasoning_seen = reasoning_seen or round_reasoning
                     if aborted:
@@ -98,9 +132,26 @@ class AgentRuntime:
                         "message": content or "请尝试更具体的分析或知识问题。",
                     }
 
+                if force_answer:
+                    # 已禁用工具仍返回 tool_calls：视为异常协议，返回安全失败。
+                    return {
+                        "status": "error",
+                        "type": "general_response",
+                        "message": "模型在收口阶段仍请求工具，已停止；请缩小问题范围后重试。",
+                    }
+
                 # 一期契约：只执行第一个工具；是否立即返回见下方
                 # 流式/非流式的终态集合判定（STREAM_TERMINAL_STATUSES）
                 name = tool_calls[0].function.name
+                signature = self._tool_signature(tool_calls[0])
+                if signature in seen_signatures:
+                    # 同一工具与参数已执行过：结果已在上下文中，不再执行副作用，强制收口。
+                    logger.warning("repeated tool call detected: %s", name)
+                    force_answer = True
+                    messages = messages + [{"role": "user", "content": REPEATED_TOOL_NOTE}]
+                    continue
+                seen_signatures.add(signature)
+
                 if on_event is not None and not on_event(
                     {"type": "tool_status", "name": name, "phase": "start"}
                 ):
@@ -116,29 +167,41 @@ class AgentRuntime:
 
                 # 非流式：所有 TERMINAL_STATUSES 即刻返回（保持原有行为）
                 # 流式：仅 STREAM_TERMINAL_STATUSES 为终态；
-                # needs_input/no_results 需让 LLM 再跑一轮生成面向用户的回复
-                if on_event is None:
-                    if status in TERMINAL_STATUSES:
-                        return result
-                else:
-                    if status in STREAM_TERMINAL_STATUSES:
-                        return result
-                    # 流式下需输入/无结果：发 end 事件并继续下一轮
-                    on_event({"type": "tool_status", "name": name, "phase": "end"})
+                # needs_input/no_results 需让 LLM 再跑一轮生成面向用户的回复。
+                # continue_tool_loop=True 的工具（如证据检索）即使 success 也继续。
+                terminal_statuses = (
+                    TERMINAL_STATUSES if on_event is None else STREAM_TERMINAL_STATUSES
+                )
+                if status in terminal_statuses and not (
+                    status == "success" and result.get(CONTINUE_TOOL_LOOP_FLAG) is True
+                ):
+                    if on_event is not None:
+                        on_event({"type": "tool_status", "name": name, "phase": "end"})
+                    return result
+                # 非终态：发 end 事件并继续下一轮
+                if on_event is not None:
+                    # end 写失败说明客户端已断开：结果照常回灌，但下一轮模型调用前中止。
+                    if on_event({"type": "tool_status", "name": name, "phase": "end"}) is False:
+                        disconnected = True
 
+                remaining_chars = budget_chars - spent_chars
+                payload = self._tool_payload(
+                    result, min(result_limit_chars, max(remaining_chars, 0))
+                )
+                spent_chars += max(len(payload), TOOL_CALL_OVERHEAD_CHARS)
+                if spent_chars >= budget_chars:
+                    # 预算用尽：保留已拿到的事实，下一轮禁用工具要求模型收口。
+                    force_answer = True
                 messages = messages + [
                     self._tool_message_dict(message, tool_calls[0]),
                     {
                         "role": "tool",
                         "tool_call_id": tool_calls[0].id,
-                        "content": json.dumps(result, ensure_ascii=False, default=str),
+                        "content": payload,
                     },
                 ]
-            return {
-                "status": "error",
-                "type": "general_response",
-                "message": f"已达最大工具调用轮数（{MAX_ROUNDS}），请简化请求后重试。",
-            }
+                if force_answer:
+                    messages = messages + [{"role": "user", "content": BUDGET_EXHAUSTED_NOTE}]
         except Exception as e:  # noqa: BLE001 - SDK/网络异常
             if dispatched is not None:
                 # 工具已执行（可能已落盘/入库），不能再跑旧工作流重复副作用。
@@ -158,6 +221,7 @@ class AgentRuntime:
         on_event: Callable[[dict], bool],
         *,
         has_prior_reasoning: bool = False,
+        tool_choice: str = "auto",
     ) -> tuple[Any, list | None, bool, bool]:
         """流式跑一轮 LLM 调用。
 
@@ -167,13 +231,14 @@ class AgentRuntime:
 
         第四项表示本轮是否产生过思考增量；``has_prior_reasoning`` 为真时，
         本轮首段思考前插入轻量分隔，让多轮工具调用之间的思考按顺序可辨。
+        ``tool_choice="none"`` 用于预算/重复调用后的强制收口轮。
         """
         stream = self.llm_client.chat.completions.create(
             model=self.model,
             messages=messages,
             tools=TOOL_SCHEMAS,
             temperature=0,
-            tool_choice="auto",
+            tool_choice=tool_choice,
             stream=True,
         )
         content_parts: list[str] = []
@@ -232,6 +297,28 @@ class AgentRuntime:
             tool_calls=tool_calls or None,
         )
         return message, tool_calls or None, False, reasoning_emitted
+
+    @staticmethod
+    def _tool_signature(tool_call: Any) -> str:
+        """工具名 + 规范化参数，用于检测重复调用。"""
+        raw = getattr(tool_call.function, "arguments", None) or "{}"
+        try:
+            canonical = json.dumps(json.loads(raw), ensure_ascii=False, sort_keys=True, default=str)
+        except (json.JSONDecodeError, TypeError):
+            canonical = raw
+        return f"{tool_call.function.name}\x00{canonical}"
+
+    @staticmethod
+    def _tool_payload(result: dict[str, Any], limit: int) -> str:
+        """序列化工具结果，超出上限时返回合法 JSON 的截断预览。"""
+        payload = json.dumps(result, ensure_ascii=False, default=str)
+        if len(payload) <= limit:
+            return payload
+        skeleton = {"truncated": True, "note": TOOL_RESULT_TRUNCATED_NOTE, "preview": ""}
+        # 预留包装字段与转义余量，避免截断后反而明显超出上限。
+        room = max(limit - len(json.dumps(skeleton, ensure_ascii=False)) - 64, 0)
+        skeleton["preview"] = payload[:room]
+        return json.dumps(skeleton, ensure_ascii=False)
 
     def _route_hint(self, user_input: str) -> dict[str, Any] | None:
         """调用 ModalRouter.hint；无 router 或失败时返回 None（不阻断主流程）。"""

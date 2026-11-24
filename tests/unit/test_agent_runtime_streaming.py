@@ -2,11 +2,12 @@
 
 from __future__ import annotations
 
+import json
 from types import SimpleNamespace
 
 import pytest
 
-from tests.unit.test_agent_runtime import FakeWM, _text_response
+from tests.unit.test_agent_runtime import FakeWM, _text_response, _tool_call_response
 
 
 def _text_chunk(text: str) -> SimpleNamespace:
@@ -236,10 +237,8 @@ def test_abort_on_tool_status_start_skips_dispatch():
     assert len(sink.events) == 1
 
 
-def test_tool_status_end_emit_result_is_ignored():
-    """phase=end 的 emit 返回值被忽略：工作照常进入下一轮（已产出工具结果不能丢）。
-    注意：delta 事件也会推给同一回调，断言仅过滤 tool_status 类型。
-    """
+def test_tool_status_end_disconnect_aborts_before_next_model_call():
+    """phase=end 写失败说明客户端已断开：结果照常回灌，但不得再发起模型调用。"""
 
     class EndOnlySink(EventSink):
         def __call__(self, event: dict) -> bool:
@@ -259,7 +258,8 @@ def test_tool_status_end_emit_result_is_ignored():
     result = runtime.execute("问", on_event=sink)
 
     assert wm.calls == [("query_knowledge", {"query": "y"})]
-    assert result["message"] == "答"
+    assert result["status"] == "aborted"
+    assert len(llm.calls) == 1
     assert [e.get("phase") for e in sink.events if e.get("type") == "tool_status"] == [
         "start",
         "end",
@@ -300,21 +300,186 @@ def test_stream_create_exception_falls_back_to_legacy_workflow():
     assert result["message"] == "fallback"
 
 
-def test_stream_rounds_capped_at_max_rounds():
-    """持续请求工具时按 MAX_ROUNDS 收敛，返回既有上限错误文案。"""
-    from src.control.agent_runtime import MAX_ROUNDS
-
+def test_stream_has_no_fixed_round_cap():
+    """不设固定轮数：连续五轮不同参数的工具调用后仍能正常收口。"""
     llm = FakeStreamLLM(
-        [[_tool_chunk(0, f"c{i}", "query_knowledge", '{"query": "z"}')] for i in range(MAX_ROUNDS)]
+        [[_tool_chunk(0, f"c{i}", "query_knowledge", f'{{"query": "q{i}"}}')] for i in range(5)]
+        + [[_text_chunk("完成")]]
     )
     wm = FakeWM({"query_knowledge": {"status": "needs_input", "message": "缺输入"}})
     runtime, _ = _runtime(llm, wm)
 
     result = runtime.execute("一直问", on_event=EventSink())
 
+    assert result["message"] == "完成"
+    assert len(wm.calls) == 5
+
+
+def test_consecutive_duplicate_tool_call_is_not_dispatched_again():
+    """同一工具 + 同一参数连续重复：不再执行副作用，禁用工具让模型收口。"""
+    llm = FakeStreamLLM(
+        [
+            [_tool_chunk(0, "c1", "query_knowledge", '{"query": "TP53"}')],
+            [_tool_chunk(0, "c2", "query_knowledge", '{"query": "TP53"}')],
+            [_text_chunk("基于已有结果回答")],
+        ]
+    )
+    wm = FakeWM({"query_knowledge": {"status": "needs_input", "message": "缺输入"}})
+    runtime, _ = _runtime(llm, wm)
+
+    result = runtime.execute("TP53 是什么", on_event=EventSink())
+
+    assert len(wm.calls) == 1
+    assert llm.calls[2]["tool_choice"] == "none"
+    assert result["message"] == "基于已有结果回答"
+
+
+def test_tool_result_is_truncated_to_per_call_cap(monkeypatch):
+    """单次工具结果超过上限时截断并标注，避免撑爆上下文。"""
+    monkeypatch.setenv("AGENT_TOOL_RESULT_MAX_CHARS", "160")
+    llm = FakeStreamLLM(
+        [
+            [_tool_chunk(0, "c1", "query_knowledge", '{"query": "x"}')],
+            [_text_chunk("答")],
+        ]
+    )
+    wm = FakeWM(
+        {
+            "query_knowledge": {
+                "status": "success",
+                "continue_tool_loop": True,
+                "message": "长" * 500,
+            }
+        }
+    )
+    runtime, _ = _runtime(llm, wm)
+
+    runtime.execute("问", on_event=EventSink())
+
+    payload = llm.calls[1]["messages"][-1]["content"]
+    parsed = json.loads(payload)
+    assert parsed["truncated"] is True
+    assert "已截断" in parsed["note"]
+    assert parsed["preview"]
+    assert len(payload) <= 160
+
+
+def test_tool_budget_exhaustion_switches_to_final_answer(monkeypatch):
+    """累计结果预算用尽后禁用工具，不再执行新工具。"""
+    monkeypatch.setenv("AGENT_TOOL_RESULT_BUDGET_CHARS", "80")
+    llm = FakeStreamLLM(
+        [
+            [_tool_chunk(0, "c1", "query_knowledge", '{"query": "x"}')],
+            [_text_chunk("基于已有信息回答")],
+        ]
+    )
+    wm = FakeWM({"query_knowledge": {"status": "needs_input", "message": "长" * 500}})
+    runtime, _ = _runtime(llm, wm)
+
+    result = runtime.execute("问", on_event=EventSink())
+
+    assert len(wm.calls) == 1
+    assert llm.calls[1]["tool_choice"] == "none"
+    assert result["message"] == "基于已有信息回答"
+
+
+def test_continue_tool_loop_flag_overrides_success_terminal_status():
+    """证据类工具即使 status=success 也继续主模型推理，而不是提前返回。"""
+    llm = FakeStreamLLM(
+        [
+            [_tool_chunk(0, "c1", "query_knowledge", '{"query": "x"}')],
+            [_text_chunk("整合后的回答")],
+        ]
+    )
+    evidence = {
+        "status": "success",
+        "type": "knowledge_evidence",
+        "evidence": [{"id": "E1"}],
+        "continue_tool_loop": True,
+    }
+    wm = FakeWM({"query_knowledge": evidence})
+    runtime, _ = _runtime(llm, wm)
+
+    result = runtime.execute("问", on_event=EventSink())
+
+    assert len(llm.calls) == 2
+    assert result["message"] == "整合后的回答"
+
+
+def test_non_stream_duplicate_call_is_not_dispatched_twice():
+    """非流式路径同样拦截重复调用，并强制模型基于已有结果收口。"""
+    llm = ScriptedLLM(
+        [
+            _tool_call_response("query_knowledge", {"query": "TP53"}),
+            _tool_call_response("query_knowledge", {"query": "TP53"}),
+            _text_response("已有结果"),
+        ]
+    )
+    wm = FakeWM({"query_knowledge": {"status": "success", "continue_tool_loop": True}})
+    runtime, _ = _runtime(llm, wm)
+
+    result = runtime.execute("TP53 是什么")
+
+    assert len(wm.calls) == 1
+    assert llm.calls[2]["tool_choice"] == "none"
+    assert result["message"] == "已有结果"
+
+
+def test_non_stream_continues_past_three_tool_rounds():
+    """非流式循环也不再受固定三轮限制。"""
+    llm = ScriptedLLM(
+        [_tool_call_response("query_knowledge", {"query": f"q{i}"}) for i in range(5)]
+        + [_text_response("完成")]
+    )
+    wm = FakeWM({"query_knowledge": {"status": "success", "continue_tool_loop": True}})
+    runtime, _ = _runtime(llm, wm)
+
+    result = runtime.execute("一直问")
+
+    assert len(wm.calls) == 5
+    assert result["message"] == "完成"
+
+
+def test_forced_answer_that_still_requests_tool_fails_safely(monkeypatch):
+    """预算耗尽后模型仍返回 tool_calls：不得执行新工具，返回安全失败。"""
+    monkeypatch.setenv("AGENT_TOOL_RESULT_BUDGET_CHARS", "80")
+    llm = ScriptedLLM(
+        [
+            _tool_call_response("query_knowledge", {"query": "x"}),
+            _tool_call_response("query_knowledge", {"query": "y"}),
+        ]
+    )
+    wm = FakeWM(
+        {
+            "query_knowledge": {
+                "status": "success",
+                "continue_tool_loop": True,
+                "message": "长" * 500,
+            }
+        }
+    )
+    runtime, _ = _runtime(llm, wm)
+
+    result = runtime.execute("问")
+
+    assert len(wm.calls) == 1
     assert result["status"] == "error"
-    assert "已达最大工具调用轮数" in result["message"]
-    assert len(llm.calls) == MAX_ROUNDS
+    assert "收口阶段" in result["message"]
+
+
+def test_tool_signature_normalizes_key_order_and_tolerates_bad_json():
+    """重复检测按规范化参数比较：键序不同视为同一调用，坏 JSON 不崩溃。"""
+    from src.control.agent_runtime import AgentRuntime
+
+    def call(arguments: str) -> SimpleNamespace:
+        return SimpleNamespace(
+            function=SimpleNamespace(name="query_knowledge", arguments=arguments)
+        )
+
+    assert AgentRuntime._tool_signature(call('{"a": 1, "b": 2}')) == (
+        AgentRuntime._tool_signature(call('{"b": 2, "a": 1}'))
+    )
+    assert AgentRuntime._tool_signature(call("not-json")) == "query_knowledge\x00not-json"
 
 
 def test_stream_tool_calls_accumulate_with_missing_index():

@@ -1,3 +1,4 @@
+import logging
 import os
 from pathlib import Path
 from typing import Any
@@ -6,6 +7,8 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
+logger = logging.getLogger(__name__)
+
 # ── 项目路径 ──────────────────────────────────────────────────
 BASE_DIR = Path(__file__).parent.parent
 
@@ -13,6 +16,24 @@ BASE_DIR = Path(__file__).parent.parent
 def env_flag(name: str) -> bool:
     """读取布尔环境变量：1/true/yes/on 为真。"""
     return os.environ.get(name, "0").strip().lower() in ("1", "true", "yes", "on")
+
+
+def env_int(name: str, default: int, *, minimum: int = 1) -> int:
+    """读取整数环境变量；空值、非法值或低于下限时告警并回退默认值。"""
+    raw = os.environ.get(name, "").strip()
+    if not raw:
+        return default
+    try:
+        value = int(raw)
+    except ValueError:
+        logger.warning("invalid integer env %s=%r, fall back to %s", name, raw, default)
+        return default
+    if value < minimum:
+        logger.warning(
+            "integer env %s=%s below minimum %s, fall back to %s", name, value, minimum, default
+        )
+        return default
+    return value
 
 
 def is_local_mode() -> bool:
