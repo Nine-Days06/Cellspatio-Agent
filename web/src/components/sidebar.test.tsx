@@ -125,7 +125,7 @@ describe('Sidebar', () => {
     expect(createSession).not.toHaveBeenCalled()
     expect(deleteSession).not.toHaveBeenCalled()
   })
-  it('移动会话导航选择后关闭，删除仍须独立二次确认', () => {
+  it('移动会话导航选择后关闭，删除仍须独立二次确认', async () => {
     const { onSelected } = renderSidebar()
     fireEvent.click(screen.getByRole('button', { name: '会话' }))
     const drawer = screen.getByRole('dialog', { name: '会话导航' })
@@ -135,7 +135,33 @@ describe('Sidebar', () => {
     expect(deleteSession).not.toHaveBeenCalled()
     fireEvent.click(within(drawer).getByRole('button', { name: /^新会话/ }))
     expect(onSelected).toHaveBeenCalledWith('s2')
+    await waitFor(() =>
+      expect(screen.queryByRole('dialog', { name: '会话导航' })).not.toBeInTheDocument(),
+    )
+  })
+
+  it('抽屉使用滑入类，关闭时先反向滑出再移除', async () => {
+    renderSidebar()
+    fireEvent.click(screen.getByRole('button', { name: '会话' }))
+
+    const drawer = screen.getByRole('dialog', { name: '会话导航' })
+    expect(drawer.className).toContain('sidebar-drawer')
+    expect(drawer.className).not.toContain('sidebar-drawer-out')
+
+    fireEvent.keyDown(document, { key: 'Escape' })
+    expect(drawer.className).toContain('sidebar-drawer-out')
+    await waitFor(() =>
+      expect(screen.queryByRole('dialog', { name: '会话导航' })).not.toBeInTheDocument(),
+    )
+  })
+
+  it('减少动效时抽屉立即关闭', () => {
+    window.matchMedia = vi.fn().mockReturnValue({ matches: true }) as unknown as typeof window.matchMedia
+    renderSidebar()
+    fireEvent.click(screen.getByRole('button', { name: '会话' }))
+    fireEvent.keyDown(document, { key: 'Escape' })
     expect(screen.queryByRole('dialog', { name: '会话导航' })).not.toBeInTheDocument()
+    delete (window as { matchMedia?: typeof window.matchMedia }).matchMedia
   })
   it('渲染会话列表并高亮当前会话', () => {
     renderSidebar()
@@ -276,6 +302,27 @@ it('按项目分组渲染会话，项目头可新建会话', () => {
     expect(createSession).toHaveBeenCalledWith(undefined, 'p1')
     expect(onCreated).toHaveBeenCalledWith(expect.objectContaining({ id: 's3', project_id: 'p1' }))
   })
+})
+
+it('项目分组收起后子项不可见且 aria-expanded=false', () => {
+  renderSidebar({ projects, sessions: [{ ...sessions[0], project_id: 'p1' }] })
+
+  const header = screen.getByRole('button', { name: /^肝项目组/ })
+
+  fireEvent.click(header)
+  expect(header).toHaveAttribute('aria-expanded', 'false')
+  const region = screen.getByRole('region', { name: '项目 肝项目组' })
+  const group = region.querySelector('.motion-collapse')
+  expect(group).toHaveAttribute('aria-hidden', 'true')
+  expect(group).toHaveClass('grid-rows-[0fr]')
+  expect(group).toHaveAttribute('inert')
+  expect(
+    within(region).queryByRole('button', { name: /^肝癌项目/ }),
+  ).not.toBeInTheDocument()
+
+  fireEvent.click(header)
+  expect(header).toHaveAttribute('aria-expanded', 'true')
+  expect(within(region).getByRole('button', { name: /^肝癌项目/ })).toBeInTheDocument()
 })
 
 it('新建项目：填名后调用 createProject 并刷新', async () => {

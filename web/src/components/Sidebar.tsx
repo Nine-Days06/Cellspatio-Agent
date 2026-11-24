@@ -1,8 +1,7 @@
-import { useRef, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import {
   Archive,
   ChevronDown,
-  ChevronRight,
   FolderPlus,
   Menu,
   MoreHorizontal,
@@ -27,6 +26,8 @@ import type { EnvStatus, KbStats, Project, SessionSummary, UsageSummary } from '
 import { groupSessions } from '@/lib/sessionGroups'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
+import { cn } from '@/lib/utils'
+import { MOTION_MS, prefersReducedMotion } from '@/lib/motion'
 import {
   Dialog,
   DialogClose,
@@ -92,6 +93,7 @@ export function Sidebar({
   onChanged,
 }: SidebarProps) {
   const [mobileOpen, setMobileOpen] = useState(false)
+  const [mobileClosing, setMobileClosing] = useState(false)
   const [pendingDelete, setPendingDelete] = useState<SessionSummary | null>(null)
   const [pendingSession, setPendingSession] = useState<SessionSummary | null>(null)
   const [pendingProject, setPendingProject] = useState<Project | null>(null)
@@ -114,6 +116,43 @@ export function Sidebar({
   const [usageLoading, setUsageLoading] = useState(false)
   const [usageError, setUsageError] = useState<string | null>(null)
   const usageRequest = useRef(0)
+  const mobileCloseTimer = useRef<number | null>(null)
+
+  useEffect(
+    () => () => {
+      if (mobileCloseTimer.current !== null) window.clearTimeout(mobileCloseTimer.current)
+    },
+    [],
+  )
+
+  /** 关闭前留出反向滑出时间；减少动效时立即关闭。 */
+  function closeMobile() {
+    if (mobileCloseTimer.current !== null) return
+    if (prefersReducedMotion()) {
+      setMobileOpen(false)
+      setMobileClosing(false)
+      return
+    }
+    setMobileClosing(true)
+    mobileCloseTimer.current = window.setTimeout(() => {
+      mobileCloseTimer.current = null
+      setMobileOpen(false)
+      setMobileClosing(false)
+    }, MOTION_MS.enter)
+  }
+
+  function handleMobileOpenChange(open: boolean) {
+    if (!open) {
+      closeMobile()
+      return
+    }
+    if (mobileCloseTimer.current !== null) {
+      window.clearTimeout(mobileCloseTimer.current)
+      mobileCloseTimer.current = null
+    }
+    setMobileClosing(false)
+    setMobileOpen(true)
+  }
 
   const {
     query,
@@ -150,7 +189,7 @@ export function Sidebar({
         archived_at: session.archived_at,
       })
       setPendingProject(null)
-      setMobileOpen(false)
+      closeMobile()
     } catch (err) {
       setCreateError(errorMessage(err, '新建会话失败'))
     }
@@ -354,7 +393,7 @@ export function Sidebar({
           title={session.title}
           onClick={() => {
             onSelect(session.id)
-            setMobileOpen(false)
+            closeMobile()
           }}
           className={`min-w-0 flex-1 rounded-lg px-3 py-3 text-left text-sm ${
             session.id === activeId
@@ -446,7 +485,7 @@ export function Sidebar({
 
       {createError && <p className="px-3 py-2 text-xs text-destructive">{createError}</p>}
 
-      <nav className="min-h-0 flex-1 overflow-y-auto px-3 pb-3" aria-label="会话列表">
+      <nav className="min-h-0 flex-1 overflow-y-auto overscroll-contain px-3 pb-3" aria-label="会话列表">
         <p className="px-3 pb-2 text-xs text-muted-foreground">
           {searchMode ? `搜索结果 ${activeSessions.length}` : `会话记录 ${activeSessions.length}`}
         </p>
@@ -484,11 +523,13 @@ export function Sidebar({
                     onClick={() => toggleProject(project.id)}
                     className="flex min-h-11 min-w-0 flex-1 items-center gap-1 rounded-lg px-2 text-left text-sm font-medium hover:bg-card/60"
                   >
-                    {collapsed ? (
-                      <ChevronRight className="size-4 shrink-0" aria-hidden="true" />
-                    ) : (
-                      <ChevronDown className="size-4 shrink-0" aria-hidden="true" />
-                    )}
+                    <ChevronDown
+                      className={cn(
+                        'size-4 shrink-0 transition-transform duration-[var(--motion-fast)] ease-[var(--motion-ease)]',
+                        collapsed && '-rotate-90',
+                      )}
+                      aria-hidden="true"
+                    />
                     <span className="truncate">{project.label}</span>
                     <span className="ml-auto text-xs text-muted-foreground">
                       {project.session_count}
@@ -511,10 +552,21 @@ export function Sidebar({
                     <MoreHorizontal className="size-4" aria-hidden="true" />
                   </button>
                 </div>
-                {!collapsed && items.length > 0 && (
-                  <ul className="ml-3 flex flex-col gap-1 border-l border-border pl-2">
-                    {items.map(renderSession)}
-                  </ul>
+                {items.length > 0 && (
+                  <div
+                    className={cn(
+                      'motion-collapse',
+                      collapsed ? 'grid-rows-[0fr]' : 'grid-rows-[1fr]',
+                    )}
+                    aria-hidden={collapsed}
+                    {...(collapsed ? { inert: '' } : {})}
+                  >
+                    <div>
+                      <ul className="ml-3 flex flex-col gap-1 border-l border-border pl-2">
+                        {items.map(renderSession)}
+                      </ul>
+                    </div>
+                  </div>
                 )}
               </section>
             )
@@ -555,7 +607,7 @@ export function Sidebar({
                     aria-label={`打开会话 ${session.title}`}
                     onClick={() => {
                       onSelect(session.id)
-                      setMobileOpen(false)
+                      closeMobile()
                     }}
                     className="flex min-h-11 min-w-0 flex-1 items-center rounded-lg px-3 text-left text-sm text-muted-foreground hover:bg-card/60"
                   >
@@ -830,14 +882,19 @@ export function Sidebar({
       <aside className="workspace-sidebar hidden w-[17rem] shrink-0 flex-col border-r border-border md:flex">
         {navigation}
       </aside>
-      <Dialog open={mobileOpen} onOpenChange={setMobileOpen}>
+      <Dialog open={mobileOpen} onOpenChange={handleMobileOpenChange}>
         <div className="workspace-sidebar flex shrink-0 items-center justify-between border-b border-border px-5 py-1 md:hidden">
           <span className="font-semibold">CellSpatio</span>
           <DialogTrigger render={<Button variant="ghost" className="min-h-11" />}>
             <Menu aria-hidden="true" />会话
           </DialogTrigger>
         </div>
-        <DialogContent className="inset-y-0 left-0 top-0 flex h-dvh w-[min(320px,calc(100%-2rem))] max-w-none translate-x-0 translate-y-0 flex-col gap-0 rounded-none bg-muted p-0 sm:max-w-none [&>[data-slot=dialog-close]]:size-11">
+        <DialogContent
+          className={cn(
+            'sidebar-drawer inset-y-0 left-0 top-0 flex h-dvh w-[min(320px,calc(100%-2rem))] max-w-none translate-x-0 translate-y-0 flex-col gap-0 rounded-none bg-muted p-0 sm:max-w-none [&>[data-slot=dialog-close]]:size-11',
+            mobileClosing && 'sidebar-drawer-out',
+          )}
+        >
           <DialogTitle className="sr-only">会话导航</DialogTitle>
           <DialogDescription className="sr-only">选择或新建会话，查看运行环境。</DialogDescription>
           {navigation}

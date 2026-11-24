@@ -459,7 +459,7 @@ export function ChatPage() {
         {workspaceExpired && (
           <div
             role="alert"
-            className="flex shrink-0 items-center justify-between gap-3 border-b border-border bg-muted px-5 py-3 text-sm md:px-9"
+            className="motion-fade flex shrink-0 items-center justify-between gap-3 border-b border-border bg-muted px-5 py-3 text-sm md:px-9"
           >
             <span>临时体验空间已到期，数据将在清理后删除。</span>
             <button
@@ -514,6 +514,7 @@ export function ChatPage() {
         </header>
         <MessageList
           key={sessionId}
+          historyReady={!messagesQuery.isLoading}
           onQcRecorded={() => {
             void queryClient.invalidateQueries({ queryKey: queryKeys.messages(sessionId ?? '') })
             void queryClient.invalidateQueries({ queryKey: queryKeys.sessions() })

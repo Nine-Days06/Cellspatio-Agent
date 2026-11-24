@@ -38,6 +38,10 @@
   `tests/unit/test_confirm_contract.py`。
 - 切换会话/清空状态必须经过 store 的私有 reset，避免遗漏 abort 和复位。
 - 临时工作区 410 时 `ChatPage` 必须显示“新建临时空间”；不能依赖 `/api/sidebar` 成功返回。
+- 动效统一用 `web/src/index.css` 的 `--motion-*` 令牌与 `motion-*` 语义类，只动
+  `opacity`/`transform`；组件不写内联动画，也不引运行时动画库。JS 里需要时长或
+  reduced-motion 判断时用 `web/src/lib/motion.ts`（`MOTION_MS` / `prefersReducedMotion`），
+  不要重复匹配 `matchMedia`。新增语义类或令牌时同步本节。
 
 ## 构建与测试
 

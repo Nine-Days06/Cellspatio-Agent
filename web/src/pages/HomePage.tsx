@@ -91,16 +91,16 @@ export function HomePage() {
       </div>
 
       <section className="relative w-full max-w-3xl">
-        <p className="text-xs font-medium tracking-[0.24em] text-primary">CELLSPATIO</p>
-        <h1 className="mt-5 max-w-2xl text-4xl leading-tight font-semibold tracking-tight md:text-5xl">
+        <p className="motion-home-step text-xs font-medium tracking-[0.24em] text-primary" data-motion-step="1">CELLSPATIO</p>
+        <h1 className="motion-home-step mt-5 max-w-2xl text-4xl leading-tight font-semibold tracking-tight md:text-5xl" data-motion-step="1">
           从单细胞数据到可复核的分析记录
         </h1>
-        <p className="mt-5 max-w-xl text-base leading-7 text-muted-foreground">
+        <p className="motion-home-step mt-5 max-w-xl text-base leading-7 text-muted-foreground" data-motion-step="2">
           CellSpatio 面向单细胞与空间组学，把数据检查、受控分析阶段和证据记录放在同一个工作台里。
           试用空间无需注册，24 小时后自动到期。
         </p>
 
-        <div className="mt-9 flex flex-wrap gap-3">
+        <div className="motion-home-step mt-9 flex flex-wrap gap-3" data-motion-step="3">
           <Button size="lg" onClick={() => navigate('/login')}>
             <LogIn />
             登录
@@ -122,7 +122,7 @@ export function HomePage() {
           </p>
         )}
 
-        <dl className="mt-12 grid gap-4 text-sm text-muted-foreground sm:grid-cols-3">
+        <dl className="motion-home-step mt-12 grid gap-4 text-sm text-muted-foreground sm:grid-cols-3" data-motion-step="4">
           <div>
             <dt className="font-medium text-foreground">受控阶段</dt>
             <dd className="mt-1 leading-6">QC、PCA、聚类与 marker 逐阶段审阅。</dd>

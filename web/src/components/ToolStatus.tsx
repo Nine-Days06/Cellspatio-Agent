@@ -24,10 +24,11 @@ export function ToolStatus({
   return (
     <div
       data-testid="tool-status"
-      className="mb-1 flex min-w-0 items-center gap-1.5 text-xs text-muted-foreground"
+      className="motion-fade-fast mb-1 flex min-w-0 items-center gap-1.5 text-xs text-muted-foreground"
     >
       <Loader2 className="size-3 animate-spin" aria-hidden="true" />
-      <span className="truncate">{text}</span>
+      {/* key=text：文案切换时只淡入新文案，行高不变，无退出动画。 */}
+      <span key={text} className="motion-swap truncate">{text}</span>
       {entry && <span aria-hidden="true">…</span>}
     </div>
   )

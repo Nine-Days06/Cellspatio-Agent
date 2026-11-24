@@ -27,7 +27,7 @@ describe('ReasoningPanel', () => {
 
     expect(screen.getByText('思考中')).toBeInTheDocument()
     expect(screen.getByText('46 字')).toBeInTheDocument()
-    expect(screen.getByText(/末尾标记/)).toBeInTheDocument()
+    expect(screen.getAllByText(/末尾标记/).length).toBeGreaterThan(0)
     expect(screen.getByRole('button', { name: '展开思考过程' })).toHaveAttribute(
       'aria-expanded',
       'false',
@@ -62,5 +62,17 @@ describe('ReasoningPanel', () => {
     expect(screen.getByText('已截断')).toBeInTheDocument()
     fireEvent.click(screen.getByRole('button', { name: '展开思考过程' }))
     expect(screen.getByText(/思考内容超过上限/)).toBeInTheDocument()
+  })
+
+  it('收起时常驻正文高度为 0 且对辅助技术隐藏', () => {
+    render(<Controlled text="常驻正文" running={false} />)
+
+    const body = screen.getByTestId('reasoning-body').closest('[aria-hidden]')
+    expect(body).toHaveAttribute('aria-hidden', 'true')
+    expect(body).toHaveClass('grid-rows-[0fr]')
+
+    fireEvent.click(screen.getByRole('button', { name: '展开思考过程' }))
+    expect(body).toHaveAttribute('aria-hidden', 'false')
+    expect(body).toHaveClass('grid-rows-[1fr]')
   })
 })

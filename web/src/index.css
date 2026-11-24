@@ -34,6 +34,17 @@
   --user-message-border: #d8e6eb;
   --radius: 0.625rem;
   --workspace-gutter: clamp(1.25rem, 3vw, 2.25rem);
+  /* 动效语言：基础档位 + spec 场景预算表里的三个高频时长。 */
+  --motion-fast: 120ms;
+  --motion-base: 180ms;
+  --motion-slow: 240ms;
+  --motion-page: 200ms;
+  --motion-enter: 160ms;
+  --motion-hint: 140ms;
+  --motion-blink: 1s;
+  --motion-shimmer: 1.4s;
+  --motion-ease: cubic-bezier(0.2, 0, 0, 1);
+  --motion-ease-enter: cubic-bezier(0.16, 1, 0.3, 1);
 }
 
 .dark {
@@ -106,10 +117,21 @@ body {
 .workspace { background-image: radial-gradient(ellipse at top right, color-mix(in srgb, var(--muted) 40%, transparent), transparent 65%); }
 .workspace-sidebar { background: linear-gradient(165deg, var(--sidebar-start) 0%, var(--sidebar-end) 100%); }
 .workspace-header { background: color-mix(in srgb, var(--background) 90%, transparent); }
-.session-selected { box-shadow: inset 3px 0 0 var(--primary); }
+.session-selected { position: relative; }
+/* 选中指示条：120ms 纵向展开，绝对定位不参与布局。 */
+.session-selected::before {
+  content: '';
+  position: absolute;
+  inset-block: 0;
+  inset-inline-start: 0;
+  width: 3px;
+  background: var(--primary);
+  animation: session-bar-in var(--motion-fast) var(--motion-ease-enter) backwards;
+}
+@keyframes session-bar-in { from { scale: 1 0; } }
 .user-message { background: var(--user-message); border: 1px solid var(--user-message-border); }
 .record-scroll { scrollbar-gutter: stable; overscroll-behavior: contain; }
-.workspace-start { animation: workspace-arrive 350ms ease-out; }
+.workspace-start { animation: motion-fade-in var(--motion-page) var(--motion-ease-enter) backwards; }
 .starter-row { padding-inline: 0.5rem; }
 .composer { background: linear-gradient(transparent, var(--background) 1rem); padding-bottom: max(0.75rem, env(safe-area-inset-bottom)); }
 .composer-shell { box-shadow: 0 3px 18px #20354308; }
@@ -117,7 +139,75 @@ body {
 .composer-input { max-height: 9rem; overflow-y: auto; }
 .confirm-dock { scrollbar-gutter: stable; overscroll-behavior: contain; }
 .confirm-dock > [data-testid] { max-width: 72rem; margin-inline: auto; }
-@keyframes workspace-arrive { from { opacity: 0; } to { opacity: 1; } }
+
+/* 语义动效类：组件只挂类名，不写内联动画；时长全部来自上面的场景令牌。 */
+.motion-page { animation: motion-page-in var(--motion-page) var(--motion-ease-enter) backwards; }
+.motion-enter-up { animation: motion-enter-up var(--motion-enter) var(--motion-ease-enter) backwards; }
+.motion-home-step { animation: motion-enter-up var(--motion-base) var(--motion-ease-enter) backwards; }
+.motion-fade { animation: motion-fade-in var(--motion-enter) var(--motion-ease) backwards; }
+.motion-fade-fast { animation: motion-fade-in var(--motion-hint) var(--motion-ease) backwards; }
+.motion-swap { animation: motion-fade-in var(--motion-fast) var(--motion-ease) backwards; }
+.motion-icon { animation: motion-icon-in var(--motion-base) var(--motion-ease-enter) backwards; }
+.motion-caret { animation: motion-caret var(--motion-blink) steps(1, end) infinite; }
+.motion-shimmer { animation: motion-shimmer var(--motion-shimmer) linear infinite; }
+.motion-collapse { display: grid; transition: grid-template-rows var(--motion-base) var(--motion-ease); }
+.motion-collapse-panel { display: grid; transition: grid-template-rows var(--motion-page) var(--motion-ease); }
+.motion-collapse > *, .motion-collapse-panel > * { min-height: 0; overflow: hidden; }
+.motion-press {
+  transition:
+    color var(--motion-fast) var(--motion-ease),
+    background-color var(--motion-fast) var(--motion-ease),
+    border-color var(--motion-fast) var(--motion-ease),
+    opacity var(--motion-fast) var(--motion-ease),
+    translate var(--motion-fast) var(--motion-ease),
+    scale var(--motion-fast) var(--motion-ease);
+}
+.motion-press:active:not(:disabled) { scale: 0.98; }
+/* 只在用户点击切换主题时临时启用，避免首屏加载出现颜色渐变。 */
+html.theme-transition body {
+  transition:
+    background-color var(--motion-enter) var(--motion-ease),
+    color var(--motion-enter) var(--motion-ease);
+}
+/* 悬浮层（如「回到最新内容」）：opacity + scale 过渡，hidden 态不可点、不可聚焦。 */
+.motion-float { transition: opacity var(--motion-enter) var(--motion-ease), scale var(--motion-enter) var(--motion-ease); }
+.motion-float-hidden { opacity: 0; scale: 0.96; pointer-events: none; }
+/* 手机侧栏：覆盖弹窗自带的居中/缩放动画，只驱动 translate 滑入滑出。 */
+.sidebar-drawer[data-open] { animation: drawer-in var(--motion-slow) var(--motion-ease-enter) backwards; }
+.sidebar-drawer[data-open].sidebar-drawer-out { animation: drawer-out var(--motion-enter) var(--motion-ease) forwards; }
+/* 证据来源、检索原文与运行环境：箭头 120ms 旋转、展开内容 140ms 淡入；不做高度动画，图表与数据更新不参与。 */
+:is(.evidence-sources, .evidence-source, .evidence-item, .workspace-sidebar details) > summary { list-style: none; cursor: pointer; }
+:is(.evidence-sources, .evidence-source, .evidence-item, .workspace-sidebar details) > summary::-webkit-details-marker { display: none; }
+:is(.evidence-sources, .evidence-source, .evidence-item, .workspace-sidebar details) > summary::marker { content: ''; }
+:is(.evidence-sources, .evidence-source, .evidence-item, .workspace-sidebar details) > summary::after {
+  content: '';
+  display: inline-block;
+  width: 0.4em;
+  height: 0.4em;
+  margin-inline-start: 0.45em;
+  vertical-align: 0.12em;
+  border-right: 1.5px solid currentColor;
+  border-bottom: 1.5px solid currentColor;
+  rotate: -45deg;
+  transition: rotate var(--motion-fast) var(--motion-ease);
+}
+:is(.evidence-sources, .evidence-source, .evidence-item, .workspace-sidebar details)[open] > summary::after { rotate: 45deg; }
+:is(.evidence-sources, .evidence-source, .evidence-item, .workspace-sidebar details)[open] > :not(summary) {
+  animation: motion-fade-in var(--motion-hint) var(--motion-ease) backwards;
+}
+
+@keyframes motion-page-in { from { opacity: 0; translate: 0 8px; } }
+@keyframes motion-enter-up { from { opacity: 0; translate: 0 6px; } }
+@keyframes motion-fade-in { from { opacity: 0; } }
+@keyframes motion-icon-in { from { opacity: 0; rotate: -90deg; } }
+@keyframes motion-caret { 0%, 45% { opacity: 1; } 55%, 100% { opacity: 0; } }
+@keyframes motion-shimmer { from { translate: -100% 0; } to { translate: 100% 0; } }
+@keyframes drawer-in { from { translate: -100% 0; } }
+@keyframes drawer-out { to { translate: -100% 0; } }
+
+.motion-home-step[data-motion-step="2"] { animation-delay: 40ms; }
+.motion-home-step[data-motion-step="3"] { animation-delay: 80ms; }
+.motion-home-step[data-motion-step="4"] { animation-delay: 120ms; }
 
 @layer base {
   :focus-visible { outline: 2px solid var(--ring); outline-offset: 3px; }
