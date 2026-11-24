@@ -18,6 +18,7 @@
 | `src/skills/` | 技能 Base/Manifest/Registry/Loader 与热重载 |
 | `src/schemas/` | 工作流等共享数据结构 |
 | `src/cli/` | 记录、回放、证据治理、工作区清理与管理账户初始化命令 |
+| `src/reasoning.py` | 流式思考字段提取：统一识别供应商 delta 上的思考与正文 |
 | `src/stage_defs.py` | 阶段名、产物目录名、失败阶段的唯一来源 |
 | `web/src/` | `pages` 页面、`lib` 传输/契约/阶段门禁、`store` zustand、`components` 交互 |
 | `pubmed-etl/` | PubMed 下载、过滤、LLM 验证、导出 |

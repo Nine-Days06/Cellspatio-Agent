@@ -56,6 +56,23 @@ def _llm(payload, calls=None, error=None, kwargs_log=None):
     return call
 
 
+def _stream(chunks, calls=None, error=None):
+    """同步流式桩：yield (kind, text)，调用时记录 prompt。"""
+
+    def call(prompt, **kwargs):
+        if calls is not None:
+            calls.append(prompt)
+        if error is not None:
+            raise error
+
+        def gen():
+            yield from chunks
+
+        return gen()
+
+    return call
+
+
 def test_supported_answer_maps_evidence_and_sources():
     client = FakeKnowledge()
     calls: list[str] = []
@@ -684,3 +701,128 @@ def test_stage_callback_is_optional_and_does_not_change_result():
 
     for key in ("status", "outcome", "answer", "claims", "evidence", "sources"):
         assert plain[key] == staged[key]
+
+
+def test_streaming_forwards_reasoning_and_buffers_complete_answer():
+    """思考逐块外发；正式 JSON 分块到达也要完整缓冲后再校验。"""
+    payload = json.dumps(
+        {
+            "outcome": "supported_answer",
+            "answer": "流式回答",
+            "claims": [{"text": "论断", "evidence_ids": ["E1"], "basis": "fact"}],
+        },
+        ensure_ascii=False,
+    )
+    reasoning: list[str] = []
+    fallback_calls: list[str] = []
+
+    result = run_knowledge_qa(
+        FakeKnowledge(),
+        "问题",
+        llm_func=_llm({}, fallback_calls),
+        stream_func=_stream(
+            [
+                ("reasoning", "先查证"),
+                ("reasoning", "再作答"),
+                ("content", payload[:12]),
+                ("content", payload[12:]),
+            ]
+        ),
+        on_reasoning=reasoning.append,
+    )
+
+    assert result["status"] == "success"
+    assert result["answer"] == "流式回答"
+    assert reasoning == ["先查证", "再作答"]
+    assert fallback_calls == []
+    assert result["config"]["answer_llm_calls"] == 1
+
+
+def test_stream_failure_before_output_falls_back_to_non_streaming():
+    """供应商不支持流式时，未产生任何输出前可安全回退一次。"""
+    fallback_calls: list[str] = []
+    payload = {
+        "outcome": "insufficient_evidence",
+        "answer": "证据不足",
+    }
+
+    def broken_stream(prompt, **kwargs):
+        raise RuntimeError("stream unsupported")
+
+    result = run_knowledge_qa(
+        FakeKnowledge(),
+        "问题",
+        llm_func=_llm(payload, fallback_calls),
+        stream_func=broken_stream,
+    )
+
+    assert result["status"] == "success"
+    assert result["answer"] == "证据不足"
+    assert len(fallback_calls) == 1
+    assert result["config"]["answer_llm_calls"] == 2
+
+
+def test_stream_failure_after_reasoning_is_not_retried():
+    """已产生思考后流中断，不能再发一次非流式请求。"""
+    fallback_calls: list[str] = []
+
+    def stream_then_boom(prompt, **kwargs):
+        def gen():
+            yield "reasoning", "想到一半"
+            raise RuntimeError("stream broke")
+
+        return gen()
+
+    result = run_knowledge_qa(
+        FakeKnowledge(),
+        "问题",
+        llm_func=_llm({}, fallback_calls),
+        stream_func=stream_then_boom,
+    )
+
+    assert result["status"] == "error"
+    assert result["error"]["stage"] == "generation"
+    assert fallback_calls == []
+    assert result["config"]["answer_llm_calls"] == 1
+
+
+def test_reasoning_disconnect_stops_stream_without_fallback():
+    """思考回调返回 False 视为客户端断开：停止消费，且不重复调用非流式。"""
+    fallback_calls: list[str] = []
+
+    result = run_knowledge_qa(
+        FakeKnowledge(),
+        "问题",
+        llm_func=_llm({}, fallback_calls),
+        stream_func=_stream(
+            [("reasoning", "先查证"), ("content", '{"outcome":"insufficient_evidence"}')]
+        ),
+        on_reasoning=lambda _piece: False,
+    )
+
+    assert result["status"] == "interrupted"
+    assert fallback_calls == []
+
+
+def test_streamed_answer_still_goes_through_evidence_validation():
+    """流式只改变传输方式，引用校验失败时仍整轮失败。"""
+    reasoning: list[str] = []
+    payload = json.dumps(
+        {
+            "outcome": "supported_answer",
+            "answer": "回答",
+            "claims": [{"text": "论断", "evidence_ids": ["E9"], "basis": "fact"}],
+        },
+        ensure_ascii=False,
+    )
+
+    result = run_knowledge_qa(
+        FakeKnowledge(),
+        "问题",
+        stream_func=_stream([("reasoning", "思考"), ("content", payload)]),
+        on_reasoning=reasoning.append,
+    )
+
+    assert result["status"] == "error"
+    assert result["error"]["stage"] == "validation"
+    assert reasoning == ["思考"]

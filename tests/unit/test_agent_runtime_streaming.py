@@ -39,6 +39,12 @@ def _tool_chunk_no_index(call_id: str = "", name: str = "", arguments: str = "")
     )
 
 
+def _reasoning_chunk(text: str, *, field: str = "reasoning_content") -> SimpleNamespace:
+    delta = SimpleNamespace(content=None, tool_calls=None)
+    setattr(delta, field, text)
+    return SimpleNamespace(choices=[SimpleNamespace(delta=delta)])
+
+
 class FakeStreamLLM:
     """流式桩：每轮按脚本产出 chunk 迭代器，记录每次 create 的 kwargs。"""
 
@@ -354,3 +360,100 @@ def test_stream_tool_calls_accumulate_with_missing_index():
     # 两个 chunk 合并为一个工具调用，arguments 拼接为完整 JSON
     assert wm2.calls == [("query_knowledge", {"query": "TP53"})]
     assert result2["message"] == "done"
+
+
+def test_stream_reasoning_chunks_are_tagged_and_not_mixed_into_content():
+    """思考增量单独打 source=reasoning，正文只保留 content 累积。"""
+    llm = FakeStreamLLM([[_reasoning_chunk("先想"), _reasoning_chunk("再想"), _text_chunk("答案")]])
+    runtime, _ = _runtime(llm)
+    sink = EventSink()
+
+    result = runtime.execute("问题", on_event=sink)
+
+    assert sink.events == [
+        {"type": "delta", "text": "先想", "source": "reasoning"},
+        {"type": "delta", "text": "再想", "source": "reasoning"},
+        {"type": "delta", "text": "答案"},
+    ]
+    assert result["message"] == "答案"
+
+
+def test_stream_accepts_reasoning_alias_and_ignores_non_string():
+    """兼容 reasoning 字段；非字符串思考载荷不得进入事件流。"""
+    bad = SimpleNamespace(
+        choices=[
+            SimpleNamespace(
+                delta=SimpleNamespace(content=None, tool_calls=None, reasoning_content=123)
+            )
+        ]
+    )
+    llm = FakeStreamLLM([[_reasoning_chunk("别名", field="reasoning"), bad, _text_chunk("答")]])
+    runtime, _ = _runtime(llm)
+    sink = EventSink()
+
+    runtime.execute("问题", on_event=sink)
+
+    assert sink.events == [
+        {"type": "delta", "text": "别名", "source": "reasoning"},
+        {"type": "delta", "text": "答"},
+    ]
+
+
+def test_stream_reasoning_between_tool_rounds_is_separated():
+    """工具调用前后的思考按顺序拼接，轮与轮之间插入轻量分隔。"""
+    llm = FakeStreamLLM(
+        [
+            [_reasoning_chunk("第一轮"), _tool_chunk(0, "c1", "query_knowledge", '{"query": "x"}')],
+            [_reasoning_chunk("第二轮"), _text_chunk("回答")],
+        ]
+    )
+    wm = FakeWM({"query_knowledge": {"status": "needs_input", "message": "缺输入"}})
+    runtime, _ = _runtime(llm, wm)
+    sink = EventSink()
+
+    result = runtime.execute("问", on_event=sink)
+
+    assert [e for e in sink.events if e.get("source") == "reasoning"] == [
+        {"type": "delta", "text": "第一轮", "source": "reasoning"},
+        {"type": "delta", "text": "\n\n第二轮", "source": "reasoning"},
+    ]
+    assert result["message"] == "回答"
+
+
+def test_reasoning_separator_survives_intermediate_round_without_reasoning():
+    """中间轮没有思考时，后续再出现思考仍要与第一轮分隔。"""
+    llm = FakeStreamLLM(
+        [
+            [_reasoning_chunk("第一轮"), _tool_chunk(0, "c1", "query_knowledge", '{"query": "x"}')],
+            [_tool_chunk(0, "c2", "query_knowledge", '{"query": "y"}')],
+            [_reasoning_chunk("第三轮"), _text_chunk("回答")],
+        ]
+    )
+    wm = FakeWM({"query_knowledge": {"status": "needs_input", "message": "缺输入"}})
+    runtime, _ = _runtime(llm, wm)
+    sink = EventSink()
+
+    runtime.execute("问", on_event=sink)
+
+    assert [e["text"] for e in sink.events if e.get("source") == "reasoning"] == [
+        "第一轮",
+        "\n\n第三轮",
+    ]
+
+
+def test_abort_on_reasoning_delta_stops_before_content():
+    """思考增量写不出去时立即中止本轮，不再继续读正文。"""
+
+    class ReasoningAbort(EventSink):
+        def __call__(self, event: dict) -> bool:
+            self.events.append(event)
+            return event.get("source") != "reasoning"
+
+    llm = FakeStreamLLM([[_reasoning_chunk("想"), _text_chunk("不该出现")]])
+    runtime, _ = _runtime(llm)
+    sink = ReasoningAbort()
+
+    result = runtime.execute("问", on_event=sink)
+
+    assert result["status"] == "aborted"
+    assert [e.get("text") for e in sink.events] == ["想"]

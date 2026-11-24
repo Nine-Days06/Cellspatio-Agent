@@ -231,13 +231,24 @@ def run_turn(
             )
             return connected
 
-        # shortcut: 只允许检索开始前因断连放弃；进行中的检索/生成不会取消
+        def on_reasoning(text: str) -> bool:
+            """思考增量走同一 delta 事件，只加 source 标记，不写正文草稿。"""
+            nonlocal connected
+            if not connected:
+                return False
+            connected = emit(make_event("delta", text=text, source="reasoning"))
+            return connected
+
+        # shortcut: 检索开始前断连直接放弃；非流式生成不可取消，流式思考
+        # 回写失败时由 on_reasoning 返回 False 提前收口。
         qa = run_knowledge_qa(
             getattr(agent, "knowledge_client", None),
             prompt,
             session_id=session_id,
             question_message_id=question_message_id,
             on_stage=on_stage,
+            on_reasoning=on_reasoning,
+            streaming=True,
         )
         if not connected or qa.get("status") == "interrupted":
             return _persist_interrupted_qa(store, session_id, prompt, question_message_id, qa)

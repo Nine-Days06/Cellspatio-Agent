@@ -69,7 +69,11 @@ async def chat(body: ChatRequest, request: Request, store: StoreDep) -> Streamin
 
         def emit_recording(event: dict[str, Any]) -> bool:
             """记录已生成的增量文本，失败时才能把部分回答落库。"""
-            if event.get("type") == "delta" and isinstance(event.get("text"), str):
+            if (
+                event.get("type") == "delta"
+                and event.get("source") != "reasoning"
+                and isinstance(event.get("text"), str)
+            ):
                 partial.append(event["text"])
             return emit(event)
 

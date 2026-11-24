@@ -1,7 +1,7 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { ApiError } from '@/lib/api'
 import { streamChat, type EndReason, type SseEvent } from '@/lib/sse'
-import { createChatStore, useChatStore } from '@/store/chat'
+import { createChatStore, REASONING_CHAR_LIMIT, useChatStore } from '@/store/chat'
 import type { DataCardPayload, ScriptCardPayload, WireMessage } from '@/lib/types'
 
 // 只替换 streamChat（send 依赖它），其余 sse 导出保持真实实现
@@ -200,6 +200,133 @@ describe('turn 生命周期', () => {
     expect(s.busy).toBe(false)
     expect(s.history.at(-1)).toMatchObject({ role: 'assistant', content: '已生成一半' })
     expect(s.notice).toEqual({ kind: 'info', text: '已停止，保留已生成的部分回答。' })
+  })
+})
+
+describe('思考增量', () => {
+  afterEach(() => {
+    vi.useRealTimers()
+  })
+
+  it('reasoning 事件只进思考草稿，不混入正文', async () => {
+    const store = useChatStore.getState()
+    store.setSession('s1', [])
+    const { ctl, release } = holdStream()
+
+    const pending = store.send('问题')
+    ctl.onEvent?.({ type: 'delta', text: '先思考', source: 'reasoning' })
+    ctl.onEvent?.({ type: 'delta', text: '正式' })
+
+    const s = useChatStore.getState()
+    expect(s.reasoning.text).toBe('先思考')
+    expect(s.draft).toBe('正式')
+    expect(s.reasoning.startedAt).toBeNull()
+    expect(s.reasoning.elapsedMs).toBeGreaterThanOrEqual(0)
+
+    ctl.onEnd?.('done')
+    release()
+    await pending
+  })
+
+  it('工具调用暂停计时，新思考只累计实际思考时长', () => {
+    vi.useFakeTimers()
+    vi.setSystemTime(0)
+    const store = useChatStore.getState()
+    store.setSession('s1', [])
+    store.beginTurn('hi')
+    store.appendReasoning('第一段')
+    vi.setSystemTime(2000)
+    store.pushTool({ name: 'knowledge_qa_retrieval', phase: 'start', label: '检索知识库' })
+    const paused = useChatStore.getState().reasoning
+    expect(paused.startedAt).toBeNull()
+    expect(paused.elapsedMs).toBe(2000)
+
+    vi.setSystemTime(10000)
+    store.appendReasoning('第二段')
+    vi.setSystemTime(13000)
+    store.appendDelta('正式回答')
+
+    const s = useChatStore.getState()
+    expect(s.reasoning.text).toBe('第一段第二段')
+    expect(s.reasoning.startedAt).toBeNull()
+    // 2 秒第一段 + 3 秒第二段；中间 8 秒工具等待不计入。
+    expect(s.reasoning.elapsedMs).toBe(5000)
+  })
+
+  it('思考超过上限后截断并停止追加', () => {
+    const store = useChatStore.getState()
+    store.setSession('s1', [])
+    store.beginTurn('hi')
+    store.appendReasoning('甲'.repeat(REASONING_CHAR_LIMIT))
+    store.appendReasoning('不应进入')
+
+    const s = useChatStore.getState()
+    expect(s.reasoning.text).toHaveLength(REASONING_CHAR_LIMIT)
+    expect(s.reasoning.truncated).toBe(true)
+    expect(s.reasoning.text.endsWith('不应进入')).toBe(false)
+  })
+
+  it('done 后把思考挂到刚落库的消息 id 上，下一轮清空', () => {
+    const store = useChatStore.getState()
+    store.setSession('s1', [])
+    store.beginTurn('hi')
+    store.appendReasoning('思考内容')
+    store.finalizeTurn(assistant({ id: 7 }))
+    store.endTurn('done')
+
+    expect(useChatStore.getState().reasoning.messageId).toBe(7)
+    expect(useChatStore.getState().reasoning.text).toBe('思考内容')
+
+    useChatStore.getState().beginTurn('下一轮')
+    expect(useChatStore.getState().reasoning.text).toBe('')
+    expect(useChatStore.getState().reasoning.messageId).toBeNull()
+  })
+
+  it('仅思考时停止，也保留部分消息并挂上思考', () => {
+    const store = useChatStore.getState()
+    store.setSession('s1', [])
+    store.beginTurn('hi')
+    store.appendReasoning('还没开始回答')
+    store.endTurn('aborted')
+
+    const s = useChatStore.getState()
+    expect(s.busy).toBe(false)
+    expect(s.history.at(-1)).toMatchObject({ role: 'assistant', content: '' })
+    expect(s.reasoning.messageId).toBe(s.history.at(-1)?.id)
+    expect(s.reasoning.text).toBe('还没开始回答')
+    expect(s.notice).toEqual({ kind: 'info', text: '已停止，已保留本次思考。' })
+  })
+
+  it('失败且没有正文时清空思考，避免残留到下一轮', () => {
+    const store = useChatStore.getState()
+    store.setSession('s1', [])
+    store.beginTurn('hi')
+    store.appendReasoning('失败的思考')
+    store.failTurn('上游超时')
+
+    const s = useChatStore.getState()
+    expect(s.reasoning.text).toBe('')
+    expect(s.reasoning.startedAt).toBeNull()
+    expect(s.reasoning.messageId).toBeNull()
+  })
+
+  it('用户手动展开后，正文开始不会自动收起；未手动时会被收起', () => {
+    const store = useChatStore.getState()
+    store.setSession('s1', [])
+    store.beginTurn('hi')
+    store.appendReasoning('思考')
+
+    // 默认折叠；模拟调用方曾经自动展开。
+    useChatStore.setState((s) => ({ reasoning: { ...s.reasoning, expanded: true } }))
+    store.appendDelta('回答')
+    expect(useChatStore.getState().reasoning.expanded).toBe(false)
+
+    useChatStore.setState((s) => ({ reasoning: { ...s.reasoning, expanded: true } }))
+    store.toggleReasoning()
+    expect(useChatStore.getState().reasoning).toMatchObject({ expanded: false, toggled: true })
+    useChatStore.setState((s) => ({ reasoning: { ...s.reasoning, expanded: true } }))
+    store.appendDelta('更多回答')
+    expect(useChatStore.getState().reasoning.expanded).toBe(true)
   })
 })
 

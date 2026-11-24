@@ -172,6 +172,13 @@ def test_knowledge_qa_prompt_excludes_history_summary_and_assets(store, monkeypa
         return json.dumps({"outcome": "insufficient_evidence", "answer": "证据不足"})
 
     monkeypatch.setattr("src.knowledge.qa.build_llm_func", lambda: (fake_llm, "fake-model"))
+
+    def broken_stream(prompt, **kwargs):
+        raise RuntimeError("streaming disabled in this test")
+
+    monkeypatch.setattr(
+        "src.knowledge.qa.build_streaming_llm_func", lambda: (broken_stream, "fake-model")
+    )
     agent = FakeAgent()
     agent.knowledge_client = Client()
 

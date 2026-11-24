@@ -87,6 +87,8 @@ export function ChatPage() {
   const sessionId = useChatStore((s) => s.sessionId)
   const history = useChatStore((s) => s.history)
   const draft = useChatStore((s) => s.draft)
+  const reasoning = useChatStore((s) => s.reasoning)
+  const toggleReasoning = useChatStore((s) => s.toggleReasoning)
   const busy = useChatStore((s) => s.busy)
   const tools = useChatStore((s) => s.tools)
   const notice = useChatStore((s) => s.notice)
@@ -518,6 +520,8 @@ export function ChatPage() {
           }}
           messages={history}
           draft={draft}
+          reasoning={reasoning}
+          onToggleReasoning={toggleReasoning}
           busy={busy}
           tools={tools}
           mode={mode}
