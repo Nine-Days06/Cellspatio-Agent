@@ -411,7 +411,8 @@ def _e2e_cases(
             result = runtime.execute(
                 case["input"],
                 context={"history": []},
-                knowledge_mode=case["category"] == "strict_literature",
+                # 端到端只保留文献用例；强制检索避免触发未装配的分析/记忆协作者。
+                knowledge_mode=True,
             )
             records.append(
                 _case_record(
