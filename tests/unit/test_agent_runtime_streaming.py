@@ -442,6 +442,111 @@ def test_long_evidence_payload_is_compacted_per_item(monkeypatch):
     assert [item["content"] for item in persisted] == [full_text] * 8
 
 
+def test_knowledge_payload_drops_private_evidence_and_source_metadata(monkeypatch):
+    """回灌模型的知识证据只保留引用/展示字段，路径、哈希与背景元数据不外发。"""
+    monkeypatch.setenv("AGENT_KNOWLEDGE_TOOL", "search")
+    llm = FakeStreamLLM(
+        [
+            [_tool_chunk(0, "c1", "search_knowledge", '{"query": "TP53"}')],
+            [_text_chunk("答 [E1]")],
+        ]
+    )
+    full_text = "证" * 4000
+    wm = FakeWM(
+        {
+            "search_knowledge": {
+                "status": "success",
+                "type": "knowledge_evidence",
+                "evidence": [
+                    {
+                        "evidence_id": f"E{i}",
+                        "chunk_id": f"chunk-{i}",
+                        "title": f"论文{i}",
+                        "year": "2024",
+                        "source_id": f"S{i}",
+                        "content": full_text,
+                        "file_path": f"D:/private/{i}.pdf",
+                        "content_sha256": "deadbeef",
+                    }
+                    for i in range(1, 3)
+                ],
+                "sources": [
+                    {
+                        "source_id": "S1",
+                        "title": "来源一",
+                        "year": "2024",
+                        "species": "human",
+                        "tissue": "blood",
+                        "technology": "scRNA-seq",
+                        "evidence_ids": ["E1"],
+                    }
+                ],
+                "continue_tool_loop": True,
+            }
+        }
+    )
+    runtime, _ = _runtime(llm, wm)
+
+    runtime.execute("TP53 的证据", on_event=EventSink())
+
+    parsed = json.loads(llm.calls[1]["messages"][-1]["content"])
+    assert [item["evidence_id"] for item in parsed["evidence"]] == ["E1", "E2"]
+    assert all("file_path" not in item for item in parsed["evidence"])
+    assert all("chunk_id" not in item for item in parsed["evidence"])
+    assert all("content_sha256" not in item for item in parsed["evidence"])
+    assert parsed["sources"] == [
+        {"source_id": "S1", "title": "来源一", "year": "2024", "evidence_ids": ["E1"]}
+    ]
+
+
+def test_knowledge_payload_fallback_keeps_all_ids_without_raw_prefix(monkeypatch):
+    """极限上限下退回编号索引，仍是合法 JSON 且保留全部 [E#]。"""
+    monkeypatch.setenv("AGENT_KNOWLEDGE_TOOL", "search")
+    monkeypatch.setenv("AGENT_TOOL_RESULT_MAX_CHARS", "1200")
+    llm = FakeStreamLLM(
+        [
+            [_tool_chunk(0, "c1", "search_knowledge", '{"query": "TP53"}')],
+            [_text_chunk("答 [E1]")],
+        ]
+    )
+    wm = FakeWM(
+        {
+            "search_knowledge": {
+                "status": "success",
+                "type": "knowledge_evidence",
+                "evidence": [
+                    {
+                        "evidence_id": f"E{i}",
+                        "title": f"论文{i}",
+                        "year": "2024",
+                        "source_id": f"S{i}",
+                        "content": "证" * 4000,
+                        "file_path": f"D:/private/{i}.pdf",
+                    }
+                    for i in range(1, 7)
+                ],
+                "sources": [
+                    {"source_id": f"S{i}", "title": f"来源{i}", "evidence_ids": [f"E{i}"]}
+                    for i in range(1, 7)
+                ],
+                "continue_tool_loop": True,
+            }
+        }
+    )
+    runtime, _ = _runtime(llm, wm)
+
+    runtime.execute("TP53 的证据", on_event=EventSink())
+
+    payload = llm.calls[1]["messages"][-1]["content"]
+    parsed = json.loads(payload)
+    assert len(payload) <= 1200
+    assert parsed["truncated"] is True
+    assert "preview" not in parsed
+    assert [item["evidence_id"] for item in parsed["evidence"]] == [f"E{i}" for i in range(1, 7)]
+    assert "content" not in parsed["evidence"][0]
+    assert "file_path" not in parsed["evidence"][0]
+
+
 def test_tool_budget_exhaustion_switches_to_final_answer(monkeypatch):
     """累计结果预算用尽后禁用工具，不再执行新工具。"""
     monkeypatch.setenv("AGENT_TOOL_RESULT_BUDGET_CHARS", "80")
@@ -706,6 +811,7 @@ def test_analysis_turn_continues_and_keeps_artifacts(monkeypatch):
         "analysis_type": "differential_expression",
         "message": "差异表达分析完成",
         "run_id": "run-1",
+        "capsule_dir": "capsules/run-1",
         "results": {
             "output_file": "de.csv",
             "charts": [{"type": "image", "image_b64": "x"}],
@@ -722,6 +828,7 @@ def test_analysis_turn_continues_and_keeps_artifacts(monkeypatch):
     assert result["results"]["charts"] == [{"type": "image", "image_b64": "x"}]
     assert result["results"]["output_file"] == "de.csv"
     assert result["results"]["run_id"] == "run-1"
+    assert result["results"]["capsule_dir"] == "capsules/run-1"
 
 
 def test_memory_turn_continues_to_final_answer(monkeypatch):

@@ -32,7 +32,8 @@ POST /api/chat（SSE）
 - 无工具调用时走 `general_response`。
 - 非单细胞分析与运行记忆是**非终态**：`run_analysis`（`analysis_type != single_cell`）
   和 `query_memory` 返回 `continue_tool_loop`，模型可继续检索或收口；分析产物
-  （`results` 除 `knowledge_evidence` 外）并入最终 `results`，与证据包一起落库。
+  （`results` 除 `knowledge_evidence` 外，以及顶层 `capsule_dir`/`run_id`）并入
+  最终 `results`，与证据包一起落库。
 - `search_knowledge` 默认启用，只读：检索证据（E 编号/来源）供模型继续推理，不生成答案、不写运行记录。
   `AGENT_KNOWLEDGE_TOOL` 设为 `legacy`（或 `off`/`false` 等停用值）会回退到旧 `query_knowledge`：
   由 LightRAG 直接作答并写运行记录，仅作兼容期排障，不再新增能力。
@@ -40,9 +41,9 @@ POST /api/chat（SSE）
   用过检索的轮次必须引用真实 `[E#]`；服务不可用、没有证据、引用校验失败分别
   返回 `knowledge_unavailable` / `insufficient_evidence` / `citation_invalid`。
   证据包随助手消息存于 `results.knowledge_evidence` 供刷新后展开，保存完整正文；
-  回灌模型的每条证据保留 `E#`、标题、年份与来源，正文压到 1,200 字并标注截断，
-  保证合法 JSON 且大小受限。下一轮历史准备只保留正文与显式论断，并清理旧消息里
-  落库的证据清单与来源列表。
+  回灌模型的每条证据只保留 `E#`、标题、年份与来源关系，正文压到 1,200 字并标注截断；
+  来源只保留引用/展示字段。若仍超单次上限，退到保留全部 `E#` 的编号索引，不返回截断的
+  JSON 前缀。下一轮历史准备只保留正文与显式论断，并清理旧消息里落库的证据清单与来源列表。
 - 动态脚本由生成器产生，确认后才执行；已知失败保留尝试历史，用户可明确重试。
 - 中断、成功、取消或无法核验的运行拒绝重跑；不把复制卡恢复 pending。
 - 新确认请求独立恢复并核验原运行，不依赖 GET 恢复的请求上下文。

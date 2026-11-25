@@ -226,8 +226,7 @@ def _run_scripted_case(case: dict[str, Any]) -> dict[str, Any]:
     llm = ScriptedLLM(case.get("script") or [])
     wm = EvalWorkflow(case)
     runtime = AgentRuntime(llm_client=llm, model="scripted", workflow_manager=wm)
-    previous_env = os.environ.get("AGENT_KNOWLEDGE_TOOL")
-    os.environ["AGENT_KNOWLEDGE_TOOL"] = "search"
+    previous = _pin_knowledge_tool()
     try:
         result = runtime.execute(
             case["input"],
@@ -235,10 +234,7 @@ def _run_scripted_case(case: dict[str, Any]) -> dict[str, Any]:
             knowledge_mode=case["category"] == "strict_literature",
         )
     finally:
-        if previous_env is None:
-            os.environ.pop("AGENT_KNOWLEDGE_TOOL", None)
-        else:
-            os.environ["AGENT_KNOWLEDGE_TOOL"] = previous_env
+        _restore_knowledge_tool(previous)
     return _case_record(
         case,
         [name for name, _args in wm.calls if name != "fallback"],
@@ -300,7 +296,7 @@ def _require_real_workflow(wm: Any) -> None:
     """端到端层必须使用真实 WorkflowManager；误退回假工作流立即失败。"""
     from src.control.workflow_manager import WorkflowManager
 
-    if not isinstance(wm, WorkflowManager):
+    if type(wm) is not WorkflowManager:
         raise RuntimeError("端到端评测必须使用真实 WorkflowManager，禁止回落到假工作流")
 
 
@@ -411,8 +407,8 @@ def _e2e_cases(
             result = runtime.execute(
                 case["input"],
                 context={"history": []},
-                # 端到端只保留文献用例；强制检索避免触发未装配的分析/记忆协作者。
-                knowledge_mode=True,
+                # 端到端按用例走默认/严格路径；literature 不再被强制成严格模式。
+                knowledge_mode=case["category"] == "strict_literature",
             )
             records.append(
                 _case_record(

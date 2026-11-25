@@ -5,6 +5,7 @@ import type {
   KnowledgeQAOutcome,
   KnowledgeQAResult,
 } from '@/lib/types'
+import { dedupeSources } from '@/lib/knowledge'
 import { cn } from '@/lib/utils'
 
 const OUTCOME_LABEL: Record<KnowledgeQAOutcome, string> = {
@@ -31,6 +32,7 @@ export function KnowledgeAnswer({ data, text }: { data: KnowledgeQAResult; text?
   const excerptsRef = useRef<HTMLDetailsElement>(null)
   const evidenceRefs = useRef(new Map<string, HTMLDetailsElement>())
   const outcome = data.outcome ? OUTCOME_LABEL[data.outcome] : null
+  const sources = dedupeSources(data.sources)
 
   const renderEvidence = (item: KnowledgeQAEvidence) => (
     <details
@@ -162,11 +164,11 @@ export function KnowledgeAnswer({ data, text }: { data: KnowledgeQAResult; text?
               <div className="mt-3 min-w-0 space-y-2">{data.evidence.map(renderEvidence)}</div>
             </details>
           )}
-          {data.sources.length > 0 && (
+          {sources.length > 0 && (
             <div className="evidence-source-list min-w-0">
               <h4 className="mb-2 text-base font-semibold">来源</h4>
               <ul className="space-y-2">
-                {data.sources.map((source) => {
+                {sources.map((source) => {
                   const href = safeHttpUrl(source.url)
                   const background = [source.species, source.tissue, source.technology]
                     .filter(Boolean)

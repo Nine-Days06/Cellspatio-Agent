@@ -82,6 +82,28 @@ PUBLIC_SOURCE_FIELDS = (
     "technology",
     "evidence_ids",
 )
+# 回灌模型的知识证据只保留引用与展示所需字段；原始 chunk 路径/哈希留在本地证据包。
+KNOWLEDGE_PAYLOAD_EVIDENCE_FIELDS = (
+    "evidence_id",
+    "title",
+    "year",
+    "url",
+    "kind",
+    "source_id",
+    "content",
+)
+KNOWLEDGE_PAYLOAD_SOURCE_FIELDS = (
+    "source_id",
+    "title",
+    "year",
+    "url",
+    "pmid",
+    "doi",
+    "evidence_ids",
+)
+# 极小上限下只保留编号、标题、年份与来源关系，确保 [E#] 引用仍可校验。
+KNOWLEDGE_PAYLOAD_EVIDENCE_MINIMAL_FIELDS = ("evidence_id", "title", "year", "source_id")
+KNOWLEDGE_PAYLOAD_SOURCE_MINIMAL_FIELDS = ("source_id", "title", "year", "evidence_ids")
 
 REPEATED_TOOL_NOTE = (
     "（系统提示：检测到重复的工具调用，工具已停用。请直接基于已有工具结果回答，不要再次请求工具。）"
@@ -535,6 +557,9 @@ class AgentRuntime:
             artifacts.update(
                 {key: value for key, value in payload.items() if key != "knowledge_evidence"}
             )
+        # 复现胶囊等顶层产物不在 results 内，但同样属于本轮分析结果。
+        if result.get("capsule_dir"):
+            artifacts["capsule_dir"] = result["capsule_dir"]
         if result.get("run_id"):
             artifacts["run_id"] = result["run_id"]
 
@@ -775,14 +800,18 @@ class AgentRuntime:
 
     @classmethod
     def _tool_payload(cls, result: dict[str, Any], limit: int) -> str:
-        """序列化工具结果：文献证据逐条压缩正文，其他结果超限时返回截断预览。"""
-        payload = json.dumps(result, ensure_ascii=False, default=str)
-        if len(payload) <= limit:
-            return payload
+        """序列化工具结果：文献证据逐条压缩正文与元数据，其他结果超限时返回截断预览。"""
         if result.get("type") == "knowledge_evidence":
             compacted = json.dumps(cls._compact_evidence(result), ensure_ascii=False, default=str)
             if len(compacted) <= limit:
                 return compacted
+            # 仍未过上限时退到编号索引；绝不返回截断的 JSON 前缀，否则 [E#] 会整批丢失。
+            return json.dumps(
+                cls._compact_evidence(result, minimal=True), ensure_ascii=False, default=str
+            )
+        payload = json.dumps(result, ensure_ascii=False, default=str)
+        if len(payload) <= limit:
+            return payload
         skeleton = {"truncated": True, "note": TOOL_RESULT_TRUNCATED_NOTE, "preview": ""}
         # 预留包装字段与转义余量，避免截断后反而明显超出上限。
         room = max(limit - len(json.dumps(skeleton, ensure_ascii=False)) - 64, 0)
@@ -790,23 +819,55 @@ class AgentRuntime:
         return json.dumps(skeleton, ensure_ascii=False)
 
     @staticmethod
-    def _compact_evidence(result: dict[str, Any]) -> dict[str, Any]:
-        """只压缩证据正文；编号、标题、年份、来源与来源关系原样保留。"""
+    def _compact_evidence(result: dict[str, Any], *, minimal: bool = False) -> dict[str, Any]:
+        """压缩回灌模型的证据：正文与可选元数据逐条收敛，编号与来源关系始终保留。"""
+        evidence_fields = (
+            KNOWLEDGE_PAYLOAD_EVIDENCE_MINIMAL_FIELDS
+            if minimal
+            else KNOWLEDGE_PAYLOAD_EVIDENCE_FIELDS
+        )
+        source_fields = (
+            KNOWLEDGE_PAYLOAD_SOURCE_MINIMAL_FIELDS if minimal else KNOWLEDGE_PAYLOAD_SOURCE_FIELDS
+        )
         evidence = []
         for item in result.get("evidence") or []:
             if not isinstance(item, dict):
                 evidence.append(item)
                 continue
+            compact = {key: item[key] for key in evidence_fields if key in item}
+            if minimal:
+                evidence.append(compact)
+                continue
             content = item.get("content")
             if isinstance(content, str) and len(content) > KNOWLEDGE_PAYLOAD_EVIDENCE_CHARS:
-                item = {
-                    **item,
+                compact = {
+                    **compact,
                     "content": content[:KNOWLEDGE_PAYLOAD_EVIDENCE_CHARS]
                     + KNOWLEDGE_PAYLOAD_TRUNCATED_MARK,
                     "content_truncated": True,
                 }
-            evidence.append(item)
-        return {**result, "evidence": evidence}
+            evidence.append(compact)
+        sources = [
+            {key: source[key] for key in source_fields if key in source}
+            for source in result.get("sources") or []
+            if isinstance(source, dict)
+        ]
+        if minimal:
+            compacted = {
+                "status": result.get("status"),
+                "type": "knowledge_evidence",
+                "query": result.get("query"),
+                "outcome": result.get("outcome"),
+                "retrieval_status": result.get("retrieval_status"),
+                "message": (str(result.get("message") or "")[:200] or None),
+                "evidence_count": result.get("evidence_count", len(evidence)),
+                "evidence": evidence,
+                "sources": sources,
+                "truncated": True,
+                "note": TOOL_RESULT_TRUNCATED_NOTE,
+            }
+            return {key: value for key, value in compacted.items() if value is not None}
+        return {**result, "evidence": evidence, "sources": sources}
 
     def _route_hint(self, user_input: str) -> dict[str, Any] | None:
         """调用 ModalRouter.hint；无 router 或失败时返回 None（不阻断主流程）。"""

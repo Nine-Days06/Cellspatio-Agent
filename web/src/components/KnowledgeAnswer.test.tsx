@@ -174,6 +174,7 @@ describe('KnowledgeAnswer', () => {
     expect(within(excerpts).getAllByText(/· 片段 /)).toHaveLength(3)
     expect(within(excerpts).getByText('第二段证据')).toBeInTheDocument()
     expect(within(excerpts).getByText('另一篇证据')).toBeInTheDocument()
+    expect(screen.getAllByText('A paper')).toHaveLength(1)
   })
 
   it('lists sources separately from excerpts', () => {

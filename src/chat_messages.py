@@ -27,6 +27,7 @@ def make_llm_summarize(agent: Any) -> Callable[[Any, Any], str] | None:
 def summarize_result(result: dict[str, Any]) -> tuple[str, list[dict[str, Any]]]:
     """结果 → (聊天文本, 引用列表)。当次渲染与历史落盘共用，保证文本一致。"""
     references: list[dict[str, Any]] = []
+    capsule_dir: str | None = None
     if result.get("type") == "knowledge_response":
         response = result.get("response", "无响应")
         references = list(result.get("references") or [])
@@ -38,14 +39,18 @@ def summarize_result(result: dict[str, Any]) -> tuple[str, list[dict[str, Any]]]
     elif result.get("type") == "general_response":
         # 对话回答可能带 knowledge 元数据（outcome/证据），正文仍以 message 为准。
         response = result.get("message", "处理完成")
+        results = result.get("results")
+        if isinstance(results, dict):
+            capsule_dir = results.get("capsule_dir")
     elif result.get("status") == "error":
         response = result.get("message", "分析失败")
     elif result.get("results"):
         response = f"分析完成: {result.get('message', '')}"
-        if result.get("capsule_dir"):
-            response += f"\n\n复现胶囊：`{result['capsule_dir']}`"
+        capsule_dir = result.get("capsule_dir")
     else:
         response = result.get("message", "处理完成")
+    if capsule_dir:
+        response += f"\n\n复现胶囊：`{capsule_dir}`"
     explanation = result.get("explanation")
     if explanation:
         response = f"{response}\n\n---\n**结果解读**\n\n{explanation}"

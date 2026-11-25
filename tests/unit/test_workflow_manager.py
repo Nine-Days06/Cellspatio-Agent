@@ -1406,6 +1406,17 @@ def test_run_analysis_for_agent_error_continues_for_model(tmp_path):
     assert result.get("continue_tool_loop") is True
 
 
+def test_run_analysis_for_agent_unsupported_type_continues_for_model():
+    """白名单外类型是可恢复错误，回灌模型解释，而不是当最终回答。"""
+    manager = _make_spy_manager()
+
+    result = manager.run_analysis_for_agent("unknown_type", {}, {})
+
+    assert result["status"] == "error"
+    assert result.get("continue_tool_loop") is True
+    assert manager.workflow_recorder.starts == []
+
+
 def test_execute_workflow_records_single_run():
     """legacy execute_workflow 同样只产生一条 run，显式 user_input 优先于 context。"""
     manager = _make_spy_manager()

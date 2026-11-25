@@ -1,4 +1,5 @@
 import type { ChatKnowledgeResult } from '@/lib/types'
+import { dedupeSources } from '@/lib/knowledge'
 
 /** 稳定的证据锚点：同一页面多条消息各自引用 E1 时不串消息。 */
 export function knowledgeAnchor(messageId: number, evidenceId: string): string {
@@ -31,7 +32,7 @@ export function KnowledgeEvidence({
   messageId: number
 }) {
   const evidence = data.evidence
-  const sources = data.sources
+  const sources = dedupeSources(data.sources)
   const claims = data.claims
   if (evidence.length === 0 && sources.length === 0 && claims.length === 0) return null
 

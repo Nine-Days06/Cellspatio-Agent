@@ -117,7 +117,13 @@ def test_require_real_workflow_rejects_fake_workflow():
 
 def test_require_real_workflow_accepts_real_manager():
     """真实 WorkflowManager 实例通过校验。"""
-    ev._require_real_workflow(MagicMock(spec=WorkflowManager))
+    ev._require_real_workflow(object.__new__(WorkflowManager))
+
+
+def test_require_real_workflow_rejects_mock_with_real_spec():
+    """带真实类 spec 的 Mock 仍不是真实管理器，必须拒绝。"""
+    with pytest.raises(RuntimeError, match="端到端评测必须使用真实 WorkflowManager"):
+        ev._require_real_workflow(MagicMock(spec=WorkflowManager))
 
 
 def test_e2e_cases_reject_injected_fake_factory():
@@ -138,7 +144,7 @@ def test_e2e_cases_require_literature_cases():
             [{"id": "greeting", "category": "no_tool", "input": "你好"}],
             None,
             "knowledge_base",
-            workflow_factory=lambda provider, knowledge_dir: MagicMock(spec=WorkflowManager),
+            workflow_factory=lambda provider, knowledge_dir: object.__new__(WorkflowManager),
         )
 
 

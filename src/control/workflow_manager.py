@@ -1252,6 +1252,7 @@ class WorkflowManager:
                 "status": "error",
                 "analysis_type": analysis_type,
                 "message": f"不支持的分析类型: {analysis_type}，支持的类型: {', '.join(SUPPORTED_ANALYSIS_TYPES)}",
+                CONTINUE_TOOL_LOOP_FLAG: True,
             }
         intent = {
             "type": "analysis",
