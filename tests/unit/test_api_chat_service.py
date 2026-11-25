@@ -7,6 +7,7 @@ import json
 import pytest
 
 from src.api.chat_service import _persist, persist_message, persist_outcome, run_turn, session_lock
+from src.control.agent_runtime import CITATION_INVALID_MESSAGE
 from src.ui.session_store import SessionStore
 from tests.unit.fakes import FakeAgent, FakeRuntime
 
@@ -87,6 +88,72 @@ def test_knowledge_qa_mode_uses_strict_agent_with_history(store):
     assert last["content"] == "可追溯回答 [E1]"
     assert last["results"]["knowledge_evidence"]["citations"] == ["E1"]
     assert result["type"] == "general_response"
+
+
+def test_knowledge_qa_passes_untruncated_recent_user_turns(store):
+    """历史窗口会截断用户发言，但严格检索 query 单独拿用户原话。"""
+    sid = store.create_session()
+    long_turn = "问" * 3000
+    store.append_message(sid, "user", long_turn)
+    store.append_message(sid, "assistant", "回答")
+    runtime = FakeRuntime()
+
+    run_turn(FakeAgent(runtime=runtime), store, sid, "那它呢？", _sink(), mode="knowledge_qa")
+
+    context = runtime.calls[0]["context"]
+    assert context["recent_user_turns"] == [long_turn]
+    assert len(context["history"][0]["content"]) < len(long_turn)
+
+
+def test_persisted_citation_failure_message_does_not_inline_evidence(store):
+    """引用失败落库正文只有提示，证据标题/片段/路径只留在证据包。"""
+    sid = store.create_session()
+    payload = {
+        "status": "error",
+        "type": "general_response",
+        "outcome": "citation_invalid",
+        "message": CITATION_INVALID_MESSAGE,
+        "results": {
+            "knowledge_evidence": {
+                "outcome": "citation_invalid",
+                "evidence": [
+                    {
+                        "evidence_id": "E1",
+                        "title": "敏感标题",
+                        "content": "证据正文哨兵",
+                        "file_path": "/secret/path.pdf",
+                    }
+                ],
+                "sources": [],
+                "citations": [],
+                "claims": [],
+            }
+        },
+    }
+
+    run_turn(FakeAgent(runtime=FakeRuntime(results=[payload])), store, sid, "TP53", _sink())
+
+    assistants = [msg for msg in store.get_messages(sid) if msg["role"] == "assistant"]
+    assert [msg["content"] for msg in assistants] == [CITATION_INVALID_MESSAGE]
+    for hidden in ("敏感标题", "证据正文哨兵", "/secret/path.pdf"):
+        for msg in assistants:
+            assert hidden not in msg["content"]
+
+
+def test_history_context_drops_legacy_evidence_listing(store):
+    """旧消息里落库的证据清单不会再进入下一轮模型上下文。"""
+    sid = store.create_session()
+    store.append_message(sid, "user", "初问")
+    store.append_message(
+        sid, "assistant", "旧答 [E1]\n\n**已检索到的证据**\n- [E1] 敏感标题：证据正文哨兵"
+    )
+    runtime = FakeRuntime()
+
+    run_turn(FakeAgent(runtime=runtime), store, sid, "追问", _sink())
+
+    history = runtime.calls[0]["context"]["history"]
+    assert any("旧答 [E1]" in msg["content"] for msg in history)
+    assert all("证据正文哨兵" not in msg["content"] for msg in history)
 
 
 def test_knowledge_qa_stops_before_retrieval_when_client_is_gone(store):

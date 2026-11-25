@@ -1,11 +1,15 @@
-"""混合链路评测：工具选择、引用有效率、回答命中、延迟与 token 成本。
+"""混合链路评测：脚本契约、工具选择、真实端到端三层分开跑。
 
 用法：
   python -m evals.run_knowledge_tool_eval --scripted
-  python -m evals.run_knowledge_tool_eval --live --provider zhipu
-  python -m evals.run_knowledge_tool_eval --scripted --baseline .scratch/eval/baseline.json
+  python -m evals.run_knowledge_tool_eval --tools --provider zhipu
+  python -m evals.run_knowledge_tool_eval --e2e --provider zhipu
+  python -m evals.run_knowledge_tool_eval --e2e --baseline .scratch/eval/baseline.json
 
-scripted 用脚本化 LLM 校验运行器与阈值；live 才代表真实模型质量。
+三层可信度不同：
+- scripted：脚本化 LLM + 假工作流，只验证运行器契约与阈值。
+- tools（旧 --live 为弃用别名）：真实模型 + 假工作流，只报告工具选择与格式。
+- e2e：真实模型 + 真实 WorkflowManager + 真实检索，才能支撑质量结论。
 """
 
 from __future__ import annotations
@@ -27,7 +31,16 @@ if str(ROOT) not in sys.path:
 from evals.run_eval import load_cases  # noqa: E402
 
 DEFAULT_CASES = ROOT / "evals" / "knowledge_tool_cases.jsonl"
-REPORT_SCHEMA = "knowledge-tool-eval/1.0.0"
+REPORT_SCHEMA = "knowledge-tool-eval/2.0.0"
+MODE_SCRIPTED = "scripted"
+MODE_TOOL_SELECTION = "tool_selection"
+MODE_E2E = "e2e"
+E2E_CATEGORIES = frozenset({"literature", "strict_literature"})
+LAYER_NOTES = {
+    MODE_SCRIPTED: "脚本化 LLM + 假工作流，仅验证运行器契约与阈值",
+    MODE_TOOL_SELECTION: "真实模型 + 假工作流，仅报告工具选择与格式指标",
+    MODE_E2E: "真实模型 + 真实 WorkflowManager + 真实检索，可支撑质量结论",
+}
 
 
 class ScriptedLLM:
@@ -166,7 +179,46 @@ def _token_estimate(chars: int) -> int:
     return max(1, chars // 4) if chars else 0
 
 
-def _run_case(case: dict[str, Any]) -> dict[str, Any]:
+def _case_record(
+    case: dict[str, Any],
+    actual_tools: list[str] | None,
+    result: dict[str, Any],
+    elapsed_ms: int,
+    input_tokens: int | None,
+    output_tokens: int | None,
+    *,
+    report_answer: bool = True,
+) -> dict[str, Any]:
+    """把一次运行整理为统一指标记录；无工具记录时工具选择记为未知。"""
+    expected_tools = case.get("expect_tools") or []
+    package = (result.get("results") or {}).get("knowledge_evidence") or {}
+    citations = package.get("citations") or []
+    citation_ok = (
+        result.get("outcome") == "supported_answer"
+        and bool(citations)
+        and all(str(item).startswith("E") for item in citations)
+    )
+    terms = case.get("expect_terms") or []
+    answer = str(result.get("message") or "")
+    return {
+        "id": case["id"],
+        "category": case["category"],
+        "expected_tools": expected_tools,
+        "actual_tools": actual_tools,
+        "tool_selection_ok": None if actual_tools is None else actual_tools == expected_tools,
+        "expect_citations": bool(case.get("expect_citations")),
+        "citation_ok": citation_ok,
+        "answer": answer if report_answer else None,
+        "answer_match": all(term in answer for term in terms) if report_answer else None,
+        "latency_ms": elapsed_ms,
+        "input_tokens": input_tokens,
+        "output_tokens": output_tokens,
+        "outcome": result.get("outcome"),
+        "status": result.get("status"),
+    }
+
+
+def _run_scripted_case(case: dict[str, Any]) -> dict[str, Any]:
     """在固定开启检索工具的环境下跑单条脚本用例，返回指标记录。"""
     from src.control.agent_runtime import AgentRuntime
 
@@ -187,40 +239,22 @@ def _run_case(case: dict[str, Any]) -> dict[str, Any]:
             os.environ.pop("AGENT_KNOWLEDGE_TOOL", None)
         else:
             os.environ["AGENT_KNOWLEDGE_TOOL"] = previous_env
-    elapsed_ms = round((time.monotonic() - start) * 1000)
-
-    expected_tools = case.get("expect_tools") or []
-    actual_tools = [name for name, _args in wm.calls if name != "fallback"]
-    package = (result.get("results") or {}).get("knowledge_evidence") or {}
-    citations = package.get("citations") or []
-    citation_ok = (
-        result.get("outcome") == "supported_answer"
-        and bool(citations)
-        and all(str(item).startswith("E") for item in citations)
+    return _case_record(
+        case,
+        [name for name, _args in wm.calls if name != "fallback"],
+        result,
+        round((time.monotonic() - start) * 1000),
+        _token_estimate(llm.input_chars),
+        _token_estimate(llm.output_chars),
     )
-    terms = case.get("expect_terms") or []
-    answer = str(result.get("message") or "")
-    answer_match = all(term in answer for term in terms)
-    return {
-        "id": case["id"],
-        "category": case["category"],
-        "expected_tools": expected_tools,
-        "actual_tools": actual_tools,
-        "tool_selection_ok": actual_tools == expected_tools,
-        "expect_citations": bool(case.get("expect_citations")),
-        "citation_ok": citation_ok,
-        "answer": answer,
-        "answer_match": answer_match,
-        "latency_ms": elapsed_ms,
-        "input_tokens": _token_estimate(llm.input_chars),
-        "output_tokens": _token_estimate(llm.output_chars),
-        "outcome": result.get("outcome"),
-        "status": result.get("status"),
-    }
 
 
-def _summary(records: list[dict[str, Any]], price_in: float, price_out: float) -> dict[str, Any]:
-    """汇总工具选择、引用、回答命中、延迟与 token 成本。"""
+def _summary(
+    records: list[dict[str, Any]], price_in: float, price_out: float, layer: str
+) -> dict[str, Any]:
+    """按评测层汇总；假工作流的层不声明回答质量。"""
+    selection_records = [record for record in records if record["tool_selection_ok"] is not None]
+    answer_records = [record for record in records if record["answer_match"] is not None]
     citation_cases = [record for record in records if record["expect_citations"]]
     latencies = [record["latency_ms"] for record in records] or [0]
     tokens_available = any(record["input_tokens"] is not None for record in records)
@@ -229,18 +263,27 @@ def _summary(records: list[dict[str, Any]], price_in: float, price_out: float) -
     return {
         "case_count": len(records),
         "tool_selection_accuracy": round(
-            sum(record["tool_selection_ok"] for record in records) / len(records), 4
+            sum(record["tool_selection_ok"] for record in selection_records)
+            / len(selection_records),
+            4,
         )
-        if records
-        else 0.0,
+        if selection_records
+        else None,
         "citation_validity": round(
             sum(record["citation_ok"] for record in citation_cases) / len(citation_cases), 4
         )
         if citation_cases
         else None,
-        "answer_match": round(sum(record["answer_match"] for record in records) / len(records), 4)
-        if records
-        else 0.0,
+        "answer_match": (
+            None
+            if layer == MODE_TOOL_SELECTION
+            else round(
+                sum(record["answer_match"] for record in answer_records) / len(answer_records),
+                4,
+            )
+            if answer_records
+            else None
+        ),
         "latency_ms_avg": round(statistics.mean(latencies), 1),
         "latency_ms_p95": round(sorted(latencies)[max(0, int(len(latencies) * 0.95) - 1)], 1),
         "input_tokens": input_tokens if tokens_available else None,
@@ -253,50 +296,136 @@ def _summary(records: list[dict[str, Any]], price_in: float, price_out: float) -
     }
 
 
-def _live_cases(cases: list[dict[str, Any]], provider: str | None) -> list[dict[str, Any]]:
-    """真实模型跑批：不注入脚本，由模型自行选择工具。"""
-    import os
+def _require_real_workflow(wm: Any) -> None:
+    """端到端层必须使用真实 WorkflowManager；误退回假工作流立即失败。"""
+    from src.control.workflow_manager import WorkflowManager
 
+    if not isinstance(wm, WorkflowManager):
+        raise RuntimeError("端到端评测必须使用真实 WorkflowManager，禁止回落到假工作流")
+
+
+def _use_provider(provider: str | None) -> None:
+    """按参数切换 LLM 供应商，保持与生产一致的配置读取。"""
     if provider:
         os.environ["AGENT_LLM_PROVIDER"] = provider
+
+
+def _pin_knowledge_tool() -> str | None:
+    """评测固定走 search_knowledge，返回原值供调用方恢复。"""
+    previous = os.environ.get("AGENT_KNOWLEDGE_TOOL")
+    os.environ["AGENT_KNOWLEDGE_TOOL"] = "search"
+    return previous
+
+
+def _restore_knowledge_tool(previous: str | None) -> None:
+    """恢复调用前的检索工具开关，避免污染进程环境。"""
+    if previous is None:
+        os.environ.pop("AGENT_KNOWLEDGE_TOOL", None)
+    else:
+        os.environ["AGENT_KNOWLEDGE_TOOL"] = previous
+
+
+def _tool_selection_cases(
+    cases: list[dict[str, Any]], provider: str | None
+) -> list[dict[str, Any]]:
+    """真实模型 + 假工作流：只观察工具选择与格式，不声明回答质量。"""
+    _use_provider(provider)
     from src.config import get_current_llm
     from src.control.agent_runtime import AgentRuntime
 
     client, model = get_current_llm()
     records: list[dict[str, Any]] = []
-    for case in cases:
-        start = time.monotonic()
-        wm = EvalWorkflow(case)
-        runtime = AgentRuntime(llm_client=client, model=model, workflow_manager=wm)
-        result = runtime.execute(
-            case["input"],
-            context={"history": []},
-            knowledge_mode=case["category"] == "strict_literature",
-        )
-        elapsed_ms = round((time.monotonic() - start) * 1000)
-        package = (result.get("results") or {}).get("knowledge_evidence") or {}
-        answer = str(result.get("message") or "")
-        actual_tools = [name for name, _args in wm.calls if name != "fallback"]
-        records.append(
-            {
-                "id": case["id"],
-                "category": case["category"],
-                "expected_tools": case.get("expect_tools") or [],
-                "actual_tools": actual_tools,
-                "tool_selection_ok": actual_tools == (case.get("expect_tools") or []),
-                "expect_citations": bool(case.get("expect_citations")),
-                "citation_ok": result.get("outcome") == "supported_answer"
-                and bool(package.get("citations"))
-                and all(str(item).startswith("E") for item in package["citations"]),
-                "answer": answer,
-                "answer_match": all(term in answer for term in (case.get("expect_terms") or [])),
-                "latency_ms": elapsed_ms,
-                "input_tokens": None,
-                "output_tokens": None,
-                "outcome": result.get("outcome"),
-                "status": result.get("status"),
-            }
-        )
+    previous = _pin_knowledge_tool()
+    try:
+        for case in cases:
+            start = time.monotonic()
+            wm = EvalWorkflow(case)
+            runtime = AgentRuntime(llm_client=client, model=model, workflow_manager=wm)
+            result = runtime.execute(
+                case["input"],
+                context={"history": []},
+                knowledge_mode=case["category"] == "strict_literature",
+            )
+            records.append(
+                _case_record(
+                    case,
+                    [name for name, _args in wm.calls if name != "fallback"],
+                    result,
+                    round((time.monotonic() - start) * 1000),
+                    None,
+                    None,
+                    report_answer=False,
+                )
+            )
+    finally:
+        _restore_knowledge_tool(previous)
+    return records
+
+
+def _build_e2e_workflow(provider: str | None, knowledge_dir: str) -> Any:
+    """按生产配置构造真实 WorkflowManager；用例只触达检索入口。"""
+    from src.control.workflow_manager import WorkflowManager
+    from src.knowledge.lightrag_client import LightRAGClient
+
+    return WorkflowManager(
+        intent_parser=None,
+        knowledge_client=LightRAGClient(
+            working_dir=knowledge_dir,
+            config={"provider": provider} if provider else {},
+        ),
+        r_executor=None,
+        visualizer=None,
+    )
+
+
+def _e2e_cases(
+    cases: list[dict[str, Any]],
+    provider: str | None,
+    knowledge_dir: str,
+    workflow_factory: Any = None,
+) -> list[dict[str, Any]]:
+    """真实模型 + 真实 WorkflowManager + 真实检索，产出可对外声明的质量指标。"""
+    _use_provider(provider)
+    from src.config import get_current_llm
+    from src.control.agent_runtime import AgentRuntime
+
+    factory = workflow_factory or _build_e2e_workflow
+    wm = factory(provider, knowledge_dir)
+    _require_real_workflow(wm)
+    selected = [
+        case
+        for case in cases
+        if case["category"] in E2E_CATEGORIES
+        and not case.get("empty_retrieval")
+        and not case.get("retrieval_error")
+    ]
+    if not selected:
+        raise RuntimeError("端到端评测没有可用用例：需要 literature/strict_literature")
+    client, model = get_current_llm()
+    records: list[dict[str, Any]] = []
+    previous = _pin_knowledge_tool()
+    try:
+        for case in selected:
+            start = time.monotonic()
+            runtime = AgentRuntime(llm_client=client, model=model, workflow_manager=wm)
+            result = runtime.execute(
+                case["input"],
+                context={"history": []},
+                # 端到端只保留文献用例；强制检索避免触发未装配的分析/记忆协作者。
+                knowledge_mode=True,
+            )
+            records.append(
+                _case_record(
+                    case,
+                    None,
+                    result,
+                    round((time.monotonic() - start) * 1000),
+                    None,
+                    None,
+                )
+            )
+    finally:
+        _restore_knowledge_tool(previous)
     return records
 
 
@@ -317,11 +446,25 @@ def main(argv: list[str] | None = None) -> int:
     """解析参数、跑评测并按阈值返回退出码。"""
     parser = argparse.ArgumentParser(description="CellSpatio 混合文献链路评测")
     mode = parser.add_mutually_exclusive_group(required=True)
-    mode.add_argument("--scripted", action="store_true")
-    mode.add_argument("--live", action="store_true")
+    mode.add_argument("--scripted", action="store_true", help="脚本契约层")
+    mode.add_argument(
+        "--tools",
+        "--live",
+        dest="tools",
+        action="store_true",
+        help="工具选择层（真实模型 + 假工作流）；--live 为弃用别名",
+    )
+    mode.add_argument("--e2e", action="store_true", help="真实端到端层")
     parser.add_argument("--cases", default=str(DEFAULT_CASES))
     parser.add_argument("--provider", default=None)
-    parser.add_argument("--baseline", default=None, help="旧链路评测报告 JSON")
+    parser.add_argument(
+        "--knowledge-dir", default=os.environ.get("KNOWLEDGE_DIR", "./knowledge_base")
+    )
+    parser.add_argument(
+        "--baseline",
+        default=None,
+        help="端到端层基线报告 JSON（其他层传入会报错；版本需匹配）",
+    )
     parser.add_argument("--min-selection-accuracy", type=float, default=0.9)
     parser.add_argument("--min-citation-validity", type=float, default=1.0)
     parser.add_argument("--min-answer-match", type=float, default=0.8)
@@ -330,17 +473,39 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--out", default=None)
     args = parser.parse_args(argv)
 
-    cases = load_cases(args.cases)
-    records = (
-        [_run_case(case) for case in cases] if args.scripted else _live_cases(cases, args.provider)
-    )
-    summary = _summary(records, args.price_input_per_mtok, args.price_output_per_mtok)
+    if args.scripted:
+        layer = MODE_SCRIPTED
+    elif args.tools:
+        layer = MODE_TOOL_SELECTION
+    else:
+        layer = MODE_E2E
     baseline = (
         json.loads(Path(args.baseline).read_text(encoding="utf-8")) if args.baseline else None
     )
+    if baseline is not None:
+        if layer != MODE_E2E:
+            parser.error("基线比较只在 --e2e 层生效")
+        if baseline.get("mode") != MODE_E2E:
+            parser.error("基线报告不是端到端层（mode 必须为 e2e），拒绝比较")
+        if baseline.get("schema_version") != REPORT_SCHEMA:
+            parser.error(
+                f"基线报告版本不匹配：需要 {REPORT_SCHEMA}，实际为 {baseline.get('schema_version')}"
+            )
+    cases = load_cases(args.cases)
+    if not cases:
+        parser.error(f"用例集为空：{args.cases}")
+    if layer == MODE_SCRIPTED:
+        records = [_run_scripted_case(case) for case in cases]
+    elif layer == MODE_TOOL_SELECTION:
+        records = _tool_selection_cases(cases, args.provider)
+    else:
+        records = _e2e_cases(cases, args.provider, args.knowledge_dir)
+    summary = _summary(records, args.price_input_per_mtok, args.price_output_per_mtok, layer)
     report = {
         "schema_version": REPORT_SCHEMA,
-        "mode": "scripted" if args.scripted else "live",
+        "mode": layer,
+        "layer_note": LAYER_NOTES[layer],
+        "baseline_comparable": layer == MODE_E2E,
         "summary": summary,
         "baseline_comparison": _compare_baseline(summary, baseline) if baseline else None,
         "cases": records,
@@ -351,11 +516,19 @@ def main(argv: list[str] | None = None) -> int:
         Path(args.out).parent.mkdir(parents=True, exist_ok=True)
         Path(args.out).write_text(text + "\n", encoding="utf-8")
 
-    failed = (
-        summary["tool_selection_accuracy"] < args.min_selection_accuracy
-        or (summary["citation_validity"] or 0.0) < args.min_citation_validity
-        or summary["answer_match"] < args.min_answer_match
-    )
+    selection = summary["tool_selection_accuracy"]
+    citation = summary["citation_validity"]
+    answer = summary["answer_match"]
+    if layer == MODE_TOOL_SELECTION:
+        failed = (selection or 0.0) < args.min_selection_accuracy or (
+            citation or 0.0
+        ) < args.min_citation_validity
+    else:
+        failed = (
+            (selection is not None and selection < args.min_selection_accuracy)
+            or (citation or 0.0) < args.min_citation_validity
+            or (answer is not None and answer < args.min_answer_match)
+        )
     if baseline:
         failed = failed or any(
             isinstance(check, dict) and check["regressed"]

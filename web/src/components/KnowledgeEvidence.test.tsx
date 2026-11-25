@@ -1,5 +1,6 @@
-import { render, screen } from '@testing-library/react'
-import { describe, expect, it } from 'vitest'
+import { fireEvent, render, screen } from '@testing-library/react'
+import { afterEach, describe, expect, it, vi } from 'vitest'
+import MarkdownContent from '@/components/MarkdownContent'
 import {
   KnowledgeEvidence,
   linkKnowledgeCitations,
@@ -65,4 +66,30 @@ describe('KnowledgeEvidence', () => {
       '答 [E1](#evidence-7-E1) 与 [E9]',
     )
   })
+
+  it('点击引用展开证据折叠区并滚动定位，展开后正文不再截断', () => {
+    const scrollIntoView = vi.fn()
+    Element.prototype.scrollIntoView = scrollIntoView
+
+    render(
+      <>
+        <MarkdownContent text="答 [E1](#evidence-7-E1)" />
+        <KnowledgeEvidence data={packageData()} messageId={7} />
+      </>,
+    )
+
+    const details = screen.getByTestId('knowledge-evidence') as HTMLDetailsElement
+    const content = screen.getByText('TP53 是抑癌基因。')
+    expect(details.open).toBe(false)
+    expect(content.className).toContain('group-open:line-clamp-none')
+
+    fireEvent.click(screen.getByRole('link', { name: 'E1' }))
+
+    expect(details.open).toBe(true)
+    expect(scrollIntoView).toHaveBeenCalled()
+  })
+})
+
+afterEach(() => {
+  delete (Element.prototype as unknown as Record<string, unknown>).scrollIntoView
 })

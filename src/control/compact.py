@@ -23,6 +23,8 @@ SOFT_TRIGGER = 96_000
 RECENT_TOKEN_BUDGET = 12_000
 TOOL_OUTPUT_MAX_CHARS = 2_000
 TRUNCATION_NOTE = "\n…（已截断）"
+LEGACY_EVIDENCE_LISTING_MARKER = "\n\n**已检索到的证据**\n"
+LEGACY_SOURCE_MARKER = "\n\n**来源**\n"
 
 
 def estimate_tokens(text: str) -> int:
@@ -36,6 +38,8 @@ def prepare_history(messages: list[dict]) -> list[dict]:
     for msg in messages:
         content = str(msg.get("content") or "")
         results = msg.get("results")
+        if msg.get("role") == "assistant":
+            content = _strip_legacy_evidence(content)
         if isinstance(results, dict):
             content = _append_claims(content, results)
         if len(content) > TOOL_OUTPUT_MAX_CHARS:
@@ -45,6 +49,19 @@ def prepare_history(messages: list[dict]) -> list[dict]:
             history_msg["results"] = _history_results(history_msg["results"])
         prepared.append(history_msg)
     return prepared
+
+
+def _strip_legacy_evidence(content: str) -> str:
+    """移除旧版正文里落库的证据清单与来源列表，避免再次进入模型上下文。"""
+    index = content.find(LEGACY_EVIDENCE_LISTING_MARKER)
+    if index >= 0:
+        content = content[:index].rstrip()
+    index = content.find(LEGACY_SOURCE_MARKER)
+    if index >= 0:
+        tail = content[index + len(LEGACY_SOURCE_MARKER) :]
+        if all(line.startswith("- ") or not line.strip() for line in tail.splitlines()):
+            content = content[:index].rstrip()
+    return content
 
 
 def _append_claims(content: str, results: dict) -> str:

@@ -90,12 +90,14 @@ def _make_runtime(llm, wm=None):
     return AgentRuntime(llm_client=llm, model="fake-model", workflow_manager=wm), wm
 
 
-def test_dispatches_run_analysis_and_returns_terminal_result():
+def test_dispatches_run_analysis_and_continues_to_final_answer():
+    """非单细胞分析结果回灌模型，本轮以模型的合并回答收口。"""
     llm = FakeLLM(
         [
             _tool_call_response(
                 "run_analysis", {"analysis_type": "differential_expression", "question": "做差异"}
-            )
+            ),
+            _text_response("差异表达完成，共 10 个显著基因。"),
         ]
     )
     wm = FakeWM(
@@ -105,6 +107,7 @@ def test_dispatches_run_analysis_and_returns_terminal_result():
                 "analysis_type": "differential_expression",
                 "message": "ok",
                 "results": {},
+                "continue_tool_loop": True,
             }
         }
     )
@@ -115,11 +118,13 @@ def test_dispatches_run_analysis_and_returns_terminal_result():
     )
 
     assert result["status"] == "success"
+    assert result["message"] == "差异表达完成，共 10 个显著基因。"
     assert wm.calls[0][0] == "run_analysis"
     assert wm.calls[0][1]["analysis_type"] == "differential_expression"
     sent = llm.calls[0]["messages"]
     assert sent[-1]["role"] == "user"
     assert "tools" in llm.calls[0]
+    assert len(llm.calls) == 2
 
 
 def test_hitl_needs_confirmation_short_circuits_without_second_llm_call():
@@ -242,14 +247,20 @@ def test_query_knowledge_dispatch():
 
 
 def test_query_memory_dispatch():
-    """query_memory 工具调用分发到 workflow_manager，返回记忆问答终态。"""
-    llm = FakeLLM([_tool_call_response("query_memory", {"query": "上次差异表达用的什么参数"})])
+    """query_memory 分发到 workflow_manager 后继续本轮，由模型收口回答。"""
+    llm = FakeLLM(
+        [
+            _tool_call_response("query_memory", {"query": "上次差异表达用的什么参数"}),
+            _text_response("上次用的是 DESeq2，FDR 0.05。"),
+        ]
+    )
     wm = FakeWM(
         {
             "query_memory": {
                 "status": "success",
                 "type": "memory_response",
                 "response": "run-abc123 使用 DESeq2，FDR=0.05",
+                "continue_tool_loop": True,
             }
         }
     )
@@ -258,8 +269,189 @@ def test_query_memory_dispatch():
     result = runtime.execute("上次那个差异表达分析用的什么参数？")
 
     assert wm.calls == [("query_memory", {"query": "上次差异表达用的什么参数"})]
-    assert result["type"] == "memory_response"
     assert result["status"] == "success"
+    assert result["message"] == "上次用的是 DESeq2，FDR 0.05。"
+
+
+@pytest.mark.parametrize(
+    ("tool", "arguments"),
+    [
+        ("run_analysis", {"analysis_type": "differential_expression"}),
+        ("search_datasets", {"query": "GSE123456"}),
+        ("query_memory", {"query": "上次用了什么参数"}),
+    ],
+)
+def test_strict_mode_rejects_non_knowledge_tools(tool, arguments):
+    """严格文献模式下，幻觉出的副作用工具不得进入工作流管理器。"""
+    llm = FakeLLM([_tool_call_response(tool, arguments), _text_response("答 [E1]")])
+    wm = FakeWM(
+        {
+            "search_knowledge": {
+                "status": "success",
+                "type": "knowledge_evidence",
+                "evidence": [{"evidence_id": "E1", "title": "论文"}],
+                "sources": [],
+                "continue_tool_loop": True,
+            }
+        }
+    )
+    runtime, wm = _make_runtime(llm, wm)
+
+    result = runtime.execute("先做分析再查文献", knowledge_mode=True)
+
+    assert [call[0] for call in wm.calls] == ["search_knowledge"]
+    assert result["outcome"] == "supported_answer"
+    assert "严格文献模式" in llm.calls[1]["messages"][-1]["content"]
+
+
+def test_strict_mode_repeated_rejected_tool_forces_answer():
+    """反复请求被拒工具由既有重复调用保护收口，不会死循环。"""
+    rejected = _tool_call_response("run_analysis", {"analysis_type": "differential_expression"})
+    llm = FakeLLM([rejected, rejected, _text_response("只能给文献回答 [E1]")])
+    wm = FakeWM(
+        {
+            "search_knowledge": {
+                "status": "success",
+                "type": "knowledge_evidence",
+                "evidence": [{"evidence_id": "E1", "title": "论文"}],
+                "sources": [],
+                "continue_tool_loop": True,
+            }
+        }
+    )
+    runtime, wm = _make_runtime(llm, wm)
+
+    result = runtime.execute("做分析", knowledge_mode=True)
+
+    assert [call[0] for call in wm.calls] == ["search_knowledge"]
+    assert len(llm.calls) == 3
+    assert result["message"] == "只能给文献回答 [E1]"
+
+
+def test_strict_mode_allows_search_after_rejection():
+    """被拒后模型改调检索工具，本轮继续取证并正常收口。"""
+    llm = FakeLLM(
+        [
+            _tool_call_response("run_analysis", {"analysis_type": "differential_expression"}),
+            _tool_call_response("search_knowledge", {"query": "补充证据"}),
+            _text_response("答 [E1][E2]"),
+        ]
+    )
+    wm = FakeWM(
+        {
+            "search_knowledge": [
+                {
+                    "status": "success",
+                    "type": "knowledge_evidence",
+                    "evidence": [{"evidence_id": "E1", "title": "论文"}],
+                    "sources": [],
+                    "continue_tool_loop": True,
+                },
+                {
+                    "status": "success",
+                    "type": "knowledge_evidence",
+                    "evidence": [{"evidence_id": "E1", "title": "另一篇"}],
+                    "sources": [],
+                    "continue_tool_loop": True,
+                },
+            ]
+        }
+    )
+    runtime, wm = _make_runtime(llm, wm)
+
+    result = runtime.execute("先分析再查文献", knowledge_mode=True)
+
+    assert [call[0] for call in wm.calls] == ["search_knowledge", "search_knowledge"]
+    assert result["outcome"] == "supported_answer"
+    assert result["message"] == "答 [E1][E2]"
+
+
+def test_strict_followup_query_carries_user_turns_and_summary_tail():
+    """严格追问的检索 query 含摘要末尾与最近两轮用户发言，不含助手正文。"""
+    llm = FakeLLM([_text_response("答 [E1]")])
+    wm = FakeWM(
+        {
+            "search_knowledge": {
+                "status": "success",
+                "type": "knowledge_evidence",
+                "evidence": [{"evidence_id": "E1", "title": "论文"}],
+                "sources": [],
+                "continue_tool_loop": True,
+            }
+        }
+    )
+    runtime, wm = _make_runtime(llm, wm)
+    context = {
+        "summary": "摘要开头" + "结" * 600,
+        "history": [
+            {"role": "user", "content": "TP53 在癌症中的作用是什么？"},
+            {
+                "role": "assistant",
+                "content": (
+                    "助手回答不应进入检索\n[结构化论断]\n- TP53 促进凋亡 [E1]\n"
+                    "证据片段：p53 是抑癌基因"
+                ),
+            },
+            {"role": "user", "content": "它主要影响哪些通路？"},
+        ],
+    }
+
+    runtime.execute("那它的机制呢？", context, knowledge_mode=True)
+
+    query = wm.calls[0][1]["query"]
+    assert "那它的机制呢？" in query
+    assert "TP53 在癌症中的作用是什么？" in query
+    assert "它主要影响哪些通路？" in query
+    assert "摘要开头" not in query
+    assert "结" * 500 in query
+    assert "助手回答不应进入检索" not in query
+    assert "TP53 促进凋亡" not in query
+    assert "p53 是抑癌基因" not in query
+
+
+def test_strict_followup_keeps_long_user_turns_whole():
+    """最近两轮用户发言不按字符截断。"""
+    long_turn = "问" * 3000
+    llm = FakeLLM([_text_response("答 [E1]")])
+    wm = FakeWM(
+        {
+            "search_knowledge": {
+                "status": "success",
+                "type": "knowledge_evidence",
+                "evidence": [{"evidence_id": "E1", "title": "论文"}],
+                "sources": [],
+                "continue_tool_loop": True,
+            }
+        }
+    )
+    runtime, wm = _make_runtime(llm, wm)
+
+    runtime.execute(
+        "那它呢？", {"history": [{"role": "user", "content": long_turn}]}, knowledge_mode=True
+    )
+
+    assert long_turn in wm.calls[0][1]["query"]
+
+
+def test_strict_first_turn_query_is_question_only():
+    """无历史的首轮严格检索仍只用当前问题。"""
+    llm = FakeLLM([_text_response("答 [E1]")])
+    wm = FakeWM(
+        {
+            "search_knowledge": {
+                "status": "success",
+                "type": "knowledge_evidence",
+                "evidence": [{"evidence_id": "E1", "title": "论文"}],
+                "sources": [],
+                "continue_tool_loop": True,
+            }
+        }
+    )
+    runtime, wm = _make_runtime(llm, wm)
+
+    runtime.execute("TP53 是什么？", {}, knowledge_mode=True)
+
+    assert wm.calls[0][1]["query"] == "TP53 是什么？"
 
 
 def test_search_knowledge_hidden_and_rejected_when_flag_off(monkeypatch):
@@ -625,11 +817,12 @@ def test_invalid_citation_after_retry_reports_and_keeps_evidence(monkeypatch):
     assert result["status"] == "error"
     assert result["outcome"] == "citation_invalid"
     assert "未通过引用校验" in result["message"]
-    assert "[E1]" in result["message"]
+    assert "[E1]" not in result["message"]
+    assert "证据面板" in result["message"]
     package = result["results"]["knowledge_evidence"]
     assert package["outcome"] == "citation_invalid"
     assert package["evidence"][0]["evidence_id"] == "E1"
-    assert package["citations"] == ["E1"]
+    assert package["citations"] == []
     assert "file_path" not in package["evidence"][0]
     assert "chunk_id" not in package["evidence"][0]
     assert package["claims"] == []

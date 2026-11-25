@@ -7,6 +7,10 @@ from types import SimpleNamespace
 
 import pytest
 
+from src.control.agent_runtime import (
+    DEFAULT_TOOL_RESULT_MAX_CHARS,
+    KNOWLEDGE_PAYLOAD_EVIDENCE_CHARS,
+)
 from tests.unit.test_agent_runtime import FakeWM, _text_response, _tool_call_response
 
 
@@ -378,6 +382,66 @@ def test_tool_result_is_truncated_to_per_call_cap(monkeypatch):
     assert len(payload) <= 160
 
 
+def test_long_evidence_payload_is_compacted_per_item(monkeypatch):
+    """文献证据超限时逐条压缩正文并保留元数据；持久化证据包仍是全文。"""
+    monkeypatch.setenv("AGENT_KNOWLEDGE_TOOL", "search")
+    monkeypatch.delenv("AGENT_TOOL_RESULT_MAX_CHARS", raising=False)
+    llm = FakeStreamLLM(
+        [
+            [_tool_chunk(0, "c1", "search_knowledge", '{"query": "TP53"}')],
+            [_text_chunk("答 [E1]")],
+        ]
+    )
+    full_text = "长" * 4000
+    wm = FakeWM(
+        {
+            "search_knowledge": {
+                "status": "success",
+                "type": "knowledge_evidence",
+                "evidence": [
+                    {
+                        "evidence_id": f"E{i}",
+                        "title": f"论文{i}",
+                        "year": "2024",
+                        "source_id": f"S{i}",
+                        "content": full_text,
+                    }
+                    for i in range(1, 9)
+                ],
+                "sources": [
+                    {"source_id": "S1", "title": "来源一", "evidence_ids": ["E1", "E2"]},
+                    {"source_id": "S2", "title": "来源二", "evidence_ids": ["E3", "E4"]},
+                ],
+                "continue_tool_loop": True,
+            }
+        }
+    )
+    runtime, _ = _runtime(llm, wm)
+
+    result = runtime.execute("TP53 的证据", on_event=EventSink())
+
+    payload = llm.calls[1]["messages"][-1]["content"]
+    parsed = json.loads(payload)
+    assert "truncated" not in parsed
+    assert len(payload) <= DEFAULT_TOOL_RESULT_MAX_CHARS
+    assert len(parsed["evidence"]) == 8
+    for index, item in enumerate(parsed["evidence"], start=1):
+        assert item["evidence_id"] == f"E{index}"
+        assert item["title"] == f"论文{index}"
+        assert item["year"] == "2024"
+        assert item["source_id"] == f"S{index}"
+        assert item["content_truncated"] is True
+        assert item["content"].startswith(full_text[:KNOWLEDGE_PAYLOAD_EVIDENCE_CHARS])
+        assert len(item["content"]) < len(full_text)
+    assert parsed["sources"] == [
+        {"source_id": "S1", "title": "来源一", "evidence_ids": ["E1", "E2"]},
+        {"source_id": "S2", "title": "来源二", "evidence_ids": ["E3", "E4"]},
+    ]
+    # 界面与落库仍拿完整正文。
+    persisted = result["results"]["knowledge_evidence"]["evidence"]
+    assert [item["content"] for item in persisted] == [full_text] * 8
+
+
 def test_tool_budget_exhaustion_switches_to_final_answer(monkeypatch):
     """累计结果预算用尽后禁用工具，不再执行新工具。"""
     monkeypatch.setenv("AGENT_TOOL_RESULT_BUDGET_CHARS", "80")
@@ -536,9 +600,9 @@ def test_search_knowledge_status_reports_evidence_count(monkeypatch):
     assert "".join(event["text"] for event in deltas) == "答 [E1][E2]"
 
 
-def test_knowledge_mode_buffers_plain_answer_to_one_delta(monkeypatch):
-    """开关开启时正文统一在轮次收口后发射，避免工具轮正文先泄露。"""
-    monkeypatch.setenv("AGENT_KNOWLEDGE_TOOL", "search")
+def test_plain_chat_streams_per_chunk_by_default(monkeypatch):
+    """默认配置（文献检索开启）下本轮没检索：普通对话仍逐 chunk 推送正文。"""
+    monkeypatch.delenv("AGENT_KNOWLEDGE_TOOL", raising=False)
     llm = FakeStreamLLM([[_text_chunk("普通"), _text_chunk("回答")]])
     runtime, _ = _runtime(llm, FakeWM({}))
     sink = EventSink()
@@ -546,8 +610,217 @@ def test_knowledge_mode_buffers_plain_answer_to_one_delta(monkeypatch):
     result = runtime.execute("你好", on_event=sink)
 
     deltas = [event for event in sink.events if event.get("type") == "delta"]
-    assert [event["text"] for event in deltas] == ["普通回答"]
+    assert [event["text"] for event in deltas] == ["普通", "回答"]
     assert result["message"] == "普通回答"
+
+
+def test_search_turn_buffers_final_answer_to_one_delta(monkeypatch):
+    """真正调用检索后，最终回答才缓冲到校验完成一次性发射。"""
+    monkeypatch.setenv("AGENT_KNOWLEDGE_TOOL", "search")
+    llm = FakeStreamLLM(
+        [
+            [_tool_chunk(0, "c1", "search_knowledge", '{"query": "TP53"}')],
+            [_text_chunk("答 [E1]")],
+        ]
+    )
+    evidence = {
+        "status": "success",
+        "type": "knowledge_evidence",
+        "evidence": [{"evidence_id": "E1", "title": "论文"}],
+        "sources": [],
+        "continue_tool_loop": True,
+    }
+    runtime, _ = _runtime(llm, FakeWM({"search_knowledge": evidence}))
+    sink = EventSink()
+
+    result = runtime.execute("TP53 的证据", on_event=sink)
+
+    deltas = [event for event in sink.events if event.get("type") == "delta"]
+    assert [event["text"] for event in deltas] == ["答 [E1]"]
+    assert result["outcome"] == "supported_answer"
+
+
+def test_strict_mode_buffers_final_answer_until_validation(monkeypatch):
+    """严格模式强制检索，最终正文在引用校验后一次性发射，且晚于工具结束事件。"""
+    monkeypatch.setenv("AGENT_KNOWLEDGE_TOOL", "search")
+    llm = FakeStreamLLM([[_text_chunk("答 [E1]")]])
+    evidence = {
+        "status": "success",
+        "type": "knowledge_evidence",
+        "evidence": [{"evidence_id": "E1", "title": "论文"}],
+        "sources": [],
+        "continue_tool_loop": True,
+    }
+    runtime, _ = _runtime(llm, FakeWM({"search_knowledge": evidence}))
+    sink = EventSink()
+
+    result = runtime.execute("TP53 的证据", on_event=sink, knowledge_mode=True)
+
+    assert [event["type"] for event in sink.events] == ["tool_status", "tool_status", "delta"]
+    assert sink.events[1]["phase"] == "end"
+    assert sink.events[2]["text"] == "答 [E1]"
+    assert result["outcome"] == "supported_answer"
+
+
+def test_search_turn_streams_reasoning_while_answer_is_buffered(monkeypatch):
+    """检索回合缓冲正文，但思考增量仍逐段流出，不被缓冲吞掉。"""
+    monkeypatch.setenv("AGENT_KNOWLEDGE_TOOL", "search")
+    llm = FakeStreamLLM(
+        [
+            [
+                _reasoning_chunk("先找证据"),
+                _tool_chunk(0, "c1", "search_knowledge", '{"query": "TP53"}'),
+            ],
+            [_reasoning_chunk("再作答"), _text_chunk("答 [E1]")],
+        ]
+    )
+    evidence = {
+        "status": "success",
+        "type": "knowledge_evidence",
+        "evidence": [{"evidence_id": "E1", "title": "论文"}],
+        "sources": [],
+        "continue_tool_loop": True,
+    }
+    runtime, _ = _runtime(llm, FakeWM({"search_knowledge": evidence}))
+    sink = EventSink()
+
+    runtime.execute("TP53 的证据", on_event=sink)
+
+    reasoning = [e["text"] for e in sink.events if e.get("source") == "reasoning"]
+    content = [e["text"] for e in sink.events if e.get("type") == "delta" and "source" not in e]
+    assert reasoning == ["先找证据", "\n\n再作答"]
+    assert content == ["答 [E1]"]
+
+
+def test_analysis_turn_continues_and_keeps_artifacts(monkeypatch):
+    """分析成功不再终结本轮：模型继续作答，分析产物随最终结果保留。"""
+    monkeypatch.delenv("AGENT_KNOWLEDGE_TOOL", raising=False)
+    llm = FakeStreamLLM(
+        [
+            [_tool_chunk(0, "c1", "run_analysis", '{"analysis_type": "differential_expression"}')],
+            [_text_chunk("共 10 个显著基因")],
+        ]
+    )
+    analysis = {
+        "status": "success",
+        "analysis_type": "differential_expression",
+        "message": "差异表达分析完成",
+        "run_id": "run-1",
+        "results": {
+            "output_file": "de.csv",
+            "charts": [{"type": "image", "image_b64": "x"}],
+        },
+        "continue_tool_loop": True,
+    }
+    runtime, wm = _runtime(llm, FakeWM({"run_analysis": analysis}))
+
+    result = runtime.execute("做差异表达", on_event=EventSink())
+
+    assert len(wm.calls) == 1
+    assert len(llm.calls) == 2
+    assert result["message"] == "共 10 个显著基因"
+    assert result["results"]["charts"] == [{"type": "image", "image_b64": "x"}]
+    assert result["results"]["output_file"] == "de.csv"
+    assert result["results"]["run_id"] == "run-1"
+
+
+def test_memory_turn_continues_to_final_answer(monkeypatch):
+    """运行记忆成功后继续本轮，最终展示模型的回答而不是“处理完成”。"""
+    monkeypatch.delenv("AGENT_KNOWLEDGE_TOOL", raising=False)
+    llm = FakeStreamLLM(
+        [
+            [_tool_chunk(0, "c1", "query_memory", '{"query": "上次参数"}')],
+            [_text_chunk("上次用的是 DESeq2，FDR 0.05。")],
+        ]
+    )
+    memory = {
+        "status": "success",
+        "type": "memory_response",
+        "response": "run-abc 使用 DESeq2，FDR=0.05",
+        "continue_tool_loop": True,
+    }
+    runtime, _ = _runtime(llm, FakeWM({"query_memory": memory}))
+    sink = EventSink()
+
+    result = runtime.execute("上次用的什么参数", on_event=sink)
+
+    assert len(llm.calls) == 2
+    assert result["message"] == "上次用的是 DESeq2，FDR 0.05。"
+    assert "处理完成" not in result["message"]
+
+
+def test_analysis_then_search_keeps_both_artifact_and_evidence(monkeypatch):
+    """分析后继续检索：最终结果同时保留分析产物与证据包。"""
+    monkeypatch.setenv("AGENT_KNOWLEDGE_TOOL", "search")
+    llm = FakeStreamLLM(
+        [
+            [_tool_chunk(0, "c1", "run_analysis", '{"analysis_type": "differential_expression"}')],
+            [_tool_chunk(0, "c2", "search_knowledge", '{"query": "TP53"}')],
+            [_text_chunk("共 10 个显著基因 [E1]")],
+        ]
+    )
+    wm = FakeWM(
+        {
+            "run_analysis": {
+                "status": "success",
+                "analysis_type": "differential_expression",
+                "results": {"output_file": "de.csv"},
+                "continue_tool_loop": True,
+            },
+            "search_knowledge": {
+                "status": "success",
+                "type": "knowledge_evidence",
+                "evidence": [{"evidence_id": "E1", "title": "论文"}],
+                "sources": [],
+                "continue_tool_loop": True,
+            },
+        }
+    )
+    runtime, wm = _runtime(llm, wm)
+
+    result = runtime.execute("做差异并查 TP53 证据", on_event=EventSink())
+
+    assert [call[0] for call in wm.calls] == ["run_analysis", "search_knowledge"]
+    assert result["results"]["output_file"] == "de.csv"
+    package = result["results"]["knowledge_evidence"]
+    assert package["outcome"] == "supported_answer"
+    assert package["citations"] == ["E1"]
+
+
+def test_memory_then_search_runs_both_tools(monkeypatch):
+    """记忆 → 文献顺序也不会在第一个工具后终止。"""
+    monkeypatch.setenv("AGENT_KNOWLEDGE_TOOL", "search")
+    llm = FakeStreamLLM(
+        [
+            [_tool_chunk(0, "c1", "query_memory", '{"query": "上次参数"}')],
+            [_tool_chunk(0, "c2", "search_knowledge", '{"query": "DESeq2"}')],
+            [_text_chunk("上次用 DESeq2[E1]，结论一致 [E1]")],
+        ]
+    )
+    wm = FakeWM(
+        {
+            "query_memory": {
+                "status": "success",
+                "type": "memory_response",
+                "response": "run-abc 使用 DESeq2",
+                "continue_tool_loop": True,
+            },
+            "search_knowledge": {
+                "status": "success",
+                "type": "knowledge_evidence",
+                "evidence": [{"evidence_id": "E1", "title": "论文"}],
+                "sources": [],
+                "continue_tool_loop": True,
+            },
+        }
+    )
+    runtime, wm = _runtime(llm, wm)
+
+    result = runtime.execute("上次参数和方法文献是否一致", on_event=EventSink())
+
+    assert [call[0] for call in wm.calls] == ["query_memory", "search_knowledge"]
+    assert result["outcome"] == "supported_answer"
+    assert result["results"]["knowledge_evidence"]["citations"] == ["E1"]
 
 
 def test_stream_tool_calls_accumulate_with_missing_index():

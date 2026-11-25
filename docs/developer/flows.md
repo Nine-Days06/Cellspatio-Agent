@@ -27,15 +27,22 @@ POST /api/chat（SSE）
   或 `reasoning`，缺失时安静降级。
 - 思考条与正式回答共用同一轮状态：正文开始后自动收起，结束后显示耗时；
   下一轮、切会话或失败且无正文时清空。多轮工具调用之间用空行分隔思考。
+- 正文流式按轮判定：普通对话逐 chunk 下发；本轮真正调用了 `search_knowledge`
+  之后才切换为整段缓冲，等工具结果回来再一次性下发。思考与工具状态不受影响。
 - 无工具调用时走 `general_response`。
+- 非单细胞分析与运行记忆是**非终态**：`run_analysis`（`analysis_type != single_cell`）
+  和 `query_memory` 返回 `continue_tool_loop`，模型可继续检索或收口；分析产物
+  （`results` 除 `knowledge_evidence` 外）并入最终 `results`，与证据包一起落库。
 - `search_knowledge` 默认启用，只读：检索证据（E 编号/来源）供模型继续推理，不生成答案、不写运行记录。
   `AGENT_KNOWLEDGE_TOOL` 设为 `legacy`（或 `off`/`false` 等停用值）会回退到旧 `query_knowledge`：
   由 LightRAG 直接作答并写运行记录，仅作兼容期排障，不再新增能力。
   `query_knowledge` 已弃用，只保留一个版本供回退；删除条件：一个发布版本内经日志/用户反馈确认无 legacy 使用，按 BREAKING 流程发布。
   用过检索的轮次必须引用真实 `[E#]`；服务不可用、没有证据、引用校验失败分别
   返回 `knowledge_unavailable` / `insufficient_evidence` / `citation_invalid`。
-  证据包随助手消息存于 `results.knowledge_evidence` 供刷新后展开；模型上下文只
-  取正文与显式论断，不重放证据原文/来源。
+  证据包随助手消息存于 `results.knowledge_evidence` 供刷新后展开，保存完整正文；
+  回灌模型的每条证据保留 `E#`、标题、年份与来源，正文压到 1,200 字并标注截断，
+  保证合法 JSON 且大小受限。下一轮历史准备只保留正文与显式论断，并清理旧消息里
+  落库的证据清单与来源列表。
 - 动态脚本由生成器产生，确认后才执行；已知失败保留尝试历史，用户可明确重试。
 - 中断、成功、取消或无法核验的运行拒绝重跑；不把复制卡恢复 pending。
 - 新确认请求独立恢复并核验原运行，不依赖 GET 恢复的请求上下文。
@@ -74,14 +81,21 @@ POST /api/chat mode=knowledge_qa
   → 正文按 [E#] 引用校验 → 证据包落库 → done
 ```
 
+护栏在 `AgentRuntime._dispatch` 顶部：严格模式下除 `search_knowledge` 外的工具调用
+直接返回 `tool_rejected` 非终态提示，不触达工作流；模型可改调检索工具继续本轮。
+`citation_invalid` 只提示展开证据面板，不把证据标题/片段/来源路径写进正文。
+
 严格模式与智能对话共用同一检索服务、同一证据包和同一引用校验，不再有第二套
 问答提示词。检索失败直接报 `knowledge_unavailable`；空结果报
 `insufficient_evidence`；引用无效重试一次后报 `citation_invalid`。模式开关只表达
 “是否强制文献深答”，不要求用户理解两条管线。
 
 混合评测用例在 `evals/knowledge_tool_cases.jsonl`，入口
-`python -m evals.run_knowledge_tool_eval --scripted|--live`；指标包含工具选择、
-引用有效率、回答命中、延迟与输入/输出 token 成本，并可按基线报告比较回归。
+`python -m evals.run_knowledge_tool_eval`，三层分开：
+`--scripted` 用脚本化 LLM + 假工作流只验证运行器契约；`--tools` 用真实模型 +
+假工作流只报告工具选择与格式（`--live` 为弃用别名）；`--e2e` 才使用真实
+WorkflowManager 与真实检索，只跑文献用例并报告回答与引用质量，基线比较仅在
+同版本端到端报告之间生效。
 
 ## 记录、快照与溯源
 

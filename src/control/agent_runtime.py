@@ -22,6 +22,7 @@ import openai
 
 from src.config import env_int
 from src.control.tools import (
+    CONTINUE_TOOL_LOOP_FLAG,
     TERMINAL_STATUSES,
     build_system_prompt,
     build_tool_schemas,
@@ -40,11 +41,19 @@ DEFAULT_TOOL_RESULT_BUDGET_CHARS = 60000
 # 每次工具调用至少按该开销计入预算；即使结果很小，也能在有限轮内自然收口。
 TOOL_CALL_OVERHEAD_CHARS = 1000
 TOOL_RESULT_TRUNCATED_NOTE = "工具结果超出单次上限，已截断"
-# 工具结果要求模型继续推理而非立即返回的标记字段。
-CONTINUE_TOOL_LOOP_FLAG = "continue_tool_loop"
+# 文献证据回灌模型时每条正文的上限；完整原文仅存在于持久化证据包与界面。
+KNOWLEDGE_PAYLOAD_EVIDENCE_CHARS = 1200
+KNOWLEDGE_PAYLOAD_TRUNCATED_MARK = (
+    f"…（正文每条按 {KNOWLEDGE_PAYLOAD_EVIDENCE_CHARS} 字压缩，完整片段见证据面板）"
+)
+# 严格模式追问检索只取摘要末尾，避免整段摘要撑大 query。
+STRICT_QUERY_SUMMARY_TAIL_CHARS = 500
 KNOWLEDGE_UNAVAILABLE = "knowledge_unavailable"
 INSUFFICIENT_EVIDENCE = "insufficient_evidence"
 CITATION_INVALID = "citation_invalid"
+CITATION_INVALID_MESSAGE = (
+    "已检索到证据，但回答未通过引用校验。请展开证据面板查看本轮证据，然后重试。"
+)
 UNAVAILABLE_MESSAGE = "知识检索服务暂时不可用，请稍后重试。"
 CITATION_RETRY_NOTE = (
     "上一版回答未通过引用校验：至少引用一条本轮真实存在的 [E#] 编号，"
@@ -76,6 +85,9 @@ PUBLIC_SOURCE_FIELDS = (
 
 REPEATED_TOOL_NOTE = (
     "（系统提示：检测到重复的工具调用，工具已停用。请直接基于已有工具结果回答，不要再次请求工具。）"
+)
+STRICT_TOOL_REJECT_NOTE = (
+    "严格文献模式只允许 search_knowledge；请改用 search_knowledge 检索证据，其他工具不可用。"
 )
 BUDGET_EXHAUSTED_NOTE = (
     "（系统提示：本轮工具结果预算已用尽，工具已停用。请直接基于已有结果回答，不要再次请求工具。）"
@@ -163,7 +175,8 @@ class AgentRuntime:
             user_input, context, hint=hint, knowledge_mode=knowledge_mode
         )
         schemas = build_tool_schemas(strict_literature=knowledge_mode)
-        buffering = knowledge_tool_enabled(force=knowledge_mode)
+        # 只有本轮已经检索过，最终回答才缓冲到校验后；未检索的普通对话保持逐字流式。
+        buffering = knowledge_mode
         dispatched: dict[str, Any] | None = None
         reasoning_seen = False
         result_limit_chars = env_int("AGENT_TOOL_RESULT_MAX_CHARS", DEFAULT_TOOL_RESULT_MAX_CHARS)
@@ -175,14 +188,16 @@ class AgentRuntime:
         next_evidence_number = 1
         seen_chunks: set[str] = set()
         trace = _KnowledgeTrace()
+        artifacts: dict[str, Any] = {}
         try:
             if knowledge_mode:
+                query = self._strict_query(user_input, context)
                 forced_call = SimpleNamespace(
                     id="forced_search_knowledge",
                     type="function",
                     function=SimpleNamespace(
                         name="search_knowledge",
-                        arguments=json.dumps({"query": user_input}, ensure_ascii=False),
+                        arguments=json.dumps({"query": query}, ensure_ascii=False),
                     ),
                 )
                 if on_event is not None and not on_event(
@@ -212,8 +227,10 @@ class AgentRuntime:
                         unavailable=trace.unavailable,
                         on_event=on_event,
                         buffered=buffering,
+                        artifacts=artifacts,
                     )
                 dispatched = result
+                self._collect_artifacts(artifacts, result)
                 payload = self._tool_payload(
                     result, min(result_limit_chars, max(budget_chars - spent_chars, 0))
                 )
@@ -271,6 +288,7 @@ class AgentRuntime:
                         unavailable=trace.unavailable,
                         on_event=on_event,
                         buffered=buffering,
+                        artifacts=artifacts,
                     )
 
                 if force_answer:
@@ -304,7 +322,9 @@ class AgentRuntime:
                 next_evidence_number += added_evidence
                 if name == "search_knowledge":
                     trace.absorb(result, user_input)
+                    buffering = True
                 dispatched = result
+                self._collect_artifacts(artifacts, result)
                 status = result.get("status")
                 if result.get("analysis_type") == "single_cell":
                     # 固定单细胞链自带人工审批，不再回灌模型；但流式过程条必须收尾。
@@ -408,36 +428,40 @@ class AgentRuntime:
         unavailable: bool,
         on_event: Callable[[dict], bool] | None,
         buffered: bool,
+        artifacts: dict[str, Any],
     ) -> dict[str, Any]:
-        """对用过检索的答案做三态收口，并在需要时缓冲后统一发射正文。"""
+        """对用过检索的答案做三态收口，并在需要时缓冲后统一发射正文。
+
+        ``artifacts`` 是本轮非检索工具累积的结果包；最终回答不能因为它们
+        来自模型而被丢弃。
+        """
+        merged = dict(artifacts)
         if searched and not evidence:
             if unavailable:
+                merged["knowledge_evidence"] = self._knowledge_package(
+                    KNOWLEDGE_UNAVAILABLE, [], [], "", []
+                )
                 result = {
                     "status": "error",
                     "type": "general_response",
                     "outcome": KNOWLEDGE_UNAVAILABLE,
                     "message": UNAVAILABLE_MESSAGE,
-                    "results": {
-                        "knowledge_evidence": self._knowledge_package(
-                            KNOWLEDGE_UNAVAILABLE, [], [], "", []
-                        )
-                    },
+                    "results": merged,
                 }
             else:
                 scope = "、".join(dict.fromkeys(q for q in queries if q))
                 text = "当前知识库没有检索到相关证据。"
                 if scope:
                     text += f"\n检索范围：{scope}。"
+                merged["knowledge_evidence"] = self._knowledge_package(
+                    INSUFFICIENT_EVIDENCE, [], [], "", []
+                )
                 result = {
                     "status": "success",
                     "type": "general_response",
                     "outcome": INSUFFICIENT_EVIDENCE,
                     "message": text,
-                    "results": {
-                        "knowledge_evidence": self._knowledge_package(
-                            INSUFFICIENT_EVIDENCE, [], [], "", []
-                        )
-                    },
+                    "results": merged,
                 }
             return self._emit_buffered(result, on_event, buffered)
 
@@ -450,23 +474,19 @@ class AgentRuntime:
                 if self._citations_valid(retried_content, valid_ids):
                     content, claims = retried_content, retried_claims
                 else:
-                    listing = self._evidence_listing(evidence)
+                    merged["knowledge_evidence"] = self._knowledge_package(
+                        CITATION_INVALID,
+                        evidence,
+                        sources,
+                        "",
+                        [],
+                    )
                     result = {
                         "status": "error",
                         "type": "general_response",
                         "outcome": CITATION_INVALID,
-                        "message": (
-                            f"已检索到证据，但回答未通过引用校验。\n\n**已检索到的证据**\n{listing}"
-                        ),
-                        "results": {
-                            "knowledge_evidence": self._knowledge_package(
-                                CITATION_INVALID,
-                                evidence,
-                                sources,
-                                "".join(f"[{item.get('evidence_id')}]" for item in evidence),
-                                [],
-                            )
-                        },
+                        "message": CITATION_INVALID_MESSAGE,
+                        "results": merged,
                     }
                     return self._emit_buffered(result, on_event, buffered)
 
@@ -477,11 +497,11 @@ class AgentRuntime:
         }
         if searched:
             result["outcome"] = "supported_answer"
-            result["results"] = {
-                "knowledge_evidence": self._knowledge_package(
-                    "supported_answer", evidence, sources, content, claims
-                )
-            }
+            merged["knowledge_evidence"] = self._knowledge_package(
+                "supported_answer", evidence, sources, content, claims
+            )
+        if merged:
+            result["results"] = merged
         return self._emit_buffered(result, on_event, buffered)
 
     @staticmethod
@@ -506,6 +526,17 @@ class AgentRuntime:
             "citations": list(dict.fromkeys(_CITATION_RE.findall(content))),
             "claims": claims,
         }
+
+    @staticmethod
+    def _collect_artifacts(artifacts: dict[str, Any], result: dict[str, Any]) -> None:
+        """累积非检索工具的结果包；证据包由收口阶段统一生成，不在此合并。"""
+        payload = result.get("results")
+        if isinstance(payload, dict):
+            artifacts.update(
+                {key: value for key, value in payload.items() if key != "knowledge_evidence"}
+            )
+        if result.get("run_id"):
+            artifacts["run_id"] = result["run_id"]
 
     @staticmethod
     def _extract_claims(content: str, valid_ids: set[str]) -> tuple[str, list[dict[str, Any]]]:
@@ -576,18 +607,6 @@ class AgentRuntime:
         ) as exc:
             logger.warning("citation retry failed: %s: %s", type(exc).__name__, exc)
             return ""
-
-    @staticmethod
-    def _evidence_listing(evidence: list[dict[str, Any]]) -> str:
-        """把已检索证据渲染成可人工判断的简短清单，不含来源路径。"""
-        lines = []
-        for item in evidence:
-            title = item.get("title") or item.get("url") or "证据"
-            year = item.get("year") or ""
-            snippet = str(item.get("content") or "")[:120]
-            suffix = f"（{year}）" if year else ""
-            lines.append(f"- [{item.get('evidence_id')}] {title}{suffix}：{snippet}")
-        return "\n".join(lines)
 
     def _stream_round(
         self,
@@ -754,17 +773,40 @@ class AgentRuntime:
             len(renumbered),
         )
 
-    @staticmethod
-    def _tool_payload(result: dict[str, Any], limit: int) -> str:
-        """序列化工具结果，超出上限时返回合法 JSON 的截断预览。"""
+    @classmethod
+    def _tool_payload(cls, result: dict[str, Any], limit: int) -> str:
+        """序列化工具结果：文献证据逐条压缩正文，其他结果超限时返回截断预览。"""
         payload = json.dumps(result, ensure_ascii=False, default=str)
         if len(payload) <= limit:
             return payload
+        if result.get("type") == "knowledge_evidence":
+            compacted = json.dumps(cls._compact_evidence(result), ensure_ascii=False, default=str)
+            if len(compacted) <= limit:
+                return compacted
         skeleton = {"truncated": True, "note": TOOL_RESULT_TRUNCATED_NOTE, "preview": ""}
         # 预留包装字段与转义余量，避免截断后反而明显超出上限。
         room = max(limit - len(json.dumps(skeleton, ensure_ascii=False)) - 64, 0)
         skeleton["preview"] = payload[:room]
         return json.dumps(skeleton, ensure_ascii=False)
+
+    @staticmethod
+    def _compact_evidence(result: dict[str, Any]) -> dict[str, Any]:
+        """只压缩证据正文；编号、标题、年份、来源与来源关系原样保留。"""
+        evidence = []
+        for item in result.get("evidence") or []:
+            if not isinstance(item, dict):
+                evidence.append(item)
+                continue
+            content = item.get("content")
+            if isinstance(content, str) and len(content) > KNOWLEDGE_PAYLOAD_EVIDENCE_CHARS:
+                item = {
+                    **item,
+                    "content": content[:KNOWLEDGE_PAYLOAD_EVIDENCE_CHARS]
+                    + KNOWLEDGE_PAYLOAD_TRUNCATED_MARK,
+                    "content_truncated": True,
+                }
+            evidence.append(item)
+        return {**result, "evidence": evidence}
 
     def _route_hint(self, user_input: str) -> dict[str, Any] | None:
         """调用 ModalRouter.hint；无 router 或失败时返回 None（不阻断主流程）。"""
@@ -855,6 +897,25 @@ class AgentRuntime:
         return messages
 
     @staticmethod
+    def _strict_query(user_input: str, context: dict[str, Any]) -> str:
+        """严格模式检索 query：当前问题 + 摘要末尾 + 最近两轮用户发言。"""
+        parts = [user_input]
+        summary = context.get("summary")
+        if isinstance(summary, str) and summary.strip():
+            parts.append(summary.strip()[-STRICT_QUERY_SUMMARY_TAIL_CHARS:])
+        if isinstance(context.get("recent_user_turns"), list):
+            # 生产路径由 chat_service 直接给未截断的用户原话。
+            turns = [str(turn) for turn in context["recent_user_turns"]]
+        else:
+            turns = [
+                str(item.get("content") or "")
+                for item in context.get("history") or []
+                if isinstance(item, dict) and item.get("role") == "user"
+            ]
+        parts.extend(turn for turn in turns[-2:] if turn and turn != user_input)
+        return "\n".join(parts)
+
+    @staticmethod
     def _tool_message_dict(assistant_message, tool_call) -> dict[str, Any]:
         """Convert SDK assistant+tool_calls back to dict for message history."""
         return {
@@ -881,6 +942,15 @@ class AgentRuntime:
         knowledge_mode: bool = False,
     ) -> dict[str, Any]:
         name = tool_call.function.name
+        if knowledge_mode and name != "search_knowledge":
+            # 严格文献模式：非检索工具不进入工作流，避免分析/下载/记忆副作用。
+            logger.warning("strict knowledge mode rejected tool: %s", name)
+            return {
+                "status": "error",
+                "type": "tool_rejected",
+                "message": STRICT_TOOL_REJECT_NOTE,
+                CONTINUE_TOOL_LOOP_FLAG: True,
+            }
         try:
             args = json.loads(tool_call.function.arguments or "{}")
         except json.JSONDecodeError:
