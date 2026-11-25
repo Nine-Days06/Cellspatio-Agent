@@ -536,9 +536,9 @@ def test_search_knowledge_status_reports_evidence_count(monkeypatch):
     assert "".join(event["text"] for event in deltas) == "答 [E1][E2]"
 
 
-def test_knowledge_mode_buffers_plain_answer_to_one_delta(monkeypatch):
-    """开关开启时正文统一在轮次收口后发射，避免工具轮正文先泄露。"""
-    monkeypatch.setenv("AGENT_KNOWLEDGE_TOOL", "search")
+def test_plain_chat_streams_per_chunk_by_default(monkeypatch):
+    """默认配置（文献检索开启）下本轮没检索：普通对话仍逐 chunk 推送正文。"""
+    monkeypatch.delenv("AGENT_KNOWLEDGE_TOOL", raising=False)
     llm = FakeStreamLLM([[_text_chunk("普通"), _text_chunk("回答")]])
     runtime, _ = _runtime(llm, FakeWM({}))
     sink = EventSink()
@@ -546,8 +546,86 @@ def test_knowledge_mode_buffers_plain_answer_to_one_delta(monkeypatch):
     result = runtime.execute("你好", on_event=sink)
 
     deltas = [event for event in sink.events if event.get("type") == "delta"]
-    assert [event["text"] for event in deltas] == ["普通回答"]
+    assert [event["text"] for event in deltas] == ["普通", "回答"]
     assert result["message"] == "普通回答"
+
+
+def test_search_turn_buffers_final_answer_to_one_delta(monkeypatch):
+    """真正调用检索后，最终回答才缓冲到校验完成一次性发射。"""
+    monkeypatch.setenv("AGENT_KNOWLEDGE_TOOL", "search")
+    llm = FakeStreamLLM(
+        [
+            [_tool_chunk(0, "c1", "search_knowledge", '{"query": "TP53"}')],
+            [_text_chunk("答 [E1]")],
+        ]
+    )
+    evidence = {
+        "status": "success",
+        "type": "knowledge_evidence",
+        "evidence": [{"evidence_id": "E1", "title": "论文"}],
+        "sources": [],
+        "continue_tool_loop": True,
+    }
+    runtime, _ = _runtime(llm, FakeWM({"search_knowledge": evidence}))
+    sink = EventSink()
+
+    result = runtime.execute("TP53 的证据", on_event=sink)
+
+    deltas = [event for event in sink.events if event.get("type") == "delta"]
+    assert [event["text"] for event in deltas] == ["答 [E1]"]
+    assert result["outcome"] == "supported_answer"
+
+
+def test_strict_mode_buffers_final_answer_until_validation(monkeypatch):
+    """严格模式强制检索，最终正文在引用校验后一次性发射，且晚于工具结束事件。"""
+    monkeypatch.setenv("AGENT_KNOWLEDGE_TOOL", "search")
+    llm = FakeStreamLLM([[_text_chunk("答 [E1]")]])
+    evidence = {
+        "status": "success",
+        "type": "knowledge_evidence",
+        "evidence": [{"evidence_id": "E1", "title": "论文"}],
+        "sources": [],
+        "continue_tool_loop": True,
+    }
+    runtime, _ = _runtime(llm, FakeWM({"search_knowledge": evidence}))
+    sink = EventSink()
+
+    result = runtime.execute("TP53 的证据", on_event=sink, knowledge_mode=True)
+
+    assert [event["type"] for event in sink.events] == ["tool_status", "tool_status", "delta"]
+    assert sink.events[1]["phase"] == "end"
+    assert sink.events[2]["text"] == "答 [E1]"
+    assert result["outcome"] == "supported_answer"
+
+
+def test_search_turn_streams_reasoning_while_answer_is_buffered(monkeypatch):
+    """检索回合缓冲正文，但思考增量仍逐段流出，不被缓冲吞掉。"""
+    monkeypatch.setenv("AGENT_KNOWLEDGE_TOOL", "search")
+    llm = FakeStreamLLM(
+        [
+            [
+                _reasoning_chunk("先找证据"),
+                _tool_chunk(0, "c1", "search_knowledge", '{"query": "TP53"}'),
+            ],
+            [_reasoning_chunk("再作答"), _text_chunk("答 [E1]")],
+        ]
+    )
+    evidence = {
+        "status": "success",
+        "type": "knowledge_evidence",
+        "evidence": [{"evidence_id": "E1", "title": "论文"}],
+        "sources": [],
+        "continue_tool_loop": True,
+    }
+    runtime, _ = _runtime(llm, FakeWM({"search_knowledge": evidence}))
+    sink = EventSink()
+
+    runtime.execute("TP53 的证据", on_event=sink)
+
+    reasoning = [e["text"] for e in sink.events if e.get("source") == "reasoning"]
+    content = [e["text"] for e in sink.events if e.get("type") == "delta" and "source" not in e]
+    assert reasoning == ["先找证据", "\n\n再作答"]
+    assert content == ["答 [E1]"]
 
 
 def test_stream_tool_calls_accumulate_with_missing_index():

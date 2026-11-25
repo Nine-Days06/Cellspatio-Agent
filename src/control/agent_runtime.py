@@ -163,7 +163,8 @@ class AgentRuntime:
             user_input, context, hint=hint, knowledge_mode=knowledge_mode
         )
         schemas = build_tool_schemas(strict_literature=knowledge_mode)
-        buffering = knowledge_tool_enabled(force=knowledge_mode)
+        # 只有本轮已经检索过，最终回答才缓冲到校验后；未检索的普通对话保持逐字流式。
+        buffering = knowledge_mode
         dispatched: dict[str, Any] | None = None
         reasoning_seen = False
         result_limit_chars = env_int("AGENT_TOOL_RESULT_MAX_CHARS", DEFAULT_TOOL_RESULT_MAX_CHARS)
@@ -304,6 +305,7 @@ class AgentRuntime:
                 next_evidence_number += added_evidence
                 if name == "search_knowledge":
                     trace.absorb(result, user_input)
+                    buffering = True
                 dispatched = result
                 status = result.get("status")
                 if result.get("analysis_type") == "single_cell":
