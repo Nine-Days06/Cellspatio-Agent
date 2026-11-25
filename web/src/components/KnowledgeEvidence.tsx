@@ -38,7 +38,7 @@ export function KnowledgeEvidence({
   return (
     <details
       data-testid="knowledge-evidence"
-      className="mt-3 rounded-lg border border-border bg-muted/30 px-3 py-2 text-xs"
+      className="group mt-3 rounded-lg border border-border bg-muted/30 px-3 py-2 text-xs"
     >
       <summary className="cursor-pointer select-none text-muted-foreground">
         文献证据（{evidence.length} 条）
@@ -67,7 +67,7 @@ export function KnowledgeEvidence({
                 )}
               </div>
               {item.content && (
-                <p className="mt-1 line-clamp-4 whitespace-pre-wrap text-muted-foreground">
+                <p className="mt-1 line-clamp-4 whitespace-pre-wrap break-words text-muted-foreground group-open:line-clamp-none">
                   {item.content}
                 </p>
               )}

@@ -56,14 +56,34 @@ export default function MarkdownContent({ text, restrictExternalContent }: Markd
       rehypePlugins={[rehypeHighlight]}
       components={{
         pre: ({ children }) => <CodeBlock>{children}</CodeBlock>,
-        a: ({ href, children }) =>
-          restrictExternalContent && !/^https?:\/\//i.test(href ?? '') ? (
+        a: ({ href, children }) => {
+          // 站内锚点（如证据 [E1]）不新开标签页：展开目标折叠区并滚动定位。
+          if (href?.startsWith('#')) {
+            return (
+              <a
+                href={href}
+                className="text-primary underline"
+                onClick={(event) => {
+                  const target = document.getElementById(href.slice(1))
+                  if (!target) return
+                  event.preventDefault()
+                  const details = target.closest('details')
+                  if (details) details.open = true
+                  target.scrollIntoView({ block: 'center' })
+                }}
+              >
+                {children}
+              </a>
+            )
+          }
+          return restrictExternalContent && !/^https?:\/\//i.test(href ?? '') ? (
             <span>{children}</span>
           ) : (
             <a href={href} target="_blank" rel="noreferrer" className="text-primary underline">
               {children}
             </a>
-          ),
+          )
+        },
         // 远程图片会泄露访问者地址，因此受限正文只显示替代文本。
         ...(restrictExternalContent
           ? { img: ({ alt }: { alt?: string }) => <span className="text-muted-foreground">{alt || '[图片]'}</span> }

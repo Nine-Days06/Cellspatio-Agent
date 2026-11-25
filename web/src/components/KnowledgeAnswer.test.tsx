@@ -103,29 +103,27 @@ afterEach(() => {
 })
 
 describe('KnowledgeAnswer', () => {
-  it('keeps one collapsed source tree with a consistent count', () => {
+  it('keeps one collapsed excerpt list with a consistent count', () => {
     renderAnswer(qa())
     const citation = screen.getByRole('link', { name: /查看证据 E1/ })
 
     expect(screen.getByRole('region', { name: '知识问答证据' })).toBeInTheDocument()
-    expect(screen.getAllByText(/来源与检索原文/)).toHaveLength(1)
-    expect(screen.getByText('1 篇 · 1 段')).toBeInTheDocument()
-    expect(screen.queryByText('查看检索原文')).not.toBeInTheDocument()
-    expect(screen.queryByRole('link', { name: /证据片段 1 条/ })).not.toBeInTheDocument()
+    expect(screen.getAllByText(/检索原文/)).toHaveLength(1)
+    expect(screen.getByText('1 段')).toBeInTheDocument()
+    expect(screen.getByRole('heading', { name: '来源' })).toBeInTheDocument()
+    expect(screen.queryByText(/未归属来源/)).not.toBeInTheDocument()
 
-    expect(detailsOf(/来源与检索原文/).open).toBe(false)
-    expect(detailsOf('2024').open).toBe(false)
+    expect(detailsOf(/检索原文/).open).toBe(false)
     expect(excerptOf(citation).open).toBe(false)
   })
 
-  it('opens the excerpt tree at every level, focuses the excerpt and scrolls to it', () => {
+  it('opens the excerpt list, focuses the excerpt and scrolls to it', () => {
     const scrollIntoView = mockScroll()
     renderAnswer(qa())
     const citation = screen.getByRole('link', { name: /查看证据 E1/ })
     fireEvent.click(citation)
 
-    expect(detailsOf(/来源与检索原文/).open).toBe(true)
-    expect(detailsOf('2024').open).toBe(true)
+    expect(detailsOf(/检索原文/).open).toBe(true)
     const excerpt = excerptOf(citation)
     expect(excerpt.open).toBe(true)
     expect(excerpt.querySelector('summary')).toHaveFocus()
@@ -133,7 +131,7 @@ describe('KnowledgeAnswer', () => {
     expect(screen.getAllByText('该文献支持结论。')).toHaveLength(1)
   })
 
-  it('opens the unassigned group when one of its excerpts is cited', () => {
+  it('opens an excerpt that has no matching source', () => {
     const scrollIntoView = mockScroll()
     const data = qa({
       claims: [{ claim_id: 'C1', text: '孤立论断', evidence_ids: ['E9'], basis: 'fact' }],
@@ -144,13 +142,13 @@ describe('KnowledgeAnswer', () => {
     const citation = screen.getByRole('link', { name: /查看证据 E9/ })
     fireEvent.click(citation)
 
-    expect(detailsOf(/来源与检索原文/).open).toBe(true)
-    expect(detailsOf(/^未归属来源/).open).toBe(true)
+    expect(detailsOf(/检索原文/).open).toBe(true)
     expect(excerptOf(citation).open).toBe(true)
+    expect(screen.queryByText(/未归属来源/)).not.toBeInTheDocument()
     expect(scrollIntoView).toHaveBeenCalled()
   })
 
-  it('groups excerpts under their source and keeps repeated sources unique', () => {
+  it('renders all excerpts in one flat list', () => {
     const data = qa({
       evidence: [
         evidence({ evidence_id: 'E1' }),
@@ -170,43 +168,27 @@ describe('KnowledgeAnswer', () => {
     })
     renderAnswer(data)
 
-    expect(screen.getByText('2 篇 · 3 段')).toBeInTheDocument()
+    expect(screen.getByText('3 段')).toBeInTheDocument()
     expect(screen.getAllByText(/· 片段 /)).toHaveLength(3)
-    const firstPaper = detailsOf('2024')
-    const secondPaper = detailsOf('2023')
-    expect(firstPaper).not.toBe(secondPaper)
-    expect(within(firstPaper).getAllByText(/· 片段 /)).toHaveLength(2)
-    expect(within(firstPaper).getByText('第二段证据')).toBeInTheDocument()
-    expect(within(firstPaper).queryByText('另一篇证据')).not.toBeInTheDocument()
-    expect(within(secondPaper).getByText('另一篇证据')).toBeInTheDocument()
+    const excerpts = detailsOf(/检索原文/)
+    expect(within(excerpts).getAllByText(/· 片段 /)).toHaveLength(3)
+    expect(within(excerpts).getByText('第二段证据')).toBeInTheDocument()
+    expect(within(excerpts).getByText('另一篇证据')).toBeInTheDocument()
   })
 
-  it('keeps excerpts without a matching source in an unassigned group', () => {
-    const data = qa({
-      evidence: [evidence({ evidence_id: 'E9', source_id: 'PMID 404', content: '孤立片段' })],
-      sources: [source({ evidence_ids: [] })],
-    })
-    renderAnswer(data)
-
-    expect(screen.getByText('2 篇 · 1 段')).toBeInTheDocument()
-    const unassigned = detailsOf(/^未归属来源/)
-    expect(unassigned.open).toBe(false)
-    expect(unassigned).toHaveTextContent('孤立片段')
-  })
-
-  it('keeps a paper without excerpts and still exposes its link', () => {
+  it('lists sources separately from excerpts', () => {
     renderAnswer(qa({ evidence: [], sources: [source({ evidence_ids: [] })] }))
 
-    expect(screen.getByText('1 篇 · 0 段')).toBeInTheDocument()
-    expect(detailsOf('2024')).toHaveTextContent('A paper')
-    expect(screen.getByText('暂无可展示的检索片段。')).toBeInTheDocument()
+    expect(screen.getByRole('heading', { name: '来源' })).toBeInTheDocument()
+    expect(screen.getByText('A paper')).toBeInTheDocument()
+    expect(screen.queryByText(/检索原文/)).not.toBeInTheDocument()
     expect(screen.getByRole('link', { name: '原文' })).toHaveAttribute(
       'href',
       'https://pubmed.ncbi.nlm.nih.gov/38947524/',
     )
   })
 
-  it('renders one row of metadata, background and link per paper', () => {
+  it('renders background and link for each source', () => {
     const data = qa({
       sources: [
         source({
@@ -231,7 +213,7 @@ describe('KnowledgeAnswer', () => {
     )
   })
 
-  it('does not render a source tree for failed or interrupted answers', () => {
+  it('does not render excerpts or sources for failed or interrupted answers', () => {
     const failed = qa({
       status: 'error',
       outcome: null,
@@ -243,7 +225,8 @@ describe('KnowledgeAnswer', () => {
     })
     const { unmount } = renderAnswer(failed)
     expect(screen.getByRole('alert')).toHaveTextContent('知识检索失败')
-    expect(screen.queryByText(/来源与检索原文/)).not.toBeInTheDocument()
+    expect(screen.queryByText(/检索原文/)).not.toBeInTheDocument()
+    expect(screen.queryByRole('heading', { name: '来源' })).not.toBeInTheDocument()
     expect(screen.queryByRole('link')).not.toBeInTheDocument()
     expect(screen.queryByText(EMPTY_FALLBACK)).not.toBeInTheDocument()
     unmount()
@@ -260,7 +243,7 @@ describe('KnowledgeAnswer', () => {
     )
     expect(screen.getByText('已中断')).toBeInTheDocument()
     expect(screen.getByRole('status')).toHaveTextContent('本轮已中断')
-    expect(screen.queryByText(/来源与检索原文/)).not.toBeInTheDocument()
+    expect(screen.queryByText(/检索原文/)).not.toBeInTheDocument()
     expect(screen.queryByText('未复核')).not.toBeInTheDocument()
   })
 
