@@ -1159,16 +1159,106 @@ class WorkflowManager:
             return self._execute_knowledge_workflow(intent, params, context, run_id)
 
     def search_knowledge_for_agent(
-        self, query: str, context: dict[str, Any] | None = None
+        self,
+        query: str,
+        context: dict[str, Any] | None = None,
+        *,
+        scope: str | None = None,
+        max_evidence: int | None = None,
+        cursor: str | None = None,
+        sources_only: bool = False,
+        source_id: str | None = None,
     ) -> dict[str, Any]:
         """Agent 面向的只读文献检索：返回证据与来源，不生成答案、不写运行记录。"""
         from src.knowledge.qa import (
+            ANSWER_DEFAULT_EVIDENCE,
+            ANSWER_MAX_EVIDENCE,
+            EXHAUSTIVE_PAGE_SOURCES,
             RETRIEVAL_CALL_FAILED,
             RETRIEVAL_DEADLINE,
+            RETRIEVAL_INVALID_CURSOR,
             RETRIEVAL_SERVICE_FAILURE,
+            SURVEY_DEFAULT_SOURCES,
+            SURVEY_EVIDENCE_CHARS,
+            SURVEY_MAX_EVIDENCE_PER_SOURCE,
+            SURVEY_MAX_SOURCES,
+            evidence_limit,
             retrieve_evidence,
         )
 
+        scope = str(scope or "answer").strip().lower()
+        if scope not in ("answer", "survey", "exhaustive"):
+            return {
+                "status": "error",
+                "type": "knowledge_evidence",
+                "query": query,
+                "scope": scope,
+                "evidence_count": 0,
+                "source_count": 0,
+                "message": f"不支持的检索范围：{scope}",
+                CONTINUE_TOOL_LOOP_FLAG: True,
+            }
+        if cursor and scope != "exhaustive":
+            return {
+                "status": "error",
+                "type": "knowledge_evidence",
+                "query": query,
+                "scope": scope,
+                "evidence_count": 0,
+                "source_count": 0,
+                "outcome": "invalid_cursor",
+                "message": "检索游标只适用于 scope=exhaustive，请重新开始检索。",
+                CONTINUE_TOOL_LOOP_FLAG: True,
+            }
+        if sources_only and scope != "exhaustive":
+            return {
+                "status": "error",
+                "type": "knowledge_evidence",
+                "query": query,
+                "scope": scope,
+                "evidence_count": 0,
+                "source_count": 0,
+                "outcome": "invalid_scope_for_sources_only",
+                "message": "sources_only 只适用于 scope=exhaustive。",
+                CONTINUE_TOOL_LOOP_FLAG: True,
+            }
+        if source_id and scope != "exhaustive":
+            return {
+                "status": "error",
+                "type": "knowledge_evidence",
+                "query": query,
+                "scope": scope,
+                "evidence_count": 0,
+                "source_count": 0,
+                "outcome": "invalid_scope_for_source_id",
+                "message": "按来源取正文时请使用 scope=exhaustive。",
+                CONTINUE_TOOL_LOOP_FLAG: True,
+            }
+        if scope == "answer":
+            retrieval_kwargs: dict[str, Any] = {
+                "max_evidence": evidence_limit(
+                    max_evidence, default=ANSWER_DEFAULT_EVIDENCE, hard=ANSWER_MAX_EVIDENCE
+                ),
+                "content_chars": 0,
+            }
+        elif scope == "survey":
+            source_limit = evidence_limit(
+                max_evidence, default=SURVEY_DEFAULT_SOURCES, hard=SURVEY_MAX_SOURCES
+            )
+            retrieval_kwargs = {
+                "max_evidence": source_limit * SURVEY_MAX_EVIDENCE_PER_SOURCE,
+                "content_chars": SURVEY_EVIDENCE_CHARS,
+                "max_sources": source_limit,
+                "per_source_max": SURVEY_MAX_EVIDENCE_PER_SOURCE,
+            }
+        else:
+            retrieval_kwargs = {
+                "page_sources": evidence_limit(
+                    max_evidence,
+                    default=EXHAUSTIVE_PAGE_SOURCES,
+                    hard=EXHAUSTIVE_PAGE_SOURCES,
+                )
+            }
         timeout = env_int("AGENT_KNOWLEDGE_TIMEOUT", 60)
         retryable = {RETRIEVAL_CALL_FAILED, RETRIEVAL_DEADLINE, RETRIEVAL_SERVICE_FAILURE}
         # 服务故障重试一次；每次尝试都有自己的截止，避免一次超时吃掉全部预算。
@@ -1176,19 +1266,44 @@ class WorkflowManager:
             self.knowledge_client,
             query,
             deadline=time.monotonic() + timeout,
+            scope=scope,
+            cursor=cursor,
+            sources_only=sources_only,
+            source_id=source_id,
+            **retrieval_kwargs,
         )
         if retrieval.error is not None and retrieval.error.reason in retryable:
             retrieval = retrieve_evidence(
                 self.knowledge_client,
                 query,
                 deadline=time.monotonic() + timeout,
+                scope=scope,
+                cursor=cursor,
+                sources_only=sources_only,
+                source_id=source_id,
+                **retrieval_kwargs,
             )
         if retrieval.error is not None:
+            if retrieval.error.reason == RETRIEVAL_INVALID_CURSOR:
+                return {
+                    "status": "error",
+                    "type": "knowledge_evidence",
+                    "query": query,
+                    "scope": scope,
+                    "evidence_count": 0,
+                    "source_count": 0,
+                    "outcome": "invalid_cursor",
+                    "message": retrieval.error.message,
+                    CONTINUE_TOOL_LOOP_FLAG: True,
+                }
             return {
                 # error + continue_tool_loop：非终态失败，让模型据实告知不可用。
                 "status": "error",
                 "type": "knowledge_evidence",
                 "query": query,
+                "scope": scope,
+                "evidence_count": 0,
+                "source_count": 0,
                 "outcome": "knowledge_unavailable",
                 "message": "知识检索服务暂时不可用，请稍后重试。",
                 "retrieval_error_reason": retrieval.error.reason,
@@ -1198,15 +1313,22 @@ class WorkflowManager:
             "status": "success",
             "type": "knowledge_evidence",
             "query": query,
+            "scope": scope,
             "evidence": retrieval.evidence,
             "sources": retrieval.sources,
             "untraceable": retrieval.untraceable,
             "evidence_count": len(retrieval.evidence),
+            "source_count": len(retrieval.sources),
+            "has_more": retrieval.has_more,
+            "next_cursor": retrieval.next_cursor,
+            "coverage_message": retrieval.coverage_message,
+            "source_id": source_id or "",
             "retrieval_status": "no_results" if retrieval.no_results else "success",
-            "message": "" if retrieval.evidence else "当前知识库没有检索到相关证据。",
+            "message": retrieval.coverage_message
+            or ("" if retrieval.evidence else "当前知识库没有检索到相关证据。"),
             CONTINUE_TOOL_LOOP_FLAG: True,
         }
-        if not retrieval.evidence:
+        if not retrieval.evidence and not (sources_only and retrieval.sources):
             result["outcome"] = "insufficient_evidence"
         return result
 

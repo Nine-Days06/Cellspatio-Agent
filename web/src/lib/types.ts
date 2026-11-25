@@ -82,7 +82,7 @@ export interface MessageResults {
   [key: string]: unknown
 }
 
-/** 对话模式：两者都走 AgentRuntime；knowledge_qa 是强制检索的严格文献预设。 */
+/** 历史消息的对话模式；新轮次只写 chat，knowledge_qa 仅用于兼容旧数据。 */
 export type ChatMode = 'chat' | 'knowledge_qa'
 
 /** 旧版知识问答回答包：只用于渲染 0.1.x 已落库的旧会话结果。 */
@@ -97,6 +97,7 @@ export type KnowledgeQAOutcome =
 /** 对话工具检索的证据包（results.knowledge_evidence），只在本轮消息内展示。 */
 export type ChatKnowledgeOutcome =
   | 'supported_answer'
+  | 'sources_only'
   | 'insufficient_evidence'
   | 'knowledge_unavailable'
   | 'citation_invalid'
@@ -138,6 +139,16 @@ export interface ChatKnowledgeResult {
   sources: ChatKnowledgeSource[]
   citations: string[]
   claims: ChatKnowledgeClaim[]
+  /** 本轮召回范围；旧消息没有该字段。 */
+  scope?: 'answer' | 'survey' | 'exhaustive'
+  evidence_count?: number
+  source_count?: number
+  has_more?: boolean
+  next_cursor?: string
+  /** 后端给出的覆盖说明，前端原样展示。 */
+  coverage_message?: string
+  /** 指定来源正文请求时回填；用于区分单来源详情与分页列表。 */
+  source_id?: string
 }
 
 export interface KnowledgeQAClaim {

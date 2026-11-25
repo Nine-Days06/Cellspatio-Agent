@@ -24,10 +24,8 @@ def _new_session(client) -> str:
     return client.post("/api/sessions", json={}).json()["session"]["id"]
 
 
-def _stream(client, session_id: str, prompt: str, mode: str = "chat"):
-    response = client.post(
-        "/api/chat", json={"session_id": session_id, "prompt": prompt, "mode": mode}
-    )
+def _stream(client, session_id: str, prompt: str):
+    response = client.post("/api/chat", json={"session_id": session_id, "prompt": prompt})
     assert response.status_code == 200
     assert response.headers["content-type"].startswith("text/event-stream")
     assert response.headers["cache-control"] == "no-cache"
@@ -264,16 +262,22 @@ def test_reasoning_delta_is_not_persisted_as_partial_answer(client):
     assert stored[-1]["content"] == "正式一半"
 
 
-def test_unknown_mode_is_rejected_before_creating_turn(client):
+def test_legacy_mode_field_no_longer_selects_a_strict_path(client):
     sid = _new_session(client)
-    response = client.post("/api/chat", json={"session_id": sid, "prompt": "hi", "mode": "bogus"})
+    runtime = FakeRuntime()
+    client.app.state.agent.agent_runtime = runtime
 
-    assert response.status_code == 422
-    assert SessionStore().get_messages(sid) == []
+    response = client.post(
+        "/api/chat", json={"session_id": sid, "prompt": "hi", "mode": "knowledge_qa"}
+    )
+
+    assert response.status_code == 200
+    assert runtime.calls[0]["user_input"] == "hi"
+    assert SessionStore().get_messages(sid)[-1]["results"]["chat_mode"] == "chat"
 
 
-def test_knowledge_qa_mode_returns_evidence_package(client, monkeypatch):
-    """知识问答走同一 agent，只是强制文献模式并返回知识证据包。"""
+def test_stream_returns_evidence_package(client, monkeypatch):
+    """普通对话按需检索后返回知识证据包。"""
     sid = _new_session(client)
     payload = {
         "status": "success",
@@ -303,26 +307,24 @@ def test_knowledge_qa_mode_returns_evidence_package(client, monkeypatch):
     )
     client.app.state.agent.agent_runtime = runtime
 
-    events = _stream(client, sid, "TP53 的功能是什么？", mode="knowledge_qa")
+    events = _stream(client, sid, "TP53 的功能是什么？")
 
     assert [event["type"] for event in events] == ["tool_status", "done"]
-    assert runtime.calls[0]["knowledge_mode"] is True
     assert events[-1]["message"]["results"]["knowledge_evidence"]["citations"] == ["E1"]
     stored = SessionStore().get_messages(sid)
     assert stored[-1]["content"] == "TP53 参与细胞周期调控 [E1]。"
 
 
-def test_knowledge_qa_reasoning_is_streamed_with_source(client):
-    """严格文献模式沿用流式思考增量，但正文只由 done 携带。"""
+def test_search_turn_streams_reasoning_with_source(client):
+    """检索轮沿用流式思考增量，但正文只由 done 携带。"""
     sid = _new_session(client)
     runtime = FakeRuntime(events=[{"type": "delta", "text": "先核对证据", "source": "reasoning"}])
     client.app.state.agent.agent_runtime = runtime
 
-    events = _stream(client, sid, "TP53 的功能是什么？", mode="knowledge_qa")
+    events = _stream(client, sid, "TP53 的功能是什么？")
 
     assert events[0] == {"type": "delta", "text": "先核对证据", "source": "reasoning"}
     assert events[-1]["type"] == "done"
-    assert runtime.calls[0]["knowledge_mode"] is True
     assert "先核对证据" not in events[-1]["message"]["content"]
     stored = SessionStore().get_messages(sid)
     assert stored[-1]["content"] == "回答"

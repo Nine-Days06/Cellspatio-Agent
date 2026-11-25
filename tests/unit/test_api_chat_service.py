@@ -53,8 +53,8 @@ def test_user_message_is_persisted_before_runtime_runs(store):
     assert emit.collected[-1]["type"] == "done"
 
 
-def test_knowledge_qa_mode_uses_strict_agent_with_history(store):
-    """知识问答收敛为同一 agent 的严格文献模式，并保留压缩后的历史。"""
+def test_turn_uses_single_agent_with_history(store):
+    """所有对话走同一 agent，并保留压缩后的历史。"""
     sid = store.create_session()
     store.append_message(sid, "user", "历史里的秘密")
     store.append_message(sid, "assistant", "历史回答")
@@ -78,31 +78,16 @@ def test_knowledge_qa_mode_uses_strict_agent_with_history(store):
     agent = FakeAgent(runtime=runtime)
     emit = _sink()
 
-    result = run_turn(agent, store, sid, "新问题", emit, mode="knowledge_qa")
+    result = run_turn(agent, store, sid, "新问题", emit)
 
     call = runtime.calls[0]
-    assert call["knowledge_mode"] is True
     assert call["context"]["summary"] == "历史摘要"
     assert "历史回答" in [item["content"] for item in call["context"]["history"]]
     last = store.get_messages(sid)[-1]
     assert last["content"] == "可追溯回答 [E1]"
     assert last["results"]["knowledge_evidence"]["citations"] == ["E1"]
+    assert last["results"]["chat_mode"] == "chat"
     assert result["type"] == "general_response"
-
-
-def test_knowledge_qa_passes_untruncated_recent_user_turns(store):
-    """历史窗口会截断用户发言，但严格检索 query 单独拿用户原话。"""
-    sid = store.create_session()
-    long_turn = "问" * 3000
-    store.append_message(sid, "user", long_turn)
-    store.append_message(sid, "assistant", "回答")
-    runtime = FakeRuntime()
-
-    run_turn(FakeAgent(runtime=runtime), store, sid, "那它呢？", _sink(), mode="knowledge_qa")
-
-    context = runtime.calls[0]["context"]
-    assert context["recent_user_turns"] == [long_turn]
-    assert len(context["history"][0]["content"]) < len(long_turn)
 
 
 def test_persisted_citation_failure_message_does_not_inline_evidence(store):
@@ -156,8 +141,8 @@ def test_history_context_drops_legacy_evidence_listing(store):
     assert all("证据正文哨兵" not in msg["content"] for msg in history)
 
 
-def test_knowledge_qa_stops_before_retrieval_when_client_is_gone(store):
-    """启动事件发不出去说明连接已断；严格文献轮同样落中断终态。"""
+def test_tool_start_abort_persists_interrupted_turn(store):
+    """启动事件发不出去说明连接已断；本轮落中断终态。"""
     sid = store.create_session()
     runtime = FakeRuntime(
         events=[{"type": "tool_status", "name": "search_knowledge", "phase": "start"}]
@@ -165,9 +150,8 @@ def test_knowledge_qa_stops_before_retrieval_when_client_is_gone(store):
     agent = FakeAgent(runtime=runtime)
     emit = _sink(abort_types=("tool_status",))
 
-    result = run_turn(agent, store, sid, "新问题", emit, mode="knowledge_qa")
+    result = run_turn(agent, store, sid, "新问题", emit)
 
-    assert runtime.calls[0]["knowledge_mode"] is True
     assert result["status"] == "aborted"
     last = store.get_messages(sid)[-1]
     assert last["role"] == "assistant"
@@ -338,8 +322,8 @@ def test_aborted_branch_persists_interrupted_marker(store):
     assert "不该出现" not in messages[-1]["content"]
 
 
-def test_aborted_turn_records_mode_for_retry(store):
-    """中断轮也要落 chat_mode，前端重试才能沿用严格文献链路。"""
+def test_aborted_turn_records_chat_mode(store):
+    """中断轮也落 chat_mode，保持历史统计字段完整。"""
     sid = store.create_session()
     runtime = FakeRuntime(events=[{"type": "delta", "text": "半句"}], default={"status": "success"})
     emit = _sink()
@@ -348,12 +332,10 @@ def test_aborted_turn_records_mode_for_retry(store):
         emit(event)
         return False
 
-    result = run_turn(
-        FakeAgent(runtime=runtime), store, sid, "TP53", abort_on_delta, mode="knowledge_qa"
-    )
+    result = run_turn(FakeAgent(runtime=runtime), store, sid, "TP53", abort_on_delta)
 
     assert result["status"] == "aborted"
-    assert store.get_messages(sid)[-1]["results"]["chat_mode"] == "knowledge_qa"
+    assert store.get_messages(sid)[-1]["results"]["chat_mode"] == "chat"
 
 
 def test_before_done_runs_after_assistant_persisted_and_before_done_event(store):
@@ -554,7 +536,7 @@ def test_session_lock_is_per_session_and_reentrant_lookup():
     first.release()
 
 
-def test_knowledge_qa_persist_failure_is_not_reported_as_success(store, monkeypatch):
+def test_persist_failure_is_not_reported_as_success(store, monkeypatch):
     """落库失败必须冒泡，不能对外宣称这一轮已完成。"""
     sid = store.create_session()
     runtime = FakeRuntime(
@@ -580,12 +562,12 @@ def test_knowledge_qa_persist_failure_is_not_reported_as_success(store, monkeypa
     emit = _sink()
 
     with pytest.raises(RuntimeError, match="disk full"):
-        run_turn(agent, store, sid, "问题", emit, mode="knowledge_qa")
+        run_turn(agent, store, sid, "问题", emit)
 
     assert emit.collected == []
 
 
-def test_knowledge_qa_disconnect_after_generation_keeps_answer(store):
+def test_disconnect_after_generation_keeps_answer(store):
     """回答已生成后写入失败仍应落库正文，不能因 done 发不出去而丢失。"""
     sid = store.create_session()
     runtime = FakeRuntime(
@@ -607,7 +589,7 @@ def test_knowledge_qa_disconnect_after_generation_keeps_answer(store):
 
     agent = FakeAgent(runtime=runtime)
 
-    result = run_turn(agent, store, sid, "问题", emit, mode="knowledge_qa")
+    result = run_turn(agent, store, sid, "问题", emit)
 
     assert result["status"] == "success"
     assert collected[-1]["type"] == "done"

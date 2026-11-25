@@ -60,6 +60,8 @@ def test_search_knowledge_returns_evidence_and_continues():
     assert result["status"] == "success"
     assert result["type"] == "knowledge_evidence"
     assert result["evidence_count"] == len(result["evidence"]) == 1
+    assert result["scope"] == "answer"
+    assert result["source_count"] == 1
     assert result["evidence"][0]["evidence_id"] == "E1"
     assert result["continue_tool_loop"] is True
     assert result["message"] == ""
@@ -119,3 +121,173 @@ def test_search_knowledge_retries_once_then_succeeds():
     assert result["status"] == "success"
     assert result["evidence_count"] == 1
     assert "outcome" not in result
+
+
+def test_search_knowledge_survey_returns_diverse_bounded_sources():
+    """survey 档返回 20 个来源、每源最多 2 条节选。"""
+    chunks = []
+    for index in range(1, 26):
+        pid = f"4000{index}"
+        for part in range(2):
+            chunks.append(
+                {
+                    "chunk_id": f"chunk-{pid}-{part}",
+                    "content": (f"标题：论文{index}\n摘要：{'证' * 2000}\n年份：2024\nPMID：{pid}"),
+                }
+            )
+    result = _manager(FakeKnowledge(_retrieval(chunks=chunks))).search_knowledge_for_agent(
+        "主题", scope="survey"
+    )
+
+    assert result["status"] == "success"
+    assert result["scope"] == "survey"
+    assert result["source_count"] == len(result["sources"]) == 20
+    assert result["evidence_count"] == len(result["evidence"]) == 40
+    assert all(len(item["content"]) <= 1200 for item in result["evidence"])
+
+
+def test_search_knowledge_survey_caps_requested_sources_at_thirty():
+    """survey 的 max_evidence 表示来源数，默认 20，请求超过 30 时截断。"""
+    chunks = []
+    for index in range(1, 36):
+        pid = f"4100{index}"
+        for part in range(2):
+            chunks.append(
+                {
+                    "chunk_id": f"chunk-{pid}-{part}",
+                    "content": f"标题：论文{index}\n摘要：证据\n年份：2024\nPMID：{pid}",
+                }
+            )
+    manager = _manager(FakeKnowledge(_retrieval(chunks=chunks)))
+
+    wide = manager.search_knowledge_for_agent("主题", scope="survey", max_evidence=30)
+    capped = manager.search_knowledge_for_agent("主题", scope="survey", max_evidence=99)
+
+    assert wide["source_count"] == len(wide["sources"]) == 30
+    assert wide["evidence_count"] == 60
+    assert capped["source_count"] == 30
+
+
+def test_search_knowledge_exhaustive_pages_and_reports_coverage():
+    """exhaustive 返回一页来源、has_more/next_cursor 与不承诺找全的覆盖说明。"""
+    chunks = [
+        {
+            "chunk_id": f"chunk-{index}",
+            "content": f"标题：论文{index}\n摘要：摘要{index}\nPMID：{80000 + index}",
+        }
+        for index in range(1, 61)
+    ]
+    manager = _manager(FakeKnowledge(_retrieval(chunks=chunks)))
+
+    first = manager.search_knowledge_for_agent("盘点", scope="exhaustive")
+    second = manager.search_knowledge_for_agent(
+        "盘点", scope="exhaustive", cursor=first["next_cursor"]
+    )
+
+    assert first["status"] == "success"
+    assert first["scope"] == "exhaustive"
+    assert first["source_count"] == len(first["sources"]) == 50
+    assert first["has_more"] is True
+    assert first["next_cursor"]
+    assert "不代表已找全" in first["coverage_message"]
+    assert second["source_count"] == 10
+    assert second["has_more"] is False
+    assert second["next_cursor"] == ""
+
+
+def test_search_knowledge_source_id_requires_exhaustive_scope():
+    """按来源取正文时必须显式使用 exhaustive，避免被 answer 默认档静默忽略。"""
+    result = _manager(FakeKnowledge(_retrieval())).search_knowledge_for_agent(
+        "盘点", source_id="PMID 38947524"
+    )
+
+    assert result["status"] == "error"
+    assert result["outcome"] == "invalid_scope_for_source_id"
+    assert "scope=exhaustive" in result["message"]
+
+
+def test_search_knowledge_paging_args_require_exhaustive_scope():
+    """cursor 与 sources_only 不能被 answer 档静默忽略。"""
+    manager = _manager(FakeKnowledge(_retrieval()))
+
+    cursor_result = manager.search_knowledge_for_agent("TP53", cursor="abc")
+    sources_result = manager.search_knowledge_for_agent("TP53", sources_only=True)
+
+    assert cursor_result["outcome"] == "invalid_cursor"
+    assert "scope=exhaustive" in cursor_result["message"]
+    assert sources_result["outcome"] == "invalid_scope_for_sources_only"
+    assert "scope=exhaustive" in sources_result["message"]
+
+
+def test_search_knowledge_exhaustive_invalid_cursor_is_explicit():
+    """查询变化后沿用旧游标返回可理解的 invalid_cursor，不伪装成服务故障。"""
+    chunks = [
+        {
+            "chunk_id": f"chunk-{index}",
+            "content": f"标题：论文{index}\n摘要：摘要{index}\nPMID：{90000 + index}",
+        }
+        for index in range(1, 61)
+    ]
+    manager = _manager(FakeKnowledge(_retrieval(chunks=chunks)))
+    first = manager.search_knowledge_for_agent("盘点", scope="exhaustive")
+
+    bad = manager.search_knowledge_for_agent(
+        "换了问题", scope="exhaustive", cursor=first["next_cursor"]
+    )
+
+    assert bad["status"] == "error"
+    assert bad["outcome"] == "invalid_cursor"
+    assert "游标无效" in bad["message"]
+
+
+def test_search_knowledge_exhaustive_sources_only_is_not_insufficient():
+    """sources_only 有来源但无证据时不算证据不足。"""
+    chunks = [
+        {
+            "chunk_id": f"chunk-{index}",
+            "content": f"标题：论文{index}\n摘要：摘要{index}\nPMID：{91000 + index}",
+        }
+        for index in range(1, 61)
+    ]
+    result = _manager(FakeKnowledge(_retrieval(chunks=chunks))).search_knowledge_for_agent(
+        "盘点", scope="exhaustive", sources_only=True
+    )
+
+    assert result["status"] == "success"
+    assert result["evidence_count"] == 0
+    assert result["source_count"] == 50
+    assert "outcome" not in result
+    assert "仅返回来源清单" in result["message"]
+
+
+def test_search_knowledge_answer_defaults_to_eight_and_caps_at_twelve():
+    """answer 默认 8 条、请求超限截到 12 条；每条正文保持完整。"""
+    long_text = "证" * 3000
+    chunks = [_chunk(pid=f"2000{index}").copy() for index in range(1, 15)]
+    for index, chunk in enumerate(chunks, start=1):
+        pid = f"2000{index}"
+        chunk.update(
+            {
+                "chunk_id": f"chunk-{pid}",
+                "content": f"标题：论文{index}\n摘要：{long_text}\nPMID：{pid}",
+            }
+        )
+    manager = _manager(FakeKnowledge(_retrieval(chunks=chunks)))
+
+    default = manager.search_knowledge_for_agent("TP53", scope="answer")
+    capped = manager.search_knowledge_for_agent("TP53", scope="answer", max_evidence=99)
+
+    assert len(default["evidence"]) == 8
+    assert len(capped["evidence"]) == 12
+    assert all(len(item["content"]) > 3000 for item in capped["evidence"])
+    assert capped["source_count"] == 12
+
+
+def test_search_knowledge_rejects_unknown_scope():
+    """未支持的档位明确报错，不退化成 answer。"""
+    result = _manager(FakeKnowledge(_retrieval())).search_knowledge_for_agent(
+        "TP53", scope="compare"
+    )
+
+    assert result["status"] == "error"
+    assert "不支持的检索范围" in result["message"]

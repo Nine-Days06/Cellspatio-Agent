@@ -35,7 +35,7 @@ REPORT_SCHEMA = "knowledge-tool-eval/2.0.0"
 MODE_SCRIPTED = "scripted"
 MODE_TOOL_SELECTION = "tool_selection"
 MODE_E2E = "e2e"
-E2E_CATEGORIES = frozenset({"literature", "strict_literature"})
+E2E_CATEGORIES = frozenset({"literature"})
 LAYER_NOTES = {
     MODE_SCRIPTED: "脚本化 LLM + 假工作流，仅验证运行器契约与阈值",
     MODE_TOOL_SELECTION: "真实模型 + 假工作流，仅报告工具选择与格式指标",
@@ -82,13 +82,38 @@ class EvalWorkflow:
         self.case = case
         self.calls: list[tuple[str, dict[str, Any]]] = []
 
-    def search_knowledge_for_agent(self, query: str, context: dict[str, Any]) -> dict[str, Any]:
+    def search_knowledge_for_agent(
+        self,
+        query: str,
+        context: dict[str, Any],
+        *,
+        scope: str | None = None,
+        max_evidence: int | None = None,
+        cursor: str | None = None,
+        sources_only: bool = False,
+        source_id: str | None = None,
+    ) -> dict[str, Any]:
         """按用例返回证据、空结果或服务错误。"""
-        self.calls.append(("search_knowledge", {"query": query}))
+        self.calls.append(
+            (
+                "search_knowledge",
+                {
+                    "query": query,
+                    "scope": scope,
+                    "max_evidence": max_evidence,
+                    "cursor": cursor,
+                    "sources_only": sources_only,
+                    "source_id": source_id,
+                },
+            )
+        )
         if self.case.get("retrieval_error"):
             return {
                 "status": "error",
                 "type": "knowledge_evidence",
+                "scope": scope or "answer",
+                "evidence_count": 0,
+                "source_count": 0,
                 "outcome": "knowledge_unavailable",
                 "message": "知识检索服务暂时不可用，请稍后重试。",
                 "continue_tool_loop": True,
@@ -98,10 +123,12 @@ class EvalWorkflow:
                 "status": "success",
                 "type": "knowledge_evidence",
                 "query": query,
+                "scope": scope or "answer",
                 "evidence": [],
                 "sources": [],
                 "untraceable": 0,
                 "evidence_count": 0,
+                "source_count": 0,
                 "retrieval_status": "no_results",
                 "message": "当前知识库没有检索到相关证据。",
                 "continue_tool_loop": True,
@@ -117,6 +144,7 @@ class EvalWorkflow:
             "status": "success",
             "type": "knowledge_evidence",
             "query": query,
+            "scope": scope or "answer",
             "evidence": [evidence],
             "sources": [
                 {
@@ -127,6 +155,7 @@ class EvalWorkflow:
             ],
             "untraceable": 0,
             "evidence_count": 1,
+            "source_count": 1,
             "retrieval_status": "success",
             "message": "",
             "continue_tool_loop": True,
@@ -231,7 +260,6 @@ def _run_scripted_case(case: dict[str, Any]) -> dict[str, Any]:
         result = runtime.execute(
             case["input"],
             context={"history": []},
-            knowledge_mode=case["category"] == "strict_literature",
         )
     finally:
         _restore_knowledge_tool(previous)
@@ -340,7 +368,6 @@ def _tool_selection_cases(
             result = runtime.execute(
                 case["input"],
                 context={"history": []},
-                knowledge_mode=case["category"] == "strict_literature",
             )
             records.append(
                 _case_record(
@@ -396,7 +423,7 @@ def _e2e_cases(
         and not case.get("retrieval_error")
     ]
     if not selected:
-        raise RuntimeError("端到端评测没有可用用例：需要 literature/strict_literature")
+        raise RuntimeError("端到端评测没有可用用例：需要 literature")
     client, model = get_current_llm()
     records: list[dict[str, Any]] = []
     previous = _pin_knowledge_tool()
@@ -407,8 +434,6 @@ def _e2e_cases(
             result = runtime.execute(
                 case["input"],
                 context={"history": []},
-                # 端到端按用例走默认/严格路径；literature 不再被强制成严格模式。
-                knowledge_mode=case["category"] == "strict_literature",
             )
             records.append(
                 _case_record(

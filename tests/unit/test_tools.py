@@ -83,18 +83,6 @@ def test_legacy_fallback_value_set_is_explicit(monkeypatch):
     assert knowledge_tool_enabled() is True
 
 
-def test_strict_literature_mode_only_exposes_search_tool():
-    """严格文献预设只暴露检索工具，不暴露分析/数据集工具。"""
-    from src.control.tools import build_system_prompt, build_tool_schemas
-
-    schemas = build_tool_schemas(strict_literature=True)
-
-    assert [schema["function"]["name"] for schema in schemas] == ["search_knowledge"]
-    prompt = build_system_prompt(strict_literature=True)
-    assert "strict literature" in prompt
-    assert "run_analysis" not in prompt
-
-
 def test_run_analysis_enum_only_supported_types():
     from src.control.tools import SUPPORTED_ANALYSIS_TYPES, TOOL_SCHEMAS
 
@@ -108,6 +96,22 @@ def test_run_analysis_enum_only_supported_types():
     assert enum == list(SUPPORTED_ANALYSIS_TYPES)
     assert "pathway_analysis" not in enum
     assert "visualization" not in enum
+
+
+def test_search_knowledge_schema_exposes_all_scopes_and_paging_fields():
+    """检索工具暴露三档范围、证据条数与分页/指定来源参数。"""
+    from src.control.tools import build_tool_schemas
+
+    schema = next(
+        item for item in build_tool_schemas() if item["function"]["name"] == "search_knowledge"
+    )
+    props = schema["function"]["parameters"]["properties"]
+
+    assert props["scope"]["enum"] == ["answer", "survey", "exhaustive"]
+    assert props["max_evidence"]["minimum"] == 1
+    assert props["cursor"]["type"] == "string"
+    assert props["sources_only"]["type"] == "boolean"
+    assert props["source_id"]["type"] == "string"
 
 
 def test_terminal_statuses_cover_hitl_and_outcomes():

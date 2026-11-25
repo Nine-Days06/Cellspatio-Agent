@@ -185,10 +185,8 @@ class FakeRuntime:
         }
         self.calls: list[dict[str, Any]] = []
 
-    def execute(self, user_input, context=None, on_event=None, *, knowledge_mode=False):
-        self.calls.append(
-            {"user_input": user_input, "context": context, "knowledge_mode": knowledge_mode}
-        )
+    def execute(self, user_input, context=None, on_event=None):
+        self.calls.append({"user_input": user_input, "context": context})
         if on_event is not None:
             for event in self.events:
                 if not on_event(event):

@@ -41,9 +41,11 @@ POST /api/chat（SSE）
   用过检索的轮次必须引用真实 `[E#]`；服务不可用、没有证据、引用校验失败分别
   返回 `knowledge_unavailable` / `insufficient_evidence` / `citation_invalid`。
   证据包随助手消息存于 `results.knowledge_evidence` 供刷新后展开，保存完整正文；
-  回灌模型的每条证据只保留 `E#`、标题、年份与来源关系，正文压到 1,200 字并标注截断；
-  来源只保留引用/展示字段。若仍超单次上限，退到保留全部 `E#` 的编号索引，不返回截断的
-  JSON 前缀。下一轮历史准备只保留正文与显式论断，并清理旧消息里落库的证据清单与来源列表。
+  `answer` 回灌完整正文；`survey`/`exhaustive` 保留节选上限。回灌模型只保留 `E#`、
+  标题、年份与来源关系；超过单次上限时按整条证据删减并显式报告省略数，正文本身不截断，
+  也不返回截断的 JSON 前缀。证据包同时带 `scope`、`evidence_count`、`source_count`、
+  `has_more`、`next_cursor` 与覆盖说明。下一轮历史准备只保留正文与显式论断，并清理旧消息
+  里落库的证据清单与来源列表。
 - 动态脚本由生成器产生，确认后才执行；已知失败保留尝试历史，用户可明确重试。
 - 中断、成功、取消或无法核验的运行拒绝重跑；不把复制卡恢复 pending。
 - 新确认请求独立恢复并核验原运行，不依赖 GET 恢复的请求上下文。
@@ -73,23 +75,26 @@ marker：独立授权的全细胞 Presto marker → 结果待复核
   聚类复核绑定已完成尝试；marker 复核通过 `src/analysis/sc_marker_reviews.py` 装配绑定视图。
 - 已完成的父证据按授权时的快照校验，不因下游推进而失效。
 
-## 严格文献深答（mode=knowledge_qa）
+## 文献证据问答（按需检索）
 
 ```text
-POST /api/chat mode=knowledge_qa
-  → 强制 search_knowledge 检索（tool_status search_knowledge）
-  → 只暴露检索工具的 agent loop
+POST /api/chat
+  → 智能体按需调用 search_knowledge（tool_status search_knowledge）
+  → 检索过的回合等工具结果回来再生成正文
   → 正文按 [E#] 引用校验 → 证据包落库 → done
 ```
 
-护栏在 `AgentRuntime._dispatch` 顶部：严格模式下除 `search_knowledge` 外的工具调用
-直接返回 `tool_rejected` 非终态提示，不触达工作流；模型可改调检索工具继续本轮。
 `citation_invalid` 只提示展开证据面板，不把证据标题/片段/来源路径写进正文。
 
-严格模式与智能对话共用同一检索服务、同一证据包和同一引用校验，不再有第二套
-问答提示词。检索失败直接报 `knowledge_unavailable`；空结果报
-`insufficient_evidence`；引用无效重试一次后报 `citation_invalid`。模式开关只表达
-“是否强制文献深答”，不要求用户理解两条管线。
+检索工具与普通对话共用同一证据包和同一引用校验。检索失败报
+`knowledge_unavailable`；空结果报 `insufficient_evidence`；引用无效重试一次后报
+`citation_invalid`。旧消息里的 `chat_mode=knowledge_qa` 只用于渲染兼容，不再选择
+独立链路。
+
+`search_knowledge` 按意图选择 `answer`（默认，8 条完整证据/硬上限 12）、`survey`
+（约 20 个去重来源、每源最多 2 段节选）或 `exhaustive`（每页最多 50 个来源，
+返回 `has_more`/`next_cursor`，覆盖说明不承诺找全）。`sources_only=true` 先取来源
+清单，`source_id` 再取单个来源正文；游标绑定查询指纹，不能跨查询复用。
 
 混合评测用例在 `evals/knowledge_tool_cases.jsonl`，入口
 `python -m evals.run_knowledge_tool_eval`，三层分开：

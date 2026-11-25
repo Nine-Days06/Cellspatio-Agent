@@ -7,7 +7,7 @@ import logging
 import threading
 from collections.abc import AsyncIterator
 from contextlib import ExitStack
-from typing import Any, Literal
+from typing import Any
 
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import StreamingResponse
@@ -36,7 +36,6 @@ class ChatRequest(BaseModel):
 
     session_id: str
     prompt: str
-    mode: Literal["chat", "knowledge_qa"] = "chat"
 
 
 @router.post("/chat")
@@ -86,7 +85,6 @@ async def chat(body: ChatRequest, request: Request, store: StoreDep) -> Streamin
                         body.session_id,
                         body.prompt,
                         emit_recording,
-                        mode=body.mode,
                         before_done=_auto_name(agent),
                     )
                 except Exception as exc:  # 任何失败都要变成 error 事件

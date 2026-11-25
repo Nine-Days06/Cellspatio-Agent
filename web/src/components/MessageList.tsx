@@ -13,7 +13,7 @@ import { ReasoningPanel } from '@/components/ReasoningPanel'
 import { SoftWarnBanner } from '@/components/SoftWarnBanner'
 import { ToolStatus, type ToolStatusEntry } from '@/components/ToolStatus'
 import { emptyReasoning, type ReasoningState } from '@/store/chat'
-import type { ChatMode, WireMessage } from '@/lib/types'
+import type { WireMessage } from '@/lib/types'
 import { prefersReducedMotion } from '@/lib/motion'
 import { cn } from '@/lib/utils'
 
@@ -32,7 +32,6 @@ export interface MessageListProps {
   draft: string
   busy: boolean
   tools: ToolStatusEntry[]
-  mode: ChatMode
   /** 停止/慢提示在输入区独立显示时，隐藏气泡内的阶段与兜底文案。 */
   hideStatus?: boolean
   notice: { kind: 'info' | 'error'; text: string } | null
@@ -42,12 +41,12 @@ export interface MessageListProps {
   onToggleReasoning?: () => void
   onRetry?: () => void
   onQcRecorded?: () => void
-  onStarter?: (prompt: string, mode: ChatMode) => void
+  onStarter?: (prompt: string) => void
 }
 
 /** 图表、QC 证据或待确认脚本卡片存在时，不用空消息兜底。 */
 function hasContent(message: WireMessage): boolean {
-  return (message.results?.charts?.length ?? 0) > 0 || Boolean(message.pending_script) || Boolean(message.results?.qc_artifacts) || Boolean(message.results?.knowledge_qa) || Boolean(message.results?.knowledge_evidence?.evidence?.length)
+  return (message.results?.charts?.length ?? 0) > 0 || Boolean(message.pending_script) || Boolean(message.results?.qc_artifacts) || Boolean(message.results?.knowledge_qa) || Boolean(message.results?.knowledge_evidence?.evidence?.length) || Boolean(message.results?.knowledge_evidence?.sources?.length)
 }
 
 function Bubble({
@@ -83,7 +82,6 @@ export function MessageList({
   draft,
   busy,
   tools,
-  mode,
   hideStatus = false,
   notice,
   softWarn,
@@ -104,12 +102,7 @@ export function MessageList({
   /** 同一时刻只显示一条状态：有活动阶段用阶段文案，否则按模式兜底；正文出现后都不显示。 */
   const showStatus = draft.length === 0 && !hideStatus
   const statusEntry = showStatus ? lastTool : null
-  const statusFallback =
-    showStatus && busy && !liveReasoning
-      ? mode === 'knowledge_qa'
-        ? '准备回答'
-        : '思考中'
-      : null
+  const statusFallback = showStatus && busy && !liveReasoning ? '思考中' : null
 
   /** 活动气泡完成后改由消息渲染；两边共用同一 key，落历史时不重新挂载。 */
   /** 历史与活动气泡放进同一数组，活动气泡独占一个常量 key。 */
@@ -246,10 +239,10 @@ export function MessageList({
             <p className="mt-4 max-w-xl leading-7 text-muted-foreground">把样本背景、数据与目标放在一起。先理解证据，再决定下一步分析。</p>
             {onStarter && <div className="mt-8 divide-y divide-border border-y border-border">
               {[
-                { icon: FlaskConical, label: '检查单细胞数据', detail: '从输入文件、样本背景和 QC 开始', prompt: '我有一份人类单细胞 10x 数据，请先帮我确认输入格式和 QC 需要的样本背景。', mode: 'chat' as const },
-                { icon: BookOpen, label: '查阅文献证据', detail: '比较方法、适用条件与证据限制', prompt: 'scRNA-seq 与 snRNA-seq 有什么区别？各自适用于哪些样本？', mode: 'knowledge_qa' as const },
-                { icon: Scan, label: '规划空间组学分析', detail: '说明技术平台、组织和研究问题', prompt: '我想分析人类空间转录组数据，需要先提供哪些平台、组织和研究背景信息？', mode: 'chat' as const },
-              ].map((item) => <button key={item.label} type="button" onClick={() => onStarter(item.prompt, item.mode)} className="starter-row flex w-full items-center gap-4 py-4 text-left hover:bg-accent/40">
+                { icon: FlaskConical, label: '检查单细胞数据', detail: '从输入文件、样本背景和 QC 开始', prompt: '我有一份人类单细胞 10x 数据，请先帮我确认输入格式和 QC 需要的样本背景。' },
+                { icon: BookOpen, label: '查阅文献证据', detail: '比较方法、适用条件与证据限制', prompt: 'scRNA-seq 与 snRNA-seq 有什么区别？各自适用于哪些样本？' },
+                { icon: Scan, label: '规划空间组学分析', detail: '说明技术平台、组织和研究问题', prompt: '我想分析人类空间转录组数据，需要先提供哪些平台、组织和研究背景信息？' },
+              ].map((item) => <button key={item.label} type="button" onClick={() => onStarter(item.prompt)} className="starter-row flex w-full items-center gap-4 py-4 text-left hover:bg-accent/40">
                 <item.icon className="size-5 shrink-0 text-primary" aria-hidden="true" />
                 <span className="min-w-0 flex-1"><span className="block font-medium">{item.label}</span><span className="mt-1 block text-sm text-muted-foreground">{item.detail}</span></span>
                 <ArrowUpRight className="size-4 shrink-0 text-muted-foreground" aria-hidden="true" />

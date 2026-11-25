@@ -9,7 +9,6 @@ import { create } from 'zustand'
 import { streamChat, type SseEvent } from '@/lib/sse'
 import {
   chartFromEvent,
-  type ChatMode,
   type ChartItem,
   type DataCardPayload,
   type ScriptCardPayload,
@@ -90,13 +89,10 @@ interface ChatState {
   dataCard: DataCardPayload | null
   /** 会话级：上下文接近压缩阈值；beginTurn 保留，setSession 复位 */
   softWarn: boolean
-  /** 本轮请求的对话模式；中断收尾时写入 partial，供重试沿用。 */
-  turnMode: ChatMode
-
   setSession: (sessionId: string, history: WireMessage[]) => void
   /** 删除最后一个会话：中止活动流并完整清空，保留 null 表示无活动会话。 */
   clearSession: () => void
-  beginTurn: (prompt: string, mode?: ChatMode) => void
+  beginTurn: (prompt: string) => void
   appendDelta: (text: string) => void
   appendReasoning: (text: string) => void
   toggleReasoning: () => void
@@ -114,7 +110,7 @@ interface ChatState {
   /** error 收尾：关 busy + 写错误提示；busy 已关时幂等（不覆盖已有提示） */
   failTurn: (message: string) => void
   /** 发起一轮对话：beginTurn → streamChat 接线；busy 或无会话时直接返回 */
-  send: (prompt: string, mode?: ChatMode) => Promise<void>
+  send: (prompt: string) => Promise<void>
   /** 中止当前流：只 abort 信号，busy 等 onEnd(aborted) 收尾才关 */
   stop: () => void
 }
@@ -141,7 +137,6 @@ export function createChatStore() {
         scriptCard: null,
         dataCard: null,
         softWarn: false,
-        turnMode: 'chat',
       })
     }
 
@@ -210,7 +205,6 @@ export function createChatStore() {
       scriptCard: null,
       dataCard: null,
       softWarn: false,
-      turnMode: 'chat',
 
       setSession(sessionId, history) {
         resetSession(sessionId, history)
@@ -220,7 +214,7 @@ export function createChatStore() {
         resetSession(null, [])
       },
 
-      beginTurn(prompt, mode = 'chat') {
+      beginTurn(prompt) {
         localSeq += 1
         const user: WireMessage = {
           id: -localSeq,
@@ -242,7 +236,6 @@ export function createChatStore() {
           charts: [],
           scriptCard: null,
           dataCard: null,
-          turnMode: mode,
           // softWarn 是会话级状态，本轮保留
         }))
       },
@@ -374,12 +367,7 @@ export function createChatStore() {
           role: 'assistant',
           content: state.draft,
           timestamp: new Date().toISOString(),
-          results:
-            state.charts.length > 0
-              ? { charts: state.charts, chat_mode: state.turnMode }
-              : state.turnMode === 'knowledge_qa'
-                ? { chat_mode: state.turnMode }
-                : null,
+          results: state.charts.length > 0 ? { charts: state.charts } : null,
           pending_script: null,
         }
         set({
@@ -447,11 +435,11 @@ export function createChatStore() {
         })
       },
 
-      async send(prompt, mode = 'chat') {
+      async send(prompt) {
         const { sessionId, busy } = get()
         if (busy || !sessionId) return
 
-        get().beginTurn(prompt, mode)
+        get().beginTurn(prompt)
         const controller = new AbortController()
         activeStream = controller
         // 切会话或已换流后，迟到事件/收尾不得改写新会话状态。
@@ -460,7 +448,6 @@ export function createChatStore() {
           await streamChat({
             sessionId,
             prompt,
-            mode,
             signal: controller.signal,
             onEvent: (event) => {
               if (isCurrent()) dispatch(event)

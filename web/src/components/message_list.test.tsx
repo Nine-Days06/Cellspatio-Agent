@@ -2,7 +2,7 @@ import { fireEvent, render, screen } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { MessageList, EMPTY_FALLBACK } from '@/components/MessageList'
 import type { ToolStatusEntry } from '@/components/ToolStatus'
-import type { ChatMode, PendingScript, WireMessage } from '@/lib/types'
+import type { PendingScript, WireMessage } from '@/lib/types'
 import { emptyReasoning, type ReasoningState } from '@/store/chat'
 
 function reasoningState(overrides: Partial<ReasoningState> = {}): ReasoningState {
@@ -28,7 +28,6 @@ const baseProps = {
   draft: '',
   busy: false,
   tools: [] as ToolStatusEntry[],
-  mode: 'chat' as ChatMode,
   notice: null as { kind: 'info' | 'error'; text: string } | null,
   softWarn: false,
   onRetry: vi.fn(),
@@ -113,6 +112,33 @@ describe('空内容兜底（约束 1）', () => {
     expect(screen.getByText('证据原文')).toBeInTheDocument()
   })
 
+  it('只有来源清单、没有证据正文时也不显示空消息兜底', () => {
+    render(
+      <MessageList
+        {...baseProps}
+        messages={[
+          msg({
+            content: '',
+            results: {
+              knowledge_evidence: {
+                outcome: 'sources_only',
+                evidence: [],
+                sources: [{ source_id: 'PMID 1', title: 'A paper', evidence_ids: [] }],
+                evidence_count: 0,
+                source_count: 1,
+                citations: [],
+                claims: [],
+              },
+            },
+          }),
+        ]}
+      />,
+    )
+
+    expect(screen.queryByText(EMPTY_FALLBACK)).not.toBeInTheDocument()
+    expect(screen.getByText('文献证据（0 条 / 1 个来源）')).toBeInTheDocument()
+  })
+
   it('点击重试触发 onRetry', () => {
     const onRetry = vi.fn()
     render(
@@ -166,7 +192,6 @@ describe('统一思考条', () => {
     render(
       <MessageList
         {...baseProps}
-        mode="knowledge_qa"
         messages={[
           msg({
             id: 11,
@@ -218,11 +243,11 @@ describe('流式与过程条', () => {
     delete (HTMLElement.prototype as Partial<HTMLElement>).scrollIntoView
   })
 
-  it('起步提示只交给输入区，并携带相应模式', () => {
+  it('起步提示只交给输入区', () => {
     const onStarter = vi.fn()
     render(<MessageList {...baseProps} onStarter={onStarter} />)
     fireEvent.click(screen.getByRole('button', { name: /查阅文献证据/ }))
-    expect(onStarter).toHaveBeenCalledWith(expect.stringContaining('scRNA-seq'), 'knowledge_qa')
+    expect(onStarter).toHaveBeenCalledWith(expect.stringContaining('scRNA-seq'))
   })
   it('draft 非空时渲染流式气泡', () => {
     render(<MessageList {...baseProps} draft="正在分析" busy />)
@@ -283,7 +308,7 @@ describe('单一状态文案', () => {
     const tools: ToolStatusEntry[] = [
       { name: 'search_knowledge', phase: 'start', label: '检索文献' },
     ]
-    render(<MessageList {...baseProps} busy mode="knowledge_qa" tools={tools} />)
+    render(<MessageList {...baseProps} busy tools={tools} />)
 
     expect(screen.getByText('检索文献')).toBeInTheDocument()
     expect(screen.queryByText('准备回答')).not.toBeInTheDocument()
@@ -295,19 +320,19 @@ describe('单一状态文案', () => {
     const tools: ToolStatusEntry[] = [
       { name: 'search_knowledge', phase: 'end', label: '检索文献', count: 2 },
     ]
-    render(<MessageList {...baseProps} busy mode="knowledge_qa" tools={tools} />)
+    render(<MessageList {...baseProps} busy tools={tools} />)
 
     expect(screen.getByText('检索文献：2 条证据')).toBeInTheDocument()
     expect(screen.queryByText('准备回答')).not.toBeInTheDocument()
   })
 
-  it('无证据条数的结束事件回落到「准备回答」', () => {
+  it('无证据条数的结束事件回落到「思考中」', () => {
     const tools: ToolStatusEntry[] = [
       { name: 'search_knowledge', phase: 'end', label: '检索文献' },
     ]
-    render(<MessageList {...baseProps} busy mode="knowledge_qa" tools={tools} />)
+    render(<MessageList {...baseProps} busy tools={tools} />)
 
-    expect(screen.getByText('准备回答')).toBeInTheDocument()
+    expect(screen.getByText('思考中')).toBeInTheDocument()
     expect(screen.queryByText('检索文献')).not.toBeInTheDocument()
   })
 
@@ -315,7 +340,7 @@ describe('单一状态文案', () => {
     const tools: ToolStatusEntry[] = [
       { name: 'search_knowledge', phase: 'start', label: '检索文献' },
     ]
-    render(<MessageList {...baseProps} busy mode="knowledge_qa" tools={tools} draft="回答正文" />)
+    render(<MessageList {...baseProps} busy tools={tools} draft="回答正文" />)
 
     expect(screen.getByText('回答正文')).toBeInTheDocument()
     expect(screen.queryByText('检索文献')).not.toBeInTheDocument()

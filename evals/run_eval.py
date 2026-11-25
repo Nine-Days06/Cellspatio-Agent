@@ -92,7 +92,17 @@ class _RecordingWM:
         self.last = ("query_knowledge", {"query": query})
         return {"status": "success", "type": "knowledge_response", "response": "scripted", "references": []}
 
-    def search_knowledge_for_agent(self, query, context):
+    def search_knowledge_for_agent(
+        self,
+        query,
+        context,
+        *,
+        scope=None,
+        max_evidence=None,
+        cursor=None,
+        sources_only=False,
+        source_id=None,
+    ):
         self.last = ("search_knowledge", {"query": query})
         return {
             "status": "success",

@@ -373,13 +373,12 @@ describe('ChatPage 输入区：键位 / 停止 / 错误提示（约束 3）', ()
     await waitFor(() => expect(streamChatMock).toHaveBeenCalledTimes(1))
   })
 
-  it('起步提示填入问题、切换模式并聚焦，不自动发送或创建会话', async () => {
+  it('起步提示填入问题并聚焦，不自动发送或创建会话', async () => {
     await renderReady(nextSid(), { messages: [] })
     fireEvent.click(screen.getByRole('button', { name: /查阅文献证据/ }))
     const box = screen.getByRole('textbox', { name: '输入你的问题' })
     expect(box).toHaveValue('scRNA-seq 与 snRNA-seq 有什么区别？各自适用于哪些样本？')
     expect(box).toHaveFocus()
-    expect(screen.getByRole('radio', { name: '严格文献深答' })).toHaveAttribute('aria-checked', 'true')
     expect(streamChatMock).not.toHaveBeenCalled()
     expect(createSessionMock).not.toHaveBeenCalled()
   })
@@ -551,10 +550,9 @@ describe('ChatPage 输入区：键位 / 停止 / 错误提示（约束 3）', ()
     expect(screen.queryByText('运行分析')).not.toBeInTheDocument()
   })
 
-  it('严格文献检索结束后展示证据条数，不残留进行中文案', async () => {
+  it('文献检索结束后展示证据条数，不残留进行中文案', async () => {
     const sid = nextSid()
     await renderReady(sid)
-    fireEvent.click(screen.getByRole('radio', { name: '严格文献深答' }))
     act(() => {
       useChatStore.setState({ busy: true })
     })
@@ -603,67 +601,31 @@ describe('ChatPage 约束落点（1/2）', () => {
     )
   })
 
-  it('知识问答模式：方向键切换，发送时带上 mode', async () => {
+  it('发送请求不再带模式字段', async () => {
     const sid = nextSid()
     await renderReady(sid)
-    const chatRadio = screen.getByRole('radio', { name: '智能对话' })
-    const qaRadio = screen.getByRole('radio', { name: '严格文献深答' })
-
-    chatRadio.focus()
-    fireEvent.keyDown(chatRadio, { key: 'ArrowRight' })
-    expect(qaRadio).toHaveAttribute('aria-checked', 'true')
-    expect(qaRadio).toHaveFocus()
-    expect(screen.getByText('强制检索文献，回答逐条引用证据；不执行分析。')).toBeInTheDocument()
-    expect(screen.queryByText(/人工复核/)).not.toBeInTheDocument()
-
-    const box = screen.getByPlaceholderText(/提出一个单细胞或空间组学问题/)
+    const box = screen.getByPlaceholderText(/描述你的数据/)
     fireEvent.change(box, { target: { value: 'Which markers identify exhausted T cells?' } })
     fireEvent.keyDown(box, { key: 'Enter' })
 
-    await waitFor(() =>
-      expect(streamChatMock).toHaveBeenCalledWith(
-        expect.objectContaining({ sessionId: sid, mode: 'knowledge_qa' }),
-      ),
-    )
+    await waitFor(() => expect(streamChatMock).toHaveBeenCalled())
+    expect(streamChatMock.mock.calls.at(-1)?.[0]).not.toHaveProperty('mode')
   })
 
-  it('重试沿用上一轮回复的链路，而不是当前开关', async () => {
+  it('重试重发最后一条用户消息，不再携带模式', async () => {
     const sid = nextSid()
     const user = makeMsg(sid, { role: 'user', content: '普通问题' })
     const emptyReply = makeMsg(sid, { role: 'assistant', content: '' })
     await renderReady(sid, { messages: [user, emptyReply] })
-    const qaRadio = screen.getByRole('radio', { name: '严格文献深答' })
-    fireEvent.click(qaRadio)
-    expect(qaRadio).toHaveAttribute('aria-checked', 'true')
 
     fireEvent.click(screen.getByRole('button', { name: '重试' }))
 
     await waitFor(() =>
       expect(streamChatMock).toHaveBeenCalledWith(
-        expect.objectContaining({ sessionId: sid, prompt: '普通问题', mode: 'chat' }),
+        expect.objectContaining({ sessionId: sid, prompt: '普通问题' }),
       ),
     )
-    expect(screen.getByRole('radio', { name: '智能对话' })).toHaveAttribute('aria-checked', 'true')
-  })
-
-  it('重试按 results.chat_mode 还原严格文献链路', async () => {
-    const sid = nextSid()
-    const user = makeMsg(sid, { role: 'user', content: 'TP53 在癌症中的作用？' })
-    const emptyReply = makeMsg(sid, {
-      role: 'assistant',
-      content: '',
-      results: { chat_mode: 'knowledge_qa' },
-    })
-    await renderReady(sid, { messages: [user, emptyReply] })
-    expect(screen.getByRole('radio', { name: '智能对话' })).toHaveAttribute('aria-checked', 'true')
-
-    fireEvent.click(screen.getByRole('button', { name: '重试' }))
-
-    await waitFor(() =>
-      expect(streamChatMock).toHaveBeenCalledWith(
-        expect.objectContaining({ sessionId: sid, prompt: 'TP53 在癌症中的作用？', mode: 'knowledge_qa' }),
-      ),
-    )
+    expect(streamChatMock.mock.calls.at(-1)?.[0]).not.toHaveProperty('mode')
   })
 
   it('约束2：过程条为 end 时输入区仍是生成态，不出现「已完成」', async () => {

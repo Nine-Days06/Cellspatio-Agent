@@ -5,7 +5,7 @@ from __future__ import annotations
 import logging
 import sqlite3
 from collections.abc import Callable
-from typing import Any, Literal
+from typing import Any
 
 from src.api.events import chart_events, make_event, wire_message
 from src.api.session_locks import lock_for
@@ -168,7 +168,6 @@ def run_turn(
     session_id: str,
     prompt: str,
     emit: Emit,
-    mode: Literal["chat", "knowledge_qa"] = "chat",
     before_done: BeforeDone | None = None,
 ) -> dict[str, Any]:
     """执行一轮对话并返回运行时结果。
@@ -199,10 +198,6 @@ def run_turn(
 
     context = {
         "history": recent,
-        # 严格追问的检索 query 需要用户原话；history 已被 prepare_history 截断。
-        "recent_user_turns": [
-            str(msg.get("content") or "") for msg in messages[:-1] if msg.get("role") == "user"
-        ][-2:],
         "summary": summary,
         "downloaded_assets": session.get("downloaded_assets") or [],
         "last_user_input": prompt,
@@ -212,18 +207,16 @@ def run_turn(
     if workspace and workspace.get("kind") == "ephemeral":
         # 临时访客只能分析自己上传进工作区的数据，聊天里提到的服务器路径同样拒绝。
         context["allowed_input_root"] = workspace.get("root_path")
-    result = agent.agent_runtime.execute(
-        prompt, context, on_event=emit, knowledge_mode=mode == "knowledge_qa"
-    )
+    result = agent.agent_runtime.execute(prompt, context, on_event=emit)
 
     results = result.get("results")
     if not isinstance(results, dict):
         results = {}
-    results["chat_mode"] = mode
+    results["chat_mode"] = "chat"
     result["results"] = results
 
     if result.get("status") == "aborted":
-        # 中断轮也要记录模式，重试时才能沿用严格文献链路。
+        # 历史统计仍读取 chat_mode；新轮次统一为普通对话。
         finalize_turn(store, session_id, content="（已中断）", results=results, emit=emit)
         return result
 

@@ -68,7 +68,7 @@ function message(data: KnowledgeQAResult): WireMessage {
 
 function renderAnswer(data: KnowledgeQAResult) {
   return render(
-    <MessageList messages={[message(data)]} draft="" busy={false} tools={[]} mode="chat" notice={null} softWarn={false} />,
+    <MessageList messages={[message(data)]} draft="" busy={false} tools={[]} notice={null} softWarn={false} />,
   )
 }
 
@@ -275,7 +275,7 @@ describe('KnowledgeAnswer', () => {
     const item = message(qa({ answer: '结构化回答仍可阅读' }))
     item.content = ' '
     render(
-      <MessageList messages={[item]} draft="" busy={false} tools={[]} mode="chat" notice={null} softWarn={false} />,
+      <MessageList messages={[item]} draft="" busy={false} tools={[]} notice={null} softWarn={false} />,
     )
     expect(screen.getByText('结构化回答仍可阅读')).toBeInTheDocument()
   })

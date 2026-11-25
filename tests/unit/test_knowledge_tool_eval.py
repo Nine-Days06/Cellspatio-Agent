@@ -53,7 +53,6 @@ def test_cases_cover_required_mix_and_scripts_end_with_final():
         "analysis_then_literature",
         "literature_then_memory",
         "followup",
-        "strict_literature",
         "service_error",
     } <= categories
     for case in cases.values():

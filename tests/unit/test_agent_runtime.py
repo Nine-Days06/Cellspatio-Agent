@@ -67,8 +67,30 @@ class FakeWM:
         self.calls.append(("query_knowledge", {"query": query}))
         return self.results["query_knowledge"]
 
-    def search_knowledge_for_agent(self, query, context):
-        self.calls.append(("search_knowledge", {"query": query}))
+    def search_knowledge_for_agent(
+        self,
+        query,
+        context,
+        *,
+        scope=None,
+        max_evidence=None,
+        cursor=None,
+        sources_only=False,
+        source_id=None,
+    ):
+        self.calls.append(
+            (
+                "search_knowledge",
+                {
+                    "query": query,
+                    "scope": scope,
+                    "max_evidence": max_evidence,
+                    "cursor": cursor,
+                    "sources_only": sources_only,
+                    "source_id": source_id,
+                },
+            )
+        )
         result = self.results["search_knowledge"]
         return result.pop(0) if isinstance(result, list) else result
 
@@ -273,187 +295,6 @@ def test_query_memory_dispatch():
     assert result["message"] == "上次用的是 DESeq2，FDR 0.05。"
 
 
-@pytest.mark.parametrize(
-    ("tool", "arguments"),
-    [
-        ("run_analysis", {"analysis_type": "differential_expression"}),
-        ("search_datasets", {"query": "GSE123456"}),
-        ("query_memory", {"query": "上次用了什么参数"}),
-    ],
-)
-def test_strict_mode_rejects_non_knowledge_tools(tool, arguments):
-    """严格文献模式下，幻觉出的副作用工具不得进入工作流管理器。"""
-    llm = FakeLLM([_tool_call_response(tool, arguments), _text_response("答 [E1]")])
-    wm = FakeWM(
-        {
-            "search_knowledge": {
-                "status": "success",
-                "type": "knowledge_evidence",
-                "evidence": [{"evidence_id": "E1", "title": "论文"}],
-                "sources": [],
-                "continue_tool_loop": True,
-            }
-        }
-    )
-    runtime, wm = _make_runtime(llm, wm)
-
-    result = runtime.execute("先做分析再查文献", knowledge_mode=True)
-
-    assert [call[0] for call in wm.calls] == ["search_knowledge"]
-    assert result["outcome"] == "supported_answer"
-    assert "严格文献模式" in llm.calls[1]["messages"][-1]["content"]
-
-
-def test_strict_mode_repeated_rejected_tool_forces_answer():
-    """反复请求被拒工具由既有重复调用保护收口，不会死循环。"""
-    rejected = _tool_call_response("run_analysis", {"analysis_type": "differential_expression"})
-    llm = FakeLLM([rejected, rejected, _text_response("只能给文献回答 [E1]")])
-    wm = FakeWM(
-        {
-            "search_knowledge": {
-                "status": "success",
-                "type": "knowledge_evidence",
-                "evidence": [{"evidence_id": "E1", "title": "论文"}],
-                "sources": [],
-                "continue_tool_loop": True,
-            }
-        }
-    )
-    runtime, wm = _make_runtime(llm, wm)
-
-    result = runtime.execute("做分析", knowledge_mode=True)
-
-    assert [call[0] for call in wm.calls] == ["search_knowledge"]
-    assert len(llm.calls) == 3
-    assert result["message"] == "只能给文献回答 [E1]"
-
-
-def test_strict_mode_allows_search_after_rejection():
-    """被拒后模型改调检索工具，本轮继续取证并正常收口。"""
-    llm = FakeLLM(
-        [
-            _tool_call_response("run_analysis", {"analysis_type": "differential_expression"}),
-            _tool_call_response("search_knowledge", {"query": "补充证据"}),
-            _text_response("答 [E1][E2]"),
-        ]
-    )
-    wm = FakeWM(
-        {
-            "search_knowledge": [
-                {
-                    "status": "success",
-                    "type": "knowledge_evidence",
-                    "evidence": [{"evidence_id": "E1", "title": "论文"}],
-                    "sources": [],
-                    "continue_tool_loop": True,
-                },
-                {
-                    "status": "success",
-                    "type": "knowledge_evidence",
-                    "evidence": [{"evidence_id": "E1", "title": "另一篇"}],
-                    "sources": [],
-                    "continue_tool_loop": True,
-                },
-            ]
-        }
-    )
-    runtime, wm = _make_runtime(llm, wm)
-
-    result = runtime.execute("先分析再查文献", knowledge_mode=True)
-
-    assert [call[0] for call in wm.calls] == ["search_knowledge", "search_knowledge"]
-    assert result["outcome"] == "supported_answer"
-    assert result["message"] == "答 [E1][E2]"
-
-
-def test_strict_followup_query_carries_user_turns_and_summary_tail():
-    """严格追问的检索 query 含摘要末尾与最近两轮用户发言，不含助手正文。"""
-    llm = FakeLLM([_text_response("答 [E1]")])
-    wm = FakeWM(
-        {
-            "search_knowledge": {
-                "status": "success",
-                "type": "knowledge_evidence",
-                "evidence": [{"evidence_id": "E1", "title": "论文"}],
-                "sources": [],
-                "continue_tool_loop": True,
-            }
-        }
-    )
-    runtime, wm = _make_runtime(llm, wm)
-    context = {
-        "summary": "摘要开头" + "结" * 600,
-        "history": [
-            {"role": "user", "content": "TP53 在癌症中的作用是什么？"},
-            {
-                "role": "assistant",
-                "content": (
-                    "助手回答不应进入检索\n[结构化论断]\n- TP53 促进凋亡 [E1]\n"
-                    "证据片段：p53 是抑癌基因"
-                ),
-            },
-            {"role": "user", "content": "它主要影响哪些通路？"},
-        ],
-    }
-
-    runtime.execute("那它的机制呢？", context, knowledge_mode=True)
-
-    query = wm.calls[0][1]["query"]
-    assert "那它的机制呢？" in query
-    assert "TP53 在癌症中的作用是什么？" in query
-    assert "它主要影响哪些通路？" in query
-    assert "摘要开头" not in query
-    assert "结" * 500 in query
-    assert "助手回答不应进入检索" not in query
-    assert "TP53 促进凋亡" not in query
-    assert "p53 是抑癌基因" not in query
-
-
-def test_strict_followup_keeps_long_user_turns_whole():
-    """最近两轮用户发言不按字符截断。"""
-    long_turn = "问" * 3000
-    llm = FakeLLM([_text_response("答 [E1]")])
-    wm = FakeWM(
-        {
-            "search_knowledge": {
-                "status": "success",
-                "type": "knowledge_evidence",
-                "evidence": [{"evidence_id": "E1", "title": "论文"}],
-                "sources": [],
-                "continue_tool_loop": True,
-            }
-        }
-    )
-    runtime, wm = _make_runtime(llm, wm)
-
-    runtime.execute(
-        "那它呢？", {"history": [{"role": "user", "content": long_turn}]}, knowledge_mode=True
-    )
-
-    assert long_turn in wm.calls[0][1]["query"]
-
-
-def test_strict_first_turn_query_is_question_only():
-    """无历史的首轮严格检索仍只用当前问题。"""
-    llm = FakeLLM([_text_response("答 [E1]")])
-    wm = FakeWM(
-        {
-            "search_knowledge": {
-                "status": "success",
-                "type": "knowledge_evidence",
-                "evidence": [{"evidence_id": "E1", "title": "论文"}],
-                "sources": [],
-                "continue_tool_loop": True,
-            }
-        }
-    )
-    runtime, wm = _make_runtime(llm, wm)
-
-    runtime.execute("TP53 是什么？", {}, knowledge_mode=True)
-
-    assert wm.calls[0][1]["query"] == "TP53 是什么？"
-
-
 def test_search_knowledge_hidden_and_rejected_when_flag_off(monkeypatch):
     """legacy 回退：工具清单不暴露，模型硬调用也只得到未知工具错误。"""
     monkeypatch.setenv("AGENT_KNOWLEDGE_TOOL", "legacy")
@@ -495,7 +336,19 @@ def test_search_knowledge_dispatches_and_continues_round(monkeypatch):
 
     result = runtime.execute("TP53 的证据")
 
-    assert wm.calls == [("search_knowledge", {"query": "TP53"})]
+    assert wm.calls == [
+        (
+            "search_knowledge",
+            {
+                "query": "TP53",
+                "scope": None,
+                "max_evidence": None,
+                "cursor": None,
+                "sources_only": False,
+                "source_id": None,
+            },
+        )
+    ]
     assert "search_knowledge" in {schema["function"]["name"] for schema in llm.calls[0]["tools"]}
     assert "[E#]" in llm.calls[0]["messages"][0]["content"]
     assert result["message"] == "基于 [E1] 的回答"
@@ -504,6 +357,116 @@ def test_search_knowledge_dispatches_and_continues_round(monkeypatch):
     assert package["citations"] == ["E1"]
     assert package["evidence"][0]["content"] == "x"
     assert package["claims"] == []
+
+
+def test_search_knowledge_forwards_answer_scope_and_limit(monkeypatch):
+    """检索参数由 schema 原样进入工作流入口，不被运行时丢弃。"""
+    monkeypatch.setenv("AGENT_KNOWLEDGE_TOOL", "search")
+    llm = FakeLLM(
+        [
+            _tool_call_response(
+                "search_knowledge",
+                {"query": "TP53", "scope": "answer", "max_evidence": 12},
+            ),
+            _text_response("答 [E1]"),
+        ]
+    )
+    runtime, wm = _make_runtime(llm, FakeWM({"search_knowledge": _evidence_result()}))
+
+    runtime.execute("TP53 的机制")
+
+    assert wm.calls[0][1] == {
+        "query": "TP53",
+        "scope": "answer",
+        "max_evidence": 12,
+        "cursor": None,
+        "sources_only": False,
+        "source_id": None,
+    }
+
+
+def test_search_knowledge_forwards_exhaustive_paging_fields(monkeypatch):
+    """分页游标、来源清单开关与指定来源都由 schema 原样进入工作流。"""
+    monkeypatch.setenv("AGENT_KNOWLEDGE_TOOL", "search")
+    llm = FakeLLM(
+        [
+            _tool_call_response(
+                "search_knowledge",
+                {
+                    "query": "盘点",
+                    "scope": "exhaustive",
+                    "cursor": "abc",
+                    "sources_only": True,
+                    "source_id": "PMID 123",
+                },
+            ),
+            _text_response("答 [E1]"),
+        ]
+    )
+    runtime, wm = _make_runtime(llm, FakeWM({"search_knowledge": _evidence_result()}))
+
+    runtime.execute("盘点文献")
+
+    assert wm.calls[0][1] == {
+        "query": "盘点",
+        "scope": "exhaustive",
+        "max_evidence": None,
+        "cursor": "abc",
+        "sources_only": True,
+        "source_id": "PMID 123",
+    }
+
+
+def test_sources_only_page_survives_finalize_with_paging_metadata(monkeypatch):
+    """sources_only 的“0 证据 + N 来源”不能被收口成证据不足，元数据要落到证据包。"""
+    monkeypatch.setenv("AGENT_KNOWLEDGE_TOOL", "search")
+    llm = FakeLLM(
+        [
+            _tool_call_response(
+                "search_knowledge",
+                {"query": "盘点", "scope": "exhaustive", "sources_only": True},
+            ),
+            _text_response(
+                '已列出文献来源。\n```claims\n[{"text": "无证据的论断", "evidence_ids": ["E1"]}]\n```'
+            ),
+        ]
+    )
+    wm = FakeWM(
+        {
+            "search_knowledge": {
+                "status": "success",
+                "type": "knowledge_evidence",
+                "query": "盘点",
+                "scope": "exhaustive",
+                "evidence": [],
+                "sources": [{"source_id": "PMID 1", "title": "A paper", "evidence_ids": []}],
+                "evidence_count": 0,
+                "source_count": 1,
+                "has_more": True,
+                "next_cursor": "cursor-1",
+                "coverage_message": "这是有界一页，不代表已找全。",
+                "continue_tool_loop": True,
+            }
+        }
+    )
+    runtime, _ = _make_runtime(llm, wm)
+
+    result = runtime.execute("盘点文献")
+
+    package = result["results"]["knowledge_evidence"]
+    assert result["status"] == "success"
+    assert result["message"] == "已列出文献来源。"
+    assert result["outcome"] == "sources_only"
+    assert package["evidence"] == []
+    assert package["outcome"] == "sources_only"
+    assert package["claims"] == []
+    assert package["evidence_count"] == 0
+    assert package["sources"] == [{"source_id": "PMID 1", "title": "A paper", "evidence_ids": []}]
+    assert package["source_count"] == 1
+    assert package["scope"] == "exhaustive"
+    assert package["has_more"] is True
+    assert package["next_cursor"] == "cursor-1"
+    assert "不代表已找全" in package["coverage_message"]
 
 
 def test_explicit_claims_block_is_stored_and_stripped(monkeypatch):
@@ -598,21 +561,6 @@ def test_duplicate_chunk_across_tool_calls_is_dropped(monkeypatch):
     assert "未新增证据" in second["message"]
 
 
-def test_knowledge_mode_forces_initial_search_and_only_exposes_search(monkeypatch):
-    """严格文献模式：先强制检索，模型只拿到检索工具和证据，再按 [E#] 作答。"""
-    monkeypatch.setenv("AGENT_KNOWLEDGE_TOOL", "legacy")
-    llm = FakeLLM([_text_response("TP53 是抑癌基因 [E1]")])
-    runtime, wm = _make_runtime(llm, FakeWM({"search_knowledge": _evidence_result()}))
-
-    result = runtime.execute("TP53", knowledge_mode=True)
-
-    assert wm.calls == [("search_knowledge", {"query": "TP53"})]
-    assert [tool["function"]["name"] for tool in llm.calls[0]["tools"]] == ["search_knowledge"]
-    assert "strict literature" in llm.calls[0]["messages"][0]["content"]
-    assert result["outcome"] == "supported_answer"
-    assert result["results"]["knowledge_evidence"]["citations"] == ["E1"]
-
-
 def test_default_on_exposes_literature_tool_without_legacy_flag(monkeypatch):
     """未配置开关时运行时默认暴露检索工具，不再暴露旧 query_knowledge。"""
     monkeypatch.delenv("AGENT_KNOWLEDGE_TOOL", raising=False)
@@ -665,24 +613,6 @@ def test_deprecated_query_knowledge_is_rejected_when_not_legacy(monkeypatch):
     assert "抑癌基因" in result["message"]
 
 
-def test_strict_mode_rejects_query_knowledge_even_in_legacy(monkeypatch):
-    """严格文献预设不受 legacy 回退影响，旧成品回答工具仍不得执行。"""
-    monkeypatch.setenv("AGENT_KNOWLEDGE_TOOL", "legacy")
-    llm = FakeLLM(
-        [
-            _tool_call_response("query_knowledge", {"query": "TP53"}),
-            _text_response("TP53 是抑癌基因 [E1]"),
-        ]
-    )
-    runtime, wm = _make_runtime(llm, FakeWM({"search_knowledge": _evidence_result()}))
-
-    result = runtime.execute("TP53", knowledge_mode=True)
-
-    assert [name for name, _ in wm.calls] == ["search_knowledge"]
-    assert result["status"] == "success"
-    assert "抑癌基因" in result["message"]
-
-
 def test_default_mode_without_llm_does_not_route_knowledge_to_old_workflow(monkeypatch):
     """默认开启检索时，无 LLM 降级也不能把知识问题送进旧成品回答工作流。"""
     from src.control.agent_runtime import AgentRuntime
@@ -718,44 +648,6 @@ def test_default_mode_blocks_old_answer_returned_by_fallback(monkeypatch):
 
     assert result["status"] == "error"
     assert "对话模型暂时不可用" in result["message"]
-
-
-def test_knowledge_mode_reports_unavailable_without_second_llm(monkeypatch):
-    """强制检索失败时不调用生成模型，直接报服务不可用。"""
-    monkeypatch.setenv("AGENT_KNOWLEDGE_TOOL", "legacy")
-    llm = FakeLLM([])
-    runtime, wm = _make_runtime(
-        llm,
-        FakeWM(
-            {
-                "search_knowledge": {
-                    "status": "error",
-                    "outcome": "knowledge_unavailable",
-                    "message": "知识检索服务暂时不可用，请稍后重试。",
-                }
-            }
-        ),
-    )
-
-    result = runtime.execute("TP53", knowledge_mode=True)
-
-    assert wm.calls[0][0] == "search_knowledge"
-    assert llm.calls == []
-    assert result["outcome"] == "knowledge_unavailable"
-
-
-def test_knowledge_mode_without_llm_does_not_fall_back_to_old_workflow():
-    """严格文献模式没有模型时直接报不可用，不能退回无引用的旧工作流。"""
-    from src.control.agent_runtime import AgentRuntime
-
-    wm = FakeWM({})
-    runtime = AgentRuntime(llm_client=None, model="none", workflow_manager=wm)
-
-    result = runtime.execute("TP53", knowledge_mode=True)
-
-    assert result["outcome"] == "knowledge_unavailable"
-    assert result["status"] == "error"
-    assert wm.fallback_calls == []
 
 
 def _evidence_result() -> dict:

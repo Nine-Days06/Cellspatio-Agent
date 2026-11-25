@@ -37,7 +37,6 @@ import {
   nextSessionAfterDelete,
 } from '@/lib/sessions'
 import type {
-  ChatMode,
   ConfirmRequestBody,
   EnvStatus,
   KbStats,
@@ -81,9 +80,6 @@ export function ChatPage() {
   const [slowHint, setSlowHint] = useState(false)
   /** 确认卡唯一状态源；新卡/切换会话/重新生成/新一轮输入时 reset */
   const [confirmState, dispatchConfirm] = useReducer(confirmReducer, initialConfirmState)
-  /** 本轮模式：严格文献模式强制检索并引用证据，智能对话按需检索 */
-  const [mode, setMode] = useState<ChatMode>('chat')
-
   const sessionId = useChatStore((s) => s.sessionId)
   const history = useChatStore((s) => s.history)
   const draft = useChatStore((s) => s.draft)
@@ -243,7 +239,7 @@ export function ChatPage() {
     }
     setInput('')
     dispatchConfirm({ type: 'reset' })
-    void send(prompt, mode)
+    void send(prompt)
   }
 
   /** 约束 1 重试：重发本会话最后一条用户消息 */
@@ -253,18 +249,8 @@ export function ChatPage() {
     const history = state.history
     const lastUserAt = history.reduce((at, m, i) => (m.role === 'user' ? i : at), -1)
     if (lastUserAt < 0) return
-    // 沿用上一轮回复所在的链路，而不是当前开关：切模式后重试不该换链路。
-    // chat_mode 由后端写入本轮 results；knowledge_qa 仅用于没有该字段的旧消息。
-    const reply = history.slice(lastUserAt + 1).find((m) => m.role === 'assistant')
-    // 没有回复可参考时保持当前开关，避免把知识问答静默换成普通对话
-    const replayMode: ChatMode = reply
-      ? reply.results?.chat_mode === 'knowledge_qa' || reply.results?.knowledge_qa
-        ? 'knowledge_qa'
-        : 'chat'
-      : mode
-    setMode(replayMode)
     dispatchConfirm({ type: 'reset' })
-    void send(history[lastUserAt].content, replayMode)
+    void send(history[lastUserAt].content)
   }
 
   /** 确认执行：先派发 submit（覆盖旧失败态）；成功按 action 回写卡片状态 / 清卡（T7 契约） */
@@ -328,7 +314,7 @@ export function ChatPage() {
     const card = useChatStore.getState().scriptCard
     if (!card) return
     dispatchConfirm({ type: 'reset' })
-    void send(card.user_request, 'chat')
+    void send(card.user_request)
   }
 
   /** 切换会话：先停旧流（防事件串台）再复位；重复选中当前会话不重置历史 */
@@ -526,12 +512,11 @@ export function ChatPage() {
           onToggleReasoning={toggleReasoning}
           busy={busy}
           tools={tools}
-          mode={mode}
           hideStatus={stopping || slowHint}
           notice={notice}
           softWarn={softWarn}
           onRetry={handleRetry}
-          onStarter={(prompt, nextMode) => { setInput(prompt); setMode(nextMode); inputRef.current?.focus() }}
+          onStarter={(prompt) => { setInput(prompt); inputRef.current?.focus() }}
         />
         {(scriptCard || dataCard) && (
           <div
@@ -560,52 +545,11 @@ export function ChatPage() {
             <p className="mb-1.5 text-xs text-muted-foreground">仍在执行，可能耗时较久</p>
           )}
           <div className="composer-shell rounded-xl border border-border bg-card px-3 pb-2 pt-2">
-          <div
-            role="radiogroup"
-            aria-label="对话模式"
-            className="mb-1 inline-flex gap-1"
-          >
-            {[
-              { value: 'chat' as const, label: '智能对话' },
-              { value: 'knowledge_qa' as const, label: '严格文献深答' },
-            ].map((item) => (
-              <button
-                key={item.value}
-                type="button"
-                role="radio"
-                aria-checked={mode === item.value}
-                tabIndex={mode === item.value ? 0 : -1}
-                disabled={busy}
-                onClick={() => setMode(item.value)}
-                onKeyDown={(e) => {
-                  if (e.key !== 'ArrowLeft' && e.key !== 'ArrowRight') return
-                  e.preventDefault()
-                  const next = item.value === 'chat' ? 'knowledge_qa' : 'chat'
-                  setMode(next)
-                  e.currentTarget.parentElement
-                    ?.querySelectorAll<HTMLButtonElement>('[role="radio"]')
-                    .item(next === 'chat' ? 0 : 1)
-                    ?.focus()
-                }}
-                className={`min-h-11 rounded-md px-3 py-2 text-sm ${
-                  mode === item.value
-                    ? 'bg-accent font-medium text-accent-foreground'
-                    : 'text-muted-foreground hover:bg-muted'
-                } disabled:opacity-50`}
-              >
-                {item.label}
-              </button>
-            ))}
-          </div>
           <div className="flex items-end gap-2">
             <textarea
               ref={inputRef}
               aria-label="输入你的问题"
-              placeholder={
-                mode === 'knowledge_qa'
-                  ? '提出一个单细胞或空间组学问题，回答将附文献片段…'
-                  : '描述你的数据、样本或分析目标…'
-              }
+              placeholder="描述你的数据、样本或分析目标…"
               rows={1}
               className="composer-input min-h-12 min-w-0 flex-1 resize-none rounded-md bg-transparent px-2 py-3 text-base leading-6 focus-visible:outline-none"
               value={input}
@@ -641,7 +585,7 @@ export function ChatPage() {
             )}
           </div>
           </div>
-          <p className="composer-help mt-2 text-xs text-muted-foreground">{mode === 'knowledge_qa' ? '强制检索文献，回答逐条引用证据；不执行分析。' : 'Enter 发送，Shift + Enter 换行；分析须独立授权。'}</p>
+          <p className="composer-help mt-2 text-xs text-muted-foreground">Enter 发送，Shift + Enter 换行；分析须独立授权。</p>
           </div>
         </div>
       </main>

@@ -1,5 +1,11 @@
 import type { ChatKnowledgeResult } from '@/lib/types'
-import { dedupeSources } from '@/lib/knowledge'
+import { dedupeEvidenceBySource, dedupeSources } from '@/lib/knowledge'
+
+const SCOPE_LABEL: Record<NonNullable<ChatKnowledgeResult['scope']>, string> = {
+  answer: '具体回答',
+  survey: '主题梳理',
+  exhaustive: '分页盘点',
+}
 
 /** 稳定的证据锚点：同一页面多条消息各自引用 E1 时不串消息。 */
 export function knowledgeAnchor(messageId: number, evidenceId: string): string {
@@ -31,10 +37,24 @@ export function KnowledgeEvidence({
   data: ChatKnowledgeResult
   messageId: number
 }) {
-  const evidence = data.evidence
+  const evidence =
+    data.scope === 'exhaustive' && !data.source_id
+      ? dedupeEvidenceBySource(data.evidence)
+      : data.evidence
   const sources = dedupeSources(data.sources)
   const claims = data.claims
   if (evidence.length === 0 && sources.length === 0 && claims.length === 0) return null
+  const hasCounts = data.evidence_count !== undefined || data.source_count !== undefined
+  const countText = hasCounts
+    ? `${data.evidence_count ?? data.evidence.length} 条 / ${data.source_count ?? sources.length} 个来源`
+    : `${data.evidence.length} 条`
+  const summary = [
+    `文献证据（${countText}）`,
+    data.scope ? SCOPE_LABEL[data.scope] : null,
+    data.has_more ? '还有下一页' : null,
+  ]
+    .filter(Boolean)
+    .join(' · ')
 
   return (
     <details
@@ -42,8 +62,13 @@ export function KnowledgeEvidence({
       className="group mt-3 rounded-lg border border-border bg-muted/30 px-3 py-2 text-xs"
     >
       <summary className="cursor-pointer select-none text-muted-foreground">
-        文献证据（{evidence.length} 条）
+        {summary}
       </summary>
+      {data.coverage_message && (
+        <p data-testid="knowledge-coverage" className="mt-2 text-muted-foreground">
+          {data.coverage_message}
+        </p>
+      )}
       {evidence.length > 0 && (
         <ul className="mt-2 space-y-2">
           {evidence.map((item) => (

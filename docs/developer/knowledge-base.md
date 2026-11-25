@@ -45,7 +45,7 @@ PG 后端 LightRAG 的连接池、事件循环和 workspace 是进程级共享�
 `python -m evals.run_knowledge_tool_eval`，分三层：
 `--scripted` 用脚本化 LLM + 假工作流只校验运行器与阈值；`--tools` 用真实模型 +
 假工作流只报告工具选择与格式（`--live` 为弃用别名）；`--e2e` 使用真实模型、
-真实 WorkflowManager 与真实检索，只跑 literature/strict_literature 用例（分析与
+真实 WorkflowManager 与真实检索，只跑 literature 用例（分析与
 记忆类留在工具选择层），才支撑“不差于旧链路”的质量结论。端到端层若误用假工作流
 会直接失败，不会静默降级。
 `evals/run_eval.py` 按进程环境运行，默认校验 `search_knowledge` 工具路由；

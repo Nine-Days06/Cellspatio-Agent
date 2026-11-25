@@ -10,12 +10,16 @@ from typing import Any
 import pytest
 
 from src.knowledge.qa import (
+    ANSWER_DEFAULT_EVIDENCE,
+    ANSWER_MAX_EVIDENCE,
     RETRIEVAL_CALL_FAILED,
     RETRIEVAL_CLIENT_UNAVAILABLE,
     RETRIEVAL_DEADLINE,
     RETRIEVAL_INVALID_RESULT,
     RETRIEVAL_SERVICE_FAILURE,
+    SURVEY_EVIDENCE_CHARS,
     StageAborted,
+    evidence_limit,
     retrieve_evidence,
 )
 
@@ -116,7 +120,209 @@ def test_duplicate_chunks_are_collapsed_before_numbering() -> None:
     retrieval = retrieve_evidence(client, "问题", deadline=time.monotonic() + 5)
 
     assert [item["evidence_id"] for item in retrieval.evidence] == ["E1"]
-    assert retrieval.sources[0]["evidence_ids"] == ["E1"]
+
+
+def test_survey_limits_sources_and_excerpts_per_source() -> None:
+    """survey 按来源收敛到 20 个，每源最多 2 条节选，PMID/DOI 交叉去重。"""
+    chunks: list[dict[str, Any]] = []
+    for index in range(1, 26):
+        pid = f"3000{index}"
+        for part in range(2):
+            chunks.append(
+                {
+                    "chunk_id": f"chunk-{pid}-{part}",
+                    "content": (f"标题：论文{index}\n摘要：{'证' * 2000}\n年份：2024\nPMID：{pid}"),
+                }
+            )
+    chunks.append(
+        {
+            "chunk_id": "chunk-doi-duplicate",
+            "content": "标题：论文1\n摘要：重复来源\nDOI：10.1000/duplicate",
+        }
+    )
+    first = chunks[0]["content"]
+    chunks[0]["content"] = f"{first}\nDOI：10.1000/duplicate"
+
+    retrieval = retrieve_evidence(
+        FakeKnowledge(_retrieval(chunks=chunks)),
+        "主题",
+        deadline=time.monotonic() + 5,
+        max_evidence=60,
+        max_sources=20,
+        per_source_max=2,
+        content_chars=SURVEY_EVIDENCE_CHARS,
+    )
+
+    assert len(retrieval.sources) == 20
+    assert len(retrieval.evidence) == 40
+    assert len({item["source_id"] for item in retrieval.evidence}) == 20
+    assert all(len(item["content"]) <= SURVEY_EVIDENCE_CHARS for item in retrieval.evidence)
+    assert len(retrieval.sources[0]["evidence_ids"]) == 2
+
+
+def test_survey_merges_pmid_and_doi_seen_in_different_chunks() -> None:
+    """同一论文的 PMID 与 DOI 分散在不同 chunk 时仍归并为一个来源。"""
+    client = FakeKnowledge(
+        _retrieval(
+            chunks=[
+                {
+                    "chunk_id": "chunk-doi-first",
+                    "content": "标题：同一论文\n摘要：第一段\nDOI：10.1000/shared",
+                },
+                {
+                    "chunk_id": "chunk-pmid",
+                    "content": ("标题：同一论文\n摘要：第二段\nPMID：12345\nDOI：10.1000/shared"),
+                },
+            ]
+        )
+    )
+
+    retrieval = retrieve_evidence(
+        client,
+        "主题",
+        deadline=time.monotonic() + 5,
+        max_evidence=2,
+        max_sources=20,
+        per_source_max=2,
+    )
+
+    assert len(retrieval.sources) == 1
+    assert retrieval.sources[0]["source_id"] == "PMID 12345"
+    assert {item["source_id"] for item in retrieval.evidence} == {"PMID 12345"}
+
+
+def test_exhaustive_pages_sources_and_keeps_ids_stable() -> None:
+    """exhaustive 每页 50 个来源，跨页 evidence ID 连续且不重复。"""
+    chunks = [
+        {
+            "chunk_id": f"chunk-{index}",
+            "content": f"标题：论文{index}\n摘要：摘要{index}\n年份：2024\nPMID：{50000 + index}",
+        }
+        for index in range(1, 121)
+    ]
+    client = FakeKnowledge(_retrieval(chunks=chunks))
+
+    first = retrieve_evidence(client, "盘点", deadline=time.monotonic() + 5, scope="exhaustive")
+    second = retrieve_evidence(
+        client,
+        "盘点",
+        deadline=time.monotonic() + 5,
+        scope="exhaustive",
+        cursor=first.next_cursor,
+    )
+    third = retrieve_evidence(
+        client,
+        "盘点",
+        deadline=time.monotonic() + 5,
+        scope="exhaustive",
+        cursor=second.next_cursor,
+    )
+
+    assert len(first.sources) == 50
+    assert first.has_more is True and first.next_cursor
+    assert [item["evidence_id"] for item in first.evidence][:1] == ["E1"]
+    assert [item["evidence_id"] for item in second.evidence][:1] == ["E51"]
+    assert [item["evidence_id"] for item in third.evidence][:1] == ["E101"]
+    assert len(third.sources) == 20
+    assert third.has_more is False and third.next_cursor == ""
+    assert "最后一页" in third.coverage_message
+    assert "next_cursor" not in third.coverage_message
+    assert not (
+        {item["source_id"] for item in first.evidence}
+        & {item["source_id"] for item in second.evidence}
+    )
+    assert "不代表已找全" in first.coverage_message
+
+
+def test_exhaustive_respects_requested_page_size() -> None:
+    """exhaustive 的 max_evidence 请求缩小每页来源数，但不超过 50。"""
+    chunks = [_chunk(pid=str(51000 + index)) for index in range(1, 26)]
+    client = FakeKnowledge(_retrieval(chunks=chunks))
+
+    small = retrieve_evidence(
+        client,
+        "盘点",
+        deadline=time.monotonic() + 5,
+        scope="exhaustive",
+        page_sources=10,
+    )
+    capped = retrieve_evidence(
+        client,
+        "盘点",
+        deadline=time.monotonic() + 5,
+        scope="exhaustive",
+        page_sources=99,
+    )
+
+    assert len(small.sources) == 10
+    assert small.has_more is True
+    assert len(capped.sources) == 25
+    assert capped.has_more is False
+
+
+def test_exhaustive_rejects_cursor_from_another_query() -> None:
+    """游标绑定查询指纹，换查询后明确返回无效游标而不是错页。"""
+    client = FakeKnowledge(
+        _retrieval(chunks=[_chunk(pid=str(60000 + index)) for index in range(1, 61)])
+    )
+    first = retrieve_evidence(client, "盘点", deadline=time.monotonic() + 5, scope="exhaustive")
+
+    bad = retrieve_evidence(
+        client,
+        "另一个问题",
+        deadline=time.monotonic() + 5,
+        scope="exhaustive",
+        cursor=first.next_cursor,
+    )
+
+    assert bad.error is not None
+    assert bad.error.reason == "invalid_cursor"
+    assert "游标无效" in bad.error.message
+
+
+def test_exhaustive_sources_only_then_fetches_one_source_text() -> None:
+    """sources_only 只给来源清单；source_id 可取该来源完整正文。"""
+    long_text = "证" * 5000
+    chunks = [
+        {
+            "chunk_id": f"chunk-{index}",
+            "content": (f"标题：论文{index}\n摘要：{long_text}\n年份：2024\nPMID：{70000 + index}"),
+        }
+        for index in range(1, 61)
+    ]
+    chunks.extend(
+        {
+            "chunk_id": f"chunk-70001-extra-{index}",
+            "content": f"标题：论文1\n摘要：{long_text}\n年份：2024\nPMID：70001",
+        }
+        for index in range(1, 13)
+    )
+    client = FakeKnowledge(_retrieval(chunks=chunks))
+
+    page = retrieve_evidence(
+        client,
+        "盘点",
+        deadline=time.monotonic() + 5,
+        scope="exhaustive",
+        sources_only=True,
+    )
+    source_id = page.sources[0]["source_id"]
+    detail = retrieve_evidence(
+        client,
+        "盘点",
+        deadline=time.monotonic() + 5,
+        scope="exhaustive",
+        cursor=page.next_cursor,
+        source_id=source_id,
+    )
+
+    assert page.evidence == []
+    assert len(page.sources) == 50
+    assert page.has_more is True
+    assert "仅返回来源清单" in page.coverage_message
+    assert len(detail.evidence) == 13
+    assert long_text in detail.evidence[0]["content"]
+    assert detail.evidence[0]["source_id"] == source_id
 
 
 def test_past_deadline_skips_the_call() -> None:
@@ -262,6 +468,35 @@ def test_content_hash_covers_full_text_not_truncated() -> None:
         retrieval.evidence[0]["content_sha256"]
         == hashlib.sha256(long_text.encode("utf-8")).hexdigest()
     )
+
+
+def test_answer_scope_keeps_full_text_and_honors_hard_cap() -> None:
+    """content_chars=0 保留完整正文；max_evidence 超过硬上限时截到 12 条。"""
+    long_text = "证" * 5000
+    chunks = [
+        _chunk(pid=f"1000{index}", text=f"标题：论文{index}\n摘要：{long_text}\nPMID：1000{index}")
+        for index in range(1, 15)
+    ]
+
+    retrieval = retrieve_evidence(
+        FakeKnowledge(_retrieval(chunks=chunks)),
+        "问题",
+        deadline=time.monotonic() + 5,
+        max_evidence=ANSWER_MAX_EVIDENCE,
+        content_chars=0,
+    )
+
+    assert len(retrieval.evidence) == ANSWER_MAX_EVIDENCE
+    assert all(long_text in item["content"] for item in retrieval.evidence)
+    assert all("摘要：" in item["content"] for item in retrieval.evidence)
+
+
+def test_evidence_limit_defaults_and_clamps() -> None:
+    """缺省/非法请求用档位默认值，超限请求截到硬上限。"""
+    assert evidence_limit(None, default=ANSWER_DEFAULT_EVIDENCE, hard=ANSWER_MAX_EVIDENCE) == 8
+    assert evidence_limit("bad", default=8, hard=12) == 8
+    assert evidence_limit(3, default=8, hard=12) == 3
+    assert evidence_limit(99, default=8, hard=12) == 12
 
 
 def test_retrieval_runs_off_loop_with_real_runtime_nesting() -> None:

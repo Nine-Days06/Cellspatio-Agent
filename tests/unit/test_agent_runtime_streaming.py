@@ -9,7 +9,6 @@ import pytest
 
 from src.control.agent_runtime import (
     DEFAULT_TOOL_RESULT_MAX_CHARS,
-    KNOWLEDGE_PAYLOAD_EVIDENCE_CHARS,
 )
 from tests.unit.test_agent_runtime import FakeWM, _text_response, _tool_call_response
 
@@ -382,8 +381,8 @@ def test_tool_result_is_truncated_to_per_call_cap(monkeypatch):
     assert len(payload) <= 160
 
 
-def test_long_evidence_payload_is_compacted_per_item(monkeypatch):
-    """文献证据超限时逐条压缩正文并保留元数据；持久化证据包仍是全文。"""
+def test_long_evidence_payload_drops_whole_items(monkeypatch):
+    """文献证据超限时整条删减并报告省略数，单条正文绝不被截断。"""
     monkeypatch.setenv("AGENT_KNOWLEDGE_TOOL", "search")
     monkeypatch.delenv("AGENT_TOOL_RESULT_MAX_CHARS", raising=False)
     llm = FakeStreamLLM(
@@ -424,19 +423,17 @@ def test_long_evidence_payload_is_compacted_per_item(monkeypatch):
     parsed = json.loads(payload)
     assert "truncated" not in parsed
     assert len(payload) <= DEFAULT_TOOL_RESULT_MAX_CHARS
-    assert len(parsed["evidence"]) == 8
+    assert len(parsed["evidence"]) < 8
+    assert parsed["evidence_count"] == len(parsed["evidence"])
+    assert parsed["omitted_evidence_count"] == 8 - len(parsed["evidence"])
+    assert "已省略" in parsed["message"]
     for index, item in enumerate(parsed["evidence"], start=1):
         assert item["evidence_id"] == f"E{index}"
         assert item["title"] == f"论文{index}"
         assert item["year"] == "2024"
         assert item["source_id"] == f"S{index}"
-        assert item["content_truncated"] is True
-        assert item["content"].startswith(full_text[:KNOWLEDGE_PAYLOAD_EVIDENCE_CHARS])
-        assert len(item["content"]) < len(full_text)
-    assert parsed["sources"] == [
-        {"source_id": "S1", "title": "来源一", "evidence_ids": ["E1", "E2"]},
-        {"source_id": "S2", "title": "来源二", "evidence_ids": ["E3", "E4"]},
-    ]
+        assert item["content"] == full_text
+        assert "content_truncated" not in item
     # 界面与落库仍拿完整正文。
     persisted = result["results"]["knowledge_evidence"]["evidence"]
     assert [item["content"] for item in persisted] == [full_text] * 8
@@ -499,8 +496,8 @@ def test_knowledge_payload_drops_private_evidence_and_source_metadata(monkeypatc
     ]
 
 
-def test_knowledge_payload_fallback_keeps_all_ids_without_raw_prefix(monkeypatch):
-    """极限上限下退回编号索引，仍是合法 JSON 且保留全部 [E#]。"""
+def test_knowledge_payload_under_tiny_limit_is_valid_json(monkeypatch):
+    """极限上限下整条删减并报告省略数，输出仍是合法 JSON。"""
     monkeypatch.setenv("AGENT_KNOWLEDGE_TOOL", "search")
     monkeypatch.setenv("AGENT_TOOL_RESULT_MAX_CHARS", "1200")
     llm = FakeStreamLLM(
@@ -540,11 +537,11 @@ def test_knowledge_payload_fallback_keeps_all_ids_without_raw_prefix(monkeypatch
     payload = llm.calls[1]["messages"][-1]["content"]
     parsed = json.loads(payload)
     assert len(payload) <= 1200
-    assert parsed["truncated"] is True
-    assert "preview" not in parsed
-    assert [item["evidence_id"] for item in parsed["evidence"]] == [f"E{i}" for i in range(1, 7)]
-    assert "content" not in parsed["evidence"][0]
-    assert "file_path" not in parsed["evidence"][0]
+    assert parsed["evidence"] == []
+    assert parsed["evidence_count"] == 0
+    assert parsed["omitted_evidence_count"] == 6
+    assert "已省略" in parsed["message"]
+    assert "D:/private" not in payload
 
 
 def test_tool_budget_exhaustion_switches_to_final_answer(monkeypatch):
@@ -742,28 +739,6 @@ def test_search_turn_buffers_final_answer_to_one_delta(monkeypatch):
 
     deltas = [event for event in sink.events if event.get("type") == "delta"]
     assert [event["text"] for event in deltas] == ["答 [E1]"]
-    assert result["outcome"] == "supported_answer"
-
-
-def test_strict_mode_buffers_final_answer_until_validation(monkeypatch):
-    """严格模式强制检索，最终正文在引用校验后一次性发射，且晚于工具结束事件。"""
-    monkeypatch.setenv("AGENT_KNOWLEDGE_TOOL", "search")
-    llm = FakeStreamLLM([[_text_chunk("答 [E1]")]])
-    evidence = {
-        "status": "success",
-        "type": "knowledge_evidence",
-        "evidence": [{"evidence_id": "E1", "title": "论文"}],
-        "sources": [],
-        "continue_tool_loop": True,
-    }
-    runtime, _ = _runtime(llm, FakeWM({"search_knowledge": evidence}))
-    sink = EventSink()
-
-    result = runtime.execute("TP53 的证据", on_event=sink, knowledge_mode=True)
-
-    assert [event["type"] for event in sink.events] == ["tool_status", "tool_status", "delta"]
-    assert sink.events[1]["phase"] == "end"
-    assert sink.events[2]["text"] == "答 [E1]"
     assert result["outcome"] == "supported_answer"
 
 
