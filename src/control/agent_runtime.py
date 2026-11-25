@@ -51,6 +51,9 @@ STRICT_QUERY_SUMMARY_TAIL_CHARS = 500
 KNOWLEDGE_UNAVAILABLE = "knowledge_unavailable"
 INSUFFICIENT_EVIDENCE = "insufficient_evidence"
 CITATION_INVALID = "citation_invalid"
+CITATION_INVALID_MESSAGE = (
+    "已检索到证据，但回答未通过引用校验。请展开证据面板查看本轮证据，然后重试。"
+)
 UNAVAILABLE_MESSAGE = "知识检索服务暂时不可用，请稍后重试。"
 CITATION_RETRY_NOTE = (
     "上一版回答未通过引用校验：至少引用一条本轮真实存在的 [E#] 编号，"
@@ -471,21 +474,18 @@ class AgentRuntime:
                 if self._citations_valid(retried_content, valid_ids):
                     content, claims = retried_content, retried_claims
                 else:
-                    listing = self._evidence_listing(evidence)
                     merged["knowledge_evidence"] = self._knowledge_package(
                         CITATION_INVALID,
                         evidence,
                         sources,
-                        "".join(f"[{item.get('evidence_id')}]" for item in evidence),
+                        "",
                         [],
                     )
                     result = {
                         "status": "error",
                         "type": "general_response",
                         "outcome": CITATION_INVALID,
-                        "message": (
-                            f"已检索到证据，但回答未通过引用校验。\n\n**已检索到的证据**\n{listing}"
-                        ),
+                        "message": CITATION_INVALID_MESSAGE,
                         "results": merged,
                     }
                     return self._emit_buffered(result, on_event, buffered)
@@ -607,18 +607,6 @@ class AgentRuntime:
         ) as exc:
             logger.warning("citation retry failed: %s: %s", type(exc).__name__, exc)
             return ""
-
-    @staticmethod
-    def _evidence_listing(evidence: list[dict[str, Any]]) -> str:
-        """把已检索证据渲染成可人工判断的简短清单，不含来源路径。"""
-        lines = []
-        for item in evidence:
-            title = item.get("title") or item.get("url") or "证据"
-            year = item.get("year") or ""
-            snippet = str(item.get("content") or "")[:120]
-            suffix = f"（{year}）" if year else ""
-            lines.append(f"- [{item.get('evidence_id')}] {title}{suffix}：{snippet}")
-        return "\n".join(lines)
 
     def _stream_round(
         self,

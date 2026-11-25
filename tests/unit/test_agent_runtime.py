@@ -817,11 +817,12 @@ def test_invalid_citation_after_retry_reports_and_keeps_evidence(monkeypatch):
     assert result["status"] == "error"
     assert result["outcome"] == "citation_invalid"
     assert "未通过引用校验" in result["message"]
-    assert "[E1]" in result["message"]
+    assert "[E1]" not in result["message"]
+    assert "证据面板" in result["message"]
     package = result["results"]["knowledge_evidence"]
     assert package["outcome"] == "citation_invalid"
     assert package["evidence"][0]["evidence_id"] == "E1"
-    assert package["citations"] == ["E1"]
+    assert package["citations"] == []
     assert "file_path" not in package["evidence"][0]
     assert "chunk_id" not in package["evidence"][0]
     assert package["claims"] == []
