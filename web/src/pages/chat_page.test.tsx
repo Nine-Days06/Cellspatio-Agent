@@ -551,7 +551,7 @@ describe('ChatPage 输入区：键位 / 停止 / 错误提示（约束 3）', ()
     expect(screen.queryByText('运行分析')).not.toBeInTheDocument()
   })
 
-  it('知识问答阶段按事件顺序切换，结束后不残留', async () => {
+  it('严格文献检索结束后展示证据条数，不残留进行中文案', async () => {
     const sid = nextSid()
     await renderReady(sid)
     fireEvent.click(screen.getByRole('radio', { name: '严格文献深答' }))
@@ -561,43 +561,29 @@ describe('ChatPage 输入区：键位 / 停止 / 错误提示（约束 3）', ()
 
     act(() => {
       useChatStore.getState().pushTool({
-        name: 'knowledge_qa_retrieval',
+        name: 'search_knowledge',
         phase: 'start',
-        label: '检索知识库',
+        label: '检索文献',
       })
     })
-    expect(screen.getByText('检索知识库')).toBeInTheDocument()
+    expect(screen.getByText('检索文献')).toBeInTheDocument()
     expect(screen.queryByText('准备回答')).not.toBeInTheDocument()
 
     act(() => {
       useChatStore.getState().pushTool({
-        name: 'knowledge_qa_retrieval',
+        name: 'search_knowledge',
         phase: 'end',
-        label: '检索知识库',
-      })
-      useChatStore.getState().pushTool({
-        name: 'knowledge_qa_answer',
-        phase: 'start',
-        label: '生成回答',
+        label: '检索文献',
+        count: 3,
       })
     })
-    expect(screen.getByText('生成回答')).toBeInTheDocument()
-    expect(screen.queryByText('检索知识库')).not.toBeInTheDocument()
-
-    act(() => {
-      useChatStore.getState().pushTool({
-        name: 'knowledge_qa_answer',
-        phase: 'end',
-        label: '生成回答',
-      })
-    })
-    expect(screen.queryByText('生成回答')).not.toBeInTheDocument()
-    expect(screen.getByText('准备回答')).toBeInTheDocument()
+    expect(screen.getByText('检索文献：3 条证据')).toBeInTheDocument()
+    expect(screen.queryByText('检索文献')).not.toBeInTheDocument()
 
     act(() => {
       useChatStore.setState({ busy: false })
     })
-    expect(screen.queryByText('准备回答')).not.toBeInTheDocument()
+    expect(screen.queryByText('检索文献：3 条证据')).not.toBeInTheDocument()
   })
 })
 
@@ -658,6 +644,26 @@ describe('ChatPage 约束落点（1/2）', () => {
       ),
     )
     expect(screen.getByRole('radio', { name: '智能对话' })).toHaveAttribute('aria-checked', 'true')
+  })
+
+  it('重试按 results.chat_mode 还原严格文献链路', async () => {
+    const sid = nextSid()
+    const user = makeMsg(sid, { role: 'user', content: 'TP53 在癌症中的作用？' })
+    const emptyReply = makeMsg(sid, {
+      role: 'assistant',
+      content: '',
+      results: { chat_mode: 'knowledge_qa' },
+    })
+    await renderReady(sid, { messages: [user, emptyReply] })
+    expect(screen.getByRole('radio', { name: '智能对话' })).toHaveAttribute('aria-checked', 'true')
+
+    fireEvent.click(screen.getByRole('button', { name: '重试' }))
+
+    await waitFor(() =>
+      expect(streamChatMock).toHaveBeenCalledWith(
+        expect.objectContaining({ sessionId: sid, prompt: 'TP53 在癌症中的作用？', mode: 'knowledge_qa' }),
+      ),
+    )
   })
 
   it('约束2：过程条为 end 时输入区仍是生成态，不出现「已完成」', async () => {

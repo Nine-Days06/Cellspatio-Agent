@@ -81,7 +81,11 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
         "type": "function",
         "function": {
             "name": "query_knowledge",
-            "description": "Query LightRAG knowledge base for gene/pathway/disease/methods biology Q&A.",
+            "description": (
+                "DEPRECATED legacy fallback answer tool. It is the only knowledge tool "
+                "exposed in legacy mode (AGENT_KNOWLEDGE_TOOL is a legacy value); when "
+                "search_knowledge is not listed, call this tool normally."
+            ),
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -152,16 +156,31 @@ def build_tool_schemas(*, strict_literature: bool = False) -> list[dict[str, Any
     """返回本轮可用工具清单；开关关闭时与既有清单完全一致。
 
     开启期间知识工具只暴露 ``search_knowledge``：与 ``query_knowledge`` 并存会让
-    模型在“知识问答”和“文献证据”之间摇摆，旧工具留到 07 票统一下线。
+    模型在“知识问答”和“文献证据”之间摇摆；旧工具只在 legacy 回退期保留。
     ``strict_literature`` 只暴露检索工具，供“严格文献深答”预设强制取证。
     """
     if strict_literature:
         return [SEARCH_KNOWLEDGE_SCHEMA]
     if not knowledge_tool_enabled():
         return list(TOOL_SCHEMAS)
-    return [
-        schema for schema in TOOL_SCHEMAS if schema["function"]["name"] != "query_knowledge"
-    ] + [SEARCH_KNOWLEDGE_SCHEMA]
+    # query_memory 的描述只在开启期改写，legacy 回退保持原样。
+    schemas: list[dict[str, Any]] = []
+    for schema in TOOL_SCHEMAS:
+        name = schema["function"]["name"]
+        if name == "query_knowledge":
+            continue
+        if name == "query_memory":
+            schema = {
+                **schema,
+                "function": {
+                    **schema["function"],
+                    "description": schema["function"]["description"].replace(
+                        "use query_knowledge", "use the literature tool (search_knowledge)"
+                    ),
+                },
+            }
+        schemas.append(schema)
+    return schemas + [SEARCH_KNOWLEDGE_SCHEMA]
 
 
 SYSTEM_PROMPT = """You are CellSpatio — single-cell & spatial omics analysis agent.
@@ -183,8 +202,7 @@ Constraints:
 KNOWLEDGE_TOOL_PROMPT = """
 
 ## Literature evidence tool
-While this tool is enabled, rule 3 is superseded: query_knowledge is not exposed;
-use search_knowledge for biology knowledge that needs literature support.
+Rule 3 resolves to search_knowledge: query_knowledge is not exposed while this tool is enabled.
 6. When the user needs literature support (mechanism, gene function, methodology) → call
    search_knowledge first. The tool returns only evidence chunks with E-ids and sources, never a
    final answer: keep reasoning yourself and cite the evidence ids inline as [E#].

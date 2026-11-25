@@ -156,7 +156,7 @@ class AgentRuntime:
                     "outcome": KNOWLEDGE_UNAVAILABLE,
                     "message": UNAVAILABLE_MESSAGE,
                 }
-            return self.workflow_manager.execute_workflow(user_input, context)
+            return self._legacy_fallback(user_input, context)
 
         hint = None if knowledge_mode else self._route_hint(user_input)
         messages = self._build_messages(
@@ -367,7 +367,33 @@ class AgentRuntime:
                     "message": UNAVAILABLE_MESSAGE,
                 }
             logger.warning("tool-calling failed, fallback to legacy workflow: %s", e)
-            return self.workflow_manager.execute_workflow(user_input, context)
+            return self._legacy_fallback(user_input, context)
+
+    def _legacy_fallback(self, user_input: str, context: dict[str, Any]) -> dict[str, Any]:
+        """无 LLM/调用异常时的降级入口。
+
+        默认链路已启用只读检索，旧工作流的成品回答协议不应再被触发；知识类问题
+        直接报不可用，其他意图仍沿用旧的 intent 工作流（离线/测试依赖此路径）。
+        """
+        if knowledge_tool_enabled():
+            from src.control.classifier import TaskClassifier
+
+            if TaskClassifier().classify(user_input).get("modality") == "knowledge":
+                return {
+                    "status": "error",
+                    "type": "general_response",
+                    "message": "对话模型暂时不可用，本轮无法生成回答；请稍后重试。",
+                }
+        result = self.workflow_manager.execute_workflow(user_input, context)
+        # 分类器可能漏判；旧工作流若仍返回成品回答，不能把它当作默认链路结果。
+        if knowledge_tool_enabled() and result.get("type") == "knowledge_response":
+            logger.warning("legacy knowledge workflow blocked after fallback")
+            return {
+                "status": "error",
+                "type": "general_response",
+                "message": "对话模型暂时不可用，本轮无法生成回答；请稍后重试。",
+            }
+        return result
 
     def _finalize_answer(
         self,
@@ -746,14 +772,22 @@ class AgentRuntime:
 
         classification = TaskClassifier().classify(user_input)
         if classification.get("skill") == "single_cell":
-            return {**classification, "best_practices": None}
+            return self._with_exposed_skill({**classification, "best_practices": None})
         if self.router is None:
             return None
         try:
-            return self.router.hint(user_input)
+            return self._with_exposed_skill(self.router.hint(user_input))
         except Exception as e:  # noqa: BLE001 - 提示注入失败必须可降级
             logger.warning("route hint failed, continue without: %s", e)
             return None
+
+    @staticmethod
+    def _with_exposed_skill(hint: dict[str, Any]) -> dict[str, Any]:
+        """分类器仍用旧技能名；默认链路不暴露它时，提示必须指向真实可用的工具。"""
+        if hint.get("modality") == "knowledge" and knowledge_tool_enabled():
+            # best_practices 是按旧技能名查的，改写后不再适用。
+            return {**hint, "skill": "search_knowledge", "best_practices": None}
+        return hint
 
     def _skill_plan(self, user_input: str, analysis_type: str) -> dict[str, Any] | None:
         """读取分析技能的静态方案；真实执行事实仍由 WorkflowManager 发布。"""
@@ -875,7 +909,16 @@ class AgentRuntime:
                 params["sources"] = args["sources"]
             return wm.search_datasets_for_agent(args.get("query", user_input), params, context)
         if name == "query_knowledge":
-            return wm.query_knowledge_for_agent(args.get("query", user_input), context)
+            # 旧成品回答工具只在 legacy 回退期可用；严格模式只允许检索证据。
+            if not knowledge_mode and not knowledge_tool_enabled():
+                return wm.query_knowledge_for_agent(args.get("query", user_input), context)
+            return {
+                "status": "error",
+                "type": "general_response",
+                "message": "query_knowledge 已弃用，请改用 search_knowledge 检索证据。",
+                # 回灌给模型，让它改调正确工具，而不是让整轮直接失败。
+                "continue_tool_loop": True,
+            }
         if name == "search_knowledge" and knowledge_tool_enabled(force=knowledge_mode):
             return wm.search_knowledge_for_agent(args.get("query", user_input), context)
         if name == "query_memory":

@@ -271,6 +271,24 @@ def test_aborted_branch_persists_interrupted_marker(store):
     assert "不该出现" not in messages[-1]["content"]
 
 
+def test_aborted_turn_records_mode_for_retry(store):
+    """中断轮也要落 chat_mode，前端重试才能沿用严格文献链路。"""
+    sid = store.create_session()
+    runtime = FakeRuntime(events=[{"type": "delta", "text": "半句"}], default={"status": "success"})
+    emit = _sink()
+
+    def abort_on_delta(event):
+        emit(event)
+        return False
+
+    result = run_turn(
+        FakeAgent(runtime=runtime), store, sid, "TP53", abort_on_delta, mode="knowledge_qa"
+    )
+
+    assert result["status"] == "aborted"
+    assert store.get_messages(sid)[-1]["results"]["chat_mode"] == "knowledge_qa"
+
+
 def test_before_done_runs_after_assistant_persisted_and_before_done_event(store):
     """收尾挂点：助手消息已落库、done 尚未发射，且只触发一次。"""
     sid = store.create_session()

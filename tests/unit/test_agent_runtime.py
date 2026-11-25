@@ -78,7 +78,9 @@ class FakeWM:
 
     def execute_workflow(self, user_input, context=None):
         self.fallback_calls.append(user_input)
-        return {"status": "success", "type": "general_response", "message": "fallback"}
+        return self.results.get(
+            "fallback", {"status": "success", "type": "general_response", "message": "fallback"}
+        )
 
 
 def _make_runtime(llm, wm=None):
@@ -431,6 +433,99 @@ def test_default_on_exposes_literature_tool_without_legacy_flag(monkeypatch):
     assert "search_knowledge" in names
     assert "query_knowledge" not in names
     assert "search_knowledge" in llm.calls[0]["messages"][0]["content"]
+
+
+def test_route_hint_points_to_exposed_knowledge_tool(monkeypatch):
+    """默认链路的路由提示不能建议一个已隐藏的旧工具。"""
+    monkeypatch.delenv("AGENT_KNOWLEDGE_TOOL", raising=False)
+    llm = FakeLLM([_text_response("TP53 是抑癌基因")])
+    runtime, _ = _make_runtime(llm)
+    runtime.router = SimpleNamespace(
+        hint=lambda _text: {
+            "modality": "knowledge",
+            "skill": "query_knowledge",
+            "best_practices": None,
+        }
+    )
+
+    runtime.execute("TP53 是什么")
+
+    system = llm.calls[0]["messages"][0]["content"]
+    assert "建议技能: search_knowledge" in system
+    assert "建议技能: query_knowledge" not in system
+
+
+def test_deprecated_query_knowledge_is_rejected_when_not_legacy(monkeypatch):
+    """默认开启检索后，模型幻觉调用旧成品回答工具也不得执行。"""
+    monkeypatch.delenv("AGENT_KNOWLEDGE_TOOL", raising=False)
+    llm = FakeLLM(
+        [
+            _tool_call_response("query_knowledge", {"query": "TP53"}),
+            _text_response("TP53 是抑癌基因"),
+        ]
+    )
+    runtime, wm = _make_runtime(llm)
+
+    result = runtime.execute("TP53")
+
+    assert wm.calls == []
+    assert result["status"] == "success"
+    assert "抑癌基因" in result["message"]
+
+
+def test_strict_mode_rejects_query_knowledge_even_in_legacy(monkeypatch):
+    """严格文献预设不受 legacy 回退影响，旧成品回答工具仍不得执行。"""
+    monkeypatch.setenv("AGENT_KNOWLEDGE_TOOL", "legacy")
+    llm = FakeLLM(
+        [
+            _tool_call_response("query_knowledge", {"query": "TP53"}),
+            _text_response("TP53 是抑癌基因 [E1]"),
+        ]
+    )
+    runtime, wm = _make_runtime(llm, FakeWM({"search_knowledge": _evidence_result()}))
+
+    result = runtime.execute("TP53", knowledge_mode=True)
+
+    assert [name for name, _ in wm.calls] == ["search_knowledge"]
+    assert result["status"] == "success"
+    assert "抑癌基因" in result["message"]
+
+
+def test_default_mode_without_llm_does_not_route_knowledge_to_old_workflow(monkeypatch):
+    """默认开启检索时，无 LLM 降级也不能把知识问题送进旧成品回答工作流。"""
+    from src.control.agent_runtime import AgentRuntime
+
+    monkeypatch.delenv("AGENT_KNOWLEDGE_TOOL", raising=False)
+    wm = FakeWM({})
+    runtime = AgentRuntime(llm_client=None, model="none", workflow_manager=wm)
+
+    result = runtime.execute("TP53 在癌症中的作用是什么？")
+
+    assert result["status"] == "error"
+    assert "对话模型暂时不可用" in result["message"]
+    assert wm.fallback_calls == []
+
+
+def test_default_mode_blocks_old_answer_returned_by_fallback(monkeypatch):
+    """分类器漏判时，旧工作流返回的成品回答也不能进入默认链路。"""
+    from src.control.agent_runtime import AgentRuntime
+
+    monkeypatch.delenv("AGENT_KNOWLEDGE_TOOL", raising=False)
+    wm = FakeWM(
+        {
+            "fallback": {
+                "status": "success",
+                "type": "knowledge_response",
+                "response": "旧成品回答",
+            }
+        }
+    )
+    runtime = AgentRuntime(llm_client=None, model="none", workflow_manager=wm)
+
+    result = runtime.execute("什么是批次效应")
+
+    assert result["status"] == "error"
+    assert "对话模型暂时不可用" in result["message"]
 
 
 def test_knowledge_mode_reports_unavailable_without_second_llm(monkeypatch):

@@ -28,8 +28,10 @@ POST /api/chat（SSE）
 - 思考条与正式回答共用同一轮状态：正文开始后自动收起，结束后显示耗时；
   下一轮、切会话或失败且无正文时清空。多轮工具调用之间用空行分隔思考。
 - 无工具调用时走 `general_response`。
-- 默认启用只读工具 `search_knowledge`；`AGENT_KNOWLEDGE_TOOL=legacy` 可回退旧工具：
-  只检索证据（E 编号/来源）供模型继续推理，不生成答案、不写运行记录。
+- `search_knowledge` 默认启用，只读：检索证据（E 编号/来源）供模型继续推理，不生成答案、不写运行记录。
+  `AGENT_KNOWLEDGE_TOOL` 设为 `legacy`（或 `off`/`false` 等停用值）会回退到旧 `query_knowledge`：
+  由 LightRAG 直接作答并写运行记录，仅作兼容期排障，不再新增能力。
+  `query_knowledge` 已弃用，只保留一个版本供回退；删除条件：一个发布版本内经日志/用户反馈确认无 legacy 使用，按 BREAKING 流程发布。
   用过检索的轮次必须引用真实 `[E#]`；服务不可用、没有证据、引用校验失败分别
   返回 `knowledge_unavailable` / `insufficient_evidence` / `citation_invalid`。
   证据包随助手消息存于 `results.knowledge_evidence` 供刷新后展开；模型上下文只

@@ -212,15 +212,16 @@ def run_turn(
         prompt, context, on_event=emit, knowledge_mode=mode == "knowledge_qa"
     )
 
-    if result.get("status") == "aborted":
-        finalize_turn(store, session_id, content="（已中断）", emit=emit)
-        return result
-
     results = result.get("results")
     if not isinstance(results, dict):
         results = {}
     results["chat_mode"] = mode
     result["results"] = results
+
+    if result.get("status") == "aborted":
+        # 中断轮也要记录模式，重试时才能沿用严格文献链路。
+        finalize_turn(store, session_id, content="（已中断）", results=results, emit=emit)
+        return result
 
     if result.get("status") == "needs_script_confirmation":
         pending = {

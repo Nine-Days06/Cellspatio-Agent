@@ -279,48 +279,46 @@ describe('过程条不得冒充终态（约束 2）', () => {
 })
 
 describe('单一状态文案', () => {
-  it('知识问答检索阶段只显示「检索知识库」', () => {
+  it('文献检索进行中只显示「检索文献」', () => {
     const tools: ToolStatusEntry[] = [
-      { name: 'knowledge_qa_retrieval', phase: 'start', label: '检索知识库' },
+      { name: 'search_knowledge', phase: 'start', label: '检索文献' },
     ]
     render(<MessageList {...baseProps} busy mode="knowledge_qa" tools={tools} />)
 
-    expect(screen.getByText('检索知识库')).toBeInTheDocument()
+    expect(screen.getByText('检索文献')).toBeInTheDocument()
     expect(screen.queryByText('准备回答')).not.toBeInTheDocument()
     expect(screen.queryByText('思考中')).not.toBeInTheDocument()
     expect(screen.queryByText('生成中…')).not.toBeInTheDocument()
   })
 
-  it('知识问答生成阶段只显示「生成回答」', () => {
+  it('文献检索结束后显示证据条数', () => {
     const tools: ToolStatusEntry[] = [
-      { name: 'knowledge_qa_retrieval', phase: 'end', label: '检索知识库' },
-      { name: 'knowledge_qa_answer', phase: 'start', label: '生成回答' },
+      { name: 'search_knowledge', phase: 'end', label: '检索文献', count: 2 },
     ]
     render(<MessageList {...baseProps} busy mode="knowledge_qa" tools={tools} />)
 
-    expect(screen.getByText('生成回答')).toBeInTheDocument()
-    expect(screen.queryByText('检索知识库')).not.toBeInTheDocument()
+    expect(screen.getByText('检索文献：2 条证据')).toBeInTheDocument()
     expect(screen.queryByText('准备回答')).not.toBeInTheDocument()
   })
 
-  it('阶段结束后知识问答显示「准备回答」', () => {
+  it('无证据条数的结束事件回落到「准备回答」', () => {
     const tools: ToolStatusEntry[] = [
-      { name: 'knowledge_qa_answer', phase: 'end', label: '生成回答' },
+      { name: 'search_knowledge', phase: 'end', label: '检索文献' },
     ]
     render(<MessageList {...baseProps} busy mode="knowledge_qa" tools={tools} />)
 
     expect(screen.getByText('准备回答')).toBeInTheDocument()
-    expect(screen.queryByText('生成回答')).not.toBeInTheDocument()
+    expect(screen.queryByText('检索文献')).not.toBeInTheDocument()
   })
 
   it('正文开始出现后阶段与兜底文案都不显示', () => {
     const tools: ToolStatusEntry[] = [
-      { name: 'knowledge_qa_answer', phase: 'start', label: '生成回答' },
+      { name: 'search_knowledge', phase: 'start', label: '检索文献' },
     ]
     render(<MessageList {...baseProps} busy mode="knowledge_qa" tools={tools} draft="回答正文" />)
 
     expect(screen.getByText('回答正文')).toBeInTheDocument()
-    expect(screen.queryByText('生成回答')).not.toBeInTheDocument()
+    expect(screen.queryByText('检索文献')).not.toBeInTheDocument()
     expect(screen.queryByText('准备回答')).not.toBeInTheDocument()
   })
 

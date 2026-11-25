@@ -2,7 +2,7 @@
   "metadata": {
     "name": "query_knowledge",
     "version": "1.0.0",
-    "description": "基于 LightRAG 知识库的自然语言问答",
+    "description": "[已弃用] 基于 LightRAG 知识库的自然语言问答；仅随 legacy 回退保留一个版本",
     "author": "CellSpatio",
     "tags": ["knowledge", "rag"],
     "entry_point": "main"

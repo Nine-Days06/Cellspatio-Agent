@@ -102,7 +102,7 @@ describe('turn 生命周期', () => {
     const store = useChatStore.getState()
     store.setSession('s1', [])
     store.beginTurn('第一轮')
-    store.pushTool({ name: 'knowledge_qa_retrieval', phase: 'start', label: '检索知识库' })
+    store.pushTool({ name: 'search_knowledge', phase: 'start', label: '检索文献' })
     useChatStore.getState().endTurn('done')
 
     useChatStore.getState().beginTurn('第二轮')
@@ -110,45 +110,42 @@ describe('turn 生命周期', () => {
     expect(useChatStore.getState().tools).toEqual([])
   })
 
+  it('中断收尾把本轮模式写入 partial，供重试沿用', () => {
+    const store = useChatStore.getState()
+    store.setSession('s1', [])
+    store.beginTurn('TP53 在癌症中的作用？', 'knowledge_qa')
+    store.appendDelta('半句')
+
+    useChatStore.getState().endTurn('aborted')
+
+    expect(useChatStore.getState().history.at(-1)?.results).toMatchObject({
+      chat_mode: 'knowledge_qa',
+    })
+  })
+
   it('同一阶段重复开始只保留一条', () => {
     const store = useChatStore.getState()
     store.setSession('s1', [])
     store.beginTurn('hi')
-    store.pushTool({ name: 'knowledge_qa_retrieval', phase: 'start', label: '检索知识库' })
-    store.pushTool({ name: 'knowledge_qa_retrieval', phase: 'start', label: '检索知识库' })
+    store.pushTool({ name: 'search_knowledge', phase: 'start', label: '检索文献' })
+    store.pushTool({ name: 'search_knowledge', phase: 'start', label: '检索文献' })
 
     expect(useChatStore.getState().tools).toEqual([
-      { name: 'knowledge_qa_retrieval', phase: 'start', label: '检索知识库' },
+      { name: 'search_knowledge', phase: 'start', label: '检索文献' },
     ])
-  })
-
-  it('迟到的旧阶段事件不回退当前阶段', () => {
-    const store = useChatStore.getState()
-    store.setSession('s1', [])
-    store.beginTurn('hi')
-    store.pushTool({ name: 'knowledge_qa_retrieval', phase: 'start', label: '检索知识库' })
-    store.pushTool({ name: 'knowledge_qa_retrieval', phase: 'end', label: '检索知识库' })
-    store.pushTool({ name: 'knowledge_qa_answer', phase: 'start', label: '生成回答' })
-
-    store.pushTool({ name: 'knowledge_qa_retrieval', phase: 'start', label: '检索知识库' })
-
-    expect(useChatStore.getState().tools.at(-1)).toMatchObject({
-      name: 'knowledge_qa_answer',
-      phase: 'start',
-    })
   })
 
   it('同一阶段结束后迟到的 start 不会让它重新显示', () => {
     const store = useChatStore.getState()
     store.setSession('s1', [])
     store.beginTurn('hi')
-    store.pushTool({ name: 'knowledge_qa_retrieval', phase: 'start', label: '检索知识库' })
-    store.pushTool({ name: 'knowledge_qa_retrieval', phase: 'end', label: '检索知识库' })
+    store.pushTool({ name: 'search_knowledge', phase: 'start', label: '检索文献' })
+    store.pushTool({ name: 'search_knowledge', phase: 'end', label: '检索文献' })
 
-    store.pushTool({ name: 'knowledge_qa_retrieval', phase: 'start', label: '检索知识库' })
+    store.pushTool({ name: 'search_knowledge', phase: 'start', label: '检索文献' })
 
     expect(useChatStore.getState().tools).toEqual([
-      { name: 'knowledge_qa_retrieval', phase: 'end', label: '检索知识库' },
+      { name: 'search_knowledge', phase: 'end', label: '检索文献' },
     ])
   })
 
@@ -236,7 +233,7 @@ describe('思考增量', () => {
     store.beginTurn('hi')
     store.appendReasoning('第一段')
     vi.setSystemTime(2000)
-    store.pushTool({ name: 'knowledge_qa_retrieval', phase: 'start', label: '检索知识库' })
+    store.pushTool({ name: 'search_knowledge', phase: 'start', label: '检索文献' })
     const paused = useChatStore.getState().reasoning
     expect(paused.startedAt).toBeNull()
     expect(paused.elapsedMs).toBe(2000)

@@ -9,6 +9,7 @@ from uuid import uuid4
 
 from src.control.classifier import TaskClassifier
 from src.control.kg_memory import KGMemory
+from src.control.tools import knowledge_tool_enabled
 from src.skills.base import SkillContext
 from src.skills.loader import SkillLoader
 from src.skills.registry import SkillRegistry
@@ -145,8 +146,12 @@ class ModalRouter:
         skill = classification["skill"]
         if modality == "general" or skill is None:
             return {"modality": "general", "skill": None, "best_practices": None}
+        # 默认链路会把技能名改写为 search_knowledge，按旧名查询只会白付一次检索。
+        skip_best_practices = modality == "knowledge" and knowledge_tool_enabled()
         return {
             "modality": modality,
             "skill": skill,
-            "best_practices": self._query_best_practices(skill, user_input),
+            "best_practices": (
+                None if skip_best_practices else self._query_best_practices(skill, user_input)
+            ),
         }

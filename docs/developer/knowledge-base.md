@@ -12,7 +12,7 @@
 | `src/knowledge/async_runtime.py` | 进程级共享事件循环；所有 PG 后端 LightRAG 共用 |
 | `src/knowledge/knowledge_index.py` | 覆盖索引；明确区分 `None`（无法确认）与空集 |
 | `src/knowledge/knowledge_admin.py` | 运维状态、重排、pipeline 驱动 |
-| `src/knowledge/qa.py` | 五阶段问答、证据与 package |
+| `src/knowledge/qa.py` | 只读检索服务：chunk → 证据/来源、失败分类；不生成答案 |
 | `src/knowledge/ollama_runtime.py` | Ollama 启停与空闲生命周期 |
 | `src/knowledge/prompt_profile.py` | 领域实体类型与抽取规则注入 |
 
@@ -41,9 +41,10 @@ PG 后端 LightRAG 的连接池、事件循环和 workspace 是进程级共享�
 
 ## 评测
 
-用例在 `evals/qa_cases.jsonl`；`evals/run_qa_eval.py` 跑五阶段问答并输出技术跑批报告。
-评测不记录人工复核，也不自动判定回答正确性。
-
-对话链路的混合评测在 `evals/knowledge_tool_cases.jsonl`，入口为
+文献证据链路的混合评测在 `evals/knowledge_tool_cases.jsonl`，入口为
 `python -m evals.run_knowledge_tool_eval --scripted|--live`；`live` 才代表真实模型
 质量，`scripted` 只校验运行器与阈值。
+`evals/run_eval.py` 按进程环境运行，默认校验 `search_knowledge` 工具路由；
+它不会自动切换到 legacy，旧 `query_knowledge` 路由已不再是默认链路基线。
+旧五阶段问答评测（`evals/run_qa_eval.py`）已随独立问答入口删除；回答质量统一由
+上面的混合评测覆盖，评测不记录人工复核，也不自动判定回答正确性。

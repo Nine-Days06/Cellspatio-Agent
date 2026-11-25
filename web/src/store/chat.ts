@@ -75,12 +75,6 @@ function pauseReasoning(state: ReasoningState, at: number): ReasoningState {
   }
 }
 
-/** 知识问答阶段顺序：只用于丢弃迟到的旧阶段事件，避免状态文案回退。 */
-const KNOWLEDGE_QA_STAGE_ORDER: Record<string, number> = {
-  knowledge_qa_retrieval: 1,
-  knowledge_qa_answer: 2,
-}
-
 interface ChatState {
   sessionId: string | null
   history: WireMessage[]
@@ -96,11 +90,13 @@ interface ChatState {
   dataCard: DataCardPayload | null
   /** 会话级：上下文接近压缩阈值；beginTurn 保留，setSession 复位 */
   softWarn: boolean
+  /** 本轮请求的对话模式；中断收尾时写入 partial，供重试沿用。 */
+  turnMode: ChatMode
 
   setSession: (sessionId: string, history: WireMessage[]) => void
   /** 删除最后一个会话：中止活动流并完整清空，保留 null 表示无活动会话。 */
   clearSession: () => void
-  beginTurn: (prompt: string) => void
+  beginTurn: (prompt: string, mode?: ChatMode) => void
   appendDelta: (text: string) => void
   appendReasoning: (text: string) => void
   toggleReasoning: () => void
@@ -145,6 +141,7 @@ export function createChatStore() {
         scriptCard: null,
         dataCard: null,
         softWarn: false,
+        turnMode: 'chat',
       })
     }
 
@@ -213,6 +210,7 @@ export function createChatStore() {
       scriptCard: null,
       dataCard: null,
       softWarn: false,
+      turnMode: 'chat',
 
       setSession(sessionId, history) {
         resetSession(sessionId, history)
@@ -222,7 +220,7 @@ export function createChatStore() {
         resetSession(null, [])
       },
 
-      beginTurn(prompt) {
+      beginTurn(prompt, mode = 'chat') {
         localSeq += 1
         const user: WireMessage = {
           id: -localSeq,
@@ -244,6 +242,7 @@ export function createChatStore() {
           charts: [],
           scriptCard: null,
           dataCard: null,
+          turnMode: mode,
           // softWarn 是会话级状态，本轮保留
         }))
       },
@@ -295,15 +294,6 @@ export function createChatStore() {
 
       pushTool(entry) {
         set((state) => {
-          // 迟到的旧阶段不能覆盖已经进入的新阶段
-          const incoming = KNOWLEDGE_QA_STAGE_ORDER[entry.name]
-          if (incoming !== undefined) {
-            const seen = Math.max(
-              0,
-              ...state.tools.map((tool) => KNOWLEDGE_QA_STAGE_ORDER[tool.name] ?? 0),
-            )
-            if (incoming < seen) return state
-          }
           // 同一阶段结束后迟到的 start 不能让它重新出现
           const existing = state.tools.find((tool) => tool.name === entry.name)
           if (entry.phase === 'start' && existing?.phase === 'end') return state
@@ -384,7 +374,12 @@ export function createChatStore() {
           role: 'assistant',
           content: state.draft,
           timestamp: new Date().toISOString(),
-          results: state.charts.length > 0 ? { charts: state.charts } : null,
+          results:
+            state.charts.length > 0
+              ? { charts: state.charts, chat_mode: state.turnMode }
+              : state.turnMode === 'knowledge_qa'
+                ? { chat_mode: state.turnMode }
+                : null,
           pending_script: null,
         }
         set({
@@ -456,7 +451,7 @@ export function createChatStore() {
         const { sessionId, busy } = get()
         if (busy || !sessionId) return
 
-        get().beginTurn(prompt)
+        get().beginTurn(prompt, mode)
         const controller = new AbortController()
         activeStream = controller
         // 切会话或已换流后，迟到事件/收尾不得改写新会话状态。

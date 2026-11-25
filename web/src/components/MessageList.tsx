@@ -178,6 +178,7 @@ export function MessageList({
               </div>
             )}
             {message.results?.qc_artifacts && <QcEvidence results={message.results} sessionId={message.session_id} onRecorded={onQcRecorded} />}
+            {/* 旧会话兼容：新消息一律使用 results.knowledge_evidence。 */}
             {message.results?.knowledge_qa && <KnowledgeAnswer data={message.results.knowledge_qa} text={message.content} />}
             {knowledge && <KnowledgeEvidence data={knowledge} messageId={message.id} />}
           </>

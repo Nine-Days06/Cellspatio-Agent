@@ -75,15 +75,17 @@ export interface MessageResults {
   qc?: QcEvidence
   qc_artifacts?: Record<string, string>
   qc_run_id?: string
+  /** 本轮实际使用的对话模式；旧消息没有该字段。 */
+  chat_mode?: ChatMode
   knowledge_qa?: KnowledgeQAResult
   knowledge_evidence?: ChatKnowledgeResult
   [key: string]: unknown
 }
 
-/** 对话模式：智能对话走 AgentRuntime，知识问答走受控检索链路。 */
+/** 对话模式：两者都走 AgentRuntime；knowledge_qa 是强制检索的严格文献预设。 */
 export type ChatMode = 'chat' | 'knowledge_qa'
 
-/** 知识问答回答包（src/knowledge/qa.py，协议 knowledge-qa/2.0.0）。 */
+/** 旧版知识问答回答包：只用于渲染 0.1.x 已落库的旧会话结果。 */
 export type KnowledgeQAOutcome =
   | 'supported_answer'
   | 'insufficient_evidence'
