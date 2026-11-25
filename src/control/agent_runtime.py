@@ -14,6 +14,7 @@ import json
 import logging
 import re
 from collections.abc import Callable
+from dataclasses import dataclass, field
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any, Literal
 
@@ -94,6 +95,27 @@ ABORTED_RESULT: dict[str, Any] = {
 STREAM_TERMINAL_STATUSES: frozenset[str] = TERMINAL_STATUSES - {"needs_input", "no_results"}
 
 
+@dataclass
+class _KnowledgeTrace:
+    """本轮检索事实：成功与否、查询、去重前的证据与来源。"""
+
+    searched: bool = False
+    unavailable: bool = False
+    queries: list[str] = field(default_factory=list)
+    evidence: list[dict[str, Any]] = field(default_factory=list)
+    sources: list[dict[str, Any]] = field(default_factory=list)
+
+    def absorb(self, result: dict[str, Any], query: str) -> None:
+        """记录一次检索结果；失败时只标记不可用，不把错误当空证据。"""
+        self.searched = True
+        self.queries.append(str(result.get("query") or query))
+        if result.get("status") != "success" or result.get("outcome") == KNOWLEDGE_UNAVAILABLE:
+            self.unavailable = True
+            return
+        self.evidence.extend(result.get("evidence") or [])
+        self.sources.extend(result.get("sources") or [])
+
+
 class AgentRuntime:
     """LLM tool loop; workflow_manager provides *_for_agent execution face."""
 
@@ -108,6 +130,8 @@ class AgentRuntime:
         user_input: str,
         context: dict[str, Any] | None = None,
         on_event: Callable[[dict], bool] | None = None,
+        *,
+        knowledge_mode: bool = False,
     ) -> dict[str, Any]:
         """执行一轮 tool-calling。
 
@@ -125,12 +149,21 @@ class AgentRuntime:
         context.setdefault("last_user_input", user_input)
 
         if self.llm_client is None:
+            if knowledge_mode:
+                return {
+                    "status": "error",
+                    "type": "knowledge_evidence",
+                    "outcome": KNOWLEDGE_UNAVAILABLE,
+                    "message": UNAVAILABLE_MESSAGE,
+                }
             return self.workflow_manager.execute_workflow(user_input, context)
 
-        hint = self._route_hint(user_input)
-        messages = self._build_messages(user_input, context, hint=hint)
-        schemas = build_tool_schemas()
-        buffering = knowledge_tool_enabled()
+        hint = None if knowledge_mode else self._route_hint(user_input)
+        messages = self._build_messages(
+            user_input, context, hint=hint, knowledge_mode=knowledge_mode
+        )
+        schemas = build_tool_schemas(strict_literature=knowledge_mode)
+        buffering = knowledge_tool_enabled(force=knowledge_mode)
         dispatched: dict[str, Any] | None = None
         reasoning_seen = False
         result_limit_chars = env_int("AGENT_TOOL_RESULT_MAX_CHARS", DEFAULT_TOOL_RESULT_MAX_CHARS)
@@ -141,12 +174,63 @@ class AgentRuntime:
         disconnected = False
         next_evidence_number = 1
         seen_chunks: set[str] = set()
-        knowledge_searched = False
-        knowledge_unavailable = False
-        searched_queries: list[str] = []
-        evidence_items: list[dict[str, Any]] = []
-        evidence_sources: list[dict[str, Any]] = []
+        trace = _KnowledgeTrace()
         try:
+            if knowledge_mode:
+                forced_call = SimpleNamespace(
+                    id="forced_search_knowledge",
+                    type="function",
+                    function=SimpleNamespace(
+                        name="search_knowledge",
+                        arguments=json.dumps({"query": user_input}, ensure_ascii=False),
+                    ),
+                )
+                if on_event is not None and not on_event(
+                    self._tool_status_event("search_knowledge", "start")
+                ):
+                    return dict(ABORTED_RESULT)
+                result = self._dispatch(forced_call, user_input, context, knowledge_mode=True)
+                seen_signatures.add(self._tool_signature(forced_call))
+                result, added_evidence = self._merge_evidence(
+                    result, next_evidence_number, seen_chunks
+                )
+                next_evidence_number += added_evidence
+                trace.absorb(result, user_input)
+                if on_event is not None and (
+                    on_event(self._tool_status_event("search_knowledge", "end", result)) is False
+                ):
+                    disconnected = True
+                if not trace.evidence:
+                    return self._finalize_answer(
+                        "",
+                        messages,
+                        schemas,
+                        evidence=[],
+                        sources=[],
+                        queries=trace.queries,
+                        searched=trace.searched,
+                        unavailable=trace.unavailable,
+                        on_event=on_event,
+                        buffered=buffering,
+                    )
+                dispatched = result
+                payload = self._tool_payload(
+                    result, min(result_limit_chars, max(budget_chars - spent_chars, 0))
+                )
+                spent_chars += max(len(payload), TOOL_CALL_OVERHEAD_CHARS)
+                if spent_chars >= budget_chars:
+                    force_answer = True
+                messages = messages + [
+                    self._tool_message_dict(SimpleNamespace(content=""), forced_call),
+                    {
+                        "role": "tool",
+                        "tool_call_id": forced_call.id,
+                        "content": payload,
+                    },
+                ]
+                if force_answer:
+                    messages = messages + [{"role": "user", "content": BUDGET_EXHAUSTED_NOTE}]
+
             # 不设固定轮数：以最终回答、人工终态、重复调用、预算用尽或中止收口。
             while True:
                 if disconnected:
@@ -180,11 +264,11 @@ class AgentRuntime:
                         content or "请尝试更具体的分析或知识问题。",
                         messages,
                         schemas,
-                        evidence=evidence_items,
-                        sources=evidence_sources,
-                        queries=searched_queries,
-                        searched=knowledge_searched,
-                        unavailable=knowledge_unavailable,
+                        evidence=trace.evidence,
+                        sources=trace.sources,
+                        queries=trace.queries,
+                        searched=trace.searched,
+                        unavailable=trace.unavailable,
                         on_event=on_event,
                         buffered=buffering,
                     )
@@ -211,22 +295,15 @@ class AgentRuntime:
 
                 if on_event is not None and not on_event(self._tool_status_event(name, "start")):
                     return dict(ABORTED_RESULT)
-                result = self._dispatch(tool_calls[0], user_input, context)
+                result = self._dispatch(
+                    tool_calls[0], user_input, context, knowledge_mode=knowledge_mode
+                )
                 result, added_evidence = self._merge_evidence(
                     result, next_evidence_number, seen_chunks
                 )
                 next_evidence_number += added_evidence
                 if name == "search_knowledge":
-                    knowledge_searched = True
-                    searched_queries.append(str(result.get("query") or ""))
-                    if result.get("outcome") == KNOWLEDGE_UNAVAILABLE:
-                        knowledge_unavailable = True
-                    if result.get("status") == "success":
-                        evidence_items.extend(result.get("evidence") or [])
-                        evidence_sources.extend(result.get("sources") or [])
-                    else:
-                        # 旧式 error 结果同样视为服务不可用，避免误报“没有证据”
-                        knowledge_unavailable = True
+                    trace.absorb(result, user_input)
                 dispatched = result
                 status = result.get("status")
                 if result.get("analysis_type") == "single_cell":
@@ -280,6 +357,14 @@ class AgentRuntime:
                     "type": dispatched.get("type", "general_response"),
                     "message": "工具已执行，但后续回复生成失败；请勿直接重复执行，先检查已有结果。",
                     "results": dispatched.get("results", {}),
+                }
+            if knowledge_mode:
+                logger.warning("strict literature failed before dispatch: %s", e)
+                return {
+                    "status": "error",
+                    "type": "knowledge_evidence",
+                    "outcome": KNOWLEDGE_UNAVAILABLE,
+                    "message": UNAVAILABLE_MESSAGE,
                 }
             logger.warning("tool-calling failed, fallback to legacy workflow: %s", e)
             return self.workflow_manager.execute_workflow(user_input, context)
@@ -696,9 +781,14 @@ class AgentRuntime:
         return output
 
     def _build_messages(
-        self, user_input: str, context: dict[str, Any], hint: dict[str, Any] | None = None
+        self,
+        user_input: str,
+        context: dict[str, Any],
+        hint: dict[str, Any] | None = None,
+        *,
+        knowledge_mode: bool = False,
     ) -> list[dict[str, Any]]:
-        system = build_system_prompt()
+        system = build_system_prompt(strict_literature=knowledge_mode)
         if hint and hint.get("modality") and hint["modality"] != "general":
             lines = [
                 "\n\n## 任务路由提示（本地关键词分类，仅供参考）",
@@ -748,7 +838,14 @@ class AgentRuntime:
             ],
         }
 
-    def _dispatch(self, tool_call, user_input: str, context: dict[str, Any]) -> dict[str, Any]:
+    def _dispatch(
+        self,
+        tool_call,
+        user_input: str,
+        context: dict[str, Any],
+        *,
+        knowledge_mode: bool = False,
+    ) -> dict[str, Any]:
         name = tool_call.function.name
         try:
             args = json.loads(tool_call.function.arguments or "{}")
@@ -779,7 +876,7 @@ class AgentRuntime:
             return wm.search_datasets_for_agent(args.get("query", user_input), params, context)
         if name == "query_knowledge":
             return wm.query_knowledge_for_agent(args.get("query", user_input), context)
-        if name == "search_knowledge" and knowledge_tool_enabled():
+        if name == "search_knowledge" and knowledge_tool_enabled(force=knowledge_mode):
             return wm.search_knowledge_for_agent(args.get("query", user_input), context)
         if name == "query_memory":
             return wm.query_memory_for_agent(args.get("query", user_input), context)

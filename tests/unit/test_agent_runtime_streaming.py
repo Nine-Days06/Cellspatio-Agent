@@ -10,6 +10,12 @@ import pytest
 from tests.unit.test_agent_runtime import FakeWM, _text_response, _tool_call_response
 
 
+@pytest.fixture(autouse=True)
+def _legacy_knowledge_tool(monkeypatch):
+    """既有流式用例验证旧链路；文献工具用例自行覆盖为 search。"""
+    monkeypatch.setenv("AGENT_KNOWLEDGE_TOOL", "legacy")
+
+
 def _text_chunk(text: str) -> SimpleNamespace:
     return SimpleNamespace(
         choices=[SimpleNamespace(delta=SimpleNamespace(content=text, tool_calls=None))]

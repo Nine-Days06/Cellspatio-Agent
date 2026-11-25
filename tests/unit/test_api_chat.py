@@ -196,7 +196,7 @@ def test_runtime_exception_becomes_error_event(client):
     sid = _new_session(client)
 
     class BoomRuntime:
-        def execute(self, user_input, context=None, on_event=None):
+        def execute(self, user_input, context=None, on_event=None, **kwargs):
             raise RuntimeError("知识库炸了")
 
     client.app.state.agent.agent_runtime = BoomRuntime()
@@ -213,7 +213,7 @@ def test_user_message_persisted_even_when_runtime_fails(client):
     sid = _new_session(client)
 
     class BoomRuntime:
-        def execute(self, user_input, context=None, on_event=None):
+        def execute(self, user_input, context=None, on_event=None, **kwargs):
             raise RuntimeError("boom")
 
     client.app.state.agent.agent_runtime = BoomRuntime()
@@ -230,7 +230,7 @@ def test_partial_answer_persisted_when_runtime_fails_mid_stream(client):
     sid = _new_session(client)
 
     class HalfRuntime:
-        def execute(self, user_input, context=None, on_event=None):
+        def execute(self, user_input, context=None, on_event=None, **kwargs):
             on_event({"type": "delta", "text": "已生成一半"})
             raise RuntimeError("上游超时")
 
@@ -249,7 +249,7 @@ def test_reasoning_delta_is_not_persisted_as_partial_answer(client):
     sid = _new_session(client)
 
     class HalfRuntime:
-        def execute(self, user_input, context=None, on_event=None):
+        def execute(self, user_input, context=None, on_event=None, **kwargs):
             on_event({"type": "delta", "text": "先分析", "source": "reasoning"})
             on_event({"type": "delta", "text": "正式一半"})
             raise RuntimeError("上游超时")
@@ -273,67 +273,59 @@ def test_unknown_mode_is_rejected_before_creating_turn(client):
 
 
 def test_knowledge_qa_mode_returns_evidence_package(client, monkeypatch):
+    """知识问答走同一 agent，只是强制文献模式并返回知识证据包。"""
     sid = _new_session(client)
     payload = {
-        "answer_id": "qa-route",
-        "schema_version": "knowledge-qa/2.0.0",
         "status": "success",
-        "outcome": "insufficient_evidence",
-        "answer": "没有可追溯证据。",
-        "claims": [],
-        "limitations": [],
-        "clarifications": [],
-        "evidence": [],
-        "sources": [],
+        "type": "general_response",
+        "outcome": "supported_answer",
+        "message": "TP53 参与细胞周期调控 [E1]。",
+        "results": {
+            "knowledge_evidence": {
+                "outcome": "supported_answer",
+                "evidence": [],
+                "sources": [],
+                "claims": [],
+                "citations": ["E1"],
+            }
+        },
     }
-
-    def fake_run(client, question, **kwargs):
-        on_stage = kwargs["on_stage"]
-        for stage in ("retrieval", "answer"):
-            on_stage(stage, "start")
-            on_stage(stage, "end")
-        return payload
-
-    monkeypatch.setattr("src.knowledge.qa.run_knowledge_qa", fake_run)
+    runtime = FakeRuntime(
+        results=[payload],
+        events=[
+            {
+                "type": "tool_status",
+                "name": "search_knowledge",
+                "phase": "start",
+                "label": "检索文献",
+            }
+        ],
+    )
+    client.app.state.agent.agent_runtime = runtime
 
     events = _stream(client, sid, "TP53 的功能是什么？", mode="knowledge_qa")
 
-    assert [event["type"] for event in events] == ["tool_status"] * 4 + ["done"]
-    assert events[-1]["message"]["results"]["knowledge_qa"]["answer_id"] == "qa-route"
+    assert [event["type"] for event in events] == ["tool_status", "done"]
+    assert runtime.calls[0]["knowledge_mode"] is True
+    assert events[-1]["message"]["results"]["knowledge_evidence"]["citations"] == ["E1"]
     stored = SessionStore().get_messages(sid)
-    assert stored[-1]["content"] == "没有可追溯证据。"
-    assert client.app.state.agent.agent_runtime.calls == []
+    assert stored[-1]["content"] == "TP53 参与细胞周期调控 [E1]。"
 
 
-def test_knowledge_qa_reasoning_is_streamed_with_source(client, monkeypatch):
-    """问答思考走 delta 的 source=reasoning，正式回答仍只由 done 携带。"""
+def test_knowledge_qa_reasoning_is_streamed_with_source(client):
+    """严格文献模式沿用流式思考增量，但正文只由 done 携带。"""
     sid = _new_session(client)
-    payload = {
-        "answer_id": "qa-reasoning",
-        "schema_version": "knowledge-qa/2.0.0",
-        "status": "success",
-        "outcome": "insufficient_evidence",
-        "answer": "没有可追溯证据。",
-        "claims": [],
-        "evidence": [],
-        "sources": [],
-    }
-
-    def fake_run(client, question, **kwargs):
-        kwargs["on_reasoning"]("先核对证据")
-        kwargs["on_stage"]("answer", "start")
-        kwargs["on_stage"]("answer", "end")
-        return payload
-
-    monkeypatch.setattr("src.knowledge.qa.run_knowledge_qa", fake_run)
+    runtime = FakeRuntime(events=[{"type": "delta", "text": "先核对证据", "source": "reasoning"}])
+    client.app.state.agent.agent_runtime = runtime
 
     events = _stream(client, sid, "TP53 的功能是什么？", mode="knowledge_qa")
 
     assert events[0] == {"type": "delta", "text": "先核对证据", "source": "reasoning"}
-    assert [e["type"] for e in events[1:]] == ["tool_status", "tool_status", "done"]
+    assert events[-1]["type"] == "done"
+    assert runtime.calls[0]["knowledge_mode"] is True
     assert "先核对证据" not in events[-1]["message"]["content"]
     stored = SessionStore().get_messages(sid)
-    assert stored[-1]["content"] == "没有可追溯证据。"
+    assert stored[-1]["content"] == "回答"
 
 
 def test_route_wires_auto_name_hook_to_first_turn(client):

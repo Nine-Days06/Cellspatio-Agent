@@ -52,7 +52,6 @@ vi.mock('@/lib/api', async (importOriginal) => {
       registerLocalInput: (...args: unknown[]) => registerLocalInputMock(...args),
   }
 })
-
 vi.mock('@/lib/sse', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@/lib/sse')>()
   return {
@@ -380,7 +379,7 @@ describe('ChatPage 输入区：键位 / 停止 / 错误提示（约束 3）', ()
     const box = screen.getByRole('textbox', { name: '输入你的问题' })
     expect(box).toHaveValue('scRNA-seq 与 snRNA-seq 有什么区别？各自适用于哪些样本？')
     expect(box).toHaveFocus()
-    expect(screen.getByRole('radio', { name: '知识问答' })).toHaveAttribute('aria-checked', 'true')
+    expect(screen.getByRole('radio', { name: '严格文献深答' })).toHaveAttribute('aria-checked', 'true')
     expect(streamChatMock).not.toHaveBeenCalled()
     expect(createSessionMock).not.toHaveBeenCalled()
   })
@@ -555,7 +554,7 @@ describe('ChatPage 输入区：键位 / 停止 / 错误提示（约束 3）', ()
   it('知识问答阶段按事件顺序切换，结束后不残留', async () => {
     const sid = nextSid()
     await renderReady(sid)
-    fireEvent.click(screen.getByRole('radio', { name: '知识问答' }))
+    fireEvent.click(screen.getByRole('radio', { name: '严格文献深答' }))
     act(() => {
       useChatStore.setState({ busy: true })
     })
@@ -622,13 +621,13 @@ describe('ChatPage 约束落点（1/2）', () => {
     const sid = nextSid()
     await renderReady(sid)
     const chatRadio = screen.getByRole('radio', { name: '智能对话' })
-    const qaRadio = screen.getByRole('radio', { name: '知识问答' })
+    const qaRadio = screen.getByRole('radio', { name: '严格文献深答' })
 
     chatRadio.focus()
     fireEvent.keyDown(chatRadio, { key: 'ArrowRight' })
     expect(qaRadio).toHaveAttribute('aria-checked', 'true')
     expect(qaRadio).toHaveFocus()
-    expect(screen.getByText('回答附论断与原文证据。')).toBeInTheDocument()
+    expect(screen.getByText('强制检索文献，回答逐条引用证据；不执行分析。')).toBeInTheDocument()
     expect(screen.queryByText(/人工复核/)).not.toBeInTheDocument()
 
     const box = screen.getByPlaceholderText(/提出一个单细胞或空间组学问题/)
@@ -647,7 +646,7 @@ describe('ChatPage 约束落点（1/2）', () => {
     const user = makeMsg(sid, { role: 'user', content: '普通问题' })
     const emptyReply = makeMsg(sid, { role: 'assistant', content: '' })
     await renderReady(sid, { messages: [user, emptyReply] })
-    const qaRadio = screen.getByRole('radio', { name: '知识问答' })
+    const qaRadio = screen.getByRole('radio', { name: '严格文献深答' })
     fireEvent.click(qaRadio)
     expect(qaRadio).toHaveAttribute('aria-checked', 'true')
 

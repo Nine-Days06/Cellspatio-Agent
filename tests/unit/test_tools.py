@@ -24,12 +24,19 @@ def test_query_memory_schema_requires_query_param():
     assert "query_memory" in SYSTEM_PROMPT
 
 
-def test_knowledge_tool_is_opt_in_and_does_not_answer(monkeypatch):
-    """默认不暴露检索工具；只有 AGENT_KNOWLEDGE_TOOL=search 才加入且声明不生成答案。"""
+def test_knowledge_tool_defaults_on_and_keeps_legacy_fallback(monkeypatch):
+    """检索工具默认开启；设置 legacy 回退旧工具，且工具声明不生成答案。"""
     from src.control.tools import build_system_prompt, build_tool_schemas
 
     monkeypatch.delenv("AGENT_KNOWLEDGE_TOOL", raising=False)
-    assert "search_knowledge" not in {schema["function"]["name"] for schema in build_tool_schemas()}
+    default_names = {schema["function"]["name"] for schema in build_tool_schemas()}
+    assert "search_knowledge" in default_names
+    assert "query_knowledge" not in default_names
+    assert "search_knowledge" in build_system_prompt()
+
+    monkeypatch.setenv("AGENT_KNOWLEDGE_TOOL", "legacy")
+    legacy_names = {schema["function"]["name"] for schema in build_tool_schemas()}
+    assert legacy_names == {"run_analysis", "search_datasets", "query_knowledge", "query_memory"}
     assert "search_knowledge" not in build_system_prompt()
 
     monkeypatch.setenv("AGENT_KNOWLEDGE_TOOL", "search")
@@ -42,6 +49,18 @@ def test_knowledge_tool_is_opt_in_and_does_not_answer(monkeypatch):
     assert "search_knowledge" in build_system_prompt()
     assert "query_knowledge is not exposed" in build_system_prompt()
     assert "[E#]" in build_system_prompt()
+
+
+def test_strict_literature_mode_only_exposes_search_tool():
+    """严格文献预设只暴露检索工具，不暴露分析/数据集工具。"""
+    from src.control.tools import build_system_prompt, build_tool_schemas
+
+    schemas = build_tool_schemas(strict_literature=True)
+
+    assert [schema["function"]["name"] for schema in schemas] == ["search_knowledge"]
+    prompt = build_system_prompt(strict_literature=True)
+    assert "strict literature" in prompt
+    assert "run_analysis" not in prompt
 
 
 def test_run_analysis_enum_only_supported_types():

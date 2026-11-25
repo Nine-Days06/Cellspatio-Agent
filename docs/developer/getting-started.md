@@ -70,7 +70,7 @@ npm run build
 | `DEEPSEEK_API_KEY` / `ZHIPU_API_KEY` / `OPENAI_API_KEY` | 对应密钥 | 空 |
 | `LLM_MAX_TOKENS` / `LLM_TIMEOUT` | 生成上限与超时 | `8192` / `120` |
 | `AGENT_TOOL_RESULT_MAX_CHARS` / `AGENT_TOOL_RESULT_BUDGET_CHARS` | 单次工具结果上限 / 单轮累计预算 | `20000` / `60000` |
-| `AGENT_KNOWLEDGE_TOOL` / `AGENT_KNOWLEDGE_TIMEOUT` | 文献证据工具开关（`search` 开启）/ 检索超时秒数 | 关闭 / `60` |
+| `AGENT_KNOWLEDGE_TOOL` / `AGENT_KNOWLEDGE_TIMEOUT` | 文献证据工具开关（默认开启，`legacy` 回退旧工具）/ 检索超时秒数 | 开启 / `60` |
 | `POSTGRES_HOST` / `POSTGRES_PORT` / `POSTGRES_DATABASE` | PG 连接 | `127.0.0.1` / `5433` / `rag` |
 | `OLLAMA_URL` / `EMBEDDING_MODEL` | Ollama 地址与 embedding 模型 | `http://localhost:11434` / `bge-m3` |
 | `CELLSPATIO_LOCAL` | 便携客户端本地模式 | 关闭 |

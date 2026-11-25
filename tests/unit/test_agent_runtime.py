@@ -11,8 +11,8 @@ import pytest
 
 @pytest.fixture(autouse=True)
 def _knowledge_tool_default_off(monkeypatch):
-    """系统提示与工具清单断言基于默认关闭状态，避免开发环境 .env 干扰。"""
-    monkeypatch.delenv("AGENT_KNOWLEDGE_TOOL", raising=False)
+    """既有用例基于旧工具链；显式回退，避免开发环境 .env 干扰。"""
+    monkeypatch.setenv("AGENT_KNOWLEDGE_TOOL", "legacy")
 
 
 def _tool_call_response(name: str, arguments: dict) -> SimpleNamespace:
@@ -261,8 +261,8 @@ def test_query_memory_dispatch():
 
 
 def test_search_knowledge_hidden_and_rejected_when_flag_off(monkeypatch):
-    """默认关闭：工具清单不暴露，模型硬调用也只得到未知工具错误。"""
-    monkeypatch.delenv("AGENT_KNOWLEDGE_TOOL", raising=False)
+    """legacy 回退：工具清单不暴露，模型硬调用也只得到未知工具错误。"""
+    monkeypatch.setenv("AGENT_KNOWLEDGE_TOOL", "legacy")
     from src.control.tools import build_tool_schemas
 
     assert "search_knowledge" not in {schema["function"]["name"] for schema in build_tool_schemas()}
@@ -402,6 +402,73 @@ def test_duplicate_chunk_across_tool_calls_is_dropped(monkeypatch):
     assert second["sources"] == []
     assert second["evidence_count"] == 0
     assert "未新增证据" in second["message"]
+
+
+def test_knowledge_mode_forces_initial_search_and_only_exposes_search(monkeypatch):
+    """严格文献模式：先强制检索，模型只拿到检索工具和证据，再按 [E#] 作答。"""
+    monkeypatch.setenv("AGENT_KNOWLEDGE_TOOL", "legacy")
+    llm = FakeLLM([_text_response("TP53 是抑癌基因 [E1]")])
+    runtime, wm = _make_runtime(llm, FakeWM({"search_knowledge": _evidence_result()}))
+
+    result = runtime.execute("TP53", knowledge_mode=True)
+
+    assert wm.calls == [("search_knowledge", {"query": "TP53"})]
+    assert [tool["function"]["name"] for tool in llm.calls[0]["tools"]] == ["search_knowledge"]
+    assert "strict literature" in llm.calls[0]["messages"][0]["content"]
+    assert result["outcome"] == "supported_answer"
+    assert result["results"]["knowledge_evidence"]["citations"] == ["E1"]
+
+
+def test_default_on_exposes_literature_tool_without_legacy_flag(monkeypatch):
+    """未配置开关时运行时默认暴露检索工具，不再暴露旧 query_knowledge。"""
+    monkeypatch.delenv("AGENT_KNOWLEDGE_TOOL", raising=False)
+    llm = FakeLLM([_text_response("你好")])
+    runtime, _ = _make_runtime(llm)
+
+    runtime.execute("你好")
+
+    names = [tool["function"]["name"] for tool in llm.calls[0]["tools"]]
+    assert "search_knowledge" in names
+    assert "query_knowledge" not in names
+    assert "search_knowledge" in llm.calls[0]["messages"][0]["content"]
+
+
+def test_knowledge_mode_reports_unavailable_without_second_llm(monkeypatch):
+    """强制检索失败时不调用生成模型，直接报服务不可用。"""
+    monkeypatch.setenv("AGENT_KNOWLEDGE_TOOL", "legacy")
+    llm = FakeLLM([])
+    runtime, wm = _make_runtime(
+        llm,
+        FakeWM(
+            {
+                "search_knowledge": {
+                    "status": "error",
+                    "outcome": "knowledge_unavailable",
+                    "message": "知识检索服务暂时不可用，请稍后重试。",
+                }
+            }
+        ),
+    )
+
+    result = runtime.execute("TP53", knowledge_mode=True)
+
+    assert wm.calls[0][0] == "search_knowledge"
+    assert llm.calls == []
+    assert result["outcome"] == "knowledge_unavailable"
+
+
+def test_knowledge_mode_without_llm_does_not_fall_back_to_old_workflow():
+    """严格文献模式没有模型时直接报不可用，不能退回无引用的旧工作流。"""
+    from src.control.agent_runtime import AgentRuntime
+
+    wm = FakeWM({})
+    runtime = AgentRuntime(llm_client=None, model="none", workflow_manager=wm)
+
+    result = runtime.execute("TP53", knowledge_mode=True)
+
+    assert result["outcome"] == "knowledge_unavailable"
+    assert result["status"] == "error"
+    assert wm.fallback_calls == []
 
 
 def _evidence_result() -> dict:
