@@ -378,6 +378,59 @@ def test_tool_result_is_truncated_to_per_call_cap(monkeypatch):
     assert len(payload) <= 160
 
 
+def test_long_evidence_payload_is_compacted_per_item(monkeypatch):
+    """文献证据超限时逐条压缩正文并保留元数据；持久化证据包仍是全文。"""
+    monkeypatch.setenv("AGENT_KNOWLEDGE_TOOL", "search")
+    monkeypatch.delenv("AGENT_TOOL_RESULT_MAX_CHARS", raising=False)
+    llm = FakeStreamLLM(
+        [
+            [_tool_chunk(0, "c1", "search_knowledge", '{"query": "TP53"}')],
+            [_text_chunk("答 [E1]")],
+        ]
+    )
+    full_text = "长" * 4000
+    wm = FakeWM(
+        {
+            "search_knowledge": {
+                "status": "success",
+                "type": "knowledge_evidence",
+                "evidence": [
+                    {
+                        "evidence_id": f"E{i}",
+                        "title": f"论文{i}",
+                        "year": "2024",
+                        "source_id": f"S{i}",
+                        "content": full_text,
+                    }
+                    for i in range(1, 9)
+                ],
+                "sources": [],
+                "continue_tool_loop": True,
+            }
+        }
+    )
+    runtime, _ = _runtime(llm, wm)
+
+    result = runtime.execute("TP53 的证据", on_event=EventSink())
+
+    payload = llm.calls[1]["messages"][-1]["content"]
+    parsed = json.loads(payload)
+    assert "truncated" not in parsed
+    assert len(payload) <= 20000
+    assert len(parsed["evidence"]) == 8
+    for index, item in enumerate(parsed["evidence"], start=1):
+        assert item["evidence_id"] == f"E{index}"
+        assert item["title"] == f"论文{index}"
+        assert item["year"] == "2024"
+        assert item["source_id"] == f"S{index}"
+        assert item["content_truncated"] is True
+        assert item["content"].startswith(full_text[:1200])
+        assert len(item["content"]) < len(full_text)
+    # 界面与落库仍拿完整正文。
+    persisted = result["results"]["knowledge_evidence"]["evidence"]
+    assert [item["content"] for item in persisted] == [full_text] * 8
+
+
 def test_tool_budget_exhaustion_switches_to_final_answer(monkeypatch):
     """累计结果预算用尽后禁用工具，不再执行新工具。"""
     monkeypatch.setenv("AGENT_TOOL_RESULT_BUDGET_CHARS", "80")

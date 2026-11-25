@@ -41,6 +41,9 @@ DEFAULT_TOOL_RESULT_BUDGET_CHARS = 60000
 # 每次工具调用至少按该开销计入预算；即使结果很小，也能在有限轮内自然收口。
 TOOL_CALL_OVERHEAD_CHARS = 1000
 TOOL_RESULT_TRUNCATED_NOTE = "工具结果超出单次上限，已截断"
+# 文献证据回灌模型时每条正文的上限；完整原文仅存在于持久化证据包与界面。
+KNOWLEDGE_PAYLOAD_EVIDENCE_CHARS = 1200
+KNOWLEDGE_PAYLOAD_TRUNCATED_MARK = "…（正文按条约 1,200 字压缩，完整片段见证据面板）"
 KNOWLEDGE_UNAVAILABLE = "knowledge_unavailable"
 INSUFFICIENT_EVIDENCE = "insufficient_evidence"
 CITATION_INVALID = "citation_invalid"
@@ -777,17 +780,40 @@ class AgentRuntime:
             len(renumbered),
         )
 
-    @staticmethod
-    def _tool_payload(result: dict[str, Any], limit: int) -> str:
-        """序列化工具结果，超出上限时返回合法 JSON 的截断预览。"""
+    @classmethod
+    def _tool_payload(cls, result: dict[str, Any], limit: int) -> str:
+        """序列化工具结果：文献证据逐条压缩正文，其他结果超限时返回截断预览。"""
         payload = json.dumps(result, ensure_ascii=False, default=str)
         if len(payload) <= limit:
             return payload
+        if result.get("type") == "knowledge_evidence":
+            compacted = json.dumps(cls._compact_evidence(result), ensure_ascii=False, default=str)
+            if len(compacted) <= limit:
+                return compacted
         skeleton = {"truncated": True, "note": TOOL_RESULT_TRUNCATED_NOTE, "preview": ""}
         # 预留包装字段与转义余量，避免截断后反而明显超出上限。
         room = max(limit - len(json.dumps(skeleton, ensure_ascii=False)) - 64, 0)
         skeleton["preview"] = payload[:room]
         return json.dumps(skeleton, ensure_ascii=False)
+
+    @staticmethod
+    def _compact_evidence(result: dict[str, Any]) -> dict[str, Any]:
+        """只压缩证据正文；编号、标题、年份、来源与来源关系原样保留。"""
+        evidence = []
+        for item in result.get("evidence") or []:
+            if not isinstance(item, dict):
+                evidence.append(item)
+                continue
+            content = item.get("content")
+            if isinstance(content, str) and len(content) > KNOWLEDGE_PAYLOAD_EVIDENCE_CHARS:
+                item = {
+                    **item,
+                    "content": content[:KNOWLEDGE_PAYLOAD_EVIDENCE_CHARS]
+                    + KNOWLEDGE_PAYLOAD_TRUNCATED_MARK,
+                    "content_truncated": True,
+                }
+            evidence.append(item)
+        return {**result, "evidence": evidence}
 
     def _route_hint(self, user_input: str) -> dict[str, Any] | None:
         """调用 ModalRouter.hint；无 router 或失败时返回 None（不阻断主流程）。"""
