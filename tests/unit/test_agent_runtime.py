@@ -90,12 +90,14 @@ def _make_runtime(llm, wm=None):
     return AgentRuntime(llm_client=llm, model="fake-model", workflow_manager=wm), wm
 
 
-def test_dispatches_run_analysis_and_returns_terminal_result():
+def test_dispatches_run_analysis_and_continues_to_final_answer():
+    """非单细胞分析结果回灌模型，本轮以模型的合并回答收口。"""
     llm = FakeLLM(
         [
             _tool_call_response(
                 "run_analysis", {"analysis_type": "differential_expression", "question": "做差异"}
-            )
+            ),
+            _text_response("差异表达完成，共 10 个显著基因。"),
         ]
     )
     wm = FakeWM(
@@ -105,6 +107,7 @@ def test_dispatches_run_analysis_and_returns_terminal_result():
                 "analysis_type": "differential_expression",
                 "message": "ok",
                 "results": {},
+                "continue_tool_loop": True,
             }
         }
     )
@@ -115,11 +118,13 @@ def test_dispatches_run_analysis_and_returns_terminal_result():
     )
 
     assert result["status"] == "success"
+    assert result["message"] == "差异表达完成，共 10 个显著基因。"
     assert wm.calls[0][0] == "run_analysis"
     assert wm.calls[0][1]["analysis_type"] == "differential_expression"
     sent = llm.calls[0]["messages"]
     assert sent[-1]["role"] == "user"
     assert "tools" in llm.calls[0]
+    assert len(llm.calls) == 2
 
 
 def test_hitl_needs_confirmation_short_circuits_without_second_llm_call():
@@ -242,14 +247,20 @@ def test_query_knowledge_dispatch():
 
 
 def test_query_memory_dispatch():
-    """query_memory 工具调用分发到 workflow_manager，返回记忆问答终态。"""
-    llm = FakeLLM([_tool_call_response("query_memory", {"query": "上次差异表达用的什么参数"})])
+    """query_memory 分发到 workflow_manager 后继续本轮，由模型收口回答。"""
+    llm = FakeLLM(
+        [
+            _tool_call_response("query_memory", {"query": "上次差异表达用的什么参数"}),
+            _text_response("上次用的是 DESeq2，FDR 0.05。"),
+        ]
+    )
     wm = FakeWM(
         {
             "query_memory": {
                 "status": "success",
                 "type": "memory_response",
                 "response": "run-abc123 使用 DESeq2，FDR=0.05",
+                "continue_tool_loop": True,
             }
         }
     )
@@ -258,8 +269,8 @@ def test_query_memory_dispatch():
     result = runtime.execute("上次那个差异表达分析用的什么参数？")
 
     assert wm.calls == [("query_memory", {"query": "上次差异表达用的什么参数"})]
-    assert result["type"] == "memory_response"
     assert result["status"] == "success"
+    assert result["message"] == "上次用的是 DESeq2，FDR 0.05。"
 
 
 def test_search_knowledge_hidden_and_rejected_when_flag_off(monkeypatch):

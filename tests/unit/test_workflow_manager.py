@@ -1270,6 +1270,8 @@ def test_query_memory_for_agent_returns_memory_response():
     assert result["status"] == "success"
     assert result["type"] == "memory_response"
     assert "DESeq2" in result["response"]
+    # 记忆不是最终回答：运行时需拿到非终态标记继续本轮。
+    assert result.get("continue_tool_loop") is True
 
 
 def test_query_memory_without_kg_query_returns_error():
@@ -1370,6 +1372,8 @@ def test_run_analysis_for_agent_records_outputs(tmp_path):
 
     spy = manager.workflow_recorder
     assert result["status"] == "success"
+    # 非单细胞分析成功也要回灌模型继续作答，而不是直接结束本轮。
+    assert result.get("continue_tool_loop") is True
     by_name = {o["name"]: o for o in spy.outputs}
     assert set(by_name) == {"run-spy-1.de_results.csv", "capsule"}
     assert Path(by_name["run-spy-1.de_results.csv"]["path"]).parent == (
@@ -1377,6 +1381,29 @@ def test_run_analysis_for_agent_records_outputs(tmp_path):
     )
     assert Path(by_name["capsule"]["path"]).parent == tmp_path / "data" / "analysis" / "capsules"
     assert all(o["run_id"] == spy.starts[0]["run_id"] for o in spy.outputs)
+
+
+def test_run_analysis_for_agent_error_continues_for_model(tmp_path):
+    """可恢复的分析失败也要回灌模型，由模型解释失败原因。"""
+    counts = tmp_path / "counts.csv"
+    counts.write_text("gene,s1,s2\nG1,1,2\n", encoding="utf-8")
+
+    class FailedR:
+        returncode = 1
+
+    manager = _make_spy_manager()
+    manager.r_executor = FakeExec(return_value=FailedR())
+    manager.r_script_generator = FakeGen()
+    manager.analysis_roots = AnalysisRoots(SessionStore(), tmp_path)
+
+    result = manager.run_analysis_for_agent(
+        "differential_expression",
+        {"input_files": [str(counts)], "question": "差异表达"},
+        {"last_user_input": "做差异表达分析"},
+    )
+
+    assert result["status"] == "error"
+    assert result.get("continue_tool_loop") is True
 
 
 def test_execute_workflow_records_single_run():

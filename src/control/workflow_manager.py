@@ -19,6 +19,7 @@ from src.control.kb_coverage import (
     KnowledgeCoverage,
     auto_ingest_enabled,
 )
+from src.control.tools import CONTINUE_TOOL_LOOP_FLAG
 from src.data.tenx import validate_tenx
 from src.schemas.workflow import AnalysisType, StepType
 from src.ui.analysis_roots import AnalysisRoots
@@ -1203,7 +1204,7 @@ class WorkflowManager:
             "evidence_count": len(retrieval.evidence),
             "retrieval_status": "no_results" if retrieval.no_results else "success",
             "message": "" if retrieval.evidence else "当前知识库没有检索到相关证据。",
-            "continue_tool_loop": True,
+            CONTINUE_TOOL_LOOP_FLAG: True,
         }
         if not retrieval.evidence:
             result["outcome"] = "insufficient_evidence"
@@ -1221,15 +1222,22 @@ class WorkflowManager:
                 "status": "error",
                 "type": "memory_response",
                 "message": "运行记忆库未启用（kg_query 未注入）。",
+                CONTINUE_TOOL_LOOP_FLAG: True,
             }
         try:
             answer = self.kg_query.query(query, context=context)
-            return {"status": "success", "type": "memory_response", "response": answer}
-        except Exception as e:  # noqa: BLE001 - 记忆查询失败降级为 error 终态
+            return {
+                "status": "success",
+                "type": "memory_response",
+                "response": answer,
+                CONTINUE_TOOL_LOOP_FLAG: True,
+            }
+        except Exception as e:  # noqa: BLE001 - 记忆查询失败交给模型如实说明
             return {
                 "status": "error",
                 "type": "memory_response",
                 "message": f"运行记忆查询失败: {e}",
+                CONTINUE_TOOL_LOOP_FLAG: True,
             }
 
     def run_analysis_for_agent(
@@ -1253,4 +1261,7 @@ class WorkflowManager:
         with self._record_run(intent, params, context) as run_id:
             result = self._execute_analysis_workflow(intent, params, context, run_id)
             self._record_outputs(run_id, result)
+        if analysis_type != "single_cell" and result.get("status") in {"success", "error"}:
+            # 非审批终态：回灌模型继续作答，而不是把工具结果当最终回答。
+            result[CONTINUE_TOOL_LOOP_FLAG] = True
         return result

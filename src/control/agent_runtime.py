@@ -22,6 +22,7 @@ import openai
 
 from src.config import env_int
 from src.control.tools import (
+    CONTINUE_TOOL_LOOP_FLAG,
     TERMINAL_STATUSES,
     build_system_prompt,
     build_tool_schemas,
@@ -40,8 +41,6 @@ DEFAULT_TOOL_RESULT_BUDGET_CHARS = 60000
 # 每次工具调用至少按该开销计入预算；即使结果很小，也能在有限轮内自然收口。
 TOOL_CALL_OVERHEAD_CHARS = 1000
 TOOL_RESULT_TRUNCATED_NOTE = "工具结果超出单次上限，已截断"
-# 工具结果要求模型继续推理而非立即返回的标记字段。
-CONTINUE_TOOL_LOOP_FLAG = "continue_tool_loop"
 KNOWLEDGE_UNAVAILABLE = "knowledge_unavailable"
 INSUFFICIENT_EVIDENCE = "insufficient_evidence"
 CITATION_INVALID = "citation_invalid"
@@ -176,6 +175,7 @@ class AgentRuntime:
         next_evidence_number = 1
         seen_chunks: set[str] = set()
         trace = _KnowledgeTrace()
+        artifacts: dict[str, Any] = {}
         try:
             if knowledge_mode:
                 forced_call = SimpleNamespace(
@@ -213,8 +213,10 @@ class AgentRuntime:
                         unavailable=trace.unavailable,
                         on_event=on_event,
                         buffered=buffering,
+                        artifacts=artifacts,
                     )
                 dispatched = result
+                self._collect_artifacts(artifacts, result)
                 payload = self._tool_payload(
                     result, min(result_limit_chars, max(budget_chars - spent_chars, 0))
                 )
@@ -272,6 +274,7 @@ class AgentRuntime:
                         unavailable=trace.unavailable,
                         on_event=on_event,
                         buffered=buffering,
+                        artifacts=artifacts,
                     )
 
                 if force_answer:
@@ -307,6 +310,7 @@ class AgentRuntime:
                     trace.absorb(result, user_input)
                     buffering = True
                 dispatched = result
+                self._collect_artifacts(artifacts, result)
                 status = result.get("status")
                 if result.get("analysis_type") == "single_cell":
                     # 固定单细胞链自带人工审批，不再回灌模型；但流式过程条必须收尾。
@@ -410,36 +414,40 @@ class AgentRuntime:
         unavailable: bool,
         on_event: Callable[[dict], bool] | None,
         buffered: bool,
+        artifacts: dict[str, Any],
     ) -> dict[str, Any]:
-        """对用过检索的答案做三态收口，并在需要时缓冲后统一发射正文。"""
+        """对用过检索的答案做三态收口，并在需要时缓冲后统一发射正文。
+
+        ``artifacts`` 是本轮非检索工具累积的结果包；最终回答不能因为它们
+        来自模型而被丢弃。
+        """
+        merged = dict(artifacts)
         if searched and not evidence:
             if unavailable:
+                merged["knowledge_evidence"] = self._knowledge_package(
+                    KNOWLEDGE_UNAVAILABLE, [], [], "", []
+                )
                 result = {
                     "status": "error",
                     "type": "general_response",
                     "outcome": KNOWLEDGE_UNAVAILABLE,
                     "message": UNAVAILABLE_MESSAGE,
-                    "results": {
-                        "knowledge_evidence": self._knowledge_package(
-                            KNOWLEDGE_UNAVAILABLE, [], [], "", []
-                        )
-                    },
+                    "results": merged,
                 }
             else:
                 scope = "、".join(dict.fromkeys(q for q in queries if q))
                 text = "当前知识库没有检索到相关证据。"
                 if scope:
                     text += f"\n检索范围：{scope}。"
+                merged["knowledge_evidence"] = self._knowledge_package(
+                    INSUFFICIENT_EVIDENCE, [], [], "", []
+                )
                 result = {
                     "status": "success",
                     "type": "general_response",
                     "outcome": INSUFFICIENT_EVIDENCE,
                     "message": text,
-                    "results": {
-                        "knowledge_evidence": self._knowledge_package(
-                            INSUFFICIENT_EVIDENCE, [], [], "", []
-                        )
-                    },
+                    "results": merged,
                 }
             return self._emit_buffered(result, on_event, buffered)
 
@@ -453,6 +461,13 @@ class AgentRuntime:
                     content, claims = retried_content, retried_claims
                 else:
                     listing = self._evidence_listing(evidence)
+                    merged["knowledge_evidence"] = self._knowledge_package(
+                        CITATION_INVALID,
+                        evidence,
+                        sources,
+                        "".join(f"[{item.get('evidence_id')}]" for item in evidence),
+                        [],
+                    )
                     result = {
                         "status": "error",
                         "type": "general_response",
@@ -460,15 +475,7 @@ class AgentRuntime:
                         "message": (
                             f"已检索到证据，但回答未通过引用校验。\n\n**已检索到的证据**\n{listing}"
                         ),
-                        "results": {
-                            "knowledge_evidence": self._knowledge_package(
-                                CITATION_INVALID,
-                                evidence,
-                                sources,
-                                "".join(f"[{item.get('evidence_id')}]" for item in evidence),
-                                [],
-                            )
-                        },
+                        "results": merged,
                     }
                     return self._emit_buffered(result, on_event, buffered)
 
@@ -479,11 +486,11 @@ class AgentRuntime:
         }
         if searched:
             result["outcome"] = "supported_answer"
-            result["results"] = {
-                "knowledge_evidence": self._knowledge_package(
-                    "supported_answer", evidence, sources, content, claims
-                )
-            }
+            merged["knowledge_evidence"] = self._knowledge_package(
+                "supported_answer", evidence, sources, content, claims
+            )
+        if merged:
+            result["results"] = merged
         return self._emit_buffered(result, on_event, buffered)
 
     @staticmethod
@@ -508,6 +515,17 @@ class AgentRuntime:
             "citations": list(dict.fromkeys(_CITATION_RE.findall(content))),
             "claims": claims,
         }
+
+    @staticmethod
+    def _collect_artifacts(artifacts: dict[str, Any], result: dict[str, Any]) -> None:
+        """累积非检索工具的结果包；证据包由收口阶段统一生成，不在此合并。"""
+        payload = result.get("results")
+        if isinstance(payload, dict):
+            artifacts.update(
+                {key: value for key, value in payload.items() if key != "knowledge_evidence"}
+            )
+        if result.get("run_id"):
+            artifacts["run_id"] = result["run_id"]
 
     @staticmethod
     def _extract_claims(content: str, valid_ids: set[str]) -> tuple[str, list[dict[str, Any]]]:

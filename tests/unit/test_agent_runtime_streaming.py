@@ -628,6 +628,137 @@ def test_search_turn_streams_reasoning_while_answer_is_buffered(monkeypatch):
     assert content == ["答 [E1]"]
 
 
+def test_analysis_turn_continues_and_keeps_artifacts(monkeypatch):
+    """分析成功不再终结本轮：模型继续作答，分析产物随最终结果保留。"""
+    monkeypatch.delenv("AGENT_KNOWLEDGE_TOOL", raising=False)
+    llm = FakeStreamLLM(
+        [
+            [_tool_chunk(0, "c1", "run_analysis", '{"analysis_type": "differential_expression"}')],
+            [_text_chunk("共 10 个显著基因")],
+        ]
+    )
+    analysis = {
+        "status": "success",
+        "analysis_type": "differential_expression",
+        "message": "差异表达分析完成",
+        "run_id": "run-1",
+        "results": {
+            "output_file": "de.csv",
+            "charts": [{"type": "image", "image_b64": "x"}],
+        },
+        "continue_tool_loop": True,
+    }
+    runtime, wm = _runtime(llm, FakeWM({"run_analysis": analysis}))
+
+    result = runtime.execute("做差异表达", on_event=EventSink())
+
+    assert len(wm.calls) == 1
+    assert len(llm.calls) == 2
+    assert result["message"] == "共 10 个显著基因"
+    assert result["results"]["charts"] == [{"type": "image", "image_b64": "x"}]
+    assert result["results"]["output_file"] == "de.csv"
+    assert result["results"]["run_id"] == "run-1"
+
+
+def test_memory_turn_continues_to_final_answer(monkeypatch):
+    """运行记忆成功后继续本轮，最终展示模型的回答而不是“处理完成”。"""
+    monkeypatch.delenv("AGENT_KNOWLEDGE_TOOL", raising=False)
+    llm = FakeStreamLLM(
+        [
+            [_tool_chunk(0, "c1", "query_memory", '{"query": "上次参数"}')],
+            [_text_chunk("上次用的是 DESeq2，FDR 0.05。")],
+        ]
+    )
+    memory = {
+        "status": "success",
+        "type": "memory_response",
+        "response": "run-abc 使用 DESeq2，FDR=0.05",
+        "continue_tool_loop": True,
+    }
+    runtime, _ = _runtime(llm, FakeWM({"query_memory": memory}))
+    sink = EventSink()
+
+    result = runtime.execute("上次用的什么参数", on_event=sink)
+
+    assert len(llm.calls) == 2
+    assert result["message"] == "上次用的是 DESeq2，FDR 0.05。"
+    assert "处理完成" not in result["message"]
+
+
+def test_analysis_then_search_keeps_both_artifact_and_evidence(monkeypatch):
+    """分析后继续检索：最终结果同时保留分析产物与证据包。"""
+    monkeypatch.setenv("AGENT_KNOWLEDGE_TOOL", "search")
+    llm = FakeStreamLLM(
+        [
+            [_tool_chunk(0, "c1", "run_analysis", '{"analysis_type": "differential_expression"}')],
+            [_tool_chunk(0, "c2", "search_knowledge", '{"query": "TP53"}')],
+            [_text_chunk("共 10 个显著基因 [E1]")],
+        ]
+    )
+    wm = FakeWM(
+        {
+            "run_analysis": {
+                "status": "success",
+                "analysis_type": "differential_expression",
+                "results": {"output_file": "de.csv"},
+                "continue_tool_loop": True,
+            },
+            "search_knowledge": {
+                "status": "success",
+                "type": "knowledge_evidence",
+                "evidence": [{"evidence_id": "E1", "title": "论文"}],
+                "sources": [],
+                "continue_tool_loop": True,
+            },
+        }
+    )
+    runtime, wm = _runtime(llm, wm)
+
+    result = runtime.execute("做差异并查 TP53 证据", on_event=EventSink())
+
+    assert [call[0] for call in wm.calls] == ["run_analysis", "search_knowledge"]
+    assert result["results"]["output_file"] == "de.csv"
+    package = result["results"]["knowledge_evidence"]
+    assert package["outcome"] == "supported_answer"
+    assert package["citations"] == ["E1"]
+
+
+def test_memory_then_search_runs_both_tools(monkeypatch):
+    """记忆 → 文献顺序也不会在第一个工具后终止。"""
+    monkeypatch.setenv("AGENT_KNOWLEDGE_TOOL", "search")
+    llm = FakeStreamLLM(
+        [
+            [_tool_chunk(0, "c1", "query_memory", '{"query": "上次参数"}')],
+            [_tool_chunk(0, "c2", "search_knowledge", '{"query": "DESeq2"}')],
+            [_text_chunk("上次用 DESeq2[E1]，结论一致 [E1]")],
+        ]
+    )
+    wm = FakeWM(
+        {
+            "query_memory": {
+                "status": "success",
+                "type": "memory_response",
+                "response": "run-abc 使用 DESeq2",
+                "continue_tool_loop": True,
+            },
+            "search_knowledge": {
+                "status": "success",
+                "type": "knowledge_evidence",
+                "evidence": [{"evidence_id": "E1", "title": "论文"}],
+                "sources": [],
+                "continue_tool_loop": True,
+            },
+        }
+    )
+    runtime, wm = _runtime(llm, wm)
+
+    result = runtime.execute("上次参数和方法文献是否一致", on_event=EventSink())
+
+    assert [call[0] for call in wm.calls] == ["query_memory", "search_knowledge"]
+    assert result["outcome"] == "supported_answer"
+    assert result["results"]["knowledge_evidence"]["citations"] == ["E1"]
+
+
 def test_stream_tool_calls_accumulate_with_missing_index():
     """工具调用 chunk 缺失 index 时，按顺序归入当前槽或新建槽，不串槽。
 

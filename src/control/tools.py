@@ -20,6 +20,9 @@ SUPPORTED_ANALYSIS_TYPES: tuple[str, ...] = tuple(ANALYSIS_TYPES)
 # 唯一来源是 TerminalStatus 枚举，避免与 schemas/workflow.py 漂移。
 TERMINAL_STATUSES: frozenset[str] = frozenset(item.value for item in TerminalStatus)
 
+# 工具结果要求模型继续推理而非立即返回的标记字段。
+CONTINUE_TOOL_LOOP_FLAG = "continue_tool_loop"
+
 TOOL_SCHEMAS: list[dict[str, Any]] = [
     {
         "type": "function",
