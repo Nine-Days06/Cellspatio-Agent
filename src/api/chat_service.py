@@ -199,6 +199,10 @@ def run_turn(
 
     context = {
         "history": recent,
+        # 严格追问的检索 query 需要用户原话；history 已被 prepare_history 截断。
+        "recent_user_turns": [
+            str(msg.get("content") or "") for msg in messages[:-1] if msg.get("role") == "user"
+        ][-2:],
         "summary": summary,
         "downloaded_assets": session.get("downloaded_assets") or [],
         "last_user_input": prompt,

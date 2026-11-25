@@ -366,6 +366,94 @@ def test_strict_mode_allows_search_after_rejection():
     assert result["message"] == "答 [E1][E2]"
 
 
+def test_strict_followup_query_carries_user_turns_and_summary_tail():
+    """严格追问的检索 query 含摘要末尾与最近两轮用户发言，不含助手正文。"""
+    llm = FakeLLM([_text_response("答 [E1]")])
+    wm = FakeWM(
+        {
+            "search_knowledge": {
+                "status": "success",
+                "type": "knowledge_evidence",
+                "evidence": [{"evidence_id": "E1", "title": "论文"}],
+                "sources": [],
+                "continue_tool_loop": True,
+            }
+        }
+    )
+    runtime, wm = _make_runtime(llm, wm)
+    context = {
+        "summary": "摘要开头" + "结" * 600,
+        "history": [
+            {"role": "user", "content": "TP53 在癌症中的作用是什么？"},
+            {
+                "role": "assistant",
+                "content": (
+                    "助手回答不应进入检索\n[结构化论断]\n- TP53 促进凋亡 [E1]\n"
+                    "证据片段：p53 是抑癌基因"
+                ),
+            },
+            {"role": "user", "content": "它主要影响哪些通路？"},
+        ],
+    }
+
+    runtime.execute("那它的机制呢？", context, knowledge_mode=True)
+
+    query = wm.calls[0][1]["query"]
+    assert "那它的机制呢？" in query
+    assert "TP53 在癌症中的作用是什么？" in query
+    assert "它主要影响哪些通路？" in query
+    assert "摘要开头" not in query
+    assert "结" * 500 in query
+    assert "助手回答不应进入检索" not in query
+    assert "TP53 促进凋亡" not in query
+    assert "p53 是抑癌基因" not in query
+
+
+def test_strict_followup_keeps_long_user_turns_whole():
+    """最近两轮用户发言不按字符截断。"""
+    long_turn = "问" * 3000
+    llm = FakeLLM([_text_response("答 [E1]")])
+    wm = FakeWM(
+        {
+            "search_knowledge": {
+                "status": "success",
+                "type": "knowledge_evidence",
+                "evidence": [{"evidence_id": "E1", "title": "论文"}],
+                "sources": [],
+                "continue_tool_loop": True,
+            }
+        }
+    )
+    runtime, wm = _make_runtime(llm, wm)
+
+    runtime.execute(
+        "那它呢？", {"history": [{"role": "user", "content": long_turn}]}, knowledge_mode=True
+    )
+
+    assert long_turn in wm.calls[0][1]["query"]
+
+
+def test_strict_first_turn_query_is_question_only():
+    """无历史的首轮严格检索仍只用当前问题。"""
+    llm = FakeLLM([_text_response("答 [E1]")])
+    wm = FakeWM(
+        {
+            "search_knowledge": {
+                "status": "success",
+                "type": "knowledge_evidence",
+                "evidence": [{"evidence_id": "E1", "title": "论文"}],
+                "sources": [],
+                "continue_tool_loop": True,
+            }
+        }
+    )
+    runtime, wm = _make_runtime(llm, wm)
+
+    runtime.execute("TP53 是什么？", {}, knowledge_mode=True)
+
+    assert wm.calls[0][1]["query"] == "TP53 是什么？"
+
+
 def test_search_knowledge_hidden_and_rejected_when_flag_off(monkeypatch):
     """legacy 回退：工具清单不暴露，模型硬调用也只得到未知工具错误。"""
     monkeypatch.setenv("AGENT_KNOWLEDGE_TOOL", "legacy")

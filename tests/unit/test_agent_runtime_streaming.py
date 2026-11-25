@@ -7,6 +7,10 @@ from types import SimpleNamespace
 
 import pytest
 
+from src.control.agent_runtime import (
+    DEFAULT_TOOL_RESULT_MAX_CHARS,
+    KNOWLEDGE_PAYLOAD_EVIDENCE_CHARS,
+)
 from tests.unit.test_agent_runtime import FakeWM, _text_response, _tool_call_response
 
 
@@ -404,7 +408,10 @@ def test_long_evidence_payload_is_compacted_per_item(monkeypatch):
                     }
                     for i in range(1, 9)
                 ],
-                "sources": [],
+                "sources": [
+                    {"source_id": "S1", "title": "来源一", "evidence_ids": ["E1", "E2"]},
+                    {"source_id": "S2", "title": "来源二", "evidence_ids": ["E3", "E4"]},
+                ],
                 "continue_tool_loop": True,
             }
         }
@@ -416,7 +423,7 @@ def test_long_evidence_payload_is_compacted_per_item(monkeypatch):
     payload = llm.calls[1]["messages"][-1]["content"]
     parsed = json.loads(payload)
     assert "truncated" not in parsed
-    assert len(payload) <= 20000
+    assert len(payload) <= DEFAULT_TOOL_RESULT_MAX_CHARS
     assert len(parsed["evidence"]) == 8
     for index, item in enumerate(parsed["evidence"], start=1):
         assert item["evidence_id"] == f"E{index}"
@@ -424,8 +431,12 @@ def test_long_evidence_payload_is_compacted_per_item(monkeypatch):
         assert item["year"] == "2024"
         assert item["source_id"] == f"S{index}"
         assert item["content_truncated"] is True
-        assert item["content"].startswith(full_text[:1200])
+        assert item["content"].startswith(full_text[:KNOWLEDGE_PAYLOAD_EVIDENCE_CHARS])
         assert len(item["content"]) < len(full_text)
+    assert parsed["sources"] == [
+        {"source_id": "S1", "title": "来源一", "evidence_ids": ["E1", "E2"]},
+        {"source_id": "S2", "title": "来源二", "evidence_ids": ["E3", "E4"]},
+    ]
     # 界面与落库仍拿完整正文。
     persisted = result["results"]["knowledge_evidence"]["evidence"]
     assert [item["content"] for item in persisted] == [full_text] * 8

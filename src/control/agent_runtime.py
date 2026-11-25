@@ -43,7 +43,11 @@ TOOL_CALL_OVERHEAD_CHARS = 1000
 TOOL_RESULT_TRUNCATED_NOTE = "工具结果超出单次上限，已截断"
 # 文献证据回灌模型时每条正文的上限；完整原文仅存在于持久化证据包与界面。
 KNOWLEDGE_PAYLOAD_EVIDENCE_CHARS = 1200
-KNOWLEDGE_PAYLOAD_TRUNCATED_MARK = "…（正文按条约 1,200 字压缩，完整片段见证据面板）"
+KNOWLEDGE_PAYLOAD_TRUNCATED_MARK = (
+    f"…（正文每条按 {KNOWLEDGE_PAYLOAD_EVIDENCE_CHARS} 字压缩，完整片段见证据面板）"
+)
+# 严格模式追问检索只取摘要末尾，避免整段摘要撑大 query。
+STRICT_QUERY_SUMMARY_TAIL_CHARS = 500
 KNOWLEDGE_UNAVAILABLE = "knowledge_unavailable"
 INSUFFICIENT_EVIDENCE = "insufficient_evidence"
 CITATION_INVALID = "citation_invalid"
@@ -184,12 +188,13 @@ class AgentRuntime:
         artifacts: dict[str, Any] = {}
         try:
             if knowledge_mode:
+                query = self._strict_query(user_input, context)
                 forced_call = SimpleNamespace(
                     id="forced_search_knowledge",
                     type="function",
                     function=SimpleNamespace(
                         name="search_knowledge",
-                        arguments=json.dumps({"query": user_input}, ensure_ascii=False),
+                        arguments=json.dumps({"query": query}, ensure_ascii=False),
                     ),
                 )
                 if on_event is not None and not on_event(
@@ -902,6 +907,25 @@ class AgentRuntime:
                 messages.append({"role": msg["role"], "content": msg["content"]})
         messages.append({"role": "user", "content": user_input})
         return messages
+
+    @staticmethod
+    def _strict_query(user_input: str, context: dict[str, Any]) -> str:
+        """严格模式检索 query：当前问题 + 摘要末尾 + 最近两轮用户发言。"""
+        parts = [user_input]
+        summary = context.get("summary")
+        if isinstance(summary, str) and summary.strip():
+            parts.append(summary.strip()[-STRICT_QUERY_SUMMARY_TAIL_CHARS:])
+        if isinstance(context.get("recent_user_turns"), list):
+            # 生产路径由 chat_service 直接给未截断的用户原话。
+            turns = [str(turn) for turn in context["recent_user_turns"]]
+        else:
+            turns = [
+                str(item.get("content") or "")
+                for item in context.get("history") or []
+                if isinstance(item, dict) and item.get("role") == "user"
+            ]
+        parts.extend(turn for turn in turns[-2:] if turn and turn != user_input)
+        return "\n".join(parts)
 
     @staticmethod
     def _tool_message_dict(assistant_message, tool_call) -> dict[str, Any]:

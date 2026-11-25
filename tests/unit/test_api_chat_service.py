@@ -89,6 +89,21 @@ def test_knowledge_qa_mode_uses_strict_agent_with_history(store):
     assert result["type"] == "general_response"
 
 
+def test_knowledge_qa_passes_untruncated_recent_user_turns(store):
+    """历史窗口会截断用户发言，但严格检索 query 单独拿用户原话。"""
+    sid = store.create_session()
+    long_turn = "问" * 3000
+    store.append_message(sid, "user", long_turn)
+    store.append_message(sid, "assistant", "回答")
+    runtime = FakeRuntime()
+
+    run_turn(FakeAgent(runtime=runtime), store, sid, "那它呢？", _sink(), mode="knowledge_qa")
+
+    context = runtime.calls[0]["context"]
+    assert context["recent_user_turns"] == [long_turn]
+    assert len(context["history"][0]["content"]) < len(long_turn)
+
+
 def test_knowledge_qa_stops_before_retrieval_when_client_is_gone(store):
     """启动事件发不出去说明连接已断；严格文献轮同样落中断终态。"""
     sid = store.create_session()
