@@ -120,3 +120,18 @@ def test_hint_general_when_no_keyword_match():
     assert hint["modality"] == "general"
     assert hint["skill"] is None
     assert hint["best_practices"] is None
+
+
+def test_hint_skips_best_practice_query_when_search_tool_enabled(monkeypatch):
+    """默认链路会把知识技能改写为 search_knowledge，旧名的最佳实践查询应跳过。"""
+    monkeypatch.delenv("AGENT_KNOWLEDGE_TOOL", raising=False)
+    registry = SkillRegistry(Path("/tmp/skills"))
+    loader = MagicMock(spec=SkillLoader)
+    kg_memory = MagicMock()
+    router = ModalRouter(registry, loader, kg_memory=kg_memory)
+
+    hint = router.hint("TP53 在癌症中的作用是什么？")
+
+    assert hint["modality"] == "knowledge"
+    assert hint["best_practices"] is None
+    kg_memory.query_entities.assert_not_called()

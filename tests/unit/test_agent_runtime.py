@@ -6,6 +6,14 @@ import json
 import logging
 from types import SimpleNamespace
 
+import pytest
+
+
+@pytest.fixture(autouse=True)
+def _knowledge_tool_default_off(monkeypatch):
+    """既有用例基于旧工具链；显式回退，避免开发环境 .env 干扰。"""
+    monkeypatch.setenv("AGENT_KNOWLEDGE_TOOL", "legacy")
+
 
 def _tool_call_response(name: str, arguments: dict) -> SimpleNamespace:
     tc = SimpleNamespace(
@@ -59,13 +67,20 @@ class FakeWM:
         self.calls.append(("query_knowledge", {"query": query}))
         return self.results["query_knowledge"]
 
+    def search_knowledge_for_agent(self, query, context):
+        self.calls.append(("search_knowledge", {"query": query}))
+        result = self.results["search_knowledge"]
+        return result.pop(0) if isinstance(result, list) else result
+
     def query_memory_for_agent(self, query, context):
         self.calls.append(("query_memory", {"query": query}))
         return self.results["query_memory"]
 
     def execute_workflow(self, user_input, context=None):
         self.fallback_calls.append(user_input)
-        return {"status": "success", "type": "general_response", "message": "fallback"}
+        return self.results.get(
+            "fallback", {"status": "success", "type": "general_response", "message": "fallback"}
+        )
 
 
 def _make_runtime(llm, wm=None):
@@ -245,6 +260,475 @@ def test_query_memory_dispatch():
     assert wm.calls == [("query_memory", {"query": "上次差异表达用的什么参数"})]
     assert result["type"] == "memory_response"
     assert result["status"] == "success"
+
+
+def test_search_knowledge_hidden_and_rejected_when_flag_off(monkeypatch):
+    """legacy 回退：工具清单不暴露，模型硬调用也只得到未知工具错误。"""
+    monkeypatch.setenv("AGENT_KNOWLEDGE_TOOL", "legacy")
+    from src.control.tools import build_tool_schemas
+
+    assert "search_knowledge" not in {schema["function"]["name"] for schema in build_tool_schemas()}
+    llm = FakeLLM([_tool_call_response("search_knowledge", {"query": "TP53"})])
+    runtime, wm = _make_runtime(llm)
+
+    result = runtime.execute("TP53 的证据")
+
+    assert wm.calls == []
+    assert result["status"] == "error"
+    assert "未知工具" in result["message"]
+
+
+def test_search_knowledge_dispatches_and_continues_round(monkeypatch):
+    """开启后：schema 暴露、证据结果非终态，模型据此继续回答。"""
+    monkeypatch.setenv("AGENT_KNOWLEDGE_TOOL", "search")
+    llm = FakeLLM(
+        [
+            _tool_call_response("search_knowledge", {"query": "TP53"}),
+            _text_response("基于 [E1] 的回答"),
+        ]
+    )
+    wm = FakeWM(
+        {
+            "search_knowledge": {
+                "status": "success",
+                "type": "knowledge_evidence",
+                "evidence": [{"evidence_id": "E1", "content": "x"}],
+                "sources": [],
+                "evidence_count": 1,
+                "continue_tool_loop": True,
+            }
+        }
+    )
+    runtime, wm = _make_runtime(llm, wm)
+
+    result = runtime.execute("TP53 的证据")
+
+    assert wm.calls == [("search_knowledge", {"query": "TP53"})]
+    assert "search_knowledge" in {schema["function"]["name"] for schema in llm.calls[0]["tools"]}
+    assert "[E#]" in llm.calls[0]["messages"][0]["content"]
+    assert result["message"] == "基于 [E1] 的回答"
+    assert result["outcome"] == "supported_answer"
+    package = result["results"]["knowledge_evidence"]
+    assert package["citations"] == ["E1"]
+    assert package["evidence"][0]["content"] == "x"
+    assert package["claims"] == []
+
+
+def test_explicit_claims_block_is_stored_and_stripped(monkeypatch):
+    """模型显式给出的 claims 才落包；围栏块不进入用户可见正文。"""
+    monkeypatch.setenv("AGENT_KNOWLEDGE_TOOL", "search")
+    claims_block = '\n```claims\n[{"text": "TP53 是抑癌基因", "evidence_ids": ["E1"]}]\n```'
+    llm = FakeLLM(
+        [
+            _tool_call_response("search_knowledge", {"query": "TP53"}),
+            _text_response("TP53 是抑癌基因 [E1]" + claims_block),
+        ]
+    )
+    runtime, _ = _make_runtime(llm, FakeWM({"search_knowledge": _evidence_result()}))
+
+    result = runtime.execute("TP53")
+
+    assert result["message"] == "TP53 是抑癌基因 [E1]"
+    assert result["results"]["knowledge_evidence"]["claims"] == [
+        {"text": "TP53 是抑癌基因", "evidence_ids": ["E1"]}
+    ]
+
+
+def test_evidence_ids_continue_across_multiple_tool_calls(monkeypatch):
+    """同一轮两次检索的 E 编号接续（E1 → E2），不跨调用重号。"""
+    monkeypatch.setenv("AGENT_KNOWLEDGE_TOOL", "search")
+    evidences = [
+        {
+            "status": "success",
+            "type": "knowledge_evidence",
+            "evidence": [{"evidence_id": "E1", "chunk_id": "c1", "content": "x"}],
+            "sources": [{"source_id": "s1", "evidence_ids": ["E1"]}],
+            "evidence_count": 1,
+            "continue_tool_loop": True,
+        },
+        {
+            "status": "success",
+            "type": "knowledge_evidence",
+            "evidence": [{"evidence_id": "E1", "chunk_id": "c2", "content": "y"}],
+            "sources": [{"source_id": "s2", "evidence_ids": ["E1"]}],
+            "evidence_count": 1,
+            "continue_tool_loop": True,
+        },
+    ]
+    llm = FakeLLM(
+        [
+            _tool_call_response("search_knowledge", {"query": "q1"}),
+            _tool_call_response("search_knowledge", {"query": "q2"}),
+            _text_response("见 [E1] [E2]"),
+        ]
+    )
+    runtime, _ = _make_runtime(llm, FakeWM({"search_knowledge": evidences}))
+
+    runtime.execute("两个检索")
+
+    tool_messages = [m for m in llm.calls[2]["messages"] if m.get("role") == "tool"]
+    first = json.loads(tool_messages[0]["content"])
+    second = json.loads(tool_messages[1]["content"])
+    assert first["evidence"][0]["evidence_id"] == "E1"
+    assert second["evidence"][0]["evidence_id"] == "E2"
+    assert second["sources"][0]["evidence_ids"] == ["E2"]
+
+
+def test_duplicate_chunk_across_tool_calls_is_dropped(monkeypatch):
+    """同一 chunk 被两次检索命中时只保留首条证据，第二次不再分配 E 编号。"""
+    monkeypatch.setenv("AGENT_KNOWLEDGE_TOOL", "search")
+    evidence = {
+        "status": "success",
+        "type": "knowledge_evidence",
+        "evidence": [{"evidence_id": "E1", "chunk_id": "same", "content": "x"}],
+        "sources": [{"source_id": "s1", "evidence_ids": ["E1"]}],
+        "evidence_count": 1,
+        "continue_tool_loop": True,
+    }
+    llm = FakeLLM(
+        [
+            _tool_call_response("search_knowledge", {"query": "q1"}),
+            _tool_call_response("search_knowledge", {"query": "q2"}),
+            _text_response("见 [E1]"),
+        ]
+    )
+    runtime, _ = _make_runtime(llm, FakeWM({"search_knowledge": [evidence, dict(evidence)]}))
+
+    runtime.execute("同一 chunk 两次")
+
+    tool_messages = [m for m in llm.calls[2]["messages"] if m.get("role") == "tool"]
+    first = json.loads(tool_messages[0]["content"])
+    second = json.loads(tool_messages[1]["content"])
+    assert [item["evidence_id"] for item in first["evidence"]] == ["E1"]
+    assert second["evidence"] == []
+    assert second["sources"] == []
+    assert second["evidence_count"] == 0
+    assert "未新增证据" in second["message"]
+
+
+def test_knowledge_mode_forces_initial_search_and_only_exposes_search(monkeypatch):
+    """严格文献模式：先强制检索，模型只拿到检索工具和证据，再按 [E#] 作答。"""
+    monkeypatch.setenv("AGENT_KNOWLEDGE_TOOL", "legacy")
+    llm = FakeLLM([_text_response("TP53 是抑癌基因 [E1]")])
+    runtime, wm = _make_runtime(llm, FakeWM({"search_knowledge": _evidence_result()}))
+
+    result = runtime.execute("TP53", knowledge_mode=True)
+
+    assert wm.calls == [("search_knowledge", {"query": "TP53"})]
+    assert [tool["function"]["name"] for tool in llm.calls[0]["tools"]] == ["search_knowledge"]
+    assert "strict literature" in llm.calls[0]["messages"][0]["content"]
+    assert result["outcome"] == "supported_answer"
+    assert result["results"]["knowledge_evidence"]["citations"] == ["E1"]
+
+
+def test_default_on_exposes_literature_tool_without_legacy_flag(monkeypatch):
+    """未配置开关时运行时默认暴露检索工具，不再暴露旧 query_knowledge。"""
+    monkeypatch.delenv("AGENT_KNOWLEDGE_TOOL", raising=False)
+    llm = FakeLLM([_text_response("你好")])
+    runtime, _ = _make_runtime(llm)
+
+    runtime.execute("你好")
+
+    names = [tool["function"]["name"] for tool in llm.calls[0]["tools"]]
+    assert "search_knowledge" in names
+    assert "query_knowledge" not in names
+    assert "search_knowledge" in llm.calls[0]["messages"][0]["content"]
+
+
+def test_route_hint_points_to_exposed_knowledge_tool(monkeypatch):
+    """默认链路的路由提示不能建议一个已隐藏的旧工具。"""
+    monkeypatch.delenv("AGENT_KNOWLEDGE_TOOL", raising=False)
+    llm = FakeLLM([_text_response("TP53 是抑癌基因")])
+    runtime, _ = _make_runtime(llm)
+    runtime.router = SimpleNamespace(
+        hint=lambda _text: {
+            "modality": "knowledge",
+            "skill": "query_knowledge",
+            "best_practices": None,
+        }
+    )
+
+    runtime.execute("TP53 是什么")
+
+    system = llm.calls[0]["messages"][0]["content"]
+    assert "建议技能: search_knowledge" in system
+    assert "建议技能: query_knowledge" not in system
+
+
+def test_deprecated_query_knowledge_is_rejected_when_not_legacy(monkeypatch):
+    """默认开启检索后，模型幻觉调用旧成品回答工具也不得执行。"""
+    monkeypatch.delenv("AGENT_KNOWLEDGE_TOOL", raising=False)
+    llm = FakeLLM(
+        [
+            _tool_call_response("query_knowledge", {"query": "TP53"}),
+            _text_response("TP53 是抑癌基因"),
+        ]
+    )
+    runtime, wm = _make_runtime(llm)
+
+    result = runtime.execute("TP53")
+
+    assert wm.calls == []
+    assert result["status"] == "success"
+    assert "抑癌基因" in result["message"]
+
+
+def test_strict_mode_rejects_query_knowledge_even_in_legacy(monkeypatch):
+    """严格文献预设不受 legacy 回退影响，旧成品回答工具仍不得执行。"""
+    monkeypatch.setenv("AGENT_KNOWLEDGE_TOOL", "legacy")
+    llm = FakeLLM(
+        [
+            _tool_call_response("query_knowledge", {"query": "TP53"}),
+            _text_response("TP53 是抑癌基因 [E1]"),
+        ]
+    )
+    runtime, wm = _make_runtime(llm, FakeWM({"search_knowledge": _evidence_result()}))
+
+    result = runtime.execute("TP53", knowledge_mode=True)
+
+    assert [name for name, _ in wm.calls] == ["search_knowledge"]
+    assert result["status"] == "success"
+    assert "抑癌基因" in result["message"]
+
+
+def test_default_mode_without_llm_does_not_route_knowledge_to_old_workflow(monkeypatch):
+    """默认开启检索时，无 LLM 降级也不能把知识问题送进旧成品回答工作流。"""
+    from src.control.agent_runtime import AgentRuntime
+
+    monkeypatch.delenv("AGENT_KNOWLEDGE_TOOL", raising=False)
+    wm = FakeWM({})
+    runtime = AgentRuntime(llm_client=None, model="none", workflow_manager=wm)
+
+    result = runtime.execute("TP53 在癌症中的作用是什么？")
+
+    assert result["status"] == "error"
+    assert "对话模型暂时不可用" in result["message"]
+    assert wm.fallback_calls == []
+
+
+def test_default_mode_blocks_old_answer_returned_by_fallback(monkeypatch):
+    """分类器漏判时，旧工作流返回的成品回答也不能进入默认链路。"""
+    from src.control.agent_runtime import AgentRuntime
+
+    monkeypatch.delenv("AGENT_KNOWLEDGE_TOOL", raising=False)
+    wm = FakeWM(
+        {
+            "fallback": {
+                "status": "success",
+                "type": "knowledge_response",
+                "response": "旧成品回答",
+            }
+        }
+    )
+    runtime = AgentRuntime(llm_client=None, model="none", workflow_manager=wm)
+
+    result = runtime.execute("什么是批次效应")
+
+    assert result["status"] == "error"
+    assert "对话模型暂时不可用" in result["message"]
+
+
+def test_knowledge_mode_reports_unavailable_without_second_llm(monkeypatch):
+    """强制检索失败时不调用生成模型，直接报服务不可用。"""
+    monkeypatch.setenv("AGENT_KNOWLEDGE_TOOL", "legacy")
+    llm = FakeLLM([])
+    runtime, wm = _make_runtime(
+        llm,
+        FakeWM(
+            {
+                "search_knowledge": {
+                    "status": "error",
+                    "outcome": "knowledge_unavailable",
+                    "message": "知识检索服务暂时不可用，请稍后重试。",
+                }
+            }
+        ),
+    )
+
+    result = runtime.execute("TP53", knowledge_mode=True)
+
+    assert wm.calls[0][0] == "search_knowledge"
+    assert llm.calls == []
+    assert result["outcome"] == "knowledge_unavailable"
+
+
+def test_knowledge_mode_without_llm_does_not_fall_back_to_old_workflow():
+    """严格文献模式没有模型时直接报不可用，不能退回无引用的旧工作流。"""
+    from src.control.agent_runtime import AgentRuntime
+
+    wm = FakeWM({})
+    runtime = AgentRuntime(llm_client=None, model="none", workflow_manager=wm)
+
+    result = runtime.execute("TP53", knowledge_mode=True)
+
+    assert result["outcome"] == "knowledge_unavailable"
+    assert result["status"] == "error"
+    assert wm.fallback_calls == []
+
+
+def _evidence_result() -> dict:
+    """构造带一条可引用证据的检索工具结果。"""
+    return {
+        "status": "success",
+        "type": "knowledge_evidence",
+        "query": "TP53",
+        "evidence": [
+            {
+                "evidence_id": "E1",
+                "chunk_id": "c1",
+                "title": "A paper",
+                "content": "TP53 证据",
+                "file_path": "D:/private/paper.pdf",
+            }
+        ],
+        "sources": [{"source_id": "s1", "evidence_ids": ["E1"]}],
+        "evidence_count": 1,
+        "continue_tool_loop": True,
+    }
+
+
+def test_invalid_citation_is_retried_once_then_accepted(monkeypatch):
+    """首次回答引用不存在的编号，重写一次后通过校验。"""
+    monkeypatch.setenv("AGENT_KNOWLEDGE_TOOL", "search")
+    llm = FakeLLM(
+        [
+            _tool_call_response("search_knowledge", {"query": "TP53"}),
+            _text_response("见 [E9]"),
+            _text_response("重写后见 [E1]"),
+        ]
+    )
+    runtime, _ = _make_runtime(llm, FakeWM({"search_knowledge": _evidence_result()}))
+
+    result = runtime.execute("TP53")
+
+    assert len(llm.calls) == 3
+    assert "tools" not in llm.calls[2]
+    assert result["status"] == "success"
+    assert result["message"] == "重写后见 [E1]"
+    assert result["outcome"] == "supported_answer"
+
+
+def test_invalid_citation_after_retry_reports_and_keeps_evidence(monkeypatch):
+    """两次引用校验都失败时明确报错，并把已检索证据带回结果。"""
+    monkeypatch.setenv("AGENT_KNOWLEDGE_TOOL", "search")
+    llm = FakeLLM(
+        [
+            _tool_call_response("search_knowledge", {"query": "TP53"}),
+            _text_response("没有引用"),
+            _text_response("仍然没有引用"),
+        ]
+    )
+    runtime, _ = _make_runtime(llm, FakeWM({"search_knowledge": _evidence_result()}))
+
+    result = runtime.execute("TP53")
+
+    assert result["status"] == "error"
+    assert result["outcome"] == "citation_invalid"
+    assert "未通过引用校验" in result["message"]
+    assert "[E1]" in result["message"]
+    package = result["results"]["knowledge_evidence"]
+    assert package["outcome"] == "citation_invalid"
+    assert package["evidence"][0]["evidence_id"] == "E1"
+    assert package["citations"] == ["E1"]
+    assert "file_path" not in package["evidence"][0]
+    assert "chunk_id" not in package["evidence"][0]
+    assert package["claims"] == []
+
+
+def test_successful_empty_search_reports_insufficient_evidence(monkeypatch):
+    """检索成功但零证据时给固定话术，不依赖模型自行“猜没有”。"""
+    monkeypatch.setenv("AGENT_KNOWLEDGE_TOOL", "search")
+    llm = FakeLLM(
+        [
+            _tool_call_response("search_knowledge", {"query": "冷门问题"}),
+            _text_response("我猜没有证据"),
+        ]
+    )
+    empty = {
+        "status": "success",
+        "type": "knowledge_evidence",
+        "query": "冷门问题",
+        "evidence": [],
+        "sources": [],
+        "evidence_count": 0,
+        "retrieval_status": "no_results",
+        "message": "当前知识库没有检索到相关证据。",
+        "outcome": "insufficient_evidence",
+        "continue_tool_loop": True,
+    }
+    runtime, _ = _make_runtime(llm, FakeWM({"search_knowledge": empty}))
+
+    result = runtime.execute("冷门问题")
+
+    assert result["status"] == "success"
+    assert result["outcome"] == "insufficient_evidence"
+    assert "当前知识库没有检索到相关证据" in result["message"]
+    assert "检索范围：冷门问题" in result["message"]
+    assert len(llm.calls) == 2  # 不做引用重试
+
+
+def test_failed_then_empty_search_stays_unavailable(monkeypatch):
+    """一次故障加一次成功空结果仍报不可用：不能把未覆盖的检索说成没有证据。"""
+    monkeypatch.setenv("AGENT_KNOWLEDGE_TOOL", "search")
+    llm = FakeLLM(
+        [
+            _tool_call_response("search_knowledge", {"query": "q1"}),
+            _tool_call_response("search_knowledge", {"query": "q2"}),
+            _text_response("没有证据"),
+        ]
+    )
+    failed = {
+        "status": "error",
+        "type": "knowledge_evidence",
+        "query": "q1",
+        "outcome": "knowledge_unavailable",
+        "message": "知识检索服务暂时不可用，请稍后重试。",
+        "continue_tool_loop": True,
+    }
+    empty = {
+        "status": "success",
+        "type": "knowledge_evidence",
+        "query": "q2",
+        "evidence": [],
+        "sources": [],
+        "evidence_count": 0,
+        "outcome": "insufficient_evidence",
+        "continue_tool_loop": True,
+    }
+    runtime, _ = _make_runtime(llm, FakeWM({"search_knowledge": [failed, empty]}))
+
+    result = runtime.execute("两次检索")
+
+    assert result["status"] == "error"
+    assert result["outcome"] == "knowledge_unavailable"
+    assert result["message"] == "知识检索服务暂时不可用，请稍后重试。"
+
+
+def test_service_failure_reports_unavailable_not_missing_evidence(monkeypatch):
+    """检索服务不可用时用固定不可用话术，覆盖模型可能编造的“没有证据”。"""
+    monkeypatch.setenv("AGENT_KNOWLEDGE_TOOL", "search")
+    llm = FakeLLM(
+        [
+            _tool_call_response("search_knowledge", {"query": "TP53"}),
+            _text_response("知识库里没有证据"),
+        ]
+    )
+    failed = {
+        "status": "error",
+        "type": "knowledge_evidence",
+        "query": "TP53",
+        "outcome": "knowledge_unavailable",
+        "message": "知识检索服务暂时不可用，请稍后重试。",
+        "retrieval_error_reason": "service_failure",
+        "continue_tool_loop": True,
+    }
+    runtime, _ = _make_runtime(llm, FakeWM({"search_knowledge": failed}))
+
+    result = runtime.execute("TP53")
+
+    assert result["status"] == "error"
+    assert result["outcome"] == "knowledge_unavailable"
+    assert result["message"] == "知识检索服务暂时不可用，请稍后重试。"
 
 
 def test_run_analysis_merges_regex_params_from_user_input():
@@ -529,3 +1013,32 @@ def test_qc_results_and_artifacts_do_not_enter_model_history():
     )
     assert "CELL_SECRET" not in str(out) and "PRIVATE_PATH" not in str(out)
     assert out[1] == {"role": "assistant", "content": "QC 等待审阅"}
+
+
+def test_knowledge_history_keeps_claims_but_strips_evidence_and_sources():
+    """后续轮次只带正文/引用/显式论断，证据原文与来源路径不进入模型上下文。"""
+    from src.control import compact
+
+    rt, _ = _make_runtime(None)
+    history = compact.prepare_history(
+        [
+            {
+                "role": "assistant",
+                "content": "TP53 是抑癌基因 [E1]",
+                "results": {
+                    "knowledge_evidence": {
+                        "outcome": "supported_answer",
+                        "evidence": [{"evidence_id": "E1", "content": "SECRET_CHUNK"}],
+                        "sources": [{"file_path": "PRIVATE_PATH"}],
+                        "claims": [{"text": "TP53 是抑癌基因", "evidence_ids": ["E1"]}],
+                    }
+                },
+            }
+        ]
+    )
+    out = rt._build_messages("继续", {"history": history})
+
+    rendered = str(out)
+    assert "SECRET_CHUNK" not in rendered and "PRIVATE_PATH" not in rendered
+    assert "结构化论断" in out[1]["content"]
+    assert "TP53 是抑癌基因 [E1]" in out[1]["content"]

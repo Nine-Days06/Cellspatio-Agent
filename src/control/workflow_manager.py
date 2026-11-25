@@ -2,6 +2,7 @@ import csv
 import hashlib
 import logging
 import math
+import time
 import uuid
 import zlib
 from collections.abc import Iterator
@@ -10,6 +11,7 @@ from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from typing import Any
 
+from src.config import env_int
 from src.control.kb_coverage import (
     LAZY_INGEST_MAX_ASSETS,
     LAZY_INGEST_MIN_CONTEXT,
@@ -1154,6 +1156,58 @@ class WorkflowManager:
         params = self.intent_parser.extract_parameters(query) if self.intent_parser else {}
         with self._record_run(intent, params, context) as run_id:
             return self._execute_knowledge_workflow(intent, params, context, run_id)
+
+    def search_knowledge_for_agent(
+        self, query: str, context: dict[str, Any] | None = None
+    ) -> dict[str, Any]:
+        """Agent 面向的只读文献检索：返回证据与来源，不生成答案、不写运行记录。"""
+        from src.knowledge.qa import (
+            RETRIEVAL_CALL_FAILED,
+            RETRIEVAL_DEADLINE,
+            RETRIEVAL_SERVICE_FAILURE,
+            retrieve_evidence,
+        )
+
+        timeout = env_int("AGENT_KNOWLEDGE_TIMEOUT", 60)
+        retryable = {RETRIEVAL_CALL_FAILED, RETRIEVAL_DEADLINE, RETRIEVAL_SERVICE_FAILURE}
+        # 服务故障重试一次；每次尝试都有自己的截止，避免一次超时吃掉全部预算。
+        retrieval = retrieve_evidence(
+            self.knowledge_client,
+            query,
+            deadline=time.monotonic() + timeout,
+        )
+        if retrieval.error is not None and retrieval.error.reason in retryable:
+            retrieval = retrieve_evidence(
+                self.knowledge_client,
+                query,
+                deadline=time.monotonic() + timeout,
+            )
+        if retrieval.error is not None:
+            return {
+                # error + continue_tool_loop：非终态失败，让模型据实告知不可用。
+                "status": "error",
+                "type": "knowledge_evidence",
+                "query": query,
+                "outcome": "knowledge_unavailable",
+                "message": "知识检索服务暂时不可用，请稍后重试。",
+                "retrieval_error_reason": retrieval.error.reason,
+                "continue_tool_loop": True,
+            }
+        result = {
+            "status": "success",
+            "type": "knowledge_evidence",
+            "query": query,
+            "evidence": retrieval.evidence,
+            "sources": retrieval.sources,
+            "untraceable": retrieval.untraceable,
+            "evidence_count": len(retrieval.evidence),
+            "retrieval_status": "no_results" if retrieval.no_results else "success",
+            "message": "" if retrieval.evidence else "当前知识库没有检索到相关证据。",
+            "continue_tool_loop": True,
+        }
+        if not retrieval.evidence:
+            result["outcome"] = "insufficient_evidence"
+        return result
 
     def query_memory_for_agent(
         self, query: str, context: dict[str, Any] | None = None

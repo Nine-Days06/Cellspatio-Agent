@@ -31,22 +31,50 @@ def estimate_tokens(text: str) -> int:
 
 
 def prepare_history(messages: list[dict]) -> list[dict]:
-    """裁剪超长单条消息内容，返回等值副本（不改原对象）。"""
+    """裁剪超长内容并剥离知识证据原文，只给后续轮次留正文与显式论断。"""
     prepared = []
     for msg in messages:
         content = str(msg.get("content") or "")
+        results = msg.get("results")
+        if isinstance(results, dict):
+            content = _append_claims(content, results)
         if len(content) > TOOL_OUTPUT_MAX_CHARS:
             content = content[:TOOL_OUTPUT_MAX_CHARS] + TRUNCATION_NOTE
-        prepared.append({**msg, "content": content})
+        history_msg = {**msg, "content": content}
+        if "results" in history_msg:
+            history_msg["results"] = _history_results(history_msg["results"])
+        prepared.append(history_msg)
     return prepared
+
+
+def _append_claims(content: str, results: dict) -> str:
+    """显式 claims 进入正文上下文，保证压缩阈值能计入这部分成本。"""
+    package = results.get("knowledge_evidence")
+    claims = package.get("claims") if isinstance(package, dict) else None
+    if not isinstance(claims, list):
+        return content
+    lines = [
+        f"- {claim.get('text')} [{'、'.join(str(i) for i in claim.get('evidence_ids') or [])}]"
+        for claim in claims
+        if isinstance(claim, dict) and claim.get("text")
+    ]
+    return f"{content}\n\n[结构化论断]\n" + "\n".join(lines) if lines else content
+
+
+def _history_results(results: object) -> dict | None:
+    """证据原文/来源只服务 UI；其他结果键原样保留。"""
+    if not isinstance(results, dict):
+        return None
+    kept = {key: value for key, value in results.items() if key != "knowledge_evidence"}
+    return kept or None
 
 
 def context_tokens(summary: str | None, window: list[dict], system: str | None = None) -> int:
     """system + 摘要 + 历史窗口的 token 总量。"""
     if system is None:
-        from src.control.tools import SYSTEM_PROMPT
+        from src.control.tools import build_system_prompt
 
-        system = SYSTEM_PROMPT
+        system = build_system_prompt()
     total = estimate_tokens(system or "")
     total += estimate_tokens(summary or "")
     for msg in window:

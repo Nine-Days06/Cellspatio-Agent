@@ -120,34 +120,6 @@ def persist_outcome(
     return result, last
 
 
-def _persist_interrupted_qa(
-    store: SessionStore,
-    session_id: str,
-    question: str,
-    question_message_id: int,
-    qa: dict[str, Any] | None = None,
-) -> dict[str, Any]:
-    """断连时也落终态：刷新后能看出这一轮被中断，而不是只有用户提问没有回应。"""
-    from src.knowledge.qa import interrupted_package
-
-    # 已有检索/生成结果时保留内容，只把状态改为 interrupted，避免白跑一轮
-    pkg = (
-        {**qa, "status": "interrupted"}
-        if qa
-        else interrupted_package(
-            question, session_id=session_id, question_message_id=question_message_id
-        )
-    )
-    answer = str(pkg.get("answer") or "本轮已中断，未生成回答。")
-    finalize_turn(store, session_id, content=answer, results={"knowledge_qa": pkg})
-    return {
-        "status": "interrupted",
-        "type": "knowledge_qa",
-        "message": answer,
-        "results": {"knowledge_qa": pkg},
-    }
-
-
 def is_qc_stage(result: dict[str, Any]) -> bool:
     """固定 QC 终态判定：对话与本地入口共用，避免两处条件漂移。"""
     return result.get("stage") == "qc_review"
@@ -208,64 +180,7 @@ def run_turn(
     emit(event) -> bool：返回 False 表示客户端已断开，后续发射应被忽略。
     before_done：助手消息落库后、``done`` 发射前的唯一扩展点；中断与报错分支不触发。
     """
-    question = store.append_message(session_id, "user", prompt)
-
-    # 知识问答必须在历史压缩与上下文构造之前分叉：只允许本轮问题进入模型。
-    if mode == "knowledge_qa":
-        from src.knowledge.qa import STAGE_RETRIEVAL, run_knowledge_qa
-
-        question_message_id = question["id"]
-        connected = True
-
-        def on_stage(stage: str, phase: str) -> bool:
-            """把问答阶段翻译成现有工具状态事件；返回连接是否仍可写。"""
-            nonlocal connected
-            label = "检索知识库" if stage == STAGE_RETRIEVAL else "生成回答"
-            connected = emit(
-                make_event(
-                    "tool_status",
-                    name=f"knowledge_qa_{stage}",
-                    phase=phase,
-                    label=label,
-                )
-            )
-            return connected
-
-        def on_reasoning(text: str) -> bool:
-            """思考增量走同一 delta 事件，只加 source 标记，不写正文草稿。"""
-            nonlocal connected
-            if not connected:
-                return False
-            connected = emit(make_event("delta", text=text, source="reasoning"))
-            return connected
-
-        # shortcut: 检索开始前断连直接放弃；非流式生成不可取消，流式思考
-        # 回写失败时由 on_reasoning 返回 False 提前收口。
-        qa = run_knowledge_qa(
-            getattr(agent, "knowledge_client", None),
-            prompt,
-            session_id=session_id,
-            question_message_id=question_message_id,
-            on_stage=on_stage,
-            on_reasoning=on_reasoning,
-            streaming=True,
-        )
-        if not connected or qa.get("status") == "interrupted":
-            return _persist_interrupted_qa(store, session_id, prompt, question_message_id, qa)
-        finalize_turn(
-            store,
-            session_id,
-            content=qa["answer"],
-            results={"knowledge_qa": qa},
-            emit=emit,
-            before_done=before_done if turn_completed({"status": qa["status"]}) else None,
-        )
-        return {
-            "status": qa["status"],
-            "type": "knowledge_qa",
-            "message": qa["answer"],
-            "results": {"knowledge_qa": qa},
-        }
+    store.append_message(session_id, "user", prompt)
 
     session = store.get_session(session_id) or {}
     messages = store.get_messages(session_id)
@@ -293,10 +208,19 @@ def run_turn(
     if workspace and workspace.get("kind") == "ephemeral":
         # 临时访客只能分析自己上传进工作区的数据，聊天里提到的服务器路径同样拒绝。
         context["allowed_input_root"] = workspace.get("root_path")
-    result = agent.agent_runtime.execute(prompt, context, on_event=emit)
+    result = agent.agent_runtime.execute(
+        prompt, context, on_event=emit, knowledge_mode=mode == "knowledge_qa"
+    )
+
+    results = result.get("results")
+    if not isinstance(results, dict):
+        results = {}
+    results["chat_mode"] = mode
+    result["results"] = results
 
     if result.get("status") == "aborted":
-        finalize_turn(store, session_id, content="（已中断）", emit=emit)
+        # 中断轮也要记录模式，重试时才能沿用严格文献链路。
+        finalize_turn(store, session_id, content="（已中断）", results=results, emit=emit)
         return result
 
     if result.get("status") == "needs_script_confirmation":

@@ -81,7 +81,7 @@ export function ChatPage() {
   const [slowHint, setSlowHint] = useState(false)
   /** 确认卡唯一状态源；新卡/切换会话/重新生成/新一轮输入时 reset */
   const [confirmState, dispatchConfirm] = useReducer(confirmReducer, initialConfirmState)
-  /** 本轮模式：知识问答只走证据链，智能对话走现有工具循环 */
+  /** 本轮模式：严格文献模式强制检索并引用证据，智能对话按需检索 */
   const [mode, setMode] = useState<ChatMode>('chat')
 
   const sessionId = useChatStore((s) => s.sessionId)
@@ -253,11 +253,12 @@ export function ChatPage() {
     const history = state.history
     const lastUserAt = history.reduce((at, m, i) => (m.role === 'user' ? i : at), -1)
     if (lastUserAt < 0) return
-    // 沿用上一轮回复所在的链路，而不是当前开关：切模式后重试不该换链路
+    // 沿用上一轮回复所在的链路，而不是当前开关：切模式后重试不该换链路。
+    // chat_mode 由后端写入本轮 results；knowledge_qa 仅用于没有该字段的旧消息。
     const reply = history.slice(lastUserAt + 1).find((m) => m.role === 'assistant')
     // 没有回复可参考时保持当前开关，避免把知识问答静默换成普通对话
     const replayMode: ChatMode = reply
-      ? reply.results?.knowledge_qa
+      ? reply.results?.chat_mode === 'knowledge_qa' || reply.results?.knowledge_qa
         ? 'knowledge_qa'
         : 'chat'
       : mode
@@ -566,7 +567,7 @@ export function ChatPage() {
           >
             {[
               { value: 'chat' as const, label: '智能对话' },
-              { value: 'knowledge_qa' as const, label: '知识问答' },
+              { value: 'knowledge_qa' as const, label: '严格文献深答' },
             ].map((item) => (
               <button
                 key={item.value}
@@ -640,7 +641,7 @@ export function ChatPage() {
             )}
           </div>
           </div>
-          <p className="composer-help mt-2 text-xs text-muted-foreground">{mode === 'knowledge_qa' ? '回答附论断与原文证据。' : 'Enter 发送，Shift + Enter 换行；分析须独立授权。'}</p>
+          <p className="composer-help mt-2 text-xs text-muted-foreground">{mode === 'knowledge_qa' ? '强制检索文献，回答逐条引用证据；不执行分析。' : 'Enter 发送，Shift + Enter 换行；分析须独立授权。'}</p>
           </div>
         </div>
       </main>

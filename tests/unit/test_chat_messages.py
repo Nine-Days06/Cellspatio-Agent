@@ -50,6 +50,20 @@ def test_summarize_result_plain_message_default():
     assert chat_messages.summarize_result({})[0] == "处理完成"
 
 
+def test_summarize_result_general_response_keeps_message_with_knowledge_metadata():
+    """对话回答附带 knowledge results 时，正文不能被改写成“分析完成”。"""
+    result = {
+        "status": "success",
+        "type": "general_response",
+        "message": "回答 [E1]",
+        "results": {"knowledge": {"outcome": "supported_answer"}},
+    }
+
+    content, _refs = chat_messages.summarize_result(result)
+
+    assert content == "回答 [E1]"
+
+
 def test_build_assistant_message_attaches_results():
     message = chat_messages.build_assistant_message({"results": {"data": [1]}, "message": "ok"})
 

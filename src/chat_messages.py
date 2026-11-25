@@ -35,6 +35,9 @@ def summarize_result(result: dict[str, Any]) -> tuple[str, list[dict[str, Any]]]
         response = f"已下载 {asset.get('asset_id')} → `{asset.get('access_path')}`"
     elif result.get("stage") == "qc_review":
         response = result.get("message", "QC 等待科学审阅，未执行下游分析。")
+    elif result.get("type") == "general_response":
+        # 对话回答可能带 knowledge 元数据（outcome/证据），正文仍以 message 为准。
+        response = result.get("message", "处理完成")
     elif result.get("status") == "error":
         response = result.get("message", "分析失败")
     elif result.get("results"):

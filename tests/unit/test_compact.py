@@ -36,6 +36,30 @@ def test_prepare_history_returns_equal_copy_for_short_message():
     assert out[0] is not src[0]  # 但是副本，避免污染原对象
 
 
+def test_prepare_history_strips_evidence_but_keeps_claims():
+    """证据包留在消息落库层，进入后续上下文前只剩显式论断。"""
+    src = [
+        {
+            "role": "assistant",
+            "content": "答 [E1]",
+            "results": {
+                "knowledge_evidence": {
+                    "evidence": [{"evidence_id": "E1", "content": "SECRET"}],
+                    "sources": [{"file_path": "PRIVATE"}],
+                    "claims": [{"text": "论断", "evidence_ids": ["E1"]}],
+                }
+            },
+        }
+    ]
+
+    out = prepare_history(src)
+
+    assert "SECRET" not in str(out) and "PRIVATE" not in str(out)
+    assert out[0]["results"] is None
+    assert "结构化论断" in out[0]["content"]
+    assert "论断 [E1]" in out[0]["content"]
+
+
 def test_select_recent_within_budget_keeps_all():
     window = [{"role": "user", "content": "abcd"}]
     older, recent = select_recent(window, budget=100)
@@ -67,6 +91,47 @@ def test_context_tokens_includes_system_summary_and_window():
     summary = "s" * 40  # 10 token
     window = [{"role": "user", "content": "h" * 40}]  # 10 token
     assert context_tokens(summary, window, system="") == 20
+
+
+def test_context_tokens_ignores_persisted_knowledge_evidence():
+    """证据包只供 UI 展开，不参与模型上下文成本。"""
+    window = [
+        {
+            "role": "assistant",
+            "content": "回答如下 [E1]",
+            "results": {
+                "knowledge_evidence": {
+                    "evidence": [{"evidence_id": "E1", "content": "x" * 100_000}],
+                    "sources": [{"title": "paper"}],
+                }
+            },
+        }
+    ]
+
+    assert context_tokens(None, window, system="") == 2
+
+
+def test_long_conversation_does_not_replay_evidence_packages():
+    """多轮证据包落库后，进入上下文窗口的仍只有正文；压缩成本不随证据增长。"""
+    messages = [
+        {
+            "role": "assistant",
+            "content": "回答如下 [E1]",
+            "results": {
+                "knowledge_evidence": {
+                    "evidence": [{"evidence_id": "E1", "content": "x" * 200_000}],
+                    "sources": [{"file_path": "PRIVATE"}],
+                }
+            },
+        }
+        for _ in range(40)
+    ]
+
+    prepared = prepare_history(messages)
+
+    assert "x" * 100 not in str(prepared)
+    assert "PRIVATE" not in str(prepared)
+    assert context_tokens(None, prepared, system="") < 500
 
 
 def test_should_compact_respects_trigger(monkeypatch):

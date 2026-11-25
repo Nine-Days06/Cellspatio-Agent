@@ -3,6 +3,10 @@ import { ArrowDown, ArrowUpRight, FlaskConical, BookOpen, Scan } from 'lucide-re
 import { Button } from '@/components/ui/button'
 import { ChartBlock } from '@/components/ChartBlock'
 import { KnowledgeAnswer } from '@/components/KnowledgeAnswer'
+import {
+  KnowledgeEvidence,
+  linkKnowledgeCitations,
+} from '@/components/KnowledgeEvidence'
 import { QcEvidence } from '@/components/QcEvidence'
 import { MarkdownMessage } from '@/components/MarkdownMessage'
 import { ReasoningPanel } from '@/components/ReasoningPanel'
@@ -42,8 +46,8 @@ export interface MessageListProps {
 }
 
 /** 图表、QC 证据或待确认脚本卡片存在时，不用空消息兜底。 */
-function hasVisuals(message: WireMessage): boolean {
-  return (message.results?.charts?.length ?? 0) > 0 || Boolean(message.pending_script) || Boolean(message.results?.qc_artifacts) || Boolean(message.results?.knowledge_qa)
+function hasContent(message: WireMessage): boolean {
+  return (message.results?.charts?.length ?? 0) > 0 || Boolean(message.pending_script) || Boolean(message.results?.qc_artifacts) || Boolean(message.results?.knowledge_qa) || Boolean(message.results?.knowledge_evidence?.evidence?.length)
 }
 
 function Bubble({
@@ -114,9 +118,10 @@ export function MessageList({
       message.role === 'assistant' &&
       hasReasoning &&
       message.id === reasoning.messageId
+    const knowledge = message.results?.knowledge_evidence
     const empty =
       !message.content.trim() &&
-      !hasVisuals(message) &&
+      !hasContent(message) &&
       !messageReasoning &&
       message.role === 'assistant'
     const fresh = historyReady && message.role === 'user' && message.id < 0
@@ -153,7 +158,15 @@ export function MessageList({
               </div>
             ) : !message.results?.knowledge_qa ? (
               <MarkdownMessage
-                text={message.content}
+                text={
+                  knowledge
+                    ? linkKnowledgeCitations(
+                        message.content,
+                        knowledge.citations,
+                        message.id,
+                      )
+                    : message.content
+                }
                 className="reading-prose"
               />
             ) : null}
@@ -165,7 +178,9 @@ export function MessageList({
               </div>
             )}
             {message.results?.qc_artifacts && <QcEvidence results={message.results} sessionId={message.session_id} onRecorded={onQcRecorded} />}
+            {/* 旧会话兼容：新消息一律使用 results.knowledge_evidence。 */}
             {message.results?.knowledge_qa && <KnowledgeAnswer data={message.results.knowledge_qa} text={message.content} />}
+            {knowledge && <KnowledgeEvidence data={knowledge} messageId={message.id} />}
           </>
         ) : (
           <div className="whitespace-pre-wrap text-sm">{message.content}</div>

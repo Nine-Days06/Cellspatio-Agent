@@ -28,6 +28,14 @@ POST /api/chat（SSE）
 - 思考条与正式回答共用同一轮状态：正文开始后自动收起，结束后显示耗时；
   下一轮、切会话或失败且无正文时清空。多轮工具调用之间用空行分隔思考。
 - 无工具调用时走 `general_response`。
+- `search_knowledge` 默认启用，只读：检索证据（E 编号/来源）供模型继续推理，不生成答案、不写运行记录。
+  `AGENT_KNOWLEDGE_TOOL` 设为 `legacy`（或 `off`/`false` 等停用值）会回退到旧 `query_knowledge`：
+  由 LightRAG 直接作答并写运行记录，仅作兼容期排障，不再新增能力。
+  `query_knowledge` 已弃用，只保留一个版本供回退；删除条件：一个发布版本内经日志/用户反馈确认无 legacy 使用，按 BREAKING 流程发布。
+  用过检索的轮次必须引用真实 `[E#]`；服务不可用、没有证据、引用校验失败分别
+  返回 `knowledge_unavailable` / `insufficient_evidence` / `citation_invalid`。
+  证据包随助手消息存于 `results.knowledge_evidence` 供刷新后展开；模型上下文只
+  取正文与显式论断，不重放证据原文/来源。
 - 动态脚本由生成器产生，确认后才执行；已知失败保留尝试历史，用户可明确重试。
 - 中断、成功、取消或无法核验的运行拒绝重跑；不把复制卡恢复 pending。
 - 新确认请求独立恢复并核验原运行，不依赖 GET 恢复的请求上下文。
@@ -57,25 +65,23 @@ marker：独立授权的全细胞 Presto marker → 结果待复核
   聚类复核绑定已完成尝试；marker 复核通过 `src/analysis/sc_marker_reviews.py` 装配绑定视图。
 - 已完成的父证据按授权时的快照校验，不因下游推进而失效。
 
-## 知识问答
+## 严格文献深答（mode=knowledge_qa）
 
 ```text
 POST /api/chat mode=knowledge_qa
-  → tool_status knowledge_qa_retrieval start → 检索 → 证据 → end
-  → tool_status knowledge_qa_answer start → 流式生成（思考走 delta source=reasoning）
-  → 正式 JSON 完整缓冲 → 证据校验 → end
-  → 回答落库 → done
+  → 强制 search_knowledge 检索（tool_status search_knowledge）
+  → 只暴露检索工具的 agent loop
+  → 正文按 [E#] 引用校验 → 证据包落库 → done
 ```
 
-两个阶段事件复用 `tool_status`，不新增 SSE 类型；前端只显示最新进入且未结束的阶段。
-阶段事件只做过程展示，不参与 busy 收尾。
+严格模式与智能对话共用同一检索服务、同一证据包和同一引用校验，不再有第二套
+问答提示词。检索失败直接报 `knowledge_unavailable`；空结果报
+`insufficient_evidence`；引用无效重试一次后报 `citation_invalid`。模式开关只表达
+“是否强制文献深答”，不要求用户理解两条管线。
 
-生成阶段优先使用供应商流式接口；思考增量实时外发，正式内容在缓冲区内拼成完整
-JSON，校验通过后才落库和随 `done` 展示。流式在产生任何内容或思考前失败时回退
-一次非流式调用；已经产生内容后中断则按生成失败收口，不重复请求。
-
-评测只做技术跑批，不自动判定回答正确性。用例在 `evals/qa_cases.jsonl`，入口在
-`evals/run_qa_eval.py`。
+混合评测用例在 `evals/knowledge_tool_cases.jsonl`，入口
+`python -m evals.run_knowledge_tool_eval --scripted|--live`；指标包含工具选择、
+引用有效率、回答命中、延迟与输入/输出 token 成本，并可按基线报告比较回归。
 
 ## 记录、快照与溯源
 
