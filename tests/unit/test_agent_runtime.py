@@ -273,6 +273,99 @@ def test_query_memory_dispatch():
     assert result["message"] == "上次用的是 DESeq2，FDR 0.05。"
 
 
+@pytest.mark.parametrize(
+    ("tool", "arguments"),
+    [
+        ("run_analysis", {"analysis_type": "differential_expression"}),
+        ("search_datasets", {"query": "GSE123456"}),
+        ("query_memory", {"query": "上次用了什么参数"}),
+    ],
+)
+def test_strict_mode_rejects_non_knowledge_tools(tool, arguments):
+    """严格文献模式下，幻觉出的副作用工具不得进入工作流管理器。"""
+    llm = FakeLLM([_tool_call_response(tool, arguments), _text_response("答 [E1]")])
+    wm = FakeWM(
+        {
+            "search_knowledge": {
+                "status": "success",
+                "type": "knowledge_evidence",
+                "evidence": [{"evidence_id": "E1", "title": "论文"}],
+                "sources": [],
+                "continue_tool_loop": True,
+            }
+        }
+    )
+    runtime, wm = _make_runtime(llm, wm)
+
+    result = runtime.execute("先做分析再查文献", knowledge_mode=True)
+
+    assert [call[0] for call in wm.calls] == ["search_knowledge"]
+    assert result["outcome"] == "supported_answer"
+    assert "严格文献模式" in llm.calls[1]["messages"][-1]["content"]
+
+
+def test_strict_mode_repeated_rejected_tool_forces_answer():
+    """反复请求被拒工具由既有重复调用保护收口，不会死循环。"""
+    rejected = _tool_call_response("run_analysis", {"analysis_type": "differential_expression"})
+    llm = FakeLLM([rejected, rejected, _text_response("只能给文献回答 [E1]")])
+    wm = FakeWM(
+        {
+            "search_knowledge": {
+                "status": "success",
+                "type": "knowledge_evidence",
+                "evidence": [{"evidence_id": "E1", "title": "论文"}],
+                "sources": [],
+                "continue_tool_loop": True,
+            }
+        }
+    )
+    runtime, wm = _make_runtime(llm, wm)
+
+    result = runtime.execute("做分析", knowledge_mode=True)
+
+    assert [call[0] for call in wm.calls] == ["search_knowledge"]
+    assert len(llm.calls) == 3
+    assert result["message"] == "只能给文献回答 [E1]"
+
+
+def test_strict_mode_allows_search_after_rejection():
+    """被拒后模型改调检索工具，本轮继续取证并正常收口。"""
+    llm = FakeLLM(
+        [
+            _tool_call_response("run_analysis", {"analysis_type": "differential_expression"}),
+            _tool_call_response("search_knowledge", {"query": "补充证据"}),
+            _text_response("答 [E1][E2]"),
+        ]
+    )
+    wm = FakeWM(
+        {
+            "search_knowledge": [
+                {
+                    "status": "success",
+                    "type": "knowledge_evidence",
+                    "evidence": [{"evidence_id": "E1", "title": "论文"}],
+                    "sources": [],
+                    "continue_tool_loop": True,
+                },
+                {
+                    "status": "success",
+                    "type": "knowledge_evidence",
+                    "evidence": [{"evidence_id": "E1", "title": "另一篇"}],
+                    "sources": [],
+                    "continue_tool_loop": True,
+                },
+            ]
+        }
+    )
+    runtime, wm = _make_runtime(llm, wm)
+
+    result = runtime.execute("先分析再查文献", knowledge_mode=True)
+
+    assert [call[0] for call in wm.calls] == ["search_knowledge", "search_knowledge"]
+    assert result["outcome"] == "supported_answer"
+    assert result["message"] == "答 [E1][E2]"
+
+
 def test_search_knowledge_hidden_and_rejected_when_flag_off(monkeypatch):
     """legacy 回退：工具清单不暴露，模型硬调用也只得到未知工具错误。"""
     monkeypatch.setenv("AGENT_KNOWLEDGE_TOOL", "legacy")

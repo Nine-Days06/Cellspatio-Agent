@@ -76,6 +76,9 @@ PUBLIC_SOURCE_FIELDS = (
 REPEATED_TOOL_NOTE = (
     "（系统提示：检测到重复的工具调用，工具已停用。请直接基于已有工具结果回答，不要再次请求工具。）"
 )
+STRICT_TOOL_REJECT_NOTE = (
+    "严格文献模式只允许 search_knowledge；请改用 search_knowledge 检索证据，其他工具不可用。"
+)
 BUDGET_EXHAUSTED_NOTE = (
     "（系统提示：本轮工具结果预算已用尽，工具已停用。请直接基于已有结果回答，不要再次请求工具。）"
 )
@@ -901,6 +904,15 @@ class AgentRuntime:
         knowledge_mode: bool = False,
     ) -> dict[str, Any]:
         name = tool_call.function.name
+        if knowledge_mode and name != "search_knowledge":
+            # 严格文献模式：非检索工具不进入工作流，避免分析/下载/记忆副作用。
+            logger.warning("strict knowledge mode rejected tool: %s", name)
+            return {
+                "status": "error",
+                "type": "tool_rejected",
+                "message": STRICT_TOOL_REJECT_NOTE,
+                CONTINUE_TOOL_LOOP_FLAG: True,
+            }
         try:
             args = json.loads(tool_call.function.arguments or "{}")
         except json.JSONDecodeError:
