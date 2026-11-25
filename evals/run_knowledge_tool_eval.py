@@ -462,7 +462,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--baseline",
         default=None,
-        help="端到端层基线报告 JSON（其他层忽略；版本不匹配会报错）",
+        help="端到端层基线报告 JSON（其他层传入会报错；版本需匹配）",
     )
     parser.add_argument("--min-selection-accuracy", type=float, default=0.9)
     parser.add_argument("--min-citation-validity", type=float, default=1.0)
