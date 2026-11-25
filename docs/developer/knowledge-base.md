@@ -42,8 +42,12 @@ PG 后端 LightRAG 的连接池、事件循环和 workspace 是进程级共享�
 ## 评测
 
 文献证据链路的混合评测在 `evals/knowledge_tool_cases.jsonl`，入口为
-`python -m evals.run_knowledge_tool_eval --scripted|--live`；`live` 才代表真实模型
-质量，`scripted` 只校验运行器与阈值。
+`python -m evals.run_knowledge_tool_eval`，分三层：
+`--scripted` 用脚本化 LLM + 假工作流只校验运行器与阈值；`--tools` 用真实模型 +
+假工作流只报告工具选择与格式（`--live` 为弃用别名）；`--e2e` 使用真实模型、
+真实 WorkflowManager 与真实检索，只跑 literature/strict_literature 用例（分析与
+记忆类留在工具选择层），才支撑“不差于旧链路”的质量结论。端到端层若误用假工作流
+会直接失败，不会静默降级。
 `evals/run_eval.py` 按进程环境运行，默认校验 `search_knowledge` 工具路由；
 它不会自动切换到 legacy，旧 `query_knowledge` 路由已不再是默认链路基线。
 旧五阶段问答评测（`evals/run_qa_eval.py`）已随独立问答入口删除；回答质量统一由
