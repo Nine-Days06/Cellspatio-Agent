@@ -445,6 +445,7 @@ def test_sources_only_page_survives_finalize_with_paging_metadata(monkeypatch):
                 "has_more": True,
                 "next_cursor": "cursor-1",
                 "coverage_message": "这是有界一页，不代表已找全。",
+                "rerank_status": "applied",
                 "continue_tool_loop": True,
             }
         }
@@ -467,6 +468,7 @@ def test_sources_only_page_survives_finalize_with_paging_metadata(monkeypatch):
     assert package["has_more"] is True
     assert package["next_cursor"] == "cursor-1"
     assert "不代表已找全" in package["coverage_message"]
+    assert package["rerank_status"] == "applied"
 
 
 def test_explicit_claims_block_is_stored_and_stripped(monkeypatch):

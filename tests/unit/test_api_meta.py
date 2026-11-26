@@ -290,47 +290,6 @@ def test_sidebar_env_start_mode_lazy_by_default(monkeypatch):
     assert env["ollama_start_mode"] == "lazy"
 
 
-def test_sidebar_env_exposes_rerank_configuration(monkeypatch):
-    """部署层重排可用性与模型名供界面决定开关是否可用。"""
-    monkeypatch.setenv("KNOWLEDGE_RERANK_PROVIDER", "http")
-    monkeypatch.setenv("KNOWLEDGE_RERANK_ENDPOINT", "http://127.0.0.1:8080/rerank")
-    monkeypatch.setenv("KNOWLEDGE_RERANK_MODEL", "BAAI/bge-reranker-v2-m3")
-    agent = FakeAgent()
-    agent.knowledge_client = StubKB()
-
-    env = _client(agent).get("/api/sidebar").json()["env"]
-
-    assert env["rerank"] == {
-        "configured": True,
-        "model": "BAAI/bge-reranker-v2-m3",
-    }
-
-
-def test_sidebar_env_rerank_disabled_by_default():
-    agent = FakeAgent()
-    agent.knowledge_client = StubKB()
-
-    env = _client(agent).get("/api/sidebar").json()["env"]
-
-    assert env["rerank"] == {"configured": False, "model": ""}
-
-
-def test_sidebar_rerank_probe_failure_degrades(monkeypatch):
-    """重排配置探测抛错只降级为不可用，绝不让侧栏 500。"""
-
-    def boom():
-        raise RuntimeError("bad config")
-
-    monkeypatch.setattr("src.knowledge.rerank.rerank_config_from_env", boom)
-    agent = FakeAgent()
-    agent.knowledge_client = StubKB()
-
-    response = _client(agent).get("/api/sidebar")
-
-    assert response.status_code == 200
-    assert response.json()["env"]["rerank"] == {"configured": False, "model": ""}
-
-
 def test_sidebar_start_mode_degrades_when_accessor_raises(monkeypatch):
     """读不到模式只降级成 lazy，绝不让侧栏 500。"""
     from src.knowledge import ollama_runtime

@@ -1262,7 +1262,7 @@ class WorkflowManager:
             }
         timeout = env_int("AGENT_KNOWLEDGE_TIMEOUT", 60)
         retryable = {RETRIEVAL_CALL_FAILED, RETRIEVAL_DEADLINE, RETRIEVAL_SERVICE_FAILURE}
-        reranker = build_reranker() if (context or {}).get("rerank_enabled") else None
+        reranker = build_reranker()
         # 服务故障重试一次；每次尝试都有自己的截止，避免一次超时吃掉全部预算。
         retrieval = retrieve_evidence(
             self.knowledge_client,

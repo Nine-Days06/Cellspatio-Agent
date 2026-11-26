@@ -53,8 +53,8 @@ def _manager(knowledge_client):
     )
 
 
-def test_search_knowledge_builds_reranker_only_when_requested(monkeypatch):
-    """未开启时零构造；开启时只构造一次，两次重试共用同一实例。"""
+def test_search_knowledge_always_builds_and_uses_reranker(monkeypatch):
+    """配置后每轮自动重排；只构造一次，两次重试共用同一实例。"""
     built: list[object] = []
     scored: list[object] = []
 
@@ -74,9 +74,6 @@ def test_search_knowledge_builds_reranker_only_when_requested(monkeypatch):
     manager = _manager(FakeKnowledge(_retrieval(), error=RuntimeError("blip"), fail_times=1))
 
     manager.search_knowledge_for_agent("TP53")
-    assert built == []
-
-    manager.search_knowledge_for_agent("TP53", context={"rerank_enabled": True})
     assert len(built) == 1
     assert scored and scored[0] is built[0]
 

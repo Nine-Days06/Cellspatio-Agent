@@ -243,24 +243,6 @@ describe('streamChat 错误分支', () => {
   })
 })
 
-describe('请求体', () => {
-  it('携带本轮重排偏好，缺省为 false', async () => {
-    const fetchMock = vi
-      .spyOn(globalThis, 'fetch')
-      .mockResolvedValueOnce(sseResponse([frame({ type: 'done', message_id: 1 })]))
-      .mockResolvedValueOnce(sseResponse([frame({ type: 'done', message_id: 1 })]))
-
-    await streamChat({ ...options(capture()), rerank: true })
-    await streamChat(options(capture()))
-
-    const bodies = fetchMock.mock.calls.map(
-      ([, init]) => JSON.parse(String(init?.body)) as Record<string, unknown>,
-    )
-    expect(bodies[0]).toMatchObject({ session_id: 's1', prompt: '你好', rerank: true })
-    expect(bodies[1]).toMatchObject({ rerank: false })
-  })
-})
-
 describe('ApiError 身份', () => {
   it('sse re-export 的 ApiError 与 api.ts 的是同一个类', async () => {
     const { ApiError: ApiErrorFromApi } = await import('@/lib/api')

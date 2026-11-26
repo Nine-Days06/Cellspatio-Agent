@@ -44,8 +44,8 @@ POST /api/chat（SSE）
   `answer` 回灌完整正文；`survey`/`exhaustive` 保留节选上限。回灌模型只保留 `E#`、
   标题、年份与来源关系；超过单次上限时按整条证据删减并显式报告省略数，正文本身不截断，
   也不返回截断的 JSON 前缀。证据包同时带 `scope`、`evidence_count`、`source_count`、
-  `has_more`、`next_cursor`、覆盖说明与 `rerank_status`（可选重排默认关闭；失败只降级
-  排序，不把检索变成失败）。下一轮历史准备只保留正文与显式论断，并清理旧消息
+`has_more`、`next_cursor`、覆盖说明与 `rerank_status`（配置重排服务后自动启用；
+失败只降级排序，不把检索变成失败）。下一轮历史准备只保留正文与显式论断，并清理旧消息
   里落库的证据清单与来源列表。
 - 动态脚本由生成器产生，确认后才执行；已知失败保留尝试历史，用户可明确重试。
 - 中断、成功、取消或无法核验的运行拒绝重跑；不把复制卡恢复 pending。
@@ -87,8 +87,8 @@ POST /api/chat
 
 `citation_invalid` 只提示展开证据面板，不把证据标题/片段/来源路径写进正文。
 
-`POST /api/chat` 可带 `rerank`（默认 `false`）表示本轮用户是否启用文献重排；
-关闭时不构造重排器。是否可用仍取决于部署层 `KNOWLEDGE_RERANK_*` 配置。
+`POST /api/chat` 不再接收重排开关。配置了 `KNOWLEDGE_RERANK_*` 就每轮自动重排；
+未配置时不构造重排器。结果通过 `rerank_status` 返回，并在证据区展示。
 
 检索工具与普通对话共用同一证据包和同一引用校验。检索失败报
 `knowledge_unavailable`；空结果报 `insufficient_evidence`；引用无效重试一次后报

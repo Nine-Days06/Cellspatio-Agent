@@ -33,7 +33,6 @@ export { ApiError }
 export interface StreamChatOptions {
   sessionId: string
   prompt: string
-  rerank?: boolean
   onEvent: (event: SseEvent) => void
   onEnd: (reason: EndReason) => void
   signal?: AbortSignal
@@ -51,7 +50,7 @@ export function isAbortError(err: unknown): boolean {
  * 关闭——onEnd 一定会被调用且只调用一次；tool_status 只用于渲染过程条文案。
  */
 export async function streamChat(options: StreamChatOptions): Promise<void> {
-  const { sessionId, prompt, rerank = false, onEvent, onEnd, signal } = options
+  const { sessionId, prompt, onEvent, onEnd, signal } = options
   let ended = false
   const finish = (reason: EndReason) => {
     if (ended) return
@@ -64,7 +63,7 @@ export async function streamChat(options: StreamChatOptions): Promise<void> {
     response = await requestResponse('/api/chat', {
       method: 'POST',
       headers: jsonHeaders,
-      body: JSON.stringify({ session_id: sessionId, prompt, rerank }),
+      body: JSON.stringify({ session_id: sessionId, prompt }),
       signal,
     })
   } catch (err) {

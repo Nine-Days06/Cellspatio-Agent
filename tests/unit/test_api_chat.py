@@ -24,9 +24,8 @@ def _new_session(client) -> str:
     return client.post("/api/sessions", json={}).json()["session"]["id"]
 
 
-def _stream(client, session_id: str, prompt: str, **extra):
-    body = {"session_id": session_id, "prompt": prompt, **extra}
-    response = client.post("/api/chat", json=body)
+def _stream(client, session_id: str, prompt: str):
+    response = client.post("/api/chat", json={"session_id": session_id, "prompt": prompt})
     assert response.status_code == 200
     assert response.headers["content-type"].startswith("text/event-stream")
     assert response.headers["cache-control"] == "no-cache"
@@ -75,27 +74,6 @@ def test_stream_emits_tool_status_with_label(client):
         "phase": "start",
         "label": "运行分析",
     }
-
-
-def test_stream_passes_rerank_flag_to_turn_context(client):
-    """请求体 rerank=true 原样进入本轮上下文，由工作流决定是否构造重排器。"""
-    sid = _new_session(client)
-    runtime = FakeRuntime(default={"status": "success", "message": "回答"})
-    client.app.state.agent.agent_runtime = runtime
-
-    _stream(client, sid, "TP53", rerank=True)
-
-    assert runtime.calls[0]["context"]["rerank_enabled"] is True
-
-
-def test_stream_rejects_non_boolean_rerank(client):
-    """重排开关是严格布尔，避免 "yes"/1 之类的宽松转换。"""
-    response = client.post(
-        "/api/chat",
-        json={"session_id": "any", "prompt": "TP53", "rerank": "yes"},
-    )
-
-    assert response.status_code == 422
 
 
 def test_stream_emits_confirm_card_for_script_branch(client):

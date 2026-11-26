@@ -149,6 +149,14 @@ export interface ChatKnowledgeResult {
   coverage_message?: string
   /** 指定来源正文请求时回填；用于区分单来源详情与分页列表。 */
   source_id?: string
+  /** 本轮重排结果；旧消息没有该字段。 */
+  rerank_status?:
+    | 'disabled'
+    | 'not_applicable'
+    | 'applied'
+    | 'partial'
+    | 'fallback_timeout'
+    | 'fallback_error'
 }
 
 export interface KnowledgeQAClaim {
@@ -497,11 +505,6 @@ export interface EnvStatus {
    * - `lazy`  = 按需唤起 + 空闲自动关闭（默认）
    */
   ollama_start_mode: 'eager' | 'lazy'
-  /** 部署层重排是否可用；模型名只在可用时有意义 */
-  rerank: {
-    configured: boolean
-    model: string
-  }
 }
 
 export interface SidebarResponse {

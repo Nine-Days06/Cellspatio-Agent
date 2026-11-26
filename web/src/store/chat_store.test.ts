@@ -2,7 +2,6 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { ApiError } from '@/lib/api'
 import { streamChat, type EndReason, type SseEvent } from '@/lib/sse'
 import { createChatStore, REASONING_CHAR_LIMIT, useChatStore } from '@/store/chat'
-import { RERANK_KEY } from '@/lib/preferences'
 import type { DataCardPayload, ScriptCardPayload, WireMessage } from '@/lib/types'
 
 // 只替换 streamChat（send 依赖它），其余 sse 导出保持真实实现
@@ -612,24 +611,6 @@ describe('约束2：收尾唯一通道（动作层）', () => {
 })
 
 describe('send：SSE 接线', () => {
-  it('请求体携带本地重排偏好', async () => {
-    const { ctl, release } = holdStream()
-    useChatStore.getState().setSession('s1', [])
-    localStorage.setItem(RERANK_KEY, '1')
-
-    try {
-      const pending = useChatStore.getState().send('hi')
-
-      expect(streamChat).toHaveBeenCalledWith(expect.objectContaining({ rerank: true }))
-
-      ctl.onEnd?.('done')
-      release()
-      await pending
-    } finally {
-      localStorage.removeItem(RERANK_KEY)
-    }
-  })
-
   it('tool_status 透传检索结果条数', async () => {
     const { ctl, release } = holdStream()
     useChatStore.getState().setSession('s1', [])

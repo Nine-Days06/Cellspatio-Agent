@@ -7,7 +7,6 @@
 */
 import { create } from 'zustand'
 import { streamChat, type SseEvent } from '@/lib/sse'
-import { readRerankPreference } from '@/lib/preferences'
 import {
   chartFromEvent,
   type ChartItem,
@@ -449,7 +448,6 @@ export function createChatStore() {
           await streamChat({
             sessionId,
             prompt,
-            rerank: readRerankPreference(),
             signal: controller.signal,
             onEvent: (event) => {
               if (isCurrent()) dispatch(event)
