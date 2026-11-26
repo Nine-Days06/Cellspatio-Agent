@@ -497,6 +497,11 @@ export interface EnvStatus {
    * - `lazy`  = 按需唤起 + 空闲自动关闭（默认）
    */
   ollama_start_mode: 'eager' | 'lazy'
+  /** 部署层重排是否可用；模型名只在可用时有意义 */
+  rerank: {
+    configured: boolean
+    model: string
+  }
 }
 
 export interface SidebarResponse {

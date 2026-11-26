@@ -15,6 +15,7 @@ import { ArrowUp, Home, LogOut, Square } from 'lucide-react'
 import { ConfirmCard } from '@/components/ConfirmCard'
 import { LocalInputDialog } from '@/components/LocalInputDialog'
 import { MessageList } from '@/components/MessageList'
+import { RerankSetting } from '@/components/RerankSetting'
 import { Sidebar } from '@/components/Sidebar'
 import { ThemeToggle } from '@/components/ThemeToggle'
 import { UploadDialog } from '@/components/UploadDialog'
@@ -52,6 +53,7 @@ const DEFAULT_ENV: EnvStatus = {
   kb_ok: false,
   ollama: { state: 'unavailable', managed: false, detail: '' },
   ollama_start_mode: 'lazy',
+  rerank: { configured: false, model: '' },
 }
 
 function workspaceSummary(workspace?: WorkspaceInfo): string {
@@ -102,6 +104,7 @@ export function ChatPage() {
   const projectsQuery = useProjects()
   const messagesQuery = useMessages(sessionId)
   const sidebarQuery = useSidebar(sessionId ?? undefined)
+  const rerankEnv = sidebarQuery.data?.env.rerank ?? DEFAULT_ENV.rerank
   const queryClient = useQueryClient()
   const sessions = sessionsQuery.data?.sessions ?? []
   const projects = projectsQuery.data?.projects ?? []
@@ -488,6 +491,7 @@ export function ChatPage() {
               />
             )}
             {workspace?.kind === 'ephemeral' && <UploadDialog onSubmit={handleUpload} />}
+            <RerankSetting configured={rerankEnv.configured} model={rerankEnv.model} />
             <ThemeToggle />
             <button
               type="button"

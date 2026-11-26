@@ -62,6 +62,7 @@ const healthyEnv: EnvStatus = {
   kb_ok: true,
   ollama: { state: 'ready', managed: false, detail: '' },
   ollama_start_mode: 'lazy',
+  rerank: { configured: false, model: '' },
 }
 
 const healthyKb: KbStats = { initialized: true }
@@ -213,7 +214,7 @@ describe('Sidebar', () => {
   it('知识库未初始化 / R 缺失 / 路径缺失 显示红点', () => {
     renderSidebar({
       kbStats: { initialized: false, error: 'kb not ready' },
-      env: { rscript: null, kb_path: './knowledge_base', kb_ok: false, ollama: { state: 'ready', managed: false, detail: '' }, ollama_start_mode: 'lazy' },
+      env: { rscript: null, kb_path: './knowledge_base', kb_ok: false, ollama: { state: 'ready', managed: false, detail: '' }, ollama_start_mode: 'lazy', rerank: { configured: false, model: '' } },
     })
     expect(screen.getByTestId('dot-kb')).toHaveAttribute('data-state', 'error')
     expect(screen.getByTestId('dot-rscript')).toHaveAttribute('data-state', 'error')

@@ -44,7 +44,7 @@ def _kb_stats(agent: Any) -> dict[str, Any]:
 def _env_status(agent: Any) -> dict[str, Any]:
     """环境自检：Rscript 可执行文件 + 知识库目录 + Ollama 保活状态。
 
-    四段探测各自 try/except：r_executor 缺失/config 缺失/which 失败
+    五段探测各自 try/except：r_executor 缺失/config 缺失/which 失败
     一律降级成响应里的标记（rscript=None、kb_path 默认值），绝不 500。
     """
     rscript: str | None = None
@@ -86,12 +86,25 @@ def _env_status(agent: Any) -> dict[str, Any]:
         logger.warning("ollama start_mode failed: %s", exc)
         ollama_start_mode = "lazy"
 
+    rerank_configured, rerank_model = False, ""
+    try:
+        from src.knowledge.rerank import rerank_config_from_env
+
+        rerank = rerank_config_from_env()
+        rerank_configured = rerank.enabled
+        rerank_model = rerank.model if rerank.enabled else ""
+    except Exception as exc:  # noqa: BLE001 - 读不到配置不该让侧栏 500
+        logger.warning("rerank config probe failed: %s", exc)
     return {
         "rscript": rscript,
         "kb_path": kb_path,
         "kb_ok": kb_ok,
         "ollama": ollama,
         "ollama_start_mode": ollama_start_mode,
+        "rerank": {
+            "configured": rerank_configured,
+            "model": rerank_model,
+        },
     }
 
 

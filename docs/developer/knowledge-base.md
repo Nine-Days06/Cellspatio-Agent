@@ -43,6 +43,8 @@ PG 后端 LightRAG 的连接池、事件循环和 workspace 是进程级共享�
 ## 重排（可选）
 
 - 默认关闭，未配置时检索零外部调用；`KNOWLEDGE_RERANK_*` 见 `.env.example`。
+- 工作区页头的「检索设置」可逐用户开关；偏好只存浏览器 `localStorage`，默认关。
+  部署未配置重排服务时开关禁用并提示原因。
 - 只接受 TEI 兼容 `POST /rerank`：请求 `{"query","texts","model"}`，响应
   `[{"index","score"}]`。启用意味着查询与片段文本会发往该 endpoint。
 - 重排只改变候选顺序，在来源去重、`survey` 多样性与 `exhaustive` 分页之前；

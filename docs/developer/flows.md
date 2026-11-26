@@ -87,6 +87,9 @@ POST /api/chat
 
 `citation_invalid` 只提示展开证据面板，不把证据标题/片段/来源路径写进正文。
 
+`POST /api/chat` 可带 `rerank`（默认 `false`）表示本轮用户是否启用文献重排；
+关闭时不构造重排器。是否可用仍取决于部署层 `KNOWLEDGE_RERANK_*` 配置。
+
 检索工具与普通对话共用同一证据包和同一引用校验。检索失败报
 `knowledge_unavailable`；空结果报 `insufficient_evidence`；引用无效重试一次后报
 `citation_invalid`。旧消息里的 `chat_mode=knowledge_qa` 只用于渲染兼容，不再选择

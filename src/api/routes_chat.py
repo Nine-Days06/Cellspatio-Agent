@@ -11,7 +11,7 @@ from typing import Any
 
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import StreamingResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, StrictBool
 
 from src.api.chat_service import BeforeDone, persist_message, run_turn
 from src.api.deps import StoreDep
@@ -36,6 +36,7 @@ class ChatRequest(BaseModel):
 
     session_id: str
     prompt: str
+    rerank: StrictBool = False
 
 
 @router.post("/chat")
@@ -86,6 +87,7 @@ async def chat(body: ChatRequest, request: Request, store: StoreDep) -> Streamin
                         body.prompt,
                         emit_recording,
                         before_done=_auto_name(agent),
+                        rerank=body.rerank,
                     )
                 except Exception as exc:  # 任何失败都要变成 error 事件
                     logger.exception("chat run_turn failed")  # except 块内自动带 traceback

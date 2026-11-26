@@ -497,6 +497,16 @@ def test_context_carries_history_summary_and_assets(store):
     assert [m["content"] for m in context["history"]] == ["上一答"]
 
 
+def test_context_defaults_rerank_off(store):
+    """不显式开启时，本轮上下文明确关闭重排，避免依赖工作流默认值。"""
+    sid = store.create_session()
+    runtime = FakeRuntime()
+
+    run_turn(FakeAgent(runtime=runtime), store, sid, "继续", _sink())
+
+    assert runtime.calls[0]["context"]["rerank_enabled"] is False
+
+
 def test_compaction_result_is_written_back_to_session(store):
     sid = store.create_session()
     for i in range(5):

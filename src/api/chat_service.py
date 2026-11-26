@@ -169,6 +169,7 @@ def run_turn(
     prompt: str,
     emit: Emit,
     before_done: BeforeDone | None = None,
+    rerank: bool = False,
 ) -> dict[str, Any]:
     """执行一轮对话并返回运行时结果。
 
@@ -178,6 +179,7 @@ def run_turn(
 
     emit(event) -> bool：返回 False 表示客户端已断开，后续发射应被忽略。
     before_done：助手消息落库后、``done`` 发射前的唯一扩展点；中断与报错分支不触发。
+    rerank：本轮是否允许文献重排；仅随 context 下发，不改工具签名。
     """
     store.append_message(session_id, "user", prompt)
 
@@ -202,6 +204,7 @@ def run_turn(
         "downloaded_assets": session.get("downloaded_assets") or [],
         "last_user_input": prompt,
         "session_id": session_id,
+        "rerank_enabled": bool(rerank),
     }
     workspace = store.get_workspace(store.workspace_id) if store.workspace_id else None
     if workspace and workspace.get("kind") == "ephemeral":
