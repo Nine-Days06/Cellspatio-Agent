@@ -7,6 +7,7 @@ function history(sessionId: string): MessagesResponse {
     session: {
       id: sessionId,
       title: '测试会话',
+      title_source: 'derived',
       created_at: '2026-11-23T00:00:00Z',
       updated_at: '2026-11-23T00:00:00Z',
       summary: null,

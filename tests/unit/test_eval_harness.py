@@ -12,10 +12,12 @@ def _load_cases():
     return [json.loads(line) for line in lines if line.strip()]
 
 
-def test_cases_file_has_required_fields_and_known_tools():
-    from src.control.tools import TOOL_SCHEMAS
+def test_cases_file_has_required_fields_and_known_tools(monkeypatch):
+    """金标用例字段完整，且期望工具都在默认工具清单里。"""
+    from src.control.tools import build_tool_schemas
 
-    names = {t["function"]["name"] for t in TOOL_SCHEMAS} | {None}
+    monkeypatch.delenv("AGENT_KNOWLEDGE_TOOL", raising=False)
+    names = {t["function"]["name"] for t in build_tool_schemas()} | {None}
     cases = _load_cases()
     assert len(cases) >= 8
     ids = set()
@@ -34,10 +36,11 @@ def test_cases_file_has_required_fields_and_known_tools():
                 )
 
 
-def test_run_eval_scripted_mode_scores_perfect_on_oracle():
+def test_run_eval_scripted_mode_scores_perfect_on_oracle(monkeypatch):
     """scripted：FakeLLM 直接回放金标期望工具 → 应 100%（校验运行器本身）。"""
     from evals.run_eval import run_scripted
 
+    monkeypatch.delenv("AGENT_KNOWLEDGE_TOOL", raising=False)
     report = run_scripted(str(CASES))
     assert report["total"] == report["passed"]
     assert report["accuracy"] == 1.0

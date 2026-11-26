@@ -2,7 +2,7 @@
 
 from typing import Literal
 
-StoreErrorKind = Literal["not_found", "conflict"]
+StoreErrorKind = Literal["not_found", "conflict", "invalid"]
 
 
 class StoreError(ValueError):

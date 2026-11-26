@@ -36,6 +36,63 @@ def test_prepare_history_returns_equal_copy_for_short_message():
     assert out[0] is not src[0]  # 但是副本，避免污染原对象
 
 
+@pytest.mark.parametrize(
+    "outcome", ["supported_answer", "insufficient_evidence", "citation_invalid"]
+)
+def test_prepare_history_strips_evidence_but_keeps_claims(outcome):
+    """三类终态都只把显式论断带入后续上下文，证据正文与来源留在落库层。
+
+    剥离逻辑与 outcome 无关；三种取值覆盖 ticket 列出的终态。
+    """
+    src = [
+        {
+            "role": "assistant",
+            "content": "答 [E1]",
+            "results": {
+                "knowledge_evidence": {
+                    "outcome": outcome,
+                    "evidence": [{"evidence_id": "E1", "content": "SECRET"}],
+                    "sources": [{"file_path": "PRIVATE"}],
+                    "claims": [{"text": "论断", "evidence_ids": ["E1"]}],
+                }
+            },
+        }
+    ]
+
+    out = prepare_history(src)
+
+    assert "SECRET" not in str(out) and "PRIVATE" not in str(out)
+    assert out[0]["results"] is None
+    assert "结构化论断" in out[0]["content"]
+    assert "论断 [E1]" in out[0]["content"]
+
+
+@pytest.mark.parametrize(
+    "content",
+    [
+        "答 [E1]\n\n**已检索到的证据**\n- [E1] A paper（2024）：片段",
+        "答 [E1]\n\n**来源**\n- 38947524 /data/raw/paper.pdf",
+    ],
+)
+def test_prepare_history_strips_legacy_evidence_blocks(content):
+    """旧版落库正文里的证据清单/来源路径不再进入后续上下文。"""
+    out = prepare_history([{"role": "assistant", "content": content}])
+
+    assert "答 [E1]" in out[0]["content"]
+    assert "已检索到的证据" not in out[0]["content"]
+    assert "A paper" not in out[0]["content"]
+    assert "/data/raw/paper.pdf" not in out[0]["content"]
+
+
+def test_prepare_history_keeps_source_heading_with_following_prose():
+    """正文中间讨论“来源”逻辑时不能误删后文。"""
+    content = "答 [E1]\n\n**来源**\n这里讨论来源可靠性，后面仍是回答。"
+
+    out = prepare_history([{"role": "assistant", "content": content}])
+
+    assert "这里讨论来源可靠性" in out[0]["content"]
+
+
 def test_select_recent_within_budget_keeps_all():
     window = [{"role": "user", "content": "abcd"}]
     older, recent = select_recent(window, budget=100)
@@ -67,6 +124,47 @@ def test_context_tokens_includes_system_summary_and_window():
     summary = "s" * 40  # 10 token
     window = [{"role": "user", "content": "h" * 40}]  # 10 token
     assert context_tokens(summary, window, system="") == 20
+
+
+def test_context_tokens_ignores_persisted_knowledge_evidence():
+    """证据包只供 UI 展开，不参与模型上下文成本。"""
+    window = [
+        {
+            "role": "assistant",
+            "content": "回答如下 [E1]",
+            "results": {
+                "knowledge_evidence": {
+                    "evidence": [{"evidence_id": "E1", "content": "x" * 100_000}],
+                    "sources": [{"title": "paper"}],
+                }
+            },
+        }
+    ]
+
+    assert context_tokens(None, window, system="") == 2
+
+
+def test_long_conversation_does_not_replay_evidence_packages():
+    """多轮证据包落库后，进入上下文窗口的仍只有正文；压缩成本不随证据增长。"""
+    messages = [
+        {
+            "role": "assistant",
+            "content": "回答如下 [E1]",
+            "results": {
+                "knowledge_evidence": {
+                    "evidence": [{"evidence_id": "E1", "content": "x" * 200_000}],
+                    "sources": [{"file_path": "PRIVATE"}],
+                }
+            },
+        }
+        for _ in range(40)
+    ]
+
+    prepared = prepare_history(messages)
+
+    assert "x" * 100 not in str(prepared)
+    assert "PRIVATE" not in str(prepared)
+    assert context_tokens(None, prepared, system="") < 500
 
 
 def test_should_compact_respects_trigger(monkeypatch):

@@ -24,10 +24,8 @@ def _new_session(client) -> str:
     return client.post("/api/sessions", json={}).json()["session"]["id"]
 
 
-def _stream(client, session_id: str, prompt: str, mode: str = "chat"):
-    response = client.post(
-        "/api/chat", json={"session_id": session_id, "prompt": prompt, "mode": mode}
-    )
+def _stream(client, session_id: str, prompt: str):
+    response = client.post("/api/chat", json={"session_id": session_id, "prompt": prompt})
     assert response.status_code == 200
     assert response.headers["content-type"].startswith("text/event-stream")
     assert response.headers["cache-control"] == "no-cache"
@@ -196,7 +194,7 @@ def test_runtime_exception_becomes_error_event(client):
     sid = _new_session(client)
 
     class BoomRuntime:
-        def execute(self, user_input, context=None, on_event=None):
+        def execute(self, user_input, context=None, on_event=None, **kwargs):
             raise RuntimeError("知识库炸了")
 
     client.app.state.agent.agent_runtime = BoomRuntime()
@@ -213,7 +211,7 @@ def test_user_message_persisted_even_when_runtime_fails(client):
     sid = _new_session(client)
 
     class BoomRuntime:
-        def execute(self, user_input, context=None, on_event=None):
+        def execute(self, user_input, context=None, on_event=None, **kwargs):
             raise RuntimeError("boom")
 
     client.app.state.agent.agent_runtime = BoomRuntime()
@@ -230,7 +228,7 @@ def test_partial_answer_persisted_when_runtime_fails_mid_stream(client):
     sid = _new_session(client)
 
     class HalfRuntime:
-        def execute(self, user_input, context=None, on_event=None):
+        def execute(self, user_input, context=None, on_event=None, **kwargs):
             on_event({"type": "delta", "text": "已生成一半"})
             raise RuntimeError("上游超时")
 
@@ -244,35 +242,112 @@ def test_partial_answer_persisted_when_runtime_fails_mid_stream(client):
     assert stored[-1]["content"] == "已生成一半"
 
 
-def test_unknown_mode_is_rejected_before_creating_turn(client):
+def test_reasoning_delta_is_not_persisted_as_partial_answer(client):
+    """思考增量照常推给前端，但失败落库的正文只能含正式内容。"""
     sid = _new_session(client)
-    response = client.post("/api/chat", json={"session_id": sid, "prompt": "hi", "mode": "bogus"})
 
-    assert response.status_code == 422
-    assert SessionStore().get_messages(sid) == []
+    class HalfRuntime:
+        def execute(self, user_input, context=None, on_event=None, **kwargs):
+            on_event({"type": "delta", "text": "先分析", "source": "reasoning"})
+            on_event({"type": "delta", "text": "正式一半"})
+            raise RuntimeError("上游超时")
+
+    client.app.state.agent.agent_runtime = HalfRuntime()
+
+    events = _stream(client, sid, "问个问题")
+
+    assert events[0] == {"type": "delta", "text": "先分析", "source": "reasoning"}
+    assert events[-1]["type"] == "error"
+    stored = SessionStore().get_messages(sid)
+    assert stored[-1]["content"] == "正式一半"
 
 
-def test_knowledge_qa_mode_returns_evidence_package(client, monkeypatch):
+def test_legacy_mode_field_no_longer_selects_a_strict_path(client):
+    sid = _new_session(client)
+    runtime = FakeRuntime()
+    client.app.state.agent.agent_runtime = runtime
+
+    response = client.post(
+        "/api/chat", json={"session_id": sid, "prompt": "hi", "mode": "knowledge_qa"}
+    )
+
+    assert response.status_code == 200
+    assert runtime.calls[0]["user_input"] == "hi"
+    assert SessionStore().get_messages(sid)[-1]["results"]["chat_mode"] == "chat"
+
+
+def test_stream_returns_evidence_package(client, monkeypatch):
+    """普通对话按需检索后返回知识证据包。"""
     sid = _new_session(client)
     payload = {
-        "answer_id": "qa-route",
-        "schema_version": "knowledge-qa/1.0.0",
         "status": "success",
-        "outcome": "insufficient_evidence",
-        "answer": "没有可追溯证据。",
-        "claims": [],
-        "limitations": [],
-        "clarifications": [],
-        "evidence": [],
-        "sources": [],
-        "review_status": "unreviewed",
+        "type": "general_response",
+        "outcome": "supported_answer",
+        "message": "TP53 参与细胞周期调控 [E1]。",
+        "results": {
+            "knowledge_evidence": {
+                "outcome": "supported_answer",
+                "evidence": [],
+                "sources": [],
+                "claims": [],
+                "citations": ["E1"],
+            }
+        },
     }
-    monkeypatch.setattr("src.knowledge.qa.run_knowledge_qa", lambda *a, **k: payload)
+    runtime = FakeRuntime(
+        results=[payload],
+        events=[
+            {
+                "type": "tool_status",
+                "name": "search_knowledge",
+                "phase": "start",
+                "label": "检索文献",
+            }
+        ],
+    )
+    client.app.state.agent.agent_runtime = runtime
 
-    events = _stream(client, sid, "TP53 的功能是什么？", mode="knowledge_qa")
+    events = _stream(client, sid, "TP53 的功能是什么？")
 
-    assert [event["type"] for event in events] == ["tool_status", "tool_status", "done"]
-    assert events[-1]["message"]["results"]["knowledge_qa"]["answer_id"] == "qa-route"
+    assert [event["type"] for event in events] == ["tool_status", "done"]
+    assert events[-1]["message"]["results"]["knowledge_evidence"]["citations"] == ["E1"]
     stored = SessionStore().get_messages(sid)
-    assert stored[-1]["content"] == "没有可追溯证据。"
-    assert client.app.state.agent.agent_runtime.calls == []
+    assert stored[-1]["content"] == "TP53 参与细胞周期调控 [E1]。"
+
+
+def test_search_turn_streams_reasoning_with_source(client):
+    """检索轮沿用流式思考增量，但正文只由 done 携带。"""
+    sid = _new_session(client)
+    runtime = FakeRuntime(events=[{"type": "delta", "text": "先核对证据", "source": "reasoning"}])
+    client.app.state.agent.agent_runtime = runtime
+
+    events = _stream(client, sid, "TP53 的功能是什么？")
+
+    assert events[0] == {"type": "delta", "text": "先核对证据", "source": "reasoning"}
+    assert events[-1]["type"] == "done"
+    assert "先核对证据" not in events[-1]["message"]["content"]
+    stored = SessionStore().get_messages(sid)
+    assert stored[-1]["content"] == "回答"
+
+
+def test_route_wires_auto_name_hook_to_first_turn(client):
+    """`/api/chat` 必须把自动命名挂到 run_turn，而不是只在单元测试里手工注入。"""
+
+    class _Completions:
+        def create(self, **kwargs):
+            message = type("Message", (), {"content": "PBMC 质控"})()
+            choice = type("Choice", (), {"message": message})()
+            return type("Response", (), {"choices": [choice]})()
+
+    class _LLM:
+        def __init__(self):
+            self.chat = type("Chat", (), {"completions": _Completions()})()
+
+    client.app.state.agent.llm_client = _LLM()
+    client.app.state.agent.llm_model = "m1"
+    sid = _new_session(client)
+
+    _stream(client, sid, "帮我做 PBMC 质控")
+
+    session = SessionStore().get_session(sid)
+    assert (session["title"], session["title_source"]) == ("PBMC 质控", "model")

@@ -2,6 +2,7 @@ import csv
 import hashlib
 import logging
 import math
+import time
 import uuid
 import zlib
 from collections.abc import Iterator
@@ -10,6 +11,7 @@ from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from typing import Any
 
+from src.config import env_int
 from src.control.kb_coverage import (
     LAZY_INGEST_MAX_ASSETS,
     LAZY_INGEST_MIN_CONTEXT,
@@ -17,6 +19,7 @@ from src.control.kb_coverage import (
     KnowledgeCoverage,
     auto_ingest_enabled,
 )
+from src.control.tools import CONTINUE_TOOL_LOOP_FLAG
 from src.data.tenx import validate_tenx
 from src.schemas.workflow import AnalysisType, StepType
 from src.ui.analysis_roots import AnalysisRoots
@@ -176,14 +179,21 @@ class WorkflowManager:
 
     def _resolve_input_file(self, params: dict[str, Any], context: dict[str, Any]) -> str | None:
         """解析输入文件：显式路径优先，不可用时回退下载资产。"""
+        allowed_root = context.get("allowed_input_root")
         if params.get("input_files"):
             candidate = params["input_files"][0]
             if Path(candidate).exists():
-                return candidate
+                if not allowed_root or Path(candidate).resolve().is_relative_to(
+                    Path(allowed_root).resolve()
+                ):
+                    return candidate
         if context.get("downloaded_assets"):
             candidate = context["downloaded_assets"][-1].get("access_path")
             if candidate and Path(candidate).exists():
-                return candidate
+                if not allowed_root or Path(candidate).resolve().is_relative_to(
+                    Path(allowed_root).resolve()
+                ):
+                    return candidate
         return None
 
     @staticmethod
@@ -1148,6 +1158,185 @@ class WorkflowManager:
         with self._record_run(intent, params, context) as run_id:
             return self._execute_knowledge_workflow(intent, params, context, run_id)
 
+    def search_knowledge_for_agent(
+        self,
+        query: str,
+        context: dict[str, Any] | None = None,
+        *,
+        scope: str | None = None,
+        max_evidence: int | None = None,
+        cursor: str | None = None,
+        sources_only: bool = False,
+        source_id: str | None = None,
+    ) -> dict[str, Any]:
+        """Agent 面向的只读文献检索：返回证据与来源，不生成答案、不写运行记录。"""
+        from src.knowledge.qa import (
+            ANSWER_DEFAULT_EVIDENCE,
+            ANSWER_MAX_EVIDENCE,
+            EXHAUSTIVE_PAGE_SOURCES,
+            RETRIEVAL_CALL_FAILED,
+            RETRIEVAL_DEADLINE,
+            RETRIEVAL_INVALID_CURSOR,
+            RETRIEVAL_SERVICE_FAILURE,
+            SURVEY_DEFAULT_SOURCES,
+            SURVEY_EVIDENCE_CHARS,
+            SURVEY_MAX_EVIDENCE_PER_SOURCE,
+            SURVEY_MAX_SOURCES,
+            evidence_limit,
+            retrieve_evidence,
+        )
+        from src.knowledge.rerank import build_reranker
+
+        scope = str(scope or "answer").strip().lower()
+        if scope not in ("answer", "survey", "exhaustive"):
+            return {
+                "status": "error",
+                "type": "knowledge_evidence",
+                "query": query,
+                "scope": scope,
+                "evidence_count": 0,
+                "source_count": 0,
+                "message": f"不支持的检索范围：{scope}",
+                CONTINUE_TOOL_LOOP_FLAG: True,
+            }
+        if cursor and scope != "exhaustive":
+            return {
+                "status": "error",
+                "type": "knowledge_evidence",
+                "query": query,
+                "scope": scope,
+                "evidence_count": 0,
+                "source_count": 0,
+                "outcome": "invalid_cursor",
+                "message": "检索游标只适用于 scope=exhaustive，请重新开始检索。",
+                CONTINUE_TOOL_LOOP_FLAG: True,
+            }
+        if sources_only and scope != "exhaustive":
+            return {
+                "status": "error",
+                "type": "knowledge_evidence",
+                "query": query,
+                "scope": scope,
+                "evidence_count": 0,
+                "source_count": 0,
+                "outcome": "invalid_scope_for_sources_only",
+                "message": "sources_only 只适用于 scope=exhaustive。",
+                CONTINUE_TOOL_LOOP_FLAG: True,
+            }
+        if source_id and scope != "exhaustive":
+            return {
+                "status": "error",
+                "type": "knowledge_evidence",
+                "query": query,
+                "scope": scope,
+                "evidence_count": 0,
+                "source_count": 0,
+                "outcome": "invalid_scope_for_source_id",
+                "message": "按来源取正文时请使用 scope=exhaustive。",
+                CONTINUE_TOOL_LOOP_FLAG: True,
+            }
+        if scope == "answer":
+            retrieval_kwargs: dict[str, Any] = {
+                "max_evidence": evidence_limit(
+                    max_evidence, default=ANSWER_DEFAULT_EVIDENCE, hard=ANSWER_MAX_EVIDENCE
+                ),
+                "content_chars": 0,
+            }
+        elif scope == "survey":
+            source_limit = evidence_limit(
+                max_evidence, default=SURVEY_DEFAULT_SOURCES, hard=SURVEY_MAX_SOURCES
+            )
+            retrieval_kwargs = {
+                "max_evidence": source_limit * SURVEY_MAX_EVIDENCE_PER_SOURCE,
+                "content_chars": SURVEY_EVIDENCE_CHARS,
+                "max_sources": source_limit,
+                "per_source_max": SURVEY_MAX_EVIDENCE_PER_SOURCE,
+            }
+        else:
+            retrieval_kwargs = {
+                "page_sources": evidence_limit(
+                    max_evidence,
+                    default=EXHAUSTIVE_PAGE_SOURCES,
+                    hard=EXHAUSTIVE_PAGE_SOURCES,
+                )
+            }
+        timeout = env_int("AGENT_KNOWLEDGE_TIMEOUT", 60)
+        retryable = {RETRIEVAL_CALL_FAILED, RETRIEVAL_DEADLINE, RETRIEVAL_SERVICE_FAILURE}
+        reranker = build_reranker()
+        # 服务故障重试一次；每次尝试都有自己的截止，避免一次超时吃掉全部预算。
+        retrieval = retrieve_evidence(
+            self.knowledge_client,
+            query,
+            deadline=time.monotonic() + timeout,
+            scope=scope,
+            cursor=cursor,
+            sources_only=sources_only,
+            source_id=source_id,
+            reranker=reranker,
+            **retrieval_kwargs,
+        )
+        if retrieval.error is not None and retrieval.error.reason in retryable:
+            retrieval = retrieve_evidence(
+                self.knowledge_client,
+                query,
+                deadline=time.monotonic() + timeout,
+                scope=scope,
+                cursor=cursor,
+                sources_only=sources_only,
+                source_id=source_id,
+                reranker=reranker,
+                **retrieval_kwargs,
+            )
+        if retrieval.error is not None:
+            if retrieval.error.reason == RETRIEVAL_INVALID_CURSOR:
+                return {
+                    "status": "error",
+                    "type": "knowledge_evidence",
+                    "query": query,
+                    "scope": scope,
+                    "evidence_count": 0,
+                    "source_count": 0,
+                    "outcome": "invalid_cursor",
+                    "message": retrieval.error.message,
+                    CONTINUE_TOOL_LOOP_FLAG: True,
+                }
+            return {
+                # error + continue_tool_loop：非终态失败，让模型据实告知不可用。
+                "status": "error",
+                "type": "knowledge_evidence",
+                "query": query,
+                "scope": scope,
+                "evidence_count": 0,
+                "source_count": 0,
+                "outcome": "knowledge_unavailable",
+                "message": "知识检索服务暂时不可用，请稍后重试。",
+                "retrieval_error_reason": retrieval.error.reason,
+                "continue_tool_loop": True,
+            }
+        result = {
+            "status": "success",
+            "type": "knowledge_evidence",
+            "query": query,
+            "scope": scope,
+            "evidence": retrieval.evidence,
+            "sources": retrieval.sources,
+            "untraceable": retrieval.untraceable,
+            "evidence_count": len(retrieval.evidence),
+            "source_count": len(retrieval.sources),
+            "has_more": retrieval.has_more,
+            "next_cursor": retrieval.next_cursor,
+            "coverage_message": retrieval.coverage_message,
+            "source_id": source_id or "",
+            "rerank_status": retrieval.rerank_status,
+            "retrieval_status": "no_results" if retrieval.no_results else "success",
+            "message": retrieval.coverage_message
+            or ("" if retrieval.evidence else "当前知识库没有检索到相关证据。"),
+            CONTINUE_TOOL_LOOP_FLAG: True,
+        }
+        if not retrieval.evidence and not (sources_only and retrieval.sources):
+            result["outcome"] = "insufficient_evidence"
+        return result
+
     def query_memory_for_agent(
         self, query: str, context: dict[str, Any] | None = None
     ) -> dict[str, Any]:
@@ -1160,15 +1349,22 @@ class WorkflowManager:
                 "status": "error",
                 "type": "memory_response",
                 "message": "运行记忆库未启用（kg_query 未注入）。",
+                CONTINUE_TOOL_LOOP_FLAG: True,
             }
         try:
             answer = self.kg_query.query(query, context=context)
-            return {"status": "success", "type": "memory_response", "response": answer}
-        except Exception as e:  # noqa: BLE001 - 记忆查询失败降级为 error 终态
+            return {
+                "status": "success",
+                "type": "memory_response",
+                "response": answer,
+                CONTINUE_TOOL_LOOP_FLAG: True,
+            }
+        except Exception as e:  # noqa: BLE001 - 记忆查询失败交给模型如实说明
             return {
                 "status": "error",
                 "type": "memory_response",
                 "message": f"运行记忆查询失败: {e}",
+                CONTINUE_TOOL_LOOP_FLAG: True,
             }
 
     def run_analysis_for_agent(
@@ -1183,6 +1379,7 @@ class WorkflowManager:
                 "status": "error",
                 "analysis_type": analysis_type,
                 "message": f"不支持的分析类型: {analysis_type}，支持的类型: {', '.join(SUPPORTED_ANALYSIS_TYPES)}",
+                CONTINUE_TOOL_LOOP_FLAG: True,
             }
         intent = {
             "type": "analysis",
@@ -1192,4 +1389,7 @@ class WorkflowManager:
         with self._record_run(intent, params, context) as run_id:
             result = self._execute_analysis_workflow(intent, params, context, run_id)
             self._record_outputs(run_id, result)
+        if analysis_type != "single_cell" and result.get("status") in {"success", "error"}:
+            # 非审批终态：回灌模型继续作答，而不是把工具结果当最终回答。
+            result[CONTINUE_TOOL_LOOP_FLAG] = True
         return result

@@ -47,4 +47,18 @@ describe('Dialog', () => {
     fireEvent.click(screen.getByRole('button', { name: '取消' }))
     expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
   })
+
+  it('弹窗与遮罩统一 160ms、0.98 缩放，居中位移独立于动画', () => {
+    render(<Harness />)
+    fireEvent.click(screen.getByRole('button', { name: '删除' }))
+
+    const dialog = screen.getByRole('dialog')
+    expect(dialog.className).toContain('data-open:zoom-in-98')
+    expect(dialog.className).not.toContain('zoom-in-95')
+    expect(dialog.className).toContain('-translate-x-1/2')
+    expect(dialog.className).toContain('-translate-y-1/2')
+
+    const overlay = document.querySelector('[data-slot="dialog-overlay"]')
+    expect(overlay?.className).toContain('data-open:fade-in-0')
+  })
 })

@@ -16,8 +16,15 @@ def get_store(request: Request) -> SessionStore:
     FastAPI 在同一请求内缓存依赖结果，多处 Depends(get_store) 只会构造一次。
     SessionStore 每次操作独立建连，同步依赖与 async 端点共用同一实例是安全的。
     """
-    factory: Callable[[], SessionStore] = request.app.state.store_factory
-    return factory()
+    store = getattr(request.state, "store", None)
+    if store is None:
+        factory: Callable[[], SessionStore] = request.app.state.store_factory
+        store = factory()
+        request.state.store = store
+    workspace_id = getattr(request.state, "workspace_id", None)
+    if workspace_id:
+        store.workspace_id = workspace_id
+    return store
 
 
 StoreDep = Annotated[SessionStore, Depends(get_store)]

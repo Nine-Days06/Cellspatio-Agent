@@ -1,8 +1,8 @@
 """SSE 事件契约：统一构造、帧序列化、图表与消息的线路编码。
 
 事件类型共 7 类（与前端共享契约）：
-- delta        {text}                          LLM 逐块输出
-- tool_status  {name, phase, label}            tool-calling 循环过程
+- delta        {text, source?}                 LLM 逐块输出；source=reasoning 表示思考
+- tool_status  {name, phase, label, count?}    tool-calling 循环过程；count 为检索结果条数
 - confirm_card {kind, payload}                 needs_script / needs_data_confirmation
 - chart        {plotly_json | image_b64}       分析产出图表
 - compressed   {soft_warn}                     压缩软阈值提醒
@@ -28,6 +28,7 @@ TOOL_LABELS: dict[str, str] = {
     "search_datasets": "搜索数据集",
     "query_knowledge": "查询知识库",
     "query_memory": "查询记忆",
+    "search_knowledge": "检索文献",
 }
 
 

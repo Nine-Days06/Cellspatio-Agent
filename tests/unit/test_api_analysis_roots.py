@@ -13,6 +13,7 @@ from src.api.app import create_app
 from src.ui.analysis_roots import AnalysisRoots
 from src.ui.session_store import SessionStore
 from tests.unit.fakes import QC_HEADER, FakeAgent, fake_qc_executor
+from tests.unit.workspace_support import authenticate_legacy
 
 _API_DIR = Path(__file__).resolve().parents[2] / "src" / "api"
 
@@ -68,7 +69,9 @@ def _client(recorder_repo: Path, allowed: Path) -> TestClient:
     )
     app = create_app(agent)
     app.state.analysis_roots = AnalysisRoots(SessionStore(), allowed)
-    return TestClient(app)
+    client = TestClient(app)
+    authenticate_legacy(client)
+    return client
 
 
 def test_create_app_uses_workflow_recorder_repo_root(tmp_path):

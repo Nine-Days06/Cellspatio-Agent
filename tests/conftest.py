@@ -80,3 +80,13 @@ def pytest_runtest_setup(item):
 @pytest.fixture(autouse=True)
 def session_db(tmp_path, monkeypatch):
     monkeypatch.setenv("CELLSPATIO_SESSIONS_DB", str(tmp_path / "sessions.db"))
+
+
+@pytest.fixture(autouse=True)
+def _disable_external_rerank(monkeypatch):
+    """单测不得依赖本机 .env 的重排 endpoint；需要时由用例显式设置。"""
+    monkeypatch.delenv("KNOWLEDGE_RERANK_PROVIDER", raising=False)
+    monkeypatch.delenv("KNOWLEDGE_RERANK_ENDPOINT", raising=False)
+    from src.knowledge.qa import _rerank_cache
+
+    _rerank_cache.clear()

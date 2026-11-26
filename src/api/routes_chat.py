@@ -7,16 +7,18 @@ import logging
 import threading
 from collections.abc import AsyncIterator
 from contextlib import ExitStack
-from typing import Any, Literal
+from typing import Any
 
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
-from src.api.chat_service import persist_message, run_turn
+from src.api.chat_service import BeforeDone, persist_message, run_turn
 from src.api.deps import StoreDep
 from src.api.events import make_event, sse_frame
 from src.api.session_locks import session_guard
+from src.ui.session_store import SessionStore
+from src.ui.session_title import maybe_name_session
 
 logger = logging.getLogger(__name__)
 
@@ -34,7 +36,6 @@ class ChatRequest(BaseModel):
 
     session_id: str
     prompt: str
-    mode: Literal["chat", "knowledge_qa"] = "chat"
 
 
 @router.post("/chat")
@@ -67,7 +68,11 @@ async def chat(body: ChatRequest, request: Request, store: StoreDep) -> Streamin
 
         def emit_recording(event: dict[str, Any]) -> bool:
             """记录已生成的增量文本，失败时才能把部分回答落库。"""
-            if event.get("type") == "delta" and isinstance(event.get("text"), str):
+            if (
+                event.get("type") == "delta"
+                and event.get("source") != "reasoning"
+                and isinstance(event.get("text"), str)
+            ):
                 partial.append(event["text"])
             return emit(event)
 
@@ -80,7 +85,7 @@ async def chat(body: ChatRequest, request: Request, store: StoreDep) -> Streamin
                         body.session_id,
                         body.prompt,
                         emit_recording,
-                        mode=body.mode,
+                        before_done=_auto_name(agent),
                     )
                 except Exception as exc:  # 任何失败都要变成 error 事件
                     logger.exception("chat run_turn failed")  # except 块内自动带 traceback
@@ -122,3 +127,17 @@ async def chat(body: ChatRequest, request: Request, store: StoreDep) -> Streamin
         media_type="text/event-stream",
         headers=SSE_HEADERS,
     )
+
+
+def _auto_name(agent: Any) -> BeforeDone:
+    """首轮问答完成后的自动命名挂点；无 LLM 客户端时由命名模块自行跳过。"""
+
+    def hook(store: SessionStore, session_id: str) -> None:
+        maybe_name_session(
+            store,
+            session_id,
+            getattr(agent, "llm_client", None),
+            getattr(agent, "llm_model", "") or "",
+        )
+
+    return hook

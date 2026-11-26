@@ -7,6 +7,7 @@ import json
 import pytest
 
 from src.api.chat_service import _persist, persist_message, persist_outcome, run_turn, session_lock
+from src.control.agent_runtime import CITATION_INVALID_MESSAGE
 from src.ui.session_store import SessionStore
 from tests.unit.fakes import FakeAgent, FakeRuntime
 
@@ -34,9 +35,9 @@ def test_user_message_is_persisted_before_runtime_runs(store):
     class RecordingRuntime(FakeRuntime):
         """执行瞬间回读 store，验证用户消息在运行时启动前已落库。"""
 
-        def execute(self, user_input, context=None, on_event=None):
+        def execute(self, user_input, context=None, on_event=None, **kwargs):
             roles_at_execute.append([m["role"] for m in store.get_messages(sid)])
-            return super().execute(user_input, context, on_event)
+            return super().execute(user_input, context, on_event, **kwargs)
 
     runtime = RecordingRuntime()
     emit = _sink()
@@ -52,119 +53,109 @@ def test_user_message_is_persisted_before_runtime_runs(store):
     assert emit.collected[-1]["type"] == "done"
 
 
-def test_knowledge_qa_mode_bypasses_history_runtime_and_compaction(store, monkeypatch):
-    """显式问答只把本轮问题交给证据链，不压缩历史、不进入工具循环。"""
+def test_turn_uses_single_agent_with_history(store):
+    """所有对话走同一 agent，并保留压缩后的历史。"""
     sid = store.create_session()
     store.append_message(sid, "user", "历史里的秘密")
     store.append_message(sid, "assistant", "历史回答")
-    store.update_session_meta(sid, summary="历史摘要", summary_upto=2)
+    store.update_session_meta(sid, summary="历史摘要", summary_upto=0)
     payload = {
-        "answer_id": "qa-test",
-        "schema_version": "knowledge-qa/1.0.0",
         "status": "success",
+        "type": "general_response",
         "outcome": "supported_answer",
-        "answer": "可追溯回答",
-        "claims": [],
-        "evidence": [],
-        "sources": [],
-        "review_status": "unreviewed",
+        "message": "可追溯回答 [E1]",
+        "results": {
+            "knowledge_evidence": {
+                "outcome": "supported_answer",
+                "evidence": [],
+                "sources": [],
+                "claims": [],
+                "citations": ["E1"],
+            }
+        },
     }
-    seen: list[str] = []
-    seen_kwargs: list[dict] = []
-
-    def fake_run(client, question, **kwargs):
-        seen.append(question)
-        seen_kwargs.append(kwargs)
-        return payload
-
-    monkeypatch.setattr("src.knowledge.qa.run_knowledge_qa", fake_run)
-    agent = FakeAgent()
-    agent.knowledge_client = object()
+    runtime = FakeRuntime(results=[payload])
+    agent = FakeAgent(runtime=runtime)
     emit = _sink()
 
-    result = run_turn(agent, store, sid, "新问题", emit, mode="knowledge_qa")
+    result = run_turn(agent, store, sid, "新问题", emit)
 
-    assert seen == ["新问题"]
-    user_message_id = [m for m in store.get_messages(sid) if m["role"] == "user"][-1]["id"]
-    assert seen_kwargs == [{"session_id": sid, "question_message_id": user_message_id}]
-    assert agent.agent_runtime.calls == []
-    assert store.get_session(sid)["summary"] == "历史摘要"
+    call = runtime.calls[0]
+    assert call["context"]["summary"] == "历史摘要"
+    assert "历史回答" in [item["content"] for item in call["context"]["history"]]
     last = store.get_messages(sid)[-1]
-    assert last["content"] == "可追溯回答"
-    assert last["results"]["knowledge_qa"]["answer_id"] == "qa-test"
-    assert [event["type"] for event in emit.collected] == [
-        "tool_status",
-        "tool_status",
-        "done",
-    ]
-    assert result["type"] == "knowledge_qa"
+    assert last["content"] == "可追溯回答 [E1]"
+    assert last["results"]["knowledge_evidence"]["citations"] == ["E1"]
+    assert last["results"]["chat_mode"] == "chat"
+    assert result["type"] == "general_response"
 
 
-def test_knowledge_qa_stops_before_retrieval_when_client_is_gone(store, monkeypatch):
-    """启动事件发不出去说明连接已断，不再发起检索/生成调用。"""
+def test_persisted_citation_failure_message_does_not_inline_evidence(store):
+    """引用失败落库正文只有提示，证据标题/片段/路径只留在证据包。"""
     sid = store.create_session()
-    called: list[str] = []
+    payload = {
+        "status": "error",
+        "type": "general_response",
+        "outcome": "citation_invalid",
+        "message": CITATION_INVALID_MESSAGE,
+        "results": {
+            "knowledge_evidence": {
+                "outcome": "citation_invalid",
+                "evidence": [
+                    {
+                        "evidence_id": "E1",
+                        "title": "敏感标题",
+                        "content": "证据正文哨兵",
+                        "file_path": "/secret/path.pdf",
+                    }
+                ],
+                "sources": [],
+                "citations": [],
+                "claims": [],
+            }
+        },
+    }
 
-    def fake_run(client, question, **kwargs):
-        called.append(question)
-        return {}
+    run_turn(FakeAgent(runtime=FakeRuntime(results=[payload])), store, sid, "TP53", _sink())
 
-    monkeypatch.setattr("src.knowledge.qa.run_knowledge_qa", fake_run)
-    agent = FakeAgent()
-    agent.knowledge_client = object()
+    assistants = [msg for msg in store.get_messages(sid) if msg["role"] == "assistant"]
+    assert [msg["content"] for msg in assistants] == [CITATION_INVALID_MESSAGE]
+    for hidden in ("敏感标题", "证据正文哨兵", "/secret/path.pdf"):
+        for msg in assistants:
+            assert hidden not in msg["content"]
+
+
+def test_history_context_drops_legacy_evidence_listing(store):
+    """旧消息里落库的证据清单不会再进入下一轮模型上下文。"""
+    sid = store.create_session()
+    store.append_message(sid, "user", "初问")
+    store.append_message(
+        sid, "assistant", "旧答 [E1]\n\n**已检索到的证据**\n- [E1] 敏感标题：证据正文哨兵"
+    )
+    runtime = FakeRuntime()
+
+    run_turn(FakeAgent(runtime=runtime), store, sid, "追问", _sink())
+
+    history = runtime.calls[0]["context"]["history"]
+    assert any("旧答 [E1]" in msg["content"] for msg in history)
+    assert all("证据正文哨兵" not in msg["content"] for msg in history)
+
+
+def test_tool_start_abort_persists_interrupted_turn(store):
+    """启动事件发不出去说明连接已断；本轮落中断终态。"""
+    sid = store.create_session()
+    runtime = FakeRuntime(
+        events=[{"type": "tool_status", "name": "search_knowledge", "phase": "start"}]
+    )
+    agent = FakeAgent(runtime=runtime)
     emit = _sink(abort_types=("tool_status",))
 
-    result = run_turn(agent, store, sid, "新问题", emit, mode="knowledge_qa")
+    result = run_turn(agent, store, sid, "新问题", emit)
 
-    assert called == []
-    assert result["status"] == "interrupted"
+    assert result["status"] == "aborted"
     last = store.get_messages(sid)[-1]
     assert last["role"] == "assistant"
-    assert last["results"]["knowledge_qa"]["status"] == "interrupted"
-    assert (
-        last["results"]["knowledge_qa"]["question_message_id"]
-        == [m for m in store.get_messages(sid) if m["role"] == "user"][-1]["id"]
-    )
-
-
-def test_knowledge_qa_prompt_excludes_history_summary_and_assets(store, monkeypatch):
-    """证据边界：模型只应看到本轮问题与本轮检索片段。"""
-    sid = store.create_session()
-    store.append_message(sid, "user", "历史里的秘密")
-    store.append_message(sid, "assistant", "历史回答")
-    store.update_session_meta(sid, summary="历史摘要", summary_upto=2)
-
-    class Client:
-        def query_data(self, question, mode="mix", **kwargs):
-            return {
-                "status": "success",
-                "data": {
-                    "chunks": [
-                        {
-                            "chunk_id": "c1",
-                            "content": "标题：A paper\n摘要：Retrieved evidence.\nPMID：38947524",
-                        }
-                    ]
-                },
-                "metadata": {},
-            }
-
-    prompts: list[str] = []
-
-    async def fake_llm(prompt, **kwargs):
-        prompts.append(prompt)
-        return json.dumps({"outcome": "insufficient_evidence", "answer": "证据不足"})
-
-    monkeypatch.setattr("src.knowledge.qa.build_llm_func", lambda: (fake_llm, "fake-model"))
-    agent = FakeAgent()
-    agent.knowledge_client = Client()
-
-    run_turn(agent, store, sid, "新问题", _sink(), mode="knowledge_qa")
-
-    assert prompts, "生成阶段应当被调用"
-    for sentinel in ("历史里的秘密", "历史回答", "历史摘要"):
-        assert sentinel not in prompts[0]
-    assert "Retrieved evidence." in prompts[0]
+    assert last["content"] == "（已中断）"
 
 
 def test_general_branch_persists_assistant_message_and_done_event(store):
@@ -331,6 +322,162 @@ def test_aborted_branch_persists_interrupted_marker(store):
     assert "不该出现" not in messages[-1]["content"]
 
 
+def test_aborted_turn_records_chat_mode(store):
+    """中断轮也落 chat_mode，保持历史统计字段完整。"""
+    sid = store.create_session()
+    runtime = FakeRuntime(events=[{"type": "delta", "text": "半句"}], default={"status": "success"})
+    emit = _sink()
+
+    def abort_on_delta(event):
+        emit(event)
+        return False
+
+    result = run_turn(FakeAgent(runtime=runtime), store, sid, "TP53", abort_on_delta)
+
+    assert result["status"] == "aborted"
+    assert store.get_messages(sid)[-1]["results"]["chat_mode"] == "chat"
+
+
+def test_before_done_runs_after_assistant_persisted_and_before_done_event(store):
+    """收尾挂点：助手消息已落库、done 尚未发射，且只触发一次。"""
+    sid = store.create_session()
+    seen: list[tuple[str, list[str], list[str]]] = []
+    emit = _sink()
+
+    def hook(store_arg, session_id):
+        seen.append(
+            (
+                session_id,
+                [m["role"] for m in store_arg.get_messages(session_id)],
+                [e["type"] for e in emit.collected],
+            )
+        )
+
+    run_turn(
+        FakeAgent(runtime=FakeRuntime(default={"status": "success", "message": "回答"})),
+        store,
+        sid,
+        "你好",
+        emit,
+        before_done=hook,
+    )
+
+    assert seen == [(sid, ["user", "assistant"], [])]
+    assert emit.collected[-1]["type"] == "done"
+
+
+def test_before_done_not_called_on_aborted_or_error_branch(store):
+    """中断与报错首轮不满足“首轮问答完成”，收尾挂点不得触发。"""
+    sid = store.create_session()
+    called: list[str] = []
+    emit = _sink()
+
+    runtime = FakeRuntime(
+        events=[{"type": "delta", "text": "半句"}],
+        default={"status": "success", "message": "不该出现"},
+    )
+
+    def abort_on_delta(event):
+        emit(event)
+        return False
+
+    run_turn(
+        FakeAgent(runtime=runtime),
+        store,
+        sid,
+        "长任务",
+        abort_on_delta,
+        before_done=lambda store_arg, session_id: called.append(session_id),
+    )
+
+    assert called == []
+    assert store.get_messages(sid)[-1]["content"] == "（已中断）"
+
+
+def test_first_turn_updates_title_before_done_event(store):
+    """首轮完成时标题在 done 之前写入，前端本轮结束即可刷新看到。"""
+    from src.ui.session_title import maybe_name_session
+
+    sid = store.create_session()
+    emit = _sink()
+    titles_at_done: list[str] = []
+
+    def emit_and_capture(event):
+        if event.get("type") == "done":
+            titles_at_done.append(store.get_session(sid)["title"])
+        return emit(event)
+
+    class FakeCompletions:
+        def create(self, **kwargs):
+            message = type("Message", (), {"content": "PBMC 质控与聚类"})()
+            choice = type("Choice", (), {"message": message})()
+            return type("Response", (), {"choices": [choice]})()
+
+    class FakeLLM:
+        def __init__(self):
+            self.chat = type("Chat", (), {"completions": FakeCompletions()})()
+
+    run_turn(
+        FakeAgent(
+            runtime=FakeRuntime(default={"status": "success", "message": "完成"}),
+            llm_client=FakeLLM(),
+        ),
+        store,
+        sid,
+        "帮我做 PBMC 质控和聚类",
+        emit_and_capture,
+        before_done=lambda store_arg, session_id: maybe_name_session(
+            store_arg, session_id, FakeLLM(), "m1"
+        ),
+    )
+
+    assert titles_at_done == ["PBMC 质控与聚类"]
+    assert store.get_session(sid)["title_source"] == "model"
+
+
+def test_error_first_turn_does_not_trigger_auto_name(store):
+    """报错首轮没有完成问答，收尾挂点不得用错误文案生成标题。"""
+    sid = store.create_session()
+    called: list[str] = []
+    emit = _sink()
+
+    run_turn(
+        FakeAgent(runtime=FakeRuntime(default={"status": "error", "message": "模型调用失败"})),
+        store,
+        sid,
+        "帮我做质控",
+        emit,
+        before_done=lambda store_arg, session_id: called.append(session_id),
+    )
+
+    assert called == []
+    assert store.get_session(sid)["title"] == "帮我做质控"
+    assert store.get_session(sid)["title_source"] == "derived"
+
+
+def test_no_llm_client_keeps_derived_title_and_emits_done(store):
+    """没有 LLM 客户端时沿用首条消息兜底标题，done 照常发射。"""
+    from src.ui.session_title import maybe_name_session
+
+    sid = store.create_session()
+    emit = _sink()
+
+    run_turn(
+        FakeAgent(runtime=FakeRuntime(default={"status": "success", "message": "回答"})),
+        store,
+        sid,
+        "TP53 的作用",
+        emit,
+        before_done=lambda store_arg, session_id: maybe_name_session(
+            store_arg, session_id, None, "m1"
+        ),
+    )
+
+    assert emit.collected[-1]["type"] == "done"
+    assert store.get_session(sid)["title"] == "TP53 的作用"
+    assert store.get_session(sid)["title_source"] == "derived"
+
+
 def test_context_carries_history_summary_and_assets(store):
     sid = store.create_session()
     store.append_message(sid, "user", "上一问")
@@ -389,21 +536,19 @@ def test_session_lock_is_per_session_and_reentrant_lookup():
     first.release()
 
 
-def test_knowledge_qa_persist_failure_is_not_reported_as_success(store, monkeypatch):
+def test_persist_failure_is_not_reported_as_success(store, monkeypatch):
     """落库失败必须冒泡，不能对外宣称这一轮已完成。"""
     sid = store.create_session()
-    monkeypatch.setattr(
-        "src.knowledge.qa.run_knowledge_qa",
-        lambda client, question, **kwargs: {
-            "answer_id": "qa-test",
-            "status": "success",
-            "outcome": "supported_answer",
-            "answer": "回答",
-            "claims": [],
-            "evidence": [],
-            "sources": [],
-            "review_status": "unreviewed",
-        },
+    runtime = FakeRuntime(
+        results=[
+            {
+                "status": "success",
+                "type": "general_response",
+                "outcome": "supported_answer",
+                "message": "回答 [E1]",
+                "results": {"knowledge_evidence": {"citations": ["E1"]}},
+            }
+        ]
     )
     real_append = store.append_message
 
@@ -413,48 +558,39 @@ def test_knowledge_qa_persist_failure_is_not_reported_as_success(store, monkeypa
         return real_append(session_id, role, content, **kwargs)
 
     monkeypatch.setattr(store, "append_message", flaky_append)
-    agent = FakeAgent()
-    agent.knowledge_client = object()
+    agent = FakeAgent(runtime=runtime)
     emit = _sink()
 
     with pytest.raises(RuntimeError, match="disk full"):
-        run_turn(agent, store, sid, "问题", emit, mode="knowledge_qa")
+        run_turn(agent, store, sid, "问题", emit)
 
-    assert [e["type"] for e in emit.collected] == ["tool_status", "tool_status"]
+    assert emit.collected == []
 
 
-def test_knowledge_qa_disconnect_after_generation_keeps_answer(store, monkeypatch):
-    """生成完才发现断连：落 interrupted，但保留已产出的回答，且不发 done。"""
+def test_disconnect_after_generation_keeps_answer(store):
+    """回答已生成后写入失败仍应落库正文，不能因 done 发不出去而丢失。"""
     sid = store.create_session()
-    payload = {
-        "answer_id": "qa-done",
-        "status": "success",
-        "outcome": "supported_answer",
-        "answer": "已有回答",
-        "claims": [],
-        "evidence": [],
-        "sources": [],
-        "review_status": "unreviewed",
-    }
-    monkeypatch.setattr("src.knowledge.qa.run_knowledge_qa", lambda client, question, **kw: payload)
+    runtime = FakeRuntime(
+        results=[
+            {
+                "status": "success",
+                "type": "general_response",
+                "outcome": "supported_answer",
+                "message": "已有回答 [E1]",
+                "results": {"knowledge_evidence": {"citations": ["E1"]}},
+            }
+        ]
+    )
     collected: list[dict] = []
-    seen: list[int] = []
 
     def emit(event):
         collected.append(event)
-        if event["type"] == "tool_status":
-            seen.append(1)
-            return len(seen) == 1
         return True
 
-    agent = FakeAgent()
-    agent.knowledge_client = object()
+    agent = FakeAgent(runtime=runtime)
 
-    result = run_turn(agent, store, sid, "问题", emit, mode="knowledge_qa")
+    result = run_turn(agent, store, sid, "问题", emit)
 
-    assert result["status"] == "interrupted"
-    assert [e["type"] for e in collected] == ["tool_status", "tool_status"]
-    pkg = store.get_messages(sid)[-1]["results"]["knowledge_qa"]
-    assert pkg["status"] == "interrupted"
-    assert pkg["answer"] == "已有回答"
-    assert store.get_messages(sid)[-1]["content"] == "已有回答"
+    assert result["status"] == "success"
+    assert collected[-1]["type"] == "done"
+    assert store.get_messages(sid)[-1]["content"] == "已有回答 [E1]"

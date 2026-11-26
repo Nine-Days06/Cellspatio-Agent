@@ -12,7 +12,7 @@ EVIDENCE_ERRORS = (
     IndexError,
 )
 
-_STORE_STATUS = {"not_found": 404, "conflict": 409}
+_STORE_STATUS = {"not_found": 404, "conflict": 409, "invalid": 400}
 
 
 def store_status(exc: StoreError) -> int:

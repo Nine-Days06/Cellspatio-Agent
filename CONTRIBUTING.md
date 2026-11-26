@@ -2,6 +2,8 @@
 
 本文件规定本仓库的协作流程。所有贡献者（含 AI agent）均须遵循。
 
+架构、模块地图、开发环境、测试细节与常见任务见 [开发文档](docs/developer/README.md)。
+
 主要依据（官方一手规范）：
 
 - [GitHub Flow](https://docs.github.com/en/get-started/using-github/github-flow) — GitHub 官方轻量分支工作流

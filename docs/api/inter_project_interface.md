@@ -68,6 +68,10 @@ pubmed-etl --step export → data/output/articles_<ts>.csv → data/import/ → 
 
 > `python -m src.knowledge.import_cli` 因模块缺少 `__main__` 入口而静默无输出（已知限制），请使用上面的 `python -c` 写法。
 
+**批次契约：** 文件名正则、导出列与读取入口集中在 `src/article_batches.py`。
+目录扫描只认 `articles_YYYYMMDD_HHMMSS.csv`，`articles_raw_*.csv` 与手工 CSV 不会自动导入；
+导入前校验必需列 `pmid/title/abstract`，新增列仍向后兼容。
+
 **去重机制（两层，各司其职）：**
 1. 导出侧：`exported_pmids.txt` 保证 CSV 批次只含新 PMID（唯一事实来源）；
 2. 导入侧：`import_ledger.json` 保证同一 CSV 批次只被读取/提交一次（批次粒度）。
@@ -79,13 +83,13 @@ pubmed-etl --step export → data/output/articles_<ts>.csv → data/import/ → 
 ```
 python sync_pubmed.py                 # 导出 + 增量导入本次新 CSV
 python sync_pubmed.py --no-import     # 只导出
-python sync_pubmed.py --reimport-all  # 忽略台账，全量重导 data/import/ 下所有文件
+python sync_pubmed.py --reimport-all  # 忽略台账，全量重导 data/import/ 下的契约批次
 ```
 
 核心函数 `sync_and_import(etl_dir, import_dir, do_import, reimport_all)`：
 1. `subprocess` 调用 `pubmed-etl/main.py --step export`
 2. 复制最新 `data/output/articles_<ts>.csv` 到主项目 `data/import/`
-3. 经 `import_cli.import_from_directory(..., files=[该文件名])` 只导入这一个文件（台账去重）；`reimport_all=True` 时改为全量扫描目录
+3. 经 `import_cli.import_from_directory(..., files=[该文件名])` 只导入这一个文件（台账去重）；`reimport_all=True` 时改为全量扫描目录下的契约批次
 
 **返回键：** `exported`（0/1）、`imported`（新批次文章数，见上方计数口径）、`failed`（0=成功，1=失败）、`csv`（复制后的文件路径，无新数据为 `None`）。
 
@@ -97,6 +101,6 @@ python sync_pubmed.py --reimport-all  # 忽略台账，全量重导 data/import/
 
 ## 版本兼容性
 
-**当前版本：** v2.1（v2.0 + 导入侧台账增量契约：新增 `new_count` / `skipped_files` / `failed_files` 返回键与 `--reimport-all` 标志，原有键与原有 CLI 参数保持不变）
+**当前版本：** v2.2（v2.1 + 批次交接契约：目录扫描只认 `articles_<ts>.csv`，读取前校验必需列；原返回键与 CLI 参数不变）
 
 **字段扩展：** 新增字段可选，不影响导入；必需字段：pmid、title、abstract。

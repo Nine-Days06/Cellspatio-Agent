@@ -37,6 +37,7 @@ const sessions: SessionSummary[] = [
   {
     id: 's1',
     title: '肝癌项目',
+    title_source: 'explicit',
     updated_at: '2026-09-30T00:00:00',
     message_count: 3,
     project_id: null,
@@ -46,6 +47,7 @@ const sessions: SessionSummary[] = [
   {
     id: 's2',
     title: '新会话',
+    title_source: 'default',
     updated_at: '2026-09-29T00:00:00',
     message_count: 0,
     project_id: null,
@@ -123,7 +125,7 @@ describe('Sidebar', () => {
     expect(createSession).not.toHaveBeenCalled()
     expect(deleteSession).not.toHaveBeenCalled()
   })
-  it('移动会话导航选择后关闭，删除仍须独立二次确认', () => {
+  it('移动会话导航选择后关闭，删除仍须独立二次确认', async () => {
     const { onSelected } = renderSidebar()
     fireEvent.click(screen.getByRole('button', { name: '会话' }))
     const drawer = screen.getByRole('dialog', { name: '会话导航' })
@@ -133,7 +135,33 @@ describe('Sidebar', () => {
     expect(deleteSession).not.toHaveBeenCalled()
     fireEvent.click(within(drawer).getByRole('button', { name: /^新会话/ }))
     expect(onSelected).toHaveBeenCalledWith('s2')
+    await waitFor(() =>
+      expect(screen.queryByRole('dialog', { name: '会话导航' })).not.toBeInTheDocument(),
+    )
+  })
+
+  it('抽屉使用滑入类，关闭时先反向滑出再移除', async () => {
+    renderSidebar()
+    fireEvent.click(screen.getByRole('button', { name: '会话' }))
+
+    const drawer = screen.getByRole('dialog', { name: '会话导航' })
+    expect(drawer.className).toContain('sidebar-drawer')
+    expect(drawer.className).not.toContain('sidebar-drawer-out')
+
+    fireEvent.keyDown(document, { key: 'Escape' })
+    expect(drawer.className).toContain('sidebar-drawer-out')
+    await waitFor(() =>
+      expect(screen.queryByRole('dialog', { name: '会话导航' })).not.toBeInTheDocument(),
+    )
+  })
+
+  it('减少动效时抽屉立即关闭', () => {
+    window.matchMedia = vi.fn().mockReturnValue({ matches: true }) as unknown as typeof window.matchMedia
+    renderSidebar()
+    fireEvent.click(screen.getByRole('button', { name: '会话' }))
+    fireEvent.keyDown(document, { key: 'Escape' })
     expect(screen.queryByRole('dialog', { name: '会话导航' })).not.toBeInTheDocument()
+    delete (window as { matchMedia?: typeof window.matchMedia }).matchMedia
   })
   it('渲染会话列表并高亮当前会话', () => {
     renderSidebar()
@@ -276,6 +304,27 @@ it('按项目分组渲染会话，项目头可新建会话', () => {
   })
 })
 
+it('项目分组收起后子项不可见且 aria-expanded=false', () => {
+  renderSidebar({ projects, sessions: [{ ...sessions[0], project_id: 'p1' }] })
+
+  const header = screen.getByRole('button', { name: /^肝项目组/ })
+
+  fireEvent.click(header)
+  expect(header).toHaveAttribute('aria-expanded', 'false')
+  const region = screen.getByRole('region', { name: '项目 肝项目组' })
+  const group = region.querySelector('.motion-collapse')
+  expect(group).toHaveAttribute('aria-hidden', 'true')
+  expect(group).toHaveClass('grid-rows-[0fr]')
+  expect(group).toHaveAttribute('inert')
+  expect(
+    within(region).queryByRole('button', { name: /^肝癌项目/ }),
+  ).not.toBeInTheDocument()
+
+  fireEvent.click(header)
+  expect(header).toHaveAttribute('aria-expanded', 'true')
+  expect(within(region).getByRole('button', { name: /^肝癌项目/ })).toBeInTheDocument()
+})
+
 it('新建项目：填名后调用 createProject 并刷新', async () => {
   createProject.mockResolvedValue({ project: projects[0] })
   const onChanged = vi.fn()
@@ -301,6 +350,28 @@ it('会话菜单可移动与归档', async () => {
   fireEvent.click(screen.getByRole('button', { name: '更多 新会话' }))
   fireEvent.click(screen.getByRole('button', { name: '归档会话' }))
   await waitFor(() => expect(onArchived).toHaveBeenCalledWith('s2'))
+})
+
+it('会话菜单可重命名并刷新侧栏', async () => {
+  updateSession.mockResolvedValue({ session: {} })
+  const onChanged = vi.fn()
+  renderSidebar({ onChanged })
+  fireEvent.click(screen.getByRole('button', { name: '更多 新会话' }))
+  fireEvent.click(screen.getByRole('button', { name: '重命名' }))
+  fireEvent.change(screen.getByLabelText('会话标题'), { target: { value: '  质控复核  ' } })
+  fireEvent.click(screen.getByRole('button', { name: '保存标题' }))
+  await waitFor(() => expect(updateSession).toHaveBeenCalledWith('s2', { title: '质控复核' }))
+  await waitFor(() => expect(onChanged).toHaveBeenCalled())
+})
+
+it('重命名拒绝空白标题且不调用接口', async () => {
+  renderSidebar()
+  fireEvent.click(screen.getByRole('button', { name: '更多 新会话' }))
+  fireEvent.click(screen.getByRole('button', { name: '重命名' }))
+  fireEvent.change(screen.getByLabelText('会话标题'), { target: { value: '   ' } })
+  fireEvent.click(screen.getByRole('button', { name: '保存标题' }))
+  expect(await screen.findByText('标题不能为空')).toBeInTheDocument()
+  expect(updateSession).not.toHaveBeenCalled()
 })
 
 it('显示已归档后置灰展示归档项目与会话，并可恢复', async () => {

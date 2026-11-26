@@ -22,6 +22,16 @@ def test_create_and_list_sessions():
     assert sessions[0]["id"] == sid
     assert sessions[0]["title"] == "第一个会话"
     assert sessions[0]["message_count"] == 0
+    assert store.get_session(sid)["title_source"] == "explicit"
+
+
+def test_create_session_without_title_is_default_source():
+    """未给标题 = default，才能被首条消息覆盖。"""
+    store = SessionStore()
+    sid = store.create_session()
+    session = store.get_session(sid)
+    assert session["title"] == "新会话"
+    assert session["title_source"] == "default"
 
 
 def test_append_message_returns_inserted_row() -> None:
@@ -62,6 +72,7 @@ def test_migrates_legacy_sessions_table(tmp_path):
     session = store.get_session("old")
     assert session is not None
     assert session["title"] == "旧会话"
+    assert session["title_source"] == "derived"
     assert session["project_id"] is None
     assert session["pinned"] is False
     assert session["archived_at"] is None
@@ -228,14 +239,62 @@ def test_batch_delete_rolls_back_when_a_later_session_is_running():
 
 def test_append_message_sets_title_from_first_user_message():
     store = SessionStore()
-    sid = store.create_session("新会话")
+    sid = store.create_session()
     store.append_message(sid, "user", "请帮我做差异表达分析，谢谢")
     session = store.get_session(sid)
     assert session["title"] == "请帮我做差异表达分析，谢谢"[:20]
+    assert session["title_source"] == "derived"
     messages = store.get_messages(sid)
     assert len(messages) == 1
     assert messages[0]["role"] == "user"
     assert messages[0]["seq"] == 1
+
+
+def test_explicit_title_survives_first_user_message():
+    """显式标题（上传/本地路径入口）不被首条消息覆盖。"""
+    store = SessionStore()
+    sid = store.create_session("上传 10x 数据")
+    store.append_message(sid, "user", "完全不同的提问内容，不应该变成标题")
+    session = store.get_session(sid)
+    assert session["title"] == "上传 10x 数据"
+    assert session["title_source"] == "explicit"
+
+
+def test_model_title_skips_explicit_and_model_sources():
+    """自动命名只覆盖 default/derived，不覆盖 explicit/model。"""
+    store = SessionStore()
+    explicit = store.create_session("用户命名")
+    assert store.set_session_title(explicit, "模型标题", source="model") is False
+    assert store.get_session(explicit)["title"] == "用户命名"
+
+    derived = store.create_session()
+    store.append_message(derived, "user", "首条提问内容")
+    assert store.set_session_title(derived, "模型标题", source="model") is True
+    session = store.get_session(derived)
+    assert (session["title"], session["title_source"]) == ("模型标题", "model")
+
+    # 已由模型命名后不再被再次覆盖
+    assert store.set_session_title(derived, "第二个标题", source="model") is False
+    assert store.get_session(derived)["title"] == "模型标题"
+
+
+def test_explicit_title_overwrites_any_source():
+    store = SessionStore()
+    sid = store.create_session()
+    store.append_message(sid, "user", "首条提问内容")
+    assert store.set_session_title(sid, "用户改名", source="explicit") is True
+    session = store.get_session(sid)
+    assert (session["title"], session["title_source"]) == ("用户改名", "explicit")
+    assert store.set_session_title(sid, "模型标题", source="model") is False
+
+
+def test_set_session_title_rejects_blank():
+    store = SessionStore()
+    sid = store.create_session()
+    with pytest.raises(StoreError) as exc:
+        store.set_session_title(sid, "   ", source="explicit")
+    assert exc.value.kind == "invalid"
+    assert store.get_session(sid)["title"] == "新会话"
 
 
 def test_append_and_get_messages_roundtrip_with_results():
@@ -369,88 +428,49 @@ def test_encode_matplotlib_figure_to_image_b64():
     plt.close(fig)
 
 
-def test_record_knowledge_qa_review_inserts_and_replays_idempotently(tmp_path):
-    """QA 复核首次落库；同 revision 重发返回同一记录。"""
-    store = SessionStore(tmp_path / "sessions.db")
+def test_new_store_does_not_create_knowledge_qa_reviews_table(tmp_path):
+    """新库不再创建知识问答复核表，也没有对应读写入口。"""
+    db_path = tmp_path / "sessions.db"
+    store = SessionStore(db_path)
 
-    first = store.record_knowledge_qa_review(
-        "a1", "b1", "v1", 3, "accepted", "证据充分", "reviewer-a"
-    )
-    assert first["answer_id"] == "a1"
-    assert first["binding_sha256"] == "b1"
-    assert first["record_version"] == "v1"
-    assert first["source_revision"] == 3
-    assert first["decision"] == "accepted"
-    assert first["veto"] == 0
-    assert first["reason"] == "证据充分"
-    assert first["reviewer"] == "reviewer-a"
-    assert first["review_id"]
-    assert first["created_at"]
-    assert set(first) == {
-        "review_id",
-        "answer_id",
-        "binding_sha256",
-        "record_version",
-        "source_revision",
-        "decision",
-        "veto",
-        "reason",
-        "reviewer",
-        "created_at",
-    }
+    with sqlite3.connect(db_path) as conn:
+        tables = {
+            row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type = 'table'")
+        }
 
-    again = store.record_knowledge_qa_review(
-        "a1", "b1", "v1", 3, "accepted", "证据充分", "reviewer-a"
-    )
-    assert again == first
-    assert store.get_knowledge_qa_reviews("a1") == [first]
+    assert "knowledge_qa_reviews" not in tables
+    assert not hasattr(store, "record_knowledge_qa_review")
+    assert not hasattr(store, "get_knowledge_qa_reviews")
 
 
-def test_record_knowledge_qa_review_rejects_same_revision_conflict(tmp_path):
-    """同 revision 内容不一致时拒绝且不新增。"""
-    store = SessionStore(tmp_path / "sessions.db")
-    store.record_knowledge_qa_review("a1", "b1", "v1", 3, "accepted", "证据充分", "reviewer-a")
-
-    with pytest.raises(ValueError, match="知识问答复核内容冲突"):
-        store.record_knowledge_qa_review("a1", "b1", "v1", 3, "rejected", "证据不足", "reviewer-b")
-    assert len(store.get_knowledge_qa_reviews("a1")) == 1
-
-
-def test_record_knowledge_qa_review_does_not_suppress_next_revision(tmp_path):
-    """QA 复核只做同 revision 幂等，不抑制 latest+1。"""
-    store = SessionStore(tmp_path / "sessions.db")
-    store.record_knowledge_qa_review("a1", "b1", "v1", 3, "accepted", "证据充分", "reviewer-a")
-    store.record_knowledge_qa_review("a1", "b1", "v1", 4, "accepted", "证据充分", "reviewer-a")
-    assert len(store.get_knowledge_qa_reviews("a1")) == 2
-
-
-def test_record_knowledge_qa_review_validates_decision_veto_and_reason(tmp_path):
-    """QA 复核保留结论、否决项与理由校验。"""
-    store = SessionStore(tmp_path / "sessions.db")
-
-    with pytest.raises(ValueError, match="复核结论"):
-        store.record_knowledge_qa_review("a1", "b1", "v1", 0, "maybe", "理由", "reviewer-a")
-    with pytest.raises(ValueError, match="否决项"):
-        store.record_knowledge_qa_review(
-            "a1", "b1", "v1", 0, "accepted", "理由", "reviewer-a", veto=True
+def test_existing_store_keeps_knowledge_qa_reviews_table(tmp_path):
+    """旧库中已有的知识问答复核表保留原数据，不迁移也不删除。"""
+    db_path = tmp_path / "sessions.db"
+    with sqlite3.connect(db_path) as conn:
+        # 复刻旧版建表语句的全部约束，验证打开旧库不会被结构差异卡住。
+        conn.execute(
+            "CREATE TABLE knowledge_qa_reviews ("
+            "review_id TEXT PRIMARY KEY, answer_id TEXT NOT NULL, binding_sha256 TEXT NOT NULL, "
+            "record_version TEXT NOT NULL, source_revision INTEGER NOT NULL, "
+            "decision TEXT NOT NULL CHECK(decision IN ('accepted', 'rejected')), "
+            "veto INTEGER NOT NULL DEFAULT 0 CHECK(veto IN (0, 1)), reason TEXT NOT NULL, "
+            "reviewer TEXT NOT NULL, created_at TEXT NOT NULL, "
+            "UNIQUE(answer_id, binding_sha256, record_version, source_revision))"
         )
-    with pytest.raises(ValueError, match="复核理由"):
-        store.record_knowledge_qa_review("a1", "b1", "v1", 0, "accepted", "   ", "reviewer-a")
-    assert store.get_knowledge_qa_reviews("a1") == []
+        conn.execute(
+            "CREATE INDEX idx_knowledge_qa_reviews_answer "
+            "ON knowledge_qa_reviews(answer_id, created_at)"
+        )
+        conn.execute(
+            "INSERT INTO knowledge_qa_reviews VALUES "
+            "('r1', 'a1', 'b1', 'v1', 1, 'accepted', 0, '理由', 'user', '2026-01-01T00:00:00')"
+        )
 
+    SessionStore(db_path)
 
-def test_record_knowledge_qa_review_leaves_session_messages_and_run_untouched(tmp_path):
-    """QA 复核不插消息、不推进任何 run。"""
-    store = SessionStore(tmp_path / "sessions.db")
-    sid = store.create_session()
-    store.register_qc_run(sid, "r", "sc_qc/r", {"kind": "qa"})
-
-    store.record_knowledge_qa_review(
-        "a1", "b1", "v1", 0, "rejected", "证据不足", "reviewer-a", veto=True
-    )
-
-    assert store.get_messages(sid) == []
-    assert store.get_qc_run(sid, "r")["revision"] == 0
+    with sqlite3.connect(db_path) as conn:
+        rows = conn.execute("SELECT review_id FROM knowledge_qa_reviews").fetchall()
+    assert rows == [("r1",)]
 
 
 def test_move_session_rejects_running_stage():

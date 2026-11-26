@@ -10,6 +10,7 @@ from typing import Any
 from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, ConfigDict, Field
 
+from src.api.auth import is_ephemeral_workspace
 from src.api.chat_service import is_qc_stage, persist_outcome, register_qc_result
 from src.api.deps import StoreDep
 from src.api.events import wire_message
@@ -35,6 +36,8 @@ def register_local_input(
 
     shortcut: 接受任意本机路径，仅适用于 loopback 客户端；多用户服务端需先加认证与路径白名单。
     """
+    if is_ephemeral_workspace(request):
+        raise HTTPException(403, "访客不能读取服务器本地路径，请使用上传入口")
     agent = request.app.state.agent
     # 404 优先于路径校验；锁内仍会重读，资产合并只用锁内快照。
     if store.get_session(session_id) is None:

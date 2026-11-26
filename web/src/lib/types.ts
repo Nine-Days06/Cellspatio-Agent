@@ -11,9 +11,13 @@ export interface Project {
   session_count: number
 }
 
+/** 标题来源：default=未命名，explicit=用户/调用方命名，derived=首条消息截断，model=模型生成。 */
+export type TitleSource = 'default' | 'explicit' | 'derived' | 'model'
+
 export interface SessionSummary {
   id: string
   title: string
+  title_source: TitleSource
   updated_at: string
   message_count: number
   project_id: string | null
@@ -25,6 +29,7 @@ export interface SessionSummary {
 export interface Session {
   id: string
   title: string
+  title_source: TitleSource
   created_at: string
   updated_at: string
   summary: string | null
@@ -70,14 +75,17 @@ export interface MessageResults {
   qc?: QcEvidence
   qc_artifacts?: Record<string, string>
   qc_run_id?: string
+  /** 本轮实际使用的对话模式；旧消息没有该字段。 */
+  chat_mode?: ChatMode
   knowledge_qa?: KnowledgeQAResult
+  knowledge_evidence?: ChatKnowledgeResult
   [key: string]: unknown
 }
 
-/** 对话模式：智能对话走 AgentRuntime，知识问答走受控检索链路。 */
+/** 历史消息的对话模式；新轮次只写 chat，knowledge_qa 仅用于兼容旧数据。 */
 export type ChatMode = 'chat' | 'knowledge_qa'
 
-/** 知识问答回答包（src/knowledge/qa.py，协议 knowledge-qa/1.0.0）。 */
+/** 旧版知识问答回答包：只用于渲染 0.1.x 已落库的旧会话结果。 */
 export type KnowledgeQAOutcome =
   | 'supported_answer'
   | 'insufficient_evidence'
@@ -85,6 +93,71 @@ export type KnowledgeQAOutcome =
   | 'context_mismatch'
   | 'conflicting_evidence'
   | 'out_of_scope'
+
+/** 对话工具检索的证据包（results.knowledge_evidence），只在本轮消息内展示。 */
+export type ChatKnowledgeOutcome =
+  | 'supported_answer'
+  | 'sources_only'
+  | 'insufficient_evidence'
+  | 'knowledge_unavailable'
+  | 'citation_invalid'
+
+export interface ChatKnowledgeEvidence {
+  evidence_id: string
+  chunk_id?: string
+  reference_id?: string
+  content?: string
+  content_sha256?: string
+  title?: string
+  year?: string
+  url?: string
+  kind?: string
+  source_id?: string
+}
+
+export interface ChatKnowledgeSource {
+  source_id: string
+  title?: string
+  year?: string
+  url?: string
+  pmid?: string
+  doi?: string
+  species?: string
+  tissue?: string
+  technology?: string
+  evidence_ids: string[]
+}
+
+export interface ChatKnowledgeClaim {
+  text: string
+  evidence_ids: string[]
+}
+
+export interface ChatKnowledgeResult {
+  outcome: ChatKnowledgeOutcome
+  evidence: ChatKnowledgeEvidence[]
+  sources: ChatKnowledgeSource[]
+  citations: string[]
+  claims: ChatKnowledgeClaim[]
+  /** 本轮召回范围；旧消息没有该字段。 */
+  scope?: 'answer' | 'survey' | 'exhaustive'
+  evidence_count?: number
+  source_count?: number
+  has_more?: boolean
+  next_cursor?: string
+  /** 后端给出的覆盖说明，前端原样展示。 */
+  coverage_message?: string
+  /** 指定来源正文请求时回填；用于区分单来源详情与分页列表。 */
+  source_id?: string
+  /** 本轮重排结果；旧消息没有该字段。 */
+  rerank_status?:
+    | 'disabled'
+    | 'not_applicable'
+    | 'applied'
+    | 'partial'
+    | 'fallback_timeout'
+    | 'fallback_error'
+}
 
 export interface KnowledgeQAClaim {
   claim_id: string
@@ -136,7 +209,6 @@ export interface KnowledgeQAResult {
   clarifications: string[]
   evidence: KnowledgeQAEvidence[]
   sources: KnowledgeQASource[]
-  review_status: 'unreviewed'
   error?: { stage: string; message: string }
   config?: Record<string, unknown>
 }
@@ -439,6 +511,27 @@ export interface SidebarResponse {
   kb_stats: KbStats
   env: EnvStatus
   soft_warn: boolean
+  workspace?: WorkspaceInfo
+}
+
+/** GET /api/workspace、/api/sidebar：当前请求所属工作区，不包含 token。 */
+export interface WorkspaceInfo {
+  id: string | null
+  kind: 'ephemeral' | 'persistent' | null
+  principal_kind?: 'visitor' | 'account'
+  label: string
+  created_at: string | null
+  expires_at: string | null
+  remaining_seconds: number | null
+  expired: boolean
+}
+
+export interface WorkspaceResponse {
+  workspace: WorkspaceInfo
+}
+
+export interface LoginResponse extends WorkspaceResponse {
+  account: { username: string }
 }
 
 export interface MessagesResponse {

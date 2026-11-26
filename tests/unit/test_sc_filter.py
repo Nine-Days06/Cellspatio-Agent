@@ -19,6 +19,7 @@ from src.api import authorized_run
 from src.api.app import create_app
 from tests.unit.test_qc_preview import PARAMS
 from tests.unit.test_qc_preview import registered as registered
+from tests.unit.workspace_support import authenticate_legacy
 
 
 @pytest.fixture
@@ -239,6 +240,7 @@ def test_store_cas_double_claim_running_blocks_mutation_and_restart(ready):
     )
     assert client.delete(f"/api/sessions/{sid}").status_code == 409
     with TestClient(create_app(client.app.state.agent)) as restarted:
+        authenticate_legacy(restarted)
         assert restarted.get(url).json()["attempts"][0]["status"] == "interrupted"
         assert (
             restarted.post(url + "/filter", json={"preview_id": pid}).json()["attempts"][0][

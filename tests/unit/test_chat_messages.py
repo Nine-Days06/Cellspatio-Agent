@@ -50,6 +50,34 @@ def test_summarize_result_plain_message_default():
     assert chat_messages.summarize_result({})[0] == "处理完成"
 
 
+def test_summarize_result_general_response_keeps_message_with_knowledge_metadata():
+    """对话回答附带 knowledge results 时，正文不能被改写成“分析完成”。"""
+    result = {
+        "status": "success",
+        "type": "general_response",
+        "message": "回答 [E1]",
+        "results": {"knowledge": {"outcome": "supported_answer"}},
+    }
+
+    content, _refs = chat_messages.summarize_result(result)
+
+    assert content == "回答 [E1]"
+
+
+def test_summarize_result_general_response_keeps_capsule_from_results():
+    """分析续跑后的对话回答仍保留复现胶囊链接。"""
+    result = {
+        "status": "success",
+        "type": "general_response",
+        "message": "差异表达完成，共 10 个显著基因。",
+        "results": {"capsule_dir": "capsules/run-1"},
+    }
+
+    content, _refs = chat_messages.summarize_result(result)
+
+    assert "复现胶囊：`capsules/run-1`" in content
+
+
 def test_build_assistant_message_attaches_results():
     message = chat_messages.build_assistant_message({"results": {"data": [1]}, "message": "ok"})
 
