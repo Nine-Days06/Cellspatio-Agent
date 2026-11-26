@@ -1185,6 +1185,7 @@ class WorkflowManager:
             evidence_limit,
             retrieve_evidence,
         )
+        from src.knowledge.rerank import build_reranker
 
         scope = str(scope or "answer").strip().lower()
         if scope not in ("answer", "survey", "exhaustive"):
@@ -1261,6 +1262,7 @@ class WorkflowManager:
             }
         timeout = env_int("AGENT_KNOWLEDGE_TIMEOUT", 60)
         retryable = {RETRIEVAL_CALL_FAILED, RETRIEVAL_DEADLINE, RETRIEVAL_SERVICE_FAILURE}
+        reranker = build_reranker()
         # 服务故障重试一次；每次尝试都有自己的截止，避免一次超时吃掉全部预算。
         retrieval = retrieve_evidence(
             self.knowledge_client,
@@ -1270,6 +1272,7 @@ class WorkflowManager:
             cursor=cursor,
             sources_only=sources_only,
             source_id=source_id,
+            reranker=reranker,
             **retrieval_kwargs,
         )
         if retrieval.error is not None and retrieval.error.reason in retryable:
@@ -1281,6 +1284,7 @@ class WorkflowManager:
                 cursor=cursor,
                 sources_only=sources_only,
                 source_id=source_id,
+                reranker=reranker,
                 **retrieval_kwargs,
             )
         if retrieval.error is not None:
@@ -1323,6 +1327,7 @@ class WorkflowManager:
             "next_cursor": retrieval.next_cursor,
             "coverage_message": retrieval.coverage_message,
             "source_id": source_id or "",
+            "rerank_status": retrieval.rerank_status,
             "retrieval_status": "no_results" if retrieval.no_results else "success",
             "message": retrieval.coverage_message
             or ("" if retrieval.evidence else "当前知识库没有检索到相关证据。"),

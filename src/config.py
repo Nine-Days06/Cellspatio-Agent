@@ -36,6 +36,24 @@ def env_int(name: str, default: int, *, minimum: int = 1) -> int:
     return value
 
 
+def env_float(name: str, default: float, *, minimum: float = 0.0) -> float:
+    """读取浮点环境变量；空值、非法值或不高于下限时告警并回退默认值。"""
+    raw = os.environ.get(name, "").strip()
+    if not raw:
+        return default
+    try:
+        value = float(raw)
+    except ValueError:
+        logger.warning("invalid float env %s=%r, fall back to %s", name, raw, default)
+        return default
+    if value <= minimum:
+        logger.warning(
+            "float env %s=%s not above minimum %s, fall back to %s", name, value, minimum, default
+        )
+        return default
+    return value
+
+
 def is_local_mode() -> bool:
     """本地客户端模式：跳过登录，以及依赖 PostgreSQL 的记忆/快照。"""
     return env_flag("CELLSPATIO_LOCAL")
