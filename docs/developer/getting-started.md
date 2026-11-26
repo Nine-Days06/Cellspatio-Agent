@@ -71,6 +71,8 @@ npm run build
 | `LLM_MAX_TOKENS` / `LLM_TIMEOUT` | 生成上限与超时 | `8192` / `120` |
 | `AGENT_TOOL_RESULT_MAX_CHARS` / `AGENT_TOOL_RESULT_BUDGET_CHARS` | 单次工具结果上限 / 单轮累计预算 | `20000` / `60000` |
 | `AGENT_KNOWLEDGE_TOOL` / `AGENT_KNOWLEDGE_TIMEOUT` | 文献证据工具开关（默认开启；`legacy`/`off`/`false` 回退已弃用的 `query_knowledge`，删除属 BREAKING）/ 检索超时秒数 | 开启 / `60` |
+| `KNOWLEDGE_RERANK_PROVIDER` / `KNOWLEDGE_RERANK_ENDPOINT` | 文献重排（默认关闭；`http` + TEI 兼容 endpoint 才启用，会外发查询与片段文本） | 关闭 |
+| `KNOWLEDGE_RERANK_MODEL` / `KNOWLEDGE_RERANK_TIMEOUT` / `KNOWLEDGE_RERANK_BATCH_SIZE` / `KNOWLEDGE_RERANK_MAX_CANDIDATES` | 重排模型、总超时秒数、批大小、最大候选数 | 空 / `5` / `16` / `120` |
 | `POSTGRES_HOST` / `POSTGRES_PORT` / `POSTGRES_DATABASE` | PG 连接 | `127.0.0.1` / `5433` / `rag` |
 | `OLLAMA_URL` / `EMBEDDING_MODEL` | Ollama 地址与 embedding 模型 | `http://localhost:11434` / `bge-m3` |
 | `CELLSPATIO_LOCAL` | 便携客户端本地模式 | 关闭 |

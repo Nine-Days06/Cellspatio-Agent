@@ -3,8 +3,12 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 import hashlib
+import itertools
+import json
 import time
+import zlib
 from typing import Any
 
 import pytest
@@ -12,6 +16,13 @@ import pytest
 from src.knowledge.qa import (
     ANSWER_DEFAULT_EVIDENCE,
     ANSWER_MAX_EVIDENCE,
+    EXHAUSTIVE_CURSOR_VERSION,
+    RERANK_APPLIED,
+    RERANK_DISABLED,
+    RERANK_FALLBACK_ERROR,
+    RERANK_FALLBACK_TIMEOUT,
+    RERANK_NOT_APPLICABLE,
+    RERANK_PARTIAL,
     RETRIEVAL_CALL_FAILED,
     RETRIEVAL_CLIENT_UNAVAILABLE,
     RETRIEVAL_DEADLINE,
@@ -19,9 +30,12 @@ from src.knowledge.qa import (
     RETRIEVAL_SERVICE_FAILURE,
     SURVEY_EVIDENCE_CHARS,
     StageAborted,
+    _query_fingerprint,
     evidence_limit,
     retrieve_evidence,
 )
+
+_FAKE_RERANK_SEQ = itertools.count()
 
 
 class FakeKnowledge:
@@ -38,6 +52,25 @@ class FakeKnowledge:
         if self.error is not None:
             raise self.error
         return self.result
+
+
+class FakeReranker:
+    """回放固定分数或异常，并记录收到的查询与片段。"""
+
+    def __init__(
+        self, scores: list[float | None] | None = None, error: BaseException | None = None
+    ):
+        self.scores = scores
+        self.error = error
+        self.fingerprint = f"fake:{next(_FAKE_RERANK_SEQ)}"
+        self.calls: list[tuple[str, list[str]]] = []
+
+    def score(self, query: str, passages: list[str]) -> list[float | None]:
+        """记录调用并回放构造时的分数或异常。"""
+        self.calls.append((query, list(passages)))
+        if self.error is not None:
+            raise self.error
+        return self.scores if self.scores is not None else []
 
 
 def _chunk(pid: str = "38947524", text: str | None = None) -> dict[str, Any]:
@@ -541,6 +574,222 @@ def test_stage_callback_aborts_before_the_call_when_client_is_gone() -> None:
 def test_stage_callback_is_optional() -> None:
     """不传回调时结果一致。"""
     retrieval = retrieve_evidence(FakeKnowledge(), "问题", deadline=time.monotonic() + 5)
+
+    assert retrieval.error is None
+    assert [item["evidence_id"] for item in retrieval.evidence] == ["E1"]
+
+
+def test_rerank_is_disabled_without_a_provider() -> None:
+    """默认没有重排器：不发起调用，顺序与状态都保持关闭。"""
+    retrieval = retrieve_evidence(FakeKnowledge(), "问题", deadline=time.monotonic() + 5)
+
+    assert retrieval.rerank_status == RERANK_DISABLED
+    assert retrieval.config["rerank_status"] == RERANK_DISABLED
+    assert [item["source_id"] for item in retrieval.evidence] == ["PMID 38947524"]
+
+
+def test_rerank_reorders_by_score_without_renumbering() -> None:
+    """假重排器改变候选顺序，证据编号在重排后才分配且保持连续。"""
+    client = FakeKnowledge(_retrieval(chunks=[_chunk("111"), _chunk("222"), _chunk("333")]))
+    reranker = FakeReranker(scores=[0.1, 0.9, 0.5])
+
+    retrieval = retrieve_evidence(client, "问题", deadline=time.monotonic() + 5, reranker=reranker)
+
+    assert retrieval.rerank_status == RERANK_APPLIED
+    assert [item["source_id"] for item in retrieval.evidence] == [
+        "PMID 222",
+        "PMID 333",
+        "PMID 111",
+    ]
+    assert [item["evidence_id"] for item in retrieval.evidence] == ["E1", "E2", "E3"]
+    assert reranker.calls[0][0] == "问题"
+    assert len(reranker.calls[0][1]) == 3
+
+
+def test_rerank_equal_scores_keep_retrieval_order() -> None:
+    """同分时按原检索顺序排列，结果稳定。"""
+    client = FakeKnowledge(_retrieval(chunks=[_chunk("111"), _chunk("222"), _chunk("333")]))
+
+    retrieval = retrieve_evidence(
+        client,
+        "问题",
+        deadline=time.monotonic() + 5,
+        reranker=FakeReranker(scores=[0.5, 0.5, 0.9]),
+    )
+
+    assert [item["source_id"] for item in retrieval.evidence] == [
+        "PMID 333",
+        "PMID 111",
+        "PMID 222",
+    ]
+
+
+def test_rerank_skips_empty_candidates() -> None:
+    """空候选集不调用重排器，报告 not_applicable 而非失败。"""
+    reranker = FakeReranker(scores=[])
+
+    retrieval = retrieve_evidence(
+        FakeKnowledge(_retrieval(chunks=[])),
+        "问题",
+        deadline=time.monotonic() + 5,
+        reranker=reranker,
+    )
+
+    assert retrieval.error is None
+    assert retrieval.rerank_status == RERANK_NOT_APPLICABLE
+    assert reranker.calls == []
+
+
+def test_rerank_failures_fall_back_to_retrieval_order() -> None:
+    """超时或异常只降级排序，不把检索变成失败。"""
+    chunks = [_chunk("111"), _chunk("222")]
+
+    timed_out = retrieve_evidence(
+        FakeKnowledge(_retrieval(chunks=chunks)),
+        "问题",
+        deadline=time.monotonic() + 5,
+        reranker=FakeReranker(error=TimeoutError()),
+    )
+    failed = retrieve_evidence(
+        FakeKnowledge(_retrieval(chunks=chunks)),
+        "问题",
+        deadline=time.monotonic() + 5,
+        reranker=FakeReranker(error=RuntimeError("boom")),
+    )
+
+    assert timed_out.error is None and timed_out.rerank_status == RERANK_FALLBACK_TIMEOUT
+    assert failed.error is None and failed.rerank_status == RERANK_FALLBACK_ERROR
+    assert [item["source_id"] for item in timed_out.evidence] == ["PMID 111", "PMID 222"]
+    assert [item["source_id"] for item in failed.evidence] == ["PMID 111", "PMID 222"]
+
+
+def test_rerank_partial_scores_keep_unscored_positions() -> None:
+    """缺分片段留在原位置，已打分片段填满其余位置。"""
+    client = FakeKnowledge(_retrieval(chunks=[_chunk("111"), _chunk("222"), _chunk("333")]))
+
+    retrieval = retrieve_evidence(
+        client,
+        "问题",
+        deadline=time.monotonic() + 5,
+        reranker=FakeReranker(scores=[0.1, None, 0.9]),
+    )
+
+    assert retrieval.rerank_status == RERANK_PARTIAL
+    assert [item["source_id"] for item in retrieval.evidence] == [
+        "PMID 333",
+        "PMID 222",
+        "PMID 111",
+    ]
+
+
+def test_rerank_malformed_scores_fall_back() -> None:
+    """非数值分数视为格式异常，回退原顺序。"""
+    chunks = [_chunk("111"), _chunk("222")]
+
+    retrieval = retrieve_evidence(
+        FakeKnowledge(_retrieval(chunks=chunks)),
+        "问题",
+        deadline=time.monotonic() + 5,
+        reranker=FakeReranker(scores=[0.5, "high"]),  # type: ignore[list-item]
+    )
+
+    assert retrieval.rerank_status == RERANK_FALLBACK_ERROR
+    assert [item["source_id"] for item in retrieval.evidence] == ["PMID 111", "PMID 222"]
+
+
+def test_exhaustive_rerank_runs_once_across_pages() -> None:
+    """同一候选集只打分一次，后续页复用顺序且不重复来源。"""
+    client = FakeKnowledge(_retrieval(chunks=[_chunk("111"), _chunk("222"), _chunk("333")]))
+    reranker = FakeReranker(scores=[0.1, 0.9, 0.5])
+
+    first = retrieve_evidence(
+        client,
+        "盘点",
+        deadline=time.monotonic() + 5,
+        scope="exhaustive",
+        page_sources=1,
+        reranker=reranker,
+    )
+    second = retrieve_evidence(
+        client,
+        "盘点",
+        deadline=time.monotonic() + 5,
+        scope="exhaustive",
+        page_sources=1,
+        cursor=first.next_cursor,
+        reranker=reranker,
+    )
+    third = retrieve_evidence(
+        client,
+        "盘点",
+        deadline=time.monotonic() + 5,
+        scope="exhaustive",
+        page_sources=1,
+        cursor=second.next_cursor,
+        reranker=reranker,
+    )
+
+    assert len(reranker.calls) == 1
+    assert [page.sources[0]["source_id"] for page in (first, second, third)] == [
+        "PMID 222",
+        "PMID 333",
+        "PMID 111",
+    ]
+    assert third.has_more is False
+
+
+def test_exhaustive_cursor_rejects_changed_rerank_fingerprint() -> None:
+    """换重排模型后旧游标被拒绝，而不是返回另一套顺序。"""
+    client = FakeKnowledge(_retrieval(chunks=[_chunk(str(80000 + index)) for index in range(1, 4)]))
+    first = retrieve_evidence(
+        client,
+        "盘点",
+        deadline=time.monotonic() + 5,
+        scope="exhaustive",
+        page_sources=1,
+        reranker=FakeReranker(scores=[0.9, 0.5, 0.1]),
+    )
+
+    bad = retrieve_evidence(
+        client,
+        "盘点",
+        deadline=time.monotonic() + 5,
+        scope="exhaustive",
+        page_sources=1,
+        cursor=first.next_cursor,
+        reranker=FakeReranker(scores=[0.9, 0.5, 0.1]),
+    )
+
+    assert bad.error is not None
+    assert bad.error.reason == "invalid_cursor"
+    assert "游标无效" in bad.error.message
+
+
+def test_exhaustive_accepts_legacy_cursor_without_rerank_fingerprint() -> None:
+    """旧游标没有重排指纹时按“重排关闭”继续可用。"""
+    payload = {
+        "v": EXHAUSTIVE_CURSOR_VERSION,
+        "scope": "exhaustive",
+        "q": _query_fingerprint("问题"),
+        "offset": 0,
+        "seen": [],
+        "next_evidence": 1,
+    }
+    raw = (
+        base64.urlsafe_b64encode(
+            zlib.compress(json.dumps(payload, ensure_ascii=False).encode("utf-8"))
+        )
+        .decode("ascii")
+        .rstrip("=")
+    )
+
+    retrieval = retrieve_evidence(
+        FakeKnowledge(),
+        "问题",
+        deadline=time.monotonic() + 5,
+        scope="exhaustive",
+        cursor=raw,
+    )
 
     assert retrieval.error is None
     assert [item["evidence_id"] for item in retrieval.evidence] == ["E1"]

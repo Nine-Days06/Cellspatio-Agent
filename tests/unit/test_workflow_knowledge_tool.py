@@ -62,6 +62,7 @@ def test_search_knowledge_returns_evidence_and_continues():
     assert result["evidence_count"] == len(result["evidence"]) == 1
     assert result["scope"] == "answer"
     assert result["source_count"] == 1
+    assert result["rerank_status"] == "disabled"
     assert result["evidence"][0]["evidence_id"] == "E1"
     assert result["continue_tool_loop"] is True
     assert result["message"] == ""

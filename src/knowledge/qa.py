@@ -11,14 +11,15 @@ import base64
 import hashlib
 import json
 import logging
+import math
 import os
 import re
 import time
 import zlib
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Iterator, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Protocol
 
 from src.knowledge.async_runtime import runtime as async_runtime
 
@@ -67,6 +68,19 @@ RETRIEVAL_CALL_FAILED = "call_failed"
 RETRIEVAL_INVALID_RESULT = "invalid_result"
 RETRIEVAL_INVALID_CURSOR = "invalid_cursor"
 RETRIEVAL_SERVICE_FAILURE = "service_failure"
+
+# 重排只在通过提供方显式启用时执行；默认零外部调用，失败只降级排序。
+RERANK_DISABLED = "disabled"
+RERANK_NOT_APPLICABLE = "not_applicable"
+RERANK_APPLIED = "applied"
+RERANK_PARTIAL = "partial"
+RERANK_FALLBACK_TIMEOUT = "fallback_timeout"
+RERANK_FALLBACK_ERROR = "fallback_error"
+RERANK_FINGERPRINT_NONE = "none"
+
+# 同一候选集只打分一次；分页复用顺序，避免每页重复请求重排服务。
+RERANK_CACHE_LIMIT = 32
+_rerank_cache: dict[str, tuple[list[str], str]] = {}
 
 # 阶段回调：(stage, phase) -> 是否继续；返回 False 表示客户端已断开。
 StageCallback = Callable[[str, str], bool | None]
@@ -227,12 +241,19 @@ def _query_fingerprint(question: str) -> str:
     return hashlib.sha256(question.encode("utf-8")).hexdigest()
 
 
-def _encode_cursor(question: str, offset: int, seen: set[str], next_evidence: int) -> str:
+def _encode_cursor(
+    question: str,
+    offset: int,
+    seen: set[str],
+    next_evidence: int,
+    rerank_fingerprint: str,
+) -> str:
     """把分页状态压进不可读但自包含的游标。"""
     payload = {
         "v": EXHAUSTIVE_CURSOR_VERSION,
         "scope": "exhaustive",
         "q": _query_fingerprint(question),
+        "rerank": rerank_fingerprint,
         "offset": offset,
         "seen": sorted(seen),
         "next_evidence": next_evidence,
@@ -241,7 +262,7 @@ def _encode_cursor(question: str, offset: int, seen: set[str], next_evidence: in
     return base64.urlsafe_b64encode(zlib.compress(raw)).decode("ascii").rstrip("=")
 
 
-def _decode_cursor(question: str, raw: str) -> dict[str, Any]:
+def _decode_cursor(question: str, raw: str, rerank_fingerprint: str) -> dict[str, Any]:
     """解码并校验游标；不匹配当前查询时抛 ValueError。"""
     try:
         padding = "=" * (-len(raw) % 4)
@@ -252,6 +273,9 @@ def _decode_cursor(question: str, raw: str) -> dict[str, Any]:
         raise ValueError("unsupported cursor version")
     if data.get("scope") != "exhaustive" or data.get("q") != _query_fingerprint(question):
         raise ValueError("cursor does not match query or scope")
+    # 旧游标没有指纹，按“重排关闭”继续可用。
+    if data.get("rerank", RERANK_FINGERPRINT_NONE) != rerank_fingerprint:
+        raise ValueError("cursor was created with a different reranker")
     seen = data.get("seen")
     if (
         not isinstance(data.get("offset"), int)
@@ -427,6 +451,7 @@ class EvidenceRetrieval:
     has_more: bool = False
     next_cursor: str = ""
     coverage_message: str = ""
+    rerank_status: str = RERANK_DISABLED
 
     @classmethod
     def failed(
@@ -447,6 +472,110 @@ class EvidenceRetrieval:
         )
 
 
+class Reranker(Protocol):
+    """提供方无关的重排器：分数与传入片段一一对应，无法打分用 None。"""
+
+    fingerprint: str
+
+    def score(self, query: str, passages: list[str]) -> Sequence[float | None]:
+        """返回每个片段相对 query 的相关性分数。"""
+
+
+def _chunk_cache_key(chunk: Any) -> str:
+    """候选片段的稳定标识；空串表示无法安全缓存。"""
+    if not isinstance(chunk, dict):
+        return ""
+    chunk_id = str(chunk.get("chunk_id") or "").strip()
+    return chunk_id or hashlib.sha256(_chunk_text(chunk).encode("utf-8")).hexdigest()
+
+
+def _rerank_cache_key(query: str, fingerprint: str, chunks: list[Any]) -> str:
+    """按查询、重排指纹与候选集合定位一次重排结果。"""
+    keys = sorted(_chunk_cache_key(chunk) for chunk in chunks)
+    digest = hashlib.sha256("\x1f".join(keys).encode("utf-8")).hexdigest()
+    return f"{_query_fingerprint(query)}:{fingerprint}:{digest}"
+
+
+def _remember_rerank(cache_key: str, reranked: list[Any], status: str) -> None:
+    """写入进程级重排缓存；失败状态也写，分页时不重复打故障服务。"""
+    # shortcut: 无 TTL、不区分知识库与 endpoint，只有重启进程才失效；接入多库或多 endpoint 时再加作用域与过期。
+    if not cache_key:
+        return
+    if len(_rerank_cache) >= RERANK_CACHE_LIMIT:
+        _rerank_cache.pop(next(iter(_rerank_cache), ""), None)
+    _rerank_cache[cache_key] = ([_chunk_cache_key(chunk) for chunk in reranked], status)
+
+
+def _apply_rerank(
+    query: str, chunks: list[Any], reranker: Reranker | None
+) -> tuple[list[Any], str]:
+    """按 query 相关性重排候选片段；只改顺序，失败回退原序。"""
+    if reranker is None:
+        return chunks, RERANK_DISABLED
+    if not chunks:
+        return chunks, RERANK_NOT_APPLICABLE
+    chunk_keys = [_chunk_cache_key(chunk) for chunk in chunks]
+    cacheable = all(chunk_keys) and len(set(chunk_keys)) == len(chunk_keys)
+    cache_key = _rerank_cache_key(query, reranker.fingerprint, chunks) if cacheable else ""
+    if cache_key:
+        cached = _rerank_cache.get(cache_key)
+        if cached is not None:
+            order, cached_status = cached
+            by_key = dict(zip(chunk_keys, chunks, strict=True))
+            return [by_key[key] for key in order], cached_status
+    passages = [_chunk_text(chunk) if isinstance(chunk, dict) else "" for chunk in chunks]
+    try:
+        raw_scores = list(reranker.score(query, passages))
+    except TimeoutError:
+        _remember_rerank(cache_key, chunks, RERANK_FALLBACK_TIMEOUT)
+        return chunks, RERANK_FALLBACK_TIMEOUT
+    except Exception:  # noqa: BLE001 - 外部服务任何异常都只降级排序，不中断检索
+        _remember_rerank(cache_key, chunks, RERANK_FALLBACK_ERROR)
+        return chunks, RERANK_FALLBACK_ERROR
+    if len(raw_scores) > len(chunks):
+        logger.warning("knowledge rerank returned extra scores: %s", len(raw_scores))
+        _remember_rerank(cache_key, chunks, RERANK_FALLBACK_ERROR)
+        return chunks, RERANK_FALLBACK_ERROR
+    scores: list[float | None] = []
+    for value in raw_scores:
+        if value is None:
+            scores.append(None)
+        elif (
+            isinstance(value, bool)
+            or not isinstance(value, (int, float))
+            or not math.isfinite(float(value))
+        ):
+            logger.warning("knowledge rerank returned an invalid score")
+            _remember_rerank(cache_key, chunks, RERANK_FALLBACK_ERROR)
+            return chunks, RERANK_FALLBACK_ERROR
+        else:
+            scores.append(float(value))
+    # 全部缺分（含响应为空）按规范回退原序，而不是报 partial。
+    if not any(score is not None for score in scores):
+        logger.warning(
+            "knowledge rerank fallback status=%s reason=no_scores", RERANK_FALLBACK_ERROR
+        )
+        _remember_rerank(cache_key, chunks, RERANK_FALLBACK_ERROR)
+        return chunks, RERANK_FALLBACK_ERROR
+    # 缺分片段留在原位置，已打分片段按分数降序填入其余位置。
+    scores.extend([None] * (len(chunks) - len(scores)))
+    ordered = sorted(
+        ((index, score) for index, score in enumerate(scores) if score is not None),
+        key=lambda item: (-item[1], item[0]),
+    )
+    reranked: list[Any] = [None] * len(chunks)
+    slots = [index for index, score in enumerate(scores) if score is not None]
+    for slot, (index, _) in zip(slots, ordered, strict=True):
+        reranked[slot] = chunks[index]
+    for index, score in enumerate(scores):
+        if score is None:
+            reranked[index] = chunks[index]
+    # 上限截断的尾部未参与打分属预期覆盖范围，不算 partial。
+    status = RERANK_APPLIED if len(ordered) == len(raw_scores) else RERANK_PARTIAL
+    _remember_rerank(cache_key, reranked, status)
+    return reranked, status
+
+
 def retrieve_evidence(
     knowledge_client: Any,
     question: str,
@@ -462,6 +591,7 @@ def retrieve_evidence(
     cursor: str | None = None,
     sources_only: bool = False,
     source_id: str | None = None,
+    reranker: Reranker | None = None,
 ) -> EvidenceRetrieval:
     """检索一次文献并装配证据，不调用生成模型。
 
@@ -550,11 +680,16 @@ def retrieve_evidence(
                 config=config,
             )
         chunks = chunks if isinstance(chunks, list) else []
+        rerank_fingerprint = (
+            reranker.fingerprint if reranker is not None else RERANK_FINGERPRINT_NONE
+        )
+        chunks, rerank_status = _apply_rerank(question, chunks, reranker)
+        config["rerank_status"] = rerank_status
         if scope == "exhaustive":
             cursor_data: dict[str, Any] | None = None
             if cursor:
                 try:
-                    cursor_data = _decode_cursor(question, cursor)
+                    cursor_data = _decode_cursor(question, cursor, rerank_fingerprint)
                 except ValueError:
                     return EvidenceRetrieval.failed(
                         "检索游标无效或与本次查询不匹配，请重新开始检索。",
@@ -590,6 +725,7 @@ def retrieve_evidence(
                         if evidence
                         else "未找到指定来源的正文片段。"
                     ),
+                    rerank_status=rerank_status,
                 )
             page_size = evidence_limit(
                 page_sources, default=EXHAUSTIVE_PAGE_SOURCES, hard=EXHAUSTIVE_PAGE_SOURCES
@@ -613,7 +749,13 @@ def retrieve_evidence(
             for source in kept:
                 seen.update(_source_record_keys(source))
             next_cursor = (
-                _encode_cursor(question, offset + len(kept), seen, next_evidence + len(evidence))
+                _encode_cursor(
+                    question,
+                    offset + len(kept),
+                    seen,
+                    next_evidence + len(evidence),
+                    rerank_fingerprint,
+                )
                 if has_more
                 else ""
             )
@@ -630,6 +772,7 @@ def retrieve_evidence(
                 has_more=has_more,
                 next_cursor=next_cursor,
                 coverage_message=coverage,
+                rerank_status=rerank_status,
             )
         evidence, sources, untraceable = _build_evidence(
             chunks,
@@ -645,4 +788,5 @@ def retrieve_evidence(
             untraceable=untraceable,
             config=config,
             no_results=retrieval_status == "failure" and failure_reason == "no_results",
+            rerank_status=rerank_status,
         )
