@@ -134,6 +134,7 @@ class _KnowledgeTrace:
     next_cursor: str = ""
     coverage_message: str = ""
     source_id: str = ""
+    rerank_status: str = ""
 
     def absorb(self, result: dict[str, Any], query: str) -> None:
         """记录一次检索结果；失败时只标记不可用，不把错误当空证据。"""
@@ -149,16 +150,20 @@ class _KnowledgeTrace:
         self.next_cursor = str(result.get("next_cursor") or "")
         self.coverage_message = str(result.get("coverage_message") or "")
         self.source_id = str(result.get("source_id") or "")
+        self.rerank_status = str(result.get("rerank_status") or "")
 
     def paging(self) -> dict[str, Any]:
         """返回最近一次检索的分页与覆盖元数据。"""
-        return {
+        paging = {
             "scope": self.scope,
             "has_more": self.has_more,
             "next_cursor": self.next_cursor,
             "coverage_message": self.coverage_message,
             "source_id": self.source_id,
         }
+        if self.rerank_status:
+            paging["rerank_status"] = self.rerank_status
+        return paging
 
 
 class AgentRuntime:

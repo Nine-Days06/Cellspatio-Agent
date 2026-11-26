@@ -1,10 +1,20 @@
 import type { ChatKnowledgeResult } from '@/lib/types'
 import { dedupeEvidenceBySource, dedupeSources } from '@/lib/knowledge'
+import { cn } from '@/lib/utils'
 
 const SCOPE_LABEL: Record<NonNullable<ChatKnowledgeResult['scope']>, string> = {
   answer: '具体回答',
   survey: '主题梳理',
   exhaustive: '分页盘点',
+}
+
+const RERANK_LABEL: Record<NonNullable<ChatKnowledgeResult['rerank_status']>, string> = {
+  applied: '重排已应用',
+  partial: '部分候选已重排',
+  fallback_timeout: '重排超时，已按原顺序',
+  fallback_error: '重排服务异常，已按原顺序',
+  disabled: '重排未启用',
+  not_applicable: '',
 }
 
 /** 稳定的证据锚点：同一页面多条消息各自引用 E1 时不串消息。 */
@@ -55,6 +65,9 @@ export function KnowledgeEvidence({
   ]
     .filter(Boolean)
     .join(' · ')
+  const rerankLabel = data.rerank_status ? RERANK_LABEL[data.rerank_status] : ''
+  const rerankFallback =
+    data.rerank_status === 'fallback_timeout' || data.rerank_status === 'fallback_error'
 
   return (
     <details
@@ -64,6 +77,17 @@ export function KnowledgeEvidence({
       <summary className="cursor-pointer select-none text-muted-foreground">
         {summary}
       </summary>
+      {rerankLabel && (
+        <p
+          data-testid="knowledge-rerank"
+          className={cn(
+            'mt-2 text-xs',
+            rerankFallback ? 'text-amber-600 dark:text-amber-400' : 'text-muted-foreground',
+          )}
+        >
+          {rerankLabel}
+        </p>
+      )}
       {data.coverage_message && (
         <p data-testid="knowledge-coverage" className="mt-2 text-muted-foreground">
           {data.coverage_message}

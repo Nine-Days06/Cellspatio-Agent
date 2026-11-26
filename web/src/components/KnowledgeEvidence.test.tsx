@@ -61,6 +61,70 @@ describe('KnowledgeEvidence', () => {
     expect(container).toBeEmptyDOMElement()
   })
 
+  it('展示本轮重排结果', () => {
+    render(
+      <KnowledgeEvidence data={packageData({ rerank_status: 'applied' })} messageId={7} />,
+    )
+
+    expect(screen.getByTestId('knowledge-rerank')).toHaveTextContent('重排已应用')
+  })
+
+  it('部分候选重排时如实标注', () => {
+    render(
+      <KnowledgeEvidence data={packageData({ rerank_status: 'partial' })} messageId={7} />,
+    )
+
+    expect(screen.getByTestId('knowledge-rerank')).toHaveTextContent('部分候选已重排')
+  })
+
+  it('重排回退时明确说明保持原顺序', () => {
+    render(
+      <KnowledgeEvidence
+        data={packageData({ rerank_status: 'fallback_timeout' })}
+        messageId={7}
+      />,
+    )
+
+    expect(screen.getByTestId('knowledge-rerank')).toHaveTextContent(
+      '重排超时，已按原顺序',
+    )
+  })
+
+  it('服务异常与未启用也有明确状态', () => {
+    const { unmount } = render(
+      <KnowledgeEvidence
+        data={packageData({ rerank_status: 'fallback_error' })}
+        messageId={7}
+      />,
+    )
+    expect(screen.getByTestId('knowledge-rerank')).toHaveTextContent(
+      '重排服务异常，已按原顺序',
+    )
+    unmount()
+
+    render(
+      <KnowledgeEvidence data={packageData({ rerank_status: 'disabled' })} messageId={7} />,
+    )
+    expect(screen.getByTestId('knowledge-rerank')).toHaveTextContent('重排未启用')
+  })
+
+  it('旧消息缺少重排字段时不渲染状态', () => {
+    render(<KnowledgeEvidence data={packageData()} messageId={7} />)
+
+    expect(screen.queryByTestId('knowledge-rerank')).not.toBeInTheDocument()
+  })
+
+  it('不适用重排时不渲染状态', () => {
+    render(
+      <KnowledgeEvidence
+        data={packageData({ rerank_status: 'not_applicable' })}
+        messageId={7}
+      />,
+    )
+
+    expect(screen.queryByTestId('knowledge-rerank')).not.toBeInTheDocument()
+  })
+
   it('引用标记链接到本消息的证据锚点，不存在的编号保持文字', () => {
     expect(linkKnowledgeCitations('答 [E1] 与 [E9]', ['E1'], 7)).toBe(
       '答 [E1](#evidence-7-E1) 与 [E9]',

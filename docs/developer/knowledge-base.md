@@ -13,7 +13,7 @@
 | `src/knowledge/knowledge_index.py` | 覆盖索引；明确区分 `None`（无法确认）与空集 |
 | `src/knowledge/knowledge_admin.py` | 运维状态、重排、pipeline 驱动 |
 | `src/knowledge/qa.py` | 只读检索服务：chunk → 证据/来源、失败分类；不生成答案 |
-| `src/knowledge/rerank.py` | 可选重排：TEI 兼容 HTTP 打分、分批、候选上限与配置 |
+| `src/knowledge/rerank.py` | 自动重排（配置后）：TEI 兼容 HTTP 打分、分批、候选上限与配置 |
 | `src/knowledge/ollama_runtime.py` | Ollama 启停与空闲生命周期 |
 | `src/knowledge/prompt_profile.py` | 领域实体类型与抽取规则注入 |
 
@@ -40,14 +40,16 @@ PG 后端 LightRAG 的连接池、事件循环和 workspace 是进程级共享�
   `KB_AUTO_INGEST=1` 开启。
 - 问答需要 Ollama embedding 与一个 LLM 供应商；只做受控单细胞 QC → marker 可以离线。
 
-## 重排（可选）
+## 重排
 
-- 默认关闭，未配置时检索零外部调用；`KNOWLEDGE_RERANK_*` 见 `.env.example`。
+- 默认不配置，未配置时检索零外部调用；配置 `KNOWLEDGE_RERANK_*` 后每轮自动重排，
+  没有用户开关。参数见 `.env.example`。
 - 只接受 TEI 兼容 `POST /rerank`：请求 `{"query","texts","model"}`，响应
-  `[{"index","score"}]`。启用意味着查询与片段文本会发往该 endpoint。
+  `[{"index","score"}]`。配置意味着查询与片段文本会发往该 endpoint。
 - 重排只改变候选顺序，在来源去重、`survey` 多样性与 `exhaustive` 分页之前；
   超时、连接失败、格式异常或全部缺分整体回退原序；部分缺分只重排已打分片段，
-  未打分片段留在原位。结果带 `rerank_status`，检索不因此失败。
+  未打分片段留在原位。结果带 `rerank_status`，证据区据此显示已应用或回退原因，
+  检索不因此失败。
 - 分页游标绑定提供方与模型指纹；换模型后旧游标会被拒绝。
 
 ## 评测
@@ -64,7 +66,8 @@ PG 后端 LightRAG 的连接池、事件循环和 workspace 是进程级共享�
 旧五阶段问答评测（`evals/run_qa_eval.py`）已随独立问答入口删除；回答质量统一由
 上面的混合评测覆盖，评测不记录人工复核，也不自动判定回答正确性。
 
-重排开关的离线 A/B 在 `evals/knowledge_rerank_cases.jsonl`，入口
+重排开/关的离线 A/B 在 `evals/knowledge_rerank_cases.jsonl`，入口
 `python -m evals.run_knowledge_rerank_eval`：同一候选集分别跑重排关/开，输出
 nDCG/MRR、命中率与来源数。离线层用人工 grade 当假打分器，只验证选择管线与指标，
-不能替代真实提供方的质量结论；默认开启前需用真实 endpoint 复测。
+不能替代真实提供方的质量结论；正式启用（配置 `KNOWLEDGE_RERANK_*`）前需用真实
+endpoint 复测。

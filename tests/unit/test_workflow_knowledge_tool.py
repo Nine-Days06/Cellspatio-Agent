@@ -53,6 +53,31 @@ def _manager(knowledge_client):
     )
 
 
+def test_search_knowledge_always_builds_and_uses_reranker(monkeypatch):
+    """配置后每轮自动重排；只构造一次，两次重试共用同一实例。"""
+    built: list[object] = []
+    scored: list[object] = []
+
+    class FakeReranker:
+        fingerprint = "fake"
+
+        def score(self, query, passages):
+            scored.append(self)
+            return [0.0] * len(passages)
+
+    def fake_build():
+        reranker = FakeReranker()
+        built.append(reranker)
+        return reranker
+
+    monkeypatch.setattr("src.knowledge.rerank.build_reranker", fake_build)
+    manager = _manager(FakeKnowledge(_retrieval(), error=RuntimeError("blip"), fail_times=1))
+
+    manager.search_knowledge_for_agent("TP53")
+    assert len(built) == 1
+    assert scored and scored[0] is built[0]
+
+
 def test_search_knowledge_returns_evidence_and_continues():
     """成功检索返回证据、来源与条数，并允许模型继续推理。"""
     result = _manager(FakeKnowledge(_retrieval())).search_knowledge_for_agent("TP53")
